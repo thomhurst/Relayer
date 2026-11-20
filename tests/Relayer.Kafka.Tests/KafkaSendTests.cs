@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Buffers;
 using System.Text;
 using Dekaf.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Kafka.Tests;
 
@@ -45,14 +45,32 @@ public class KafkaSendTests
     {
         var pool = new KafkaSendPool();
         var operations = new KafkaSendOperation[128];
+
         for (var round = 0; round < 2; round++)
         {
-            for (var i = 0; i < operations.Length; i++) operations[i] = pool.Rent(1);
-            for (var i = 0; i < operations.Length; i++) pool.Return(operations[i]);
+            for (var i = 0; i < operations.Length; i++)
+            {
+                operations[i] = pool.Rent(1);
+            }
+
+            for (var i = 0; i < operations.Length; i++)
+            {
+                pool.Return(operations[i]);
+            }
         }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < operations.Length; i++) operations[i] = pool.Rent(1);
-        for (var i = 0; i < operations.Length; i++) pool.Return(operations[i]);
+
+        for (var i = 0; i < operations.Length; i++)
+        {
+            operations[i] = pool.Rent(1);
+        }
+
+        for (var i = 0; i < operations.Length; i++)
+        {
+            pool.Return(operations[i]);
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
     }
@@ -74,7 +92,10 @@ public class KafkaSendTests
         await Assert.That(duplicates[0].GetValueAsString()).IsEqualTo("first");
         await Assert.That(duplicates[1].GetValueAsString()).IsEqualTo("second");
         var nativeOnly = new Headers().Add("traceparent", "native-only");
-        serializer.Serialize((ReadOnlyMemory<byte>.Empty, new Headers()), ref output, new() { Headers = nativeOnly });
+        serializer.Serialize((ReadOnlyMemory<byte>.Empty, new Headers()), ref output, new()
+        {
+            Headers = nativeOnly
+        });
         await Assert.That(nativeOnly.GetFirstAsString("traceparent")).IsEqualTo("native-only");
     }
 
@@ -86,21 +107,36 @@ public class KafkaSendTests
         var serializer = new KafkaValueSerializer();
         var output = new ArrayBufferWriter<byte>();
         var native = new Headers();
+
         if (populated)
+        {
             native.Add("duplicate", "old-first").Add("keep", "native").Add("duplicate", "old-last")
                 .Add("traceparent", "native-parent").Add("tracestate", "native=state");
+        }
+
         var application = new Headers().Add("duplicate", "first").Add("traceparent", "creation-parent")
             .Add("duplicate", (byte[]?)null).Add("duplicate", "last");
         byte[] body = [1, 2, 3];
 
-        serializer.Serialize((body, application), ref output, new() { Headers = native });
+        serializer.Serialize((body, application), ref output, new()
+        {
+            Headers = native
+        });
 
         await Assert.That(output.WrittenMemory.ToArray()).IsEquivalentTo(body);
         var offset = populated ? 1 : 0;
         await Assert.That(native.Count).IsEqualTo(offset + application.Count);
-        if (populated) await Assert.That(native[0].Key).IsEqualTo("keep");
+
+        if (populated)
+        {
+            await Assert.That(native[0].Key).IsEqualTo("keep");
+        }
+
         for (var i = 0; i < application.Count; i++)
+        {
             await Assert.That(native[offset + i]).IsEqualTo(application[i]);
+        }
+
         await Assert.That(native[offset + 2].IsValueNull).IsTrue();
         await Assert.That(native.GetFirstAsString("tracestate")).IsNull();
     }
@@ -137,25 +173,39 @@ public class KafkaSendTests
         KeyValuePair<string, WireString>[] headers = [new("ce_type", new("tests.order;v=1")), new("tenant", new("tenant-1"))];
         var message = new OutgoingMessage("orders", new byte[32], headers, new WireString("customer-1"));
         var context = new SerializationContext { Headers = nativeHeaders };
+
         for (var i = 0; i < 1000; i++)
         {
             output.Clear();
-            if (!populated) nativeHeaders.Clear();
+
+            if (!populated)
+            {
+                nativeHeaders.Clear();
+            }
+
             state.Prepare(message);
             keySerializer.Serialize(state.Key, ref output, context);
             serializer.Serialize((message.Body, state.Headers), ref output, context);
             state.Clear();
         }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < 1000; i++)
         {
             output.Clear();
-            if (!populated) nativeHeaders.Clear();
+
+            if (!populated)
+            {
+                nativeHeaders.Clear();
+            }
+
             state.Prepare(message);
             keySerializer.Serialize(state.Key, ref output, context);
             serializer.Serialize((message.Body, state.Headers), ref output, context);
             state.Clear();
         }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
         await Assert.That(nativeHeaders.Count).IsEqualTo(2);
@@ -173,7 +223,9 @@ public class KafkaSendTests
         await Assert.That(() => state.Prepare(new("orders", default, options: options))).Throws<InvalidOperationException>();
         state.Prepare(new("orders", default));
         await Assert.That(state.Headers.Count).IsEqualTo(0);
-        var mismatch = new SendOptions().ConfigureNative<StringBuilder>(static _ => { });
+        var mismatch = new SendOptions().ConfigureNative<StringBuilder>(static _ =>
+        {
+        });
         await Assert.That(() => state.Prepare(new("orders", default, options: mismatch)))
             .Throws<InvalidOperationException>().WithMessageContaining("native outgoing type");
     }

@@ -30,15 +30,27 @@ public sealed class KafkaJsonSchemaSerializer(ISchemaRegistryClient client) : IM
         JsonSchemaSerializerConfig? config = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_initializing) throw new InvalidOperationException("Schema declarations are frozen after initialization starts.");
+
+        if (_initializing)
+        {
+            throw new InvalidOperationException("Schema declarations are frozen after initialization starts.");
+        }
+
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         ArgumentException.ThrowIfNullOrWhiteSpace(schema);
         ArgumentNullException.ThrowIfNull(typeInfo);
         config ??= new();
+
         if (config.UseLatestVersion || config.RuleExecutor is not null || config.SchemaIdStrategy != SchemaIdSerializerStrategy.Prefix)
+        {
             throw new NotSupportedException("Use a fixed JSON writer schema with prefix schema IDs, no latest-version selection and no registry rules. Per-record registry I/O is unsupported.");
+        }
+
         if (_entries.ContainsKey(Key<TMessage>.Value))
+        {
             throw new InvalidOperationException($"A schema for '{typeof(TMessage)}' is already declared.");
+        }
+
         _entries.Add(Key<TMessage>.Value, new Entry<TMessage>(_client, topic, schema, typeInfo, config));
         return this;
     }
@@ -47,25 +59,45 @@ public sealed class KafkaJsonSchemaSerializer(ISchemaRegistryClient client) : IM
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_prepared is not null) return;
-        if (_initializing) throw new InvalidOperationException("Schema initialization is already running or previously failed. Recreate the serializer to retry.");
+
+        if (_prepared is not null)
+        {
+            return;
+        }
+
+        if (_initializing)
+        {
+            throw new InvalidOperationException("Schema initialization is already running or previously failed. Recreate the serializer to retry.");
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
         _initializing = true;
+
         foreach (var entry in _entries.Values)
+        {
             await entry.PrepareAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         _prepared = _entries.ToFrozenDictionary(ReferenceEqualityComparer.Instance);
     }
 
     /// <inheritdoc />
     public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
     {
-        if (message is null) throw new ArgumentNullException(nameof(message));
+        if (message is null)
+        {
+            throw new ArgumentNullException(nameof(message));
+        }
+
         ArgumentNullException.ThrowIfNull(destination);
         Get<TMessage>().Serialize(message, destination);
     }
 
     /// <inheritdoc />
-    public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => Get<TMessage>().Deserialize(source);
+    public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+    {
+        return Get<TMessage>().Deserialize(source);
+    }
 
     private Entry<TMessage> Get<TMessage>()
     {
@@ -78,9 +110,17 @@ public sealed class KafkaJsonSchemaSerializer(ISchemaRegistryClient client) : IM
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
-        foreach (var entry in _entries.Values) await entry.DisposeAsync().ConfigureAwait(false);
+
+        foreach (var entry in _entries.Values)
+        {
+            await entry.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private static class Key<TMessage>
@@ -91,6 +131,7 @@ public sealed class KafkaJsonSchemaSerializer(ISchemaRegistryClient client) : IM
     private abstract class Entry : IAsyncDisposable
     {
         public abstract ValueTask PrepareAsync(CancellationToken cancellationToken);
+
         public abstract ValueTask DisposeAsync();
     }
 
@@ -113,7 +154,10 @@ public sealed class KafkaJsonSchemaSerializer(ISchemaRegistryClient client) : IM
             _schemaId = resolved.SchemaId;
         }
 
-        public void Serialize(TMessage message, IBufferWriter<byte> destination) => _writer.Serialize(message, ref destination, _context);
+        public void Serialize(TMessage message, IBufferWriter<byte> destination)
+        {
+            _writer.Serialize(message, ref destination, _context);
+        }
 
         public TMessage Deserialize(ReadOnlySequence<byte> source)
         {
@@ -121,22 +165,38 @@ public sealed class KafkaJsonSchemaSerializer(ISchemaRegistryClient client) : IM
             if (source.IsSingleSegment)
             {
                 var span = source.FirstSpan;
+
                 if (span.Length < 5 || span[0] != 0 || BinaryPrimitives.ReadInt32BigEndian(span[1..]) != _schemaId)
+                {
                     throw new JsonException("The record does not use the declared JSON writer schema on this transport.");
+                }
+
                 var value = JsonSerializer.Deserialize(span[5..], typeInfo);
                 return value is null ? throw new JsonException("A message body cannot be null.") : value;
             }
+
             var prefix = new SequenceReader<byte>(source);
+
             if (!prefix.TryRead(out var magic) || magic != 0 || !prefix.TryReadBigEndian(out int schemaId) || schemaId != _schemaId)
+            {
                 throw new JsonException("The record does not use the declared JSON writer schema on this transport.");
+            }
             // Dekaf's synchronous deserializer fetches unknown/evicted schemas synchronously. The explicit
             // startup contract already resolved this ID; read JSON directly to keep registry I/O off this path.
             var reader = new Utf8JsonReader(source.Slice(prefix.Position), _readerOptions);
             var message = JsonSerializer.Deserialize(ref reader, typeInfo);
-            if (reader.Read()) throw new JsonException("A message body must contain exactly one JSON value.");
+
+            if (reader.Read())
+            {
+                throw new JsonException("A message body must contain exactly one JSON value.");
+            }
+
             return message is null ? throw new JsonException("A message body cannot be null.") : message;
         }
 
-        public override ValueTask DisposeAsync() => _writer.DisposeAsync();
+        public override ValueTask DisposeAsync()
+        {
+            return _writer.DisposeAsync();
+        }
     }
 }

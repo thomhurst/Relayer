@@ -1,6 +1,6 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer;
 
@@ -8,26 +8,48 @@ namespace Relayer;
 public interface IRelayerBuilder
 {
     /// <summary>The application's service collection.</summary>
-    IServiceCollection Services { get; }
+    IServiceCollection Services
+    {
+        get;
+    }
 
     /// <summary>How broker entities are treated at startup. Defaults to <see cref="TopologyMode.Validate"/>.</summary>
-    TopologyMode TopologyMode { get; set; }
+    TopologyMode TopologyMode
+    {
+        get; set;
+    }
 }
 
 internal sealed class RelayerBuilder(IServiceCollection services) : IRelayerBuilder, IRelayerInfrastructure
 {
     private TopologyMode _topologyMode = TopologyMode.Validate;
-    public IServiceCollection Services { get; } = services;
 
-    public MessageTypeRegistry MessageTypes { get; } = new();
+    public IServiceCollection Services
+    {
+        get;
+    } = services;
 
-    public HandlerRegistry Handlers { get; } = new();
+    public MessageTypeRegistry MessageTypes
+    {
+        get;
+    } = new();
 
-    public UpcasterRegistry Upcasters { get; } = new();
+    public HandlerRegistry Handlers
+    {
+        get;
+    } = new();
+
+    public UpcasterRegistry Upcasters
+    {
+        get;
+    } = new();
 
     public TopologyMode TopologyMode
     {
-        get => _topologyMode;
+        get
+        {
+            return _topologyMode;
+        }
         set
         {
             EnsureMutable();
@@ -35,7 +57,10 @@ internal sealed class RelayerBuilder(IServiceCollection services) : IRelayerBuil
         }
     }
 
-    internal List<TransportDefinition> Transports { get; } = [];
+    internal List<TransportDefinition> Transports
+    {
+        get;
+    } = [];
 
     public IRelayerBuilder AddTransport<TTransportOptions, TConsumerOptions>(string name,
         Action<TransportBuilder<TTransportOptions, TConsumerOptions>> configure)
@@ -55,6 +80,8 @@ internal sealed class RelayerBuilder(IServiceCollection services) : IRelayerBuil
     private void EnsureMutable()
     {
         if (MessageTypes.IsFrozen)
+        {
             throw new InvalidOperationException("Relayer configuration is frozen after AddRelayer returns.");
+        }
     }
 }

@@ -31,8 +31,14 @@ public class SenderTests
         var configured = false;
         await Assert.That(async () =>
         {
-            if (configure) await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), _ => configured = true);
-            else await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
+            if (configure)
+            {
+                await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), _ => configured = true);
+            }
+            else
+            {
+                await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
+            }
         }).Throws<InvalidOperationException>().WithMessageContaining("SendWithoutOutboxAsync");
         await Assert.That(configured).IsFalse();
         await Assert.That(outbox.Count).IsEqualTo(0);
@@ -56,7 +62,10 @@ public class SenderTests
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            builder.DeclareRoute<OrderPlaced>("events", "orders", options: new() { TransactionRequirement = SendTransactionRequirement.Native });
+            builder.DeclareRoute<OrderPlaced>("events", "orders", options: new()
+            {
+                TransactionRequirement = SendTransactionRequirement.Native
+            });
         });
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         using var scope = provider.CreateScope();
@@ -89,8 +98,16 @@ public class SenderTests
         using var scope = provider.CreateScope();
         var send = () => scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(Guid.NewGuid()),
             options => options.DeliverAt = DateTimeOffset.UtcNow.AddMinutes(1)).AsTask();
-        if (scheduler) await send();
-        else await Assert.That(send).Throws<InvalidOperationException>().WithMessageContaining("matching due-row dispatch worker");
+
+        if (scheduler)
+        {
+            await send();
+        }
+        else
+        {
+            await Assert.That(send).Throws<InvalidOperationException>().WithMessageContaining("matching due-row dispatch worker");
+        }
+
         await Assert.That(outbox.Count).IsEqualTo(scheduler ? 1 : 0);
         await Assert.That(transport.Count).IsEqualTo(0);
     }
@@ -103,7 +120,10 @@ public class SenderTests
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            builder.DeclareRoute<OrderPlaced>("events", "orders", options: new() { TransactionRequirement = SendTransactionRequirement.Outbox });
+            builder.DeclareRoute<OrderPlaced>("events", "orders", options: new()
+            {
+                TransactionRequirement = SendTransactionRequirement.Outbox
+            });
         });
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         using var scope = provider.CreateScope();
@@ -121,7 +141,11 @@ public class SenderTests
         var second = new RecordingTransport("second");
         using var provider = CreateProvider(builder =>
         {
-            builder.DeclareRoute<OrderPlaced>("second", "orders", options: new() { Source = "/billing", HeaderNames = new("cloudEvents:") });
+            builder.DeclareRoute<OrderPlaced>("second", "orders", options: new()
+            {
+                Source = "/billing",
+                HeaderNames = new("cloudEvents:")
+            });
             builder.DeclareRoute<OrderCancelled>("first", "cancellations");
         }, first, second);
         using var scope = provider.CreateScope();
@@ -144,7 +168,9 @@ public class SenderTests
     [Test]
     public async Task Unknown_route_fails_with_an_actionable_message()
     {
-        using var provider = CreateProvider(_ => { });
+        using var provider = CreateProvider(_ =>
+        {
+        });
         using var scope = provider.CreateScope();
         await Assert.That(async () => await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(Guid.NewGuid())))
             .Throws<InvalidOperationException>().WithMessageContaining("Send<TMessage>");
@@ -185,7 +211,9 @@ public class SenderTests
         using var provider = CreateProvider(builder => builder.DeclareRoute<OrderPlaced>("events", "orders"), new RecordingTransport("events"));
         using var scope = provider.CreateScope();
         await Assert.That(async () => await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(Guid.NewGuid()),
-            options => options.ConfigureNative<StringBuilder>(static _ => { })))
+            options => options.ConfigureNative<StringBuilder>(static _ =>
+            {
+            })))
             .Throws<InvalidOperationException>().WithMessageContaining("native outgoing type");
     }
 
@@ -268,7 +296,12 @@ public class SenderTests
         var transport = new RecordingTransport("events") { Completion = completion };
         var outbox = new TestOutbox { IsActive = throughOutbox, Completion = completion };
         var services = Services(transport);
-        if (throughOutbox) services.AddScoped<IOutboxEnlistment>(_ => outbox);
+
+        if (throughOutbox)
+        {
+            services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        }
+
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
@@ -280,7 +313,12 @@ public class SenderTests
 
         var send = sender.SendAsync(new OrderPlaced(Guid.NewGuid()), cancellation.Token);
         await Assert.That(send.IsCompleted).IsEqualTo(completeSynchronously);
-        if (!completeSynchronously) completion.Complete();
+
+        if (!completeSynchronously)
+        {
+            completion.Complete();
+        }
+
         await send;
 
         await Assert.That(cancellation.IsCancellationRequested).IsTrue();
@@ -301,7 +339,12 @@ public class SenderTests
     {
         var transport = new RecordingTransport("events");
         var services = Services(transport);
-        if (registeredOutbox) services.AddScoped<IOutboxEnlistment, TestOutbox>();
+
+        if (registeredOutbox)
+        {
+            services.AddScoped<IOutboxEnlistment, TestOutbox>();
+        }
+
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
@@ -329,7 +372,10 @@ public class SenderTests
         {
             builder.AddMessageTypesFromThisAssembly();
             builder.DeclareRoute<OrderPlaced>("events", "orders", options: new()
-            { EnvelopeMode = mode, HeaderNames = new("cloudEvents:") });
+            {
+                EnvelopeMode = mode,
+                HeaderNames = new("cloudEvents:")
+            });
         });
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
@@ -340,9 +386,15 @@ public class SenderTests
         await Assert.That(outbox.Id.Version).IsEqualTo(7);
         await Assert.That(outbox.MessageType).IsEqualTo("tests.order-placed;v=2");
         await Assert.That(outbox.CreatedAt >= before && outbox.CreatedAt <= DateTimeOffset.UtcNow).IsTrue();
+
         if (mode == MessageEnvelopeMode.CloudEvents)
+        {
             await Assert.That(outbox.Headers["cloudEvents:id"]).IsEqualTo(outbox.Id.ToString("D"));
-        else await Assert.That(outbox.Headers.ContainsKey("cloudEvents:id")).IsFalse();
+        }
+        else
+        {
+            await Assert.That(outbox.Headers.ContainsKey("cloudEvents:id")).IsFalse();
+        }
     }
 
     [Test]
@@ -423,6 +475,7 @@ public class SenderTests
             options.Headers["tenant"] = new string('x', 10000);
             options.ConfigureNative<NativeOutgoing>(static native => native.Value = 2);
         });
+
         try
         {
             var firstCopy = Encoding.UTF8.GetString(transport.Messages[0].Body.Span);
@@ -441,6 +494,7 @@ public class SenderTests
             await first;
             await second;
         }
+
         await Assert.That(transport.CompletedBodies[0]).Contains(firstId.ToString());
         await Assert.That(transport.CompletedBodies[1]).Contains(secondId.ToString());
     }
@@ -472,15 +526,28 @@ public class SenderTests
     {
         using var provider = CreateProvider(builder => builder.DeclareRoute<OrderPlaced>("sink", "orders", route =>
         {
-            if (scalarKey) route.OrderingKey(static message => message.OrderId);
+            if (scalarKey)
+            {
+                route.OrderingKey(static message => message.OrderId);
+            }
         }), new SinkTransport());
         using var scope = provider.CreateScope();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         var message = new OrderPlaced(Guid.NewGuid());
-        for (var i = 0; i < 1000; i++) await sender.SendAsync(message);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            await sender.SendAsync(message);
+        }
+
         TimerQueueWarmup.WarmContention();
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) await sender.SendAsync(message);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            await sender.SendAsync(message);
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
     }
@@ -496,22 +563,44 @@ public class SenderTests
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         var message = new OrderPlaced(Guid.NewGuid());
         var pending = new ValueTask[concurrency];
+
         for (var batch = 0; batch < 20; batch++)
         {
             transport.BeginBatch();
-            for (var i = 0; i < concurrency; i++) pending[i] = sender.SendAsync(message);
+
+            for (var i = 0; i < concurrency; i++)
+            {
+                pending[i] = sender.SendAsync(message);
+            }
+
             transport.CompleteBatch();
-            for (var i = 0; i < concurrency; i++) await pending[i];
+
+            for (var i = 0; i < concurrency; i++)
+            {
+                await pending[i];
+            }
         }
+
         TimerQueueWarmup.WarmContention();
         var before = GC.GetAllocatedBytesForCurrentThread();
+
         for (var batch = 0; batch < 20; batch++)
         {
             transport.BeginBatch();
-            for (var i = 0; i < concurrency; i++) pending[i] = sender.SendAsync(message);
+
+            for (var i = 0; i < concurrency; i++)
+            {
+                pending[i] = sender.SendAsync(message);
+            }
+
             transport.CompleteBatch();
-            for (var i = 0; i < concurrency; i++) await pending[i];
+
+            for (var i = 0; i < concurrency; i++)
+            {
+                await pending[i];
+            }
         }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
     }
@@ -546,7 +635,9 @@ public class SenderTests
         var outbox = (TestOutbox)scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
         outbox.IsActive = true;
         await Assert.That(async () => await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(Guid.NewGuid()),
-            options => options.ConfigureNative<NativeOutgoing>(static _ => { })))
+            options => options.ConfigureNative<NativeOutgoing>(static _ =>
+            {
+            })))
             .Throws<InvalidOperationException>().WithMessageContaining("cannot be persisted");
         await Assert.That(outbox.Count).IsEqualTo(0);
     }
@@ -564,10 +655,12 @@ public class SenderTests
     {
         var transport = new RecordingTransport("events");
         var services = Services(transport);
+
         if (error == "duplicate-transport")
         {
             services.AddSingleton<ITransport>(new RecordingTransport("events"));
         }
+
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
@@ -581,9 +674,17 @@ public class SenderTests
                         HeaderNames = error == "headers" ? null! : new(),
                         EnvelopeMode = error == "mode" ? (MessageEnvelopeMode)99 : MessageEnvelopeMode.CloudEvents
                     });
-                if (error == "duplicate-route") broker.Send<OrderPlaced>("orders");
+
+                if (error == "duplicate-route")
+                {
+                    broker.Send<OrderPlaced>("orders");
+                }
+
 #pragma warning disable RLY001 // Deliberately omit the message identity to exercise startup validation.
-                if (error == "identity") broker.Send<string>("other");
+                if (error == "identity")
+                {
+                    broker.Send<string>("other");
+                }
 #pragma warning restore RLY001
             });
         });
@@ -591,8 +692,14 @@ public class SenderTests
         Func<Task> start = async () =>
         {
             foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+            {
                 await service.StartingAsync(default);
-            foreach (var service in provider.GetServices<IHostedService>()) await service.StartAsync(default);
+            }
+
+            foreach (var service in provider.GetServices<IHostedService>())
+            {
+                await service.StartAsync(default);
+            }
         };
         await Assert.That(start).Throws<OptionsValidationException>();
     }
@@ -609,14 +716,27 @@ public class SenderTests
         var transport = new RecordingTransport("events") { UnorderedEndpoint = "orders.standard" };
         using var provider = CreateProvider(builder => builder.DeclareRoute<OrderPlaced>("events", destination, route =>
         {
-            if (key == "string") route.OrderingKey(static _ => "customer");
-            if (key == "scalar") route.OrderingKey(static message => message.OrderId);
+            if (key == "string")
+            {
+                route.OrderingKey(static _ => "customer");
+            }
+
+            if (key == "scalar")
+            {
+                route.OrderingKey(static message => message.OrderId);
+            }
         }), transport);
         Func<Task> start = async () =>
         {
             foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+            {
                 await service.StartingAsync(default);
-            foreach (var service in provider.GetServices<IHostedService>()) await service.StartAsync(default);
+            }
+
+            foreach (var service in provider.GetServices<IHostedService>())
+            {
+                await service.StartAsync(default);
+            }
         };
 
         if (destination == "orders.standard" && key != "none")
@@ -647,8 +767,17 @@ public class SenderTests
         var transport = new RecordingTransport("events") { UnorderedEndpoint = "orders" };
         var services = Services(transport);
         var outbox = new TestOutbox { IsActive = activeOutbox };
-        if (activeOutbox) services.AddScoped<IOutboxEnlistment>(_ => outbox);
-        if (middleware) services.AddSingleton<ISendMiddleware>(new ConfigureOptionsMiddleware(static options => options.OrderingKey = "customer"));
+
+        if (activeOutbox)
+        {
+            services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        }
+
+        if (middleware)
+        {
+            services.AddSingleton<ISendMiddleware>(new ConfigureOptionsMiddleware(static options => options.OrderingKey = "customer"));
+        }
+
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
@@ -659,12 +788,16 @@ public class SenderTests
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), options =>
         {
-            if (!middleware) options.OrderingKey = "customer";
+            if (!middleware)
+            {
+                options.OrderingKey = "customer";
+            }
         })).Throws<InvalidOperationException>()
             .WithMessageContaining("Send route 'tests.order-placed;v=2' on transport 'events' to endpoint 'orders' specifies an OrderingKey, but the endpoint does not support OrderedByKey.");
         await Assert.That(transport.Count).IsEqualTo(0);
         await Assert.That(outbox.Count).IsEqualTo(0);
         await Assert.That(transport.CapabilityEndpoints).IsEquivalentTo(new[] { "orders" });
+
         if (!middleware)
         {
             await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
@@ -684,7 +817,12 @@ public class SenderTests
         var transport = new RecordingTransport("events") { MaxDeliveryDelay = maxMinutes < 0 ? null : TimeSpan.FromMinutes(maxMinutes) };
         var services = Services(transport);
         var deliverAt = DateTimeOffset.UtcNow.AddDays(1);
-        if (middleware) services.AddSingleton<ISendMiddleware>(new ConfigureOptionsMiddleware(options => options.DeliverAt = deliverAt));
+
+        if (middleware)
+        {
+            services.AddSingleton<ISendMiddleware>(new ConfigureOptionsMiddleware(options => options.DeliverAt = deliverAt));
+        }
+
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
@@ -695,11 +833,15 @@ public class SenderTests
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), options =>
         {
-            if (!middleware) options.DeliverAt = deliverAt;
+            if (!middleware)
+            {
+                options.DeliverAt = deliverAt;
+            }
         })).Throws<InvalidOperationException>()
             .WithMessageContaining("Send route 'tests.order-placed;v=2' on transport 'events' to endpoint 'orders' cannot execute DeliverAt. Use sufficient native MaxDeliveryDelay for direct sends, or an active outbox transaction with a matching due-row dispatch worker.");
         await Assert.That(transport.Count).IsEqualTo(0);
         await Assert.That(transport.CapabilityEndpoints).IsEquivalentTo(new[] { "orders" });
+
         if (!middleware)
         {
             await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
@@ -783,12 +925,14 @@ public class SenderTests
     {
         var previous = Activity.Current;
         Activity.Current = null;
+
         try
         {
             var transport = new RecordingTransport("events");
             using var provider = CreateProvider(builder => builder.DeclareRoute<OrderPlaced>("events", "orders"), transport);
             using var scope = provider.CreateScope();
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
             using (var activity = new Activity("producer").SetIdFormat(ActivityIdFormat.W3C).Start())
             {
                 activity.TraceStateString = "vendor=value";
@@ -796,6 +940,7 @@ public class SenderTests
                 await Assert.That(transport.Headers["traceparent"]).IsEqualTo(activity.Id!);
                 await Assert.That(transport.Headers["tracestate"]).IsEqualTo("vendor=value");
             }
+
             await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
             await Assert.That(transport.Headers.ContainsKey("traceparent")).IsFalse();
             await Assert.That(transport.Headers.ContainsKey("tracestate")).IsFalse();
@@ -820,19 +965,47 @@ public class SenderTests
     private static ServiceCollection Services(params ITransport[] transports)
     {
         var services = new ServiceCollection();
-        foreach (var transport in transports) services.AddSingleton(transport);
+
+        foreach (var transport in transports)
+        {
+            services.AddSingleton(transport);
+        }
+
         return services;
     }
 
-    private sealed class NativeOutgoing { public int Value { get; set; } }
+    private sealed class NativeOutgoing
+    {
+        public int Value
+        {
+            get; set;
+        }
+    }
 
     private sealed class GatedTransport : ITransport
     {
         public string Name => "gated";
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
-        public List<OutgoingMessage> Messages { get; } = [];
-        public string[] CompletedBodies { get; } = new string[2];
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
+        public List<OutgoingMessage> Messages
+        {
+            get;
+        } = [];
+
+        public string[] CompletedBodies
+        {
+            get;
+        } = new string[2];
+
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             var index = Messages.Count;
@@ -840,61 +1013,167 @@ public class SenderTests
             await Release.Task.WaitAsync(cancellationToken);
             CompletedBodies[index] = Encoding.UTF8.GetString(message.Body.Span);
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class SinkTransport : ITransport
     {
         public string Name => "sink";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class ManualCompletionTransport(int concurrency) : ITransport
     {
         private readonly Completion[] _completions = Enumerable.Range(0, concurrency).Select(static _ => new Completion()).ToArray();
         private int _next;
+
         public string Name => "manual";
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
         public void BeginBatch()
         {
             _next = 0;
-            foreach (var completion in _completions) completion.Reset();
+
+            foreach (var completion in _completions)
+            {
+                completion.Reset();
+            }
         }
+
         public void CompleteBatch()
         {
             // Reverse completion also prevents reliance on send order.
-            for (var i = _next - 1; i >= 0; i--) _completions[i].Complete();
+            for (var i = _next - 1; i >= 0; i--)
+            {
+                _completions[i].Complete();
+            }
         }
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => _completions[_next++].Task;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return _completions[_next++].Task;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
 
         private sealed class Completion : IValueTaskSource
         {
             private ManualResetValueTaskSourceCore<bool> _source;
+
             public ValueTask Task => new(this, _source.Version);
-            public void Reset() => _source.Reset();
-            public void Complete() => _source.SetResult(true);
-            public void GetResult(short token) => _source.GetResult(token);
-            public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
-            public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+
+            public void Reset()
+            {
+                _source.Reset();
+            }
+
+            public void Complete()
+            {
+                _source.SetResult(true);
+            }
+
+            public void GetResult(short token)
+            {
+                _source.GetResult(token);
+            }
+
+            public ValueTaskSourceStatus GetStatus(short token)
+            {
+                return _source.GetStatus(token);
+            }
+
+            public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+            {
                 _source.OnCompleted(continuation, state, token, flags);
+            }
         }
     }
 
@@ -906,53 +1185,148 @@ public class SenderTests
         public CancelAfterSuccessCompletion(CancellationTokenSource cancellation, bool completeSynchronously)
         {
             _cancellation = cancellation;
-            if (completeSynchronously) Complete();
+
+            if (completeSynchronously)
+            {
+                Complete();
+            }
         }
 
         public ValueTask Task => new(this, _source.Version);
-        public void Complete() => _source.SetResult(true);
+
+        public void Complete()
+        {
+            _source.SetResult(true);
+        }
+
         public void GetResult(short token)
         {
             _source.GetResult(token);
             // Deterministically cancel after native success, before the sender resumes observing it.
             _cancellation.Cancel();
         }
-        public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _source.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
             _source.OnCompleted(continuation, state, token, flags);
+        }
     }
 
     private sealed class RecordingTransport(string name) : ITransport
     {
         public string Name => name;
-        public string? UnorderedEndpoint { get; init; }
-        public TimeSpan? MaxDeliveryDelay { get; init; } = TimeSpan.MaxValue;
-        public bool Transactions { get; init; }
-        public List<string> CapabilityEndpoints { get; } = [];
+
+        public string? UnorderedEndpoint
+        {
+            get; init;
+        }
+
+        public TimeSpan? MaxDeliveryDelay
+        {
+            get; init;
+        } = TimeSpan.MaxValue;
+
+        public bool Transactions
+        {
+            get; init;
+        }
+
+        public List<string> CapabilityEndpoints
+        {
+            get;
+        } = [];
+
         public TransportCapabilities GetCapabilities(string endpoint)
         {
             CapabilityEndpoints.Add(endpoint);
-            return new() { MaxDeliveryDelay = MaxDeliveryDelay, OrderedByKey = endpoint != UnorderedEndpoint, Transactions = Transactions };
+            return new()
+            {
+                MaxDeliveryDelay = MaxDeliveryDelay,
+                OrderedByKey = endpoint != UnorderedEndpoint,
+                Transactions = Transactions
+            };
         }
-        public string? Destination { get; private set; }
-        public string? Body { get; private set; }
-        public string? OrderingKey { get; private set; }
-        public DateTimeOffset? DeliverAt { get; private set; }
-        public Dictionary<string, string> Headers { get; } = [];
-        public int NativeValue { get; private set; }
-        public int Count { get; private set; }
-        public bool WaitForCancellation { get; set; }
-        public bool FailOnce { get; set; }
-        public CancelAfterSuccessCompletion? Completion { get; set; }
-        public string? FailedMessageId { get; private set; }
-        public CancellationToken ObservedToken { get; private set; }
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string? Destination
+        {
+            get; private set;
+        }
+
+        public string? Body
+        {
+            get; private set;
+        }
+
+        public string? OrderingKey
+        {
+            get; private set;
+        }
+
+        public DateTimeOffset? DeliverAt
+        {
+            get; private set;
+        }
+
+        public Dictionary<string, string> Headers
+        {
+            get;
+        } = [];
+
+        public int NativeValue
+        {
+            get; private set;
+        }
+
+        public int Count
+        {
+            get; private set;
+        }
+
+        public bool WaitForCancellation
+        {
+            get; set;
+        }
+
+        public bool FailOnce
+        {
+            get; set;
+        }
+
+        public CancelAfterSuccessCompletion? Completion
+        {
+            get; set;
+        }
+
+        public string? FailedMessageId
+        {
+            get; private set;
+        }
+
+        public CancellationToken ObservedToken
+        {
+            get; private set;
+        }
+
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             ObservedToken = cancellationToken;
             Entered.TrySetResult();
-            if (WaitForCancellation) return new(Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+
+            if (WaitForCancellation)
+            {
+                return new(Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken));
+            }
+
             var native = new NativeOutgoing();
             message.ApplyNative(native);
             NativeValue = native.Value;
@@ -961,22 +1335,48 @@ public class SenderTests
             OrderingKey = message.OrderingKey?.ToString();
             DeliverAt = message.DeliverAt;
             Headers.Clear();
-            foreach (var header in message.Headers.Span) Headers.Add(header.Key, header.Value.ToString());
+
+            foreach (var header in message.Headers.Span)
+            {
+                Headers.Add(header.Key, header.Value.ToString());
+            }
+
             Count++;
+
             if (FailOnce)
             {
                 FailOnce = false;
                 FailedMessageId = Headers["ce_id"];
                 throw new InvalidOperationException("retryable send failure");
             }
+
             return Completion?.Task ?? ValueTask.CompletedTask;
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class ConfigureOptionsMiddleware(Action<SendOptions> configure) : ISendMiddleware
@@ -1003,27 +1403,89 @@ public class SenderTests
     {
         public async ValueTask InvokeAsync(SendContext context, SendDelegate next)
         {
-            try { await next(context); }
-            catch (InvalidOperationException) { await next(context); }
+            try
+            {
+                await next(context);
+            }
+            catch (InvalidOperationException)
+            {
+                await next(context);
+            }
         }
     }
 
     private sealed class TestOutbox : IOutboxEnlistment
     {
-        public bool SupportsScheduling { get; init; } = true;
-        public bool SupportsOrderedScheduling { get; init; } = true;
-        public Guid Id { get; private set; }
-        public string? MessageType { get; private set; }
-        public DateTimeOffset CreatedAt { get; private set; }
-        public bool IsActive { get; set; }
-        public CancelAfterSuccessCompletion? Completion { get; set; }
-        public int Count { get; private set; }
-        public string? TransportName { get; private set; }
-        public string? Destination { get; private set; }
-        public string? Body { get; private set; }
-        public string? OrderingKey { get; private set; }
-        public DateTimeOffset? DeliverAt { get; private set; }
-        public Dictionary<string, string> Headers { get; } = [];
+        public bool SupportsScheduling
+        {
+            get; init;
+        } = true;
+
+        public bool SupportsOrderedScheduling
+        {
+            get; init;
+        } = true;
+
+        public Guid Id
+        {
+            get; private set;
+        }
+
+        public string? MessageType
+        {
+            get; private set;
+        }
+
+        public DateTimeOffset CreatedAt
+        {
+            get; private set;
+        }
+
+        public bool IsActive
+        {
+            get; set;
+        }
+
+        public CancelAfterSuccessCompletion? Completion
+        {
+            get; set;
+        }
+
+        public int Count
+        {
+            get; private set;
+        }
+
+        public string? TransportName
+        {
+            get; private set;
+        }
+
+        public string? Destination
+        {
+            get; private set;
+        }
+
+        public string? Body
+        {
+            get; private set;
+        }
+
+        public string? OrderingKey
+        {
+            get; private set;
+        }
+
+        public DateTimeOffset? DeliverAt
+        {
+            get; private set;
+        }
+
+        public Dictionary<string, string> Headers
+        {
+            get;
+        } = [];
+
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
             Id = record.Id;
@@ -1037,7 +1499,12 @@ public class SenderTests
             OrderingKey = message.OrderingKey?.ToString();
             DeliverAt = message.DeliverAt;
             Headers.Clear();
-            foreach (var header in message.Headers.Span) Headers.Add(header.Key, header.Value.ToString());
+
+            foreach (var header in message.Headers.Span)
+            {
+                Headers.Add(header.Key, header.Value.ToString());
+            }
+
             return Completion?.Task ?? ValueTask.CompletedTask;
         }
     }
@@ -1046,13 +1513,15 @@ public class SenderTests
 internal static class SenderTestRoutes
 {
     internal static void DeclareRoute<TMessage>(this IRelayerBuilder builder, string transportName, string destination,
-        Action<RouteBuilder<TMessage>>? configure = null, SendRouteOptions? options = null) =>
+        Action<RouteBuilder<TMessage>>? configure = null, SendRouteOptions? options = null)
+    {
         builder.AddTransport<SenderTransportOptions, SenderTransportOptions>(transportName,
-            transport => transport.Send<TMessage>(destination, route =>
-            {
-                route.SendOptions = options ?? new();
-                configure?.Invoke(route);
-            }));
+                    transport => transport.Send<TMessage>(destination, route =>
+                    {
+                        route.SendOptions = options ?? new();
+                        configure?.Invoke(route);
+                    }));
+    }
 }
 
 public sealed class SenderTransportOptions;

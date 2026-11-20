@@ -1,4 +1,5 @@
 using Relayer.Transports;
+
 namespace Relayer.Pipeline;
 
 // Transport-independent policy only. Native admission, settlement and lifecycle remain the adapter's job.
@@ -33,13 +34,19 @@ internal sealed class ConsumerCircuit : IDisposable
         // Construct disabled: callbacks must never observe partially initialized timer fields.
         _sampling = time.CreateTimer(static state => ((ConsumerCircuit)state!).ResetWindow(), this,
             Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+
         try
         {
             _recovery = time.CreateTimer(static state => ((ConsumerCircuit)state!).OfferProbe(), this,
                 Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             _sampling.Change(samplingDuration, samplingDuration);
         }
-        catch { _recovery?.Dispose(); _sampling.Dispose(); throw; }
+        catch
+        {
+            _recovery?.Dispose();
+            _sampling.Dispose();
+            throw;
+        }
     }
 
     // Values match EndpointTelemetry.RecordCircuitState. Offering a probe does not resume a native consumer.
@@ -57,12 +64,26 @@ internal sealed class ConsumerCircuit : IDisposable
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         probe = false;
+
         while (true)
         {
             var state = Volatile.Read(ref _state);
-            if ((state & StateMask) == 0) return true;
-            if (state != ProbeAvailable) return false;
-            if (Interlocked.CompareExchange(ref _state, ProbeRunning, state) != state) continue;
+
+            if ((state & StateMask) == 0)
+            {
+                return true;
+            }
+
+            if (state != ProbeAvailable)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref _state, ProbeRunning, state) != state)
+            {
+                continue;
+            }
+
             probe = true;
             return true;
         }
@@ -73,27 +94,60 @@ internal sealed class ConsumerCircuit : IDisposable
     internal bool Complete(bool probe, bool failed)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
         if (probe)
         {
             if (Interlocked.CompareExchange(ref _state, failed ? Open : 0, ProbeRunning) != ProbeRunning)
+            {
                 throw new InvalidOperationException("No circuit probe is in flight.");
-            if (failed) ScheduleRecovery();
+            }
+
+            if (failed)
+            {
+                ScheduleRecovery();
+            }
+
             return failed;
         }
+
         while (true)
         {
             var state = Volatile.Read(ref _state);
-            if ((state & StateMask) != 0) return false;
+
+            if ((state & StateMask) != 0)
+            {
+                return false;
+            }
+
             var total = state & CountMask;
             var failures = (state >> FailureShift) & CountMask;
             // A window also ends at the bounded counter capacity (over one billion outcomes).
-            if (total == CountMask) { total = 0; failures = 0; }
+            if (total == CountMask)
+            {
+                total = 0;
+                failures = 0;
+            }
+
             total++;
-            if (failed) failures++;
+
+            if (failed)
+            {
+                failures++;
+            }
+
             var open = total >= _minimumThroughput && failures / (double)total >= _failureRatio;
             var next = open ? Open : total | (failures << FailureShift);
-            if (Interlocked.CompareExchange(ref _state, next, state) != state) continue;
-            if (open) ScheduleRecovery();
+
+            if (Interlocked.CompareExchange(ref _state, next, state) != state)
+            {
+                continue;
+            }
+
+            if (open)
+            {
+                ScheduleRecovery();
+            }
+
             return open;
         }
     }
@@ -103,8 +157,16 @@ internal sealed class ConsumerCircuit : IDisposable
         while (true)
         {
             var state = Volatile.Read(ref _state);
-            if ((state & StateMask) != 0) return;
-            if (Interlocked.CompareExchange(ref _state, 0, state) == state) return;
+
+            if ((state & StateMask) != 0)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _state, 0, state) == state)
+            {
+                return;
+            }
         }
     }
 
@@ -113,20 +175,32 @@ internal sealed class ConsumerCircuit : IDisposable
     private void OfferProbe()
     {
         if (Interlocked.CompareExchange(ref _state, ProbeAvailable, Open) == Open &&
-            Volatile.Read(ref _disposed) == 0) _probeAvailable?.Invoke();
+            Volatile.Read(ref _disposed) == 0)
+        {
+            _probeAvailable?.Invoke();
+        }
     }
 
     private void ScheduleRecovery()
     {
         // Disposal may race a native shutdown. Timer disposal prevents later callbacks; a queued callback
         // can only offer admission on this abandoned policy, never restart native processing.
-        try { _recovery.Change(_breakDuration, Timeout.InfiniteTimeSpan); }
-        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0) { }
+        try
+        {
+            _recovery.Change(_breakDuration, Timeout.InfiniteTimeSpan);
+        }
+        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+        {
+        }
     }
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _sampling.Dispose();
         _recovery.Dispose();
     }
@@ -134,9 +208,15 @@ internal sealed class ConsumerCircuit : IDisposable
     internal static void Validate(double failureRatio, int minimumThroughput, TimeSpan samplingDuration, TimeSpan breakDuration)
     {
         if (!double.IsFinite(failureRatio) || failureRatio <= 0 || failureRatio > 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(failureRatio));
+        }
+
         if (minimumThroughput < 1 || minimumThroughput > CountMask)
+        {
             throw new ArgumentOutOfRangeException(nameof(minimumThroughput));
+        }
+
         ValidateDuration(samplingDuration, nameof(samplingDuration));
         ValidateDuration(breakDuration, nameof(breakDuration));
     }
@@ -144,6 +224,8 @@ internal sealed class ConsumerCircuit : IDisposable
     private static void ValidateDuration(TimeSpan duration, string name)
     {
         if (duration < TimeSpan.FromMilliseconds(1) || duration.TotalMilliseconds > uint.MaxValue - 1)
+        {
             throw new ArgumentOutOfRangeException(name, "Duration must be at least one millisecond and fit a timer.");
+        }
     }
 }

@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using System.Buffers;
 using System.Text;
-using Dekaf.Serialization;
 using Dekaf.Producer;
+using Dekaf.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Kafka;
 
@@ -11,7 +11,11 @@ internal sealed class KafkaKeySerializer : ISerializer<WireString?>
     public void Serialize<TWriter>(WireString? value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
-        if (value is not { } bytes) return;
+        if (value is not { } bytes)
+        {
+            return;
+        }
+
         if (bytes.Text is { } text)
         {
             var size = Encoding.UTF8.GetByteCount(text);
@@ -34,37 +38,73 @@ internal sealed class KafkaSendState
     private byte[] _utf8 = [];
     private KafkaSendCompletion? _completion;
 
-    internal ValueTask<Dekaf.Producer.RecordMetadata> TrackSend(ValueTask<Dekaf.Producer.RecordMetadata> pending, SendTracing.NativeSendOperation duration) =>
-        (_completion ??= new()).Track(pending, duration);
+    internal ValueTask<Dekaf.Producer.RecordMetadata> TrackSend(ValueTask<Dekaf.Producer.RecordMetadata> pending, SendTracing.NativeSendOperation duration)
+    {
+        return (_completion ??= new()).Track(pending, duration);
+    }
 
-    internal ProducerMessage<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>? Record { get; private set; }
+    internal ProducerMessage<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>? Record
+    {
+        get; private set;
+    }
 
-    internal WireString? Key { get; private set; }
-    internal bool Tombstone { get; set; }
+    internal WireString? Key
+    {
+        get; private set;
+    }
+
+    internal bool Tombstone
+    {
+        get; set;
+    }
+
     internal Headers Headers => _headers;
 
     internal void Prepare(OutgoingMessage outgoing)
     {
         Clear();
         var size = 0;
+
         foreach (var header in outgoing.Headers.Span)
-            if (header.Value.Text is { } text) size = checked(size + Encoding.UTF8.GetByteCount(text));
-        if (_utf8.Length < size) _utf8 = new byte[Math.Max(size, 256)];
+        {
+            if (header.Value.Text is { } text)
+            {
+                size = checked(size + Encoding.UTF8.GetByteCount(text));
+            }
+        }
+
+        if (_utf8.Length < size)
+        {
+            _utf8 = new byte[Math.Max(size, 256)];
+        }
+
         var position = 0;
         Key = outgoing.OrderingKey;
+
         foreach (var header in outgoing.Headers.Span)
+        {
             _headers.Add(new Header(header.Key, Encode(header.Value, ref position)));
+        }
+
         if (outgoing.HasNativeTransforms)
         {
             Record = outgoing.ApplyNative(_headers, new ProducerMessage<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>
             {
-                Topic = outgoing.Destination, Key = Key,
-                Value = outgoing.IsTombstone ? null : (outgoing.Body, _headers), Headers = _headers,
+                Topic = outgoing.Destination,
+                Key = Key,
+                Value = outgoing.IsTombstone ? null : (outgoing.Body, _headers),
+                Headers = _headers,
             });
+
             if (Record.Topic != outgoing.Destination)
+            {
                 throw new InvalidOperationException("KafkaRecord cannot change the declared destination topic. Configure a send route instead.");
+            }
         }
-        else outgoing.ApplyNative(_headers);
+        else
+        {
+            outgoing.ApplyNative(_headers);
+        }
         // Legacy private markers are never trusted, including ones supplied by native callbacks.
         _headers.Remove(TombstoneHeader);
         Tombstone = outgoing.IsTombstone;
@@ -72,7 +112,11 @@ internal sealed class KafkaSendState
 
     private ReadOnlyMemory<byte> Encode(WireString value, ref int position)
     {
-        if (value.Text is not { } text) return value.Utf8;
+        if (value.Text is not { } text)
+        {
+            return value.Utf8;
+        }
+
         var written = Encoding.UTF8.GetBytes(text, _utf8.AsSpan(position));
         var result = _utf8.AsMemory(position, written);
         position += written;
@@ -94,6 +138,7 @@ internal sealed class KafkaSendState
 internal sealed class KafkaValueSerializer : ISerializer<(ReadOnlyMemory<byte> Body, Headers Headers)?>, IRecordHeaderSerializer
 {
     public bool ProducesRecordHeaders => true;
+
     public void Serialize<TWriter>((ReadOnlyMemory<byte> Body, Headers Headers)? record, ref TWriter destination,
         SerializationContext context) where TWriter : IBufferWriter<byte>, allows ref struct
     {
@@ -102,19 +147,37 @@ internal sealed class KafkaValueSerializer : ISerializer<(ReadOnlyMemory<byte> B
         // Fresh native storage has nothing to replace, including native trace context.
         // Remove conflicts in one native pass first, so duplicate application headers retain their order.
         if (headers.Count != 0)
-            headers.RemoveAll(IsReplaced, (Application: value.Headers, Trace: value.Headers.GetFirst("traceparent") is not null));
-        for (var i = 0; i < value.Headers.Count; i++) headers.Add(value.Headers[i]);
+        {
+            headers.RemoveAll(s_isReplaced, (Application: value.Headers, Trace: value.Headers.GetFirst("traceparent") is not null));
+        }
+
+        for (var i = 0; i < value.Headers.Count; i++)
+        {
+            headers.Add(value.Headers[i]);
+        }
+
         value.Body.Span.CopyTo(destination.GetSpan(value.Body.Length));
         destination.Advance(value.Body.Length);
     }
 
-    private static readonly Func<Header, (Headers Application, bool Trace), bool> IsReplaced = static (header, state) =>
+    private static readonly Func<Header, (Headers Application, bool Trace), bool> s_isReplaced = static (header, state) =>
     {
         // Creation trace context replaces both native trace headers, even when it has no tracestate.
-        if (state.Trace && header.Key is "traceparent" or "tracestate") return true;
+        if (state.Trace && header.Key is "traceparent" or "tracestate")
+        {
+            return true;
+        }
+
         var application = state.Application;
+
         for (var i = 0; i < application.Count; i++)
-            if (application[i].Key == header.Key) return true;
+        {
+            if (application[i].Key == header.Key)
+            {
+                return true;
+            }
+        }
+
         return false;
     };
 }

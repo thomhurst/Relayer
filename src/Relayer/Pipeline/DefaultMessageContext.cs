@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Transports;
 
 namespace Relayer.Pipeline;
 
@@ -19,7 +19,11 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     // 0: pooled, 1: rented, 2: processing, 3: processed. A delivery can run only once.
     private int _state;
 
-    internal int PoolSlot { get; }
+    internal int PoolSlot
+    {
+        get;
+    }
+
     internal DefaultMessageContext(ConsumePipeline owner, int poolSlot = -1)
     {
         _owner = owner;
@@ -29,69 +33,156 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         CoreProcessing = new(owner, this);
     }
 
-    internal ConsumePipeline.CoreOperation CoreProcessing { get; }
-    internal PendingSettlement Settlement { get; }
+    internal ConsumePipeline.CoreOperation CoreProcessing
+    {
+        get;
+    }
+
+    internal PendingSettlement Settlement
+    {
+        get;
+    }
+
     internal bool CanRequestSettlement => Volatile.Read(ref _state) == 2 && (_services is not null || _demand != ScopeDemand.None);
 
     /// <inheritdoc />
     public override string MessageId => _receive?.MessageId ?? _message.MessageId;
+
     /// <inheritdoc />
     public override MessageType MessageType => _receive?.MessageType ?? _message.MessageType;
+
     /// <inheritdoc />
     public override MessageHeaders Headers => _receive ?? _message.Headers ?? MessageHeaders.Empty;
+
     /// <inheritdoc />
     public override int Attempt => _attempt > 0 ? _attempt : _receive?.Attempt ?? _message.Attempt;
+
     /// <inheritdoc />
     public override IServiceProvider Services => _services ?? OpenDemandedScope();
+
     // Singleton handlers resolve without forcing a delivery scope.
     internal IServiceProvider HandlerServices => _owner.SingletonHandlerServices ?? Services;
+
     /// <inheritdoc />
-    public override MessageFeatures Features { get; } = new();
+    public override MessageFeatures Features
+    {
+        get;
+    } = new();
+
     /// <inheritdoc />
     public override CancellationToken CancellationToken => _cancellation;
 
     internal System.Buffers.ReadOnlySequence<byte> Body => _receive is { } receive ? receive.Body : _message.Body;
+
     internal bool IsTombstone => _receive?.IsTombstone ?? false;
+
     internal WireString? TombstoneKey => _receive?.TombstoneKey;
     private int _attempt;
-    internal int Redeliveries { get; private set; }
-    internal FailureHistory? FailureHistory { get; set; }
-    internal Disposition? FailureDisposition { get; set; }
+
+    internal int Redeliveries
+    {
+        get; private set;
+    }
+
+    internal FailureHistory? FailureHistory
+    {
+        get; set;
+    }
+
+    internal Disposition? FailureDisposition
+    {
+        get; set;
+    }
+
     internal Disposition ObservedDisposition => _receive?.Disposition ?? FailureDisposition ?? Disposition.Complete;
+
     internal void ApplyFailureDisposition()
     {
-        if (FailureDisposition is { } disposition) _receive?.SetDisposition(disposition);
+        if (FailureDisposition is { } disposition)
+        {
+            _receive?.SetDisposition(disposition);
+        }
     }
-    internal AttemptSendBuffer SendBuffer { get; }
+
+    internal AttemptSendBuffer SendBuffer
+    {
+        get;
+    }
+
     internal AttemptSendBuffer? ActiveAttemptBuffer => _sender?.AttemptBuffer;
+
     internal void InitializeAttempts()
     {
         _attempt = Math.Max(Attempt, checked(FailureMetadata.ReadCount(Headers, FailureHeaders.Attempts) + 1));
         Redeliveries = FailureMetadata.ReadCount(Headers, FailureHeaders.Redeliveries);
     }
-    internal void NextAttempt() => _attempt = checked(Attempt + 1);
+
+    internal void NextAttempt()
+    {
+        _attempt = checked(Attempt + 1);
+    }
+
     internal ConsumeDelegate? ResolvedDispatch => _receive?.ResolvedDispatch;
-    internal ConsumeDelegate Dispatch { get; set; } = null!;
+
+    internal ConsumeDelegate Dispatch
+    {
+        get; set;
+    } = null!;
+
     internal HeaderNames EnvelopeNames => _receive?.EnvelopeNames ?? _owner.EnvelopeNames;
+
     internal MessageOperationTracing? ProcessTracing => _receive?.ProcessTracing;
+
     internal string? TracePartitionId => _receive?.TracePartitionId;
-    internal void EnrichActivity(System.Diagnostics.Activity activity) => _receive?.EnrichActivity(activity);
-    internal Exception? ScopeCleanupError { get; set; }
-    internal Exception? LoggedSettlementError { get; set; }
-    internal void LogSettlementFailure(Exception error) => _owner.LogSettlementFailure(this, error);
-    internal ITransport RedirectSend(ITransport transport) => _owner.Redirect(transport);
-    internal bool TryConsumeNativeSettlementError(Exception error) => _receive?.TryConsumeLoggedSettlementError(error) == true;
+
+    internal void EnrichActivity(System.Diagnostics.Activity activity)
+    {
+        _receive?.EnrichActivity(activity);
+    }
+
+    internal Exception? ScopeCleanupError
+    {
+        get; set;
+    }
+
+    internal Exception? LoggedSettlementError
+    {
+        get; set;
+    }
+
+    internal void LogSettlementFailure(Exception error)
+    {
+        _owner.LogSettlementFailure(this, error);
+    }
+
+    internal ITransport RedirectSend(ITransport transport)
+    {
+        return _owner.Redirect(transport);
+    }
+
+    internal bool TryConsumeNativeSettlementError(Exception error)
+    {
+        return _receive?.TryConsumeLoggedSettlementError(error) == true;
+    }
 
     // Read raw native fields so malformed envelopes remain loggable without parsing required fields.
     internal string? GetLogMessageId()
     {
-        if (_receive is null) return _message.MessageId;
+        if (_receive is null)
+        {
+            return _message.MessageId;
+        }
+
         return _receive.TryGetValue(EnvelopeNames.Id, out var id) ? id.ToString() : null;
     }
 
     internal string? GetLogMessageType()
     {
-        if (_receive is null) return _owner.GetWireIdentityText(_message.MessageType);
+        if (_receive is null)
+        {
+            return _owner.GetWireIdentityText(_message.MessageType);
+        }
+
         return _receive.TryGetValue(EnvelopeNames.Type, out var type) ? type.ToString() : null;
     }
 
@@ -115,35 +206,57 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         {
             throw new InvalidOperationException("The context must be rented from this pipeline and cannot be processed concurrently or after disposal.");
         }
+
         Features.Set<ISettlementFeature>(Settlement);
     }
 
     internal void SetServices(IServiceProvider services)
     {
         _services = services;
+
         if (_owner.RestoresTenant)
+        {
             services.GetRequiredService<TenantContext>().Id = Headers.TryGetValue(TenantContext.HeaderName, out var tenant) ? tenant : default;
+        }
     }
+
     internal void ClearServices()
     {
         _services = null;
         _demand = ScopeDemand.None;
     }
 
-    internal void CreateScope() => _scope = _owner.Scopes.CreateScope();
+    internal void CreateScope()
+    {
+        _scope = _owner.Scopes.CreateScope();
+    }
 
-    internal void BindScope() => SetServices(_scope!.ServiceProvider);
+    internal void BindScope()
+    {
+        SetServices(_scope!.ServiceProvider);
+    }
 
     // The attempt's sends stay in its buffer until the handler, middleware and scope disposal succeed.
-    internal void AttachSender() => AttachSender(_scope!.ServiceProvider);
+    internal void AttachSender()
+    {
+        AttachSender(_scope!.ServiceProvider);
+    }
 
     internal void AttachSender(IServiceProvider services)
     {
         var service = services.GetService<ISender>();
+
         if (service is not null && service is not Sender)
+        {
             throw new InvalidOperationException("The failure pipeline requires Relayer's scoped ISender to buffer failed-attempt sends.");
+        }
+
         _sender = (Sender?)service;
-        if (_sender is not null) _sender.AttemptBuffer = SendBuffer;
+
+        if (_sender is not null)
+        {
+            _sender.AttemptBuffer = SendBuffer;
+        }
     }
 
     internal void DemandScope()
@@ -157,11 +270,22 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         // Concurrent handler work can race here. Only consumers without a scoped handler reach this path.
         lock (_scopeGate)
         {
-            if (_services is { } services) return services;
-            if (_demand != ScopeDemand.Open) throw new InvalidOperationException("Services are available only during message processing.");
+            if (_services is { } services)
+            {
+                return services;
+            }
+
+            if (_demand != ScopeDemand.Open)
+            {
+                throw new InvalidOperationException("Services are available only during message processing.");
+            }
             // Publish last: a reader holding these services must never reach an unattached sender.
             // Tenant restoration keeps eager scopes, so SetServices has nothing further to do here.
-            if (_scope is null) CreateScope();
+            if (_scope is null)
+            {
+                CreateScope();
+            }
+
             AttachSender();
             var provider = _scope!.ServiceProvider;
             Volatile.Write(ref _services, provider);
@@ -172,7 +296,11 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal ValueTask DisposeScopeAsync()
     {
         IServiceScope? scope;
-        if (_demand == ScopeDemand.None) scope = _scope;
+
+        if (_demand == ScopeDemand.None)
+        {
+            scope = _scope;
+        }
         else
         {
             lock (_scopeGate)
@@ -181,6 +309,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
                 _demand = ScopeDemand.Closed;
             }
         }
+
         _scope = null;
         return scope is null ? default : new AsyncServiceScope(scope).DisposeAsync();
     }
@@ -204,11 +333,17 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     public void Dispose()
     {
         var previous = Volatile.Read(ref _state);
-        if (previous == 0) return;
+
+        if (previous == 0)
+        {
+            return;
+        }
+
         if (previous == 2 || Interlocked.CompareExchange(ref _state, 0, previous) != previous)
         {
             throw new InvalidOperationException("Await message processing before disposing its context.");
         }
+
         Settlement.Clear();
         _message = default;
         _attempt = 0;
@@ -229,5 +364,10 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         _owner.Return(this);
     }
 
-    private enum ScopeDemand : byte { None, Open, Closed }
+    private enum ScopeDemand : byte
+    {
+        None,
+        Open,
+        Closed
+    }
 }

@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Runtime.CompilerServices;
 using BenchmarkDotNet.Attributes;
 using Microsoft.EntityFrameworkCore;
@@ -6,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Relayer.Sagas;
 using Relayer.Sagas.EntityFrameworkCore;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -28,12 +28,14 @@ public class SagaBenchmarks
         var connection = Environment.GetEnvironmentVariable("RELAYER_BENCHMARK_POSTGRES")
             ?? throw new InvalidOperationException("Set RELAYER_BENCHMARK_POSTGRES to a disposable PostgreSQL benchmark database.");
         _schema = "saga_bench_" + Guid.NewGuid().ToString("N");
+
         await using (var setup = new NpgsqlConnection(connection))
         {
             await setup.OpenAsync();
             await using var command = new NpgsqlCommand($"CREATE SCHEMA {_schema}; CREATE TABLE {_schema}.processes (\"Id\" uuid PRIMARY KEY, \"IsCompleted\" boolean NOT NULL, \"Count\" integer NOT NULL)", setup);
             await command.ExecuteNonQueryAsync();
         }
+
         var options = new DbContextOptionsBuilder<Context>().UseNpgsql(new NpgsqlConnectionStringBuilder(connection) { SearchPath = _schema }.ConnectionString).Options;
         _database = new Context(options);
         _state = new State { Id = Guid.NewGuid() };
@@ -68,15 +70,27 @@ public class SagaBenchmarks
     public async Task Cleanup()
     {
         await _database.Database.OpenConnectionAsync();
+
         await using (var drop = new NpgsqlCommand($"DROP SCHEMA {_schema} CASCADE", (NpgsqlConnection)_database.Database.GetDbConnection()))
+        {
             await drop.ExecuteNonQueryAsync();
+        }
+
         await _database.DisposeAsync();
         await _services.DisposeAsync();
     }
 
-    public sealed class State : EntityFrameworkCoreSagaData { public int Count { get; set; } }
+    public sealed class State : EntityFrameworkCoreSagaData
+    {
+        public int Count
+        {
+            get; set;
+        }
+    }
+
     [Message("benchmark.saga")]
     public sealed class Probe;
+
     public sealed class Context(DbContextOptions<Context> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -87,9 +101,14 @@ public class SagaBenchmarks
             state.Property(s => s.Version).IsRowVersion();
         }
     }
+
     public sealed class Process(Context database, State state) : EntityFrameworkCoreSaga<Context, State, Probe>(database)
     {
-        protected override ValueTask<State?> LoadAsync(Probe message, CancellationToken cancellationToken) => new(state);
+        protected override ValueTask<State?> LoadAsync(Probe message, CancellationToken cancellationToken)
+        {
+            return new(state);
+        }
+
         protected override ValueTask TransitionAsync(State current, Probe message, MessageContext context, CancellationToken cancellationToken)
         {
             current.Count++;
@@ -104,14 +123,19 @@ public class SagaRuntimeBenchmarks
 {
     private readonly RuntimeState _state = new() { Id = Guid.NewGuid() };
     private readonly SagaBenchmarks.Probe _message = new();
-    private readonly Action _nativeContinuation = static () => { };
+    private readonly Action _nativeContinuation = static () =>
+    {
+    };
     private RuntimeProcess _process = null!;
     private ServiceProvider _services = null!;
     private BenchmarkMessageContext _context = null!;
     private Reader _reader = null!;
 
     [Params(false, true)]
-    public bool Asynchronous { get; set; }
+    public bool Asynchronous
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -133,7 +157,12 @@ public class SagaRuntimeBenchmarks
     public int NativeTransition()
     {
         var pending = _reader.Read().ConfigureAwait(false).GetAwaiter();
-        if (!pending.IsCompleted) pending.UnsafeOnCompleted(_nativeContinuation);
+
+        if (!pending.IsCompleted)
+        {
+            pending.UnsafeOnCompleted(_nativeContinuation);
+        }
+
         _reader.Wait();
         return ++pending.GetResult()!.Count;
     }
@@ -147,17 +176,35 @@ public class SagaRuntimeBenchmarks
         return _state.Count;
     }
 
-    public sealed class RuntimeState : SagaData { public int Count { get; set; } }
+    public sealed class RuntimeState : SagaData
+    {
+        public int Count
+        {
+            get; set;
+        }
+    }
+
     public sealed class RuntimeProcess(Reader reader) : Saga<RuntimeState, SagaBenchmarks.Probe>
     {
-        protected override void ValidateTransaction() { }
-        protected override ValueTask<RuntimeState?> LoadAsync(SagaBenchmarks.Probe message, CancellationToken cancellationToken) => reader.Read();
+        protected override void ValidateTransaction()
+        {
+        }
+
+        protected override ValueTask<RuntimeState?> LoadAsync(SagaBenchmarks.Probe message, CancellationToken cancellationToken)
+        {
+            return reader.Read();
+        }
+
         protected override ValueTask TransitionAsync(RuntimeState current, SagaBenchmarks.Probe message, MessageContext context, CancellationToken cancellationToken)
         {
             current.Count++;
             return default;
         }
-        protected override ValueTask SaveAsync(RuntimeState current, bool isNew, CancellationToken cancellationToken) => default;
+
+        protected override ValueTask SaveAsync(RuntimeState current, bool isNew, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
 
     // A reusable native-I/O stand-in. Completion always follows continuation registration on a dedicated worker.
@@ -179,31 +226,59 @@ public class SagaRuntimeBenchmarks
             _worker = new Thread(Run) { IsBackground = true };
             _worker.Start();
         }
+
         public ValueTask<RuntimeState?> Read()
         {
-            if (!_asynchronous) return new(_state);
+            if (!_asynchronous)
+            {
+                return new(_state);
+            }
+
             _completed.Reset();
             _completion.Reset();
             return new(this, _completion.Version);
         }
-        public void Wait() { if (_asynchronous) _completed.Wait(); }
+
+        public void Wait()
+        {
+            if (_asynchronous)
+            {
+                _completed.Wait();
+            }
+        }
+
         private void Run()
         {
             while (true)
             {
                 _resume.WaitOne();
-                if (Volatile.Read(ref _stopped)) return;
+
+                if (Volatile.Read(ref _stopped))
+                {
+                    return;
+                }
+
                 _completion.SetResult(_state);
                 _completed.Set();
             }
         }
-        public RuntimeState? GetResult(short token) => _completion.GetResult(token);
-        public System.Threading.Tasks.Sources.ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
+
+        public RuntimeState? GetResult(short token)
+        {
+            return _completion.GetResult(token);
+        }
+
+        public System.Threading.Tasks.Sources.ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
         public void OnCompleted(Action<object?> continuation, object? state, short token, System.Threading.Tasks.Sources.ValueTaskSourceOnCompletedFlags flags)
         {
             _completion.OnCompleted(continuation, state, token, flags);
             _resume.Set();
         }
+
         public void Dispose()
         {
             Volatile.Write(ref _stopped, true);
@@ -218,10 +293,19 @@ public class SagaRuntimeBenchmarks
 internal sealed class BenchmarkMessageContext(IServiceProvider services) : MessageContext
 {
     public override string MessageId => "018f0000-0000-7000-8000-000000000001";
+
     public override MessageType MessageType => new("benchmark.saga", 1);
+
     public override MessageHeaders Headers => MessageHeaders.Empty;
+
     public override int Attempt => 1;
+
     public override IServiceProvider Services => services;
-    public override MessageFeatures Features { get; } = new();
+
+    public override MessageFeatures Features
+    {
+        get;
+    } = new();
+
     public override CancellationToken CancellationToken => default;
 }

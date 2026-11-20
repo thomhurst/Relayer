@@ -30,18 +30,30 @@ public sealed class ProtobufMessageSerializer : IMessageSerializer
     }
 
     /// <inheritdoc />
-    public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => GetCodec<TMessage>().Read(source);
+    public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+    {
+        return GetCodec<TMessage>().Read(source);
+    }
 
-    private ProtobufCodec<TMessage> GetCodec<TMessage>() =>
-        _codecs.TryGetValue(ProtobufCodec<TMessage>.Key, out var codec)
-            ? (ProtobufCodec<TMessage>)codec
-            : throw new InvalidOperationException("No Protobuf parser is registered for this message. Call ProtobufSerializerBuilder.Add with its generated Parser.");
+    private ProtobufCodec<TMessage> GetCodec<TMessage>()
+    {
+        return _codecs.TryGetValue(ProtobufCodec<TMessage>.Key, out var codec)
+                    ? (ProtobufCodec<TMessage>)codec
+                    : throw new InvalidOperationException("No Protobuf parser is registered for this message. Call ProtobufSerializerBuilder.Add with its generated Parser.");
+    }
 }
 
 internal sealed class ProtobufCodec<TMessage>(Action<TMessage, IBufferWriter<byte>> write, Func<ReadOnlySequence<byte>, TMessage> read)
 {
-    internal Action<TMessage, IBufferWriter<byte>> Write { get; } = write;
-    internal Func<ReadOnlySequence<byte>, TMessage> Read { get; } = read;
+    internal Action<TMessage, IBufferWriter<byte>> Write
+    {
+        get;
+    } = write;
+
+    internal Func<ReadOnlySequence<byte>, TMessage> Read
+    {
+        get;
+    } = read;
 
     // Immutable identity only; parsers and configuration belong to each serializer instance.
     internal static readonly object Key = new();

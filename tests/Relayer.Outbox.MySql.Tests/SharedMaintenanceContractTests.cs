@@ -11,24 +11,42 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
     protected override async Task<MaintenanceFixture> CreateFixtureAsync()
     {
         var database = new MySqlFixture();
-        try { await database.StartAsync(); return new Fixture(database); }
-        catch { await database.DisposeAsync(); throw; }
+
+        try
+        {
+            await database.StartAsync();
+            return new Fixture(database);
+        }
+        catch
+        {
+            await database.DisposeAsync();
+            throw;
+        }
     }
 
     private sealed class Fixture(MySqlFixture data) : MaintenanceFixture
     {
         private string Outbox => MySqlOutboxSchema.Table(data.Options);
+
         private string Dead => MySqlOutboxSchema.DeadTable(data.Options);
+
         private string Inbox => MySqlOutboxSchema.InboxTable(data.Options);
+
         public override MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
             bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null, TimeProvider? idleTimeProvider = null,
-            RelayerInstrumentation? instrumentation = null) => new WorkerAdapter(new(data.Source, new()
+            RelayerInstrumentation? instrumentation = null)
+        {
+            return new WorkerAdapter(new(data.Source, new()
             {
-                BatchSize = batchSize, CleanupBatchLimit = cleanupBatchLimit,
-                SweepInterval = TimeSpan.FromMilliseconds(1), CleanupInterval = TimeSpan.FromHours(1), RecoveryDelay = TimeSpan.FromHours(1),
+                BatchSize = batchSize,
+                CleanupBatchLimit = cleanupBatchLimit,
+                SweepInterval = TimeSpan.FromMilliseconds(1),
+                CleanupInterval = TimeSpan.FromHours(1),
+                RecoveryDelay = TimeSpan.FromHours(1),
                 DeadRetention = deadRetention ? TimeSpan.FromDays(30) : null,
                 InboxRetention = inboxRetention ? TimeSpan.FromDays(7) : null
             }, [transport], new FailureLogger<MySqlMaintenanceWorker>(failure), instrumentation: instrumentation, idleTimeProvider: idleTimeProvider, storeName: "store"));
+        }
 
         public override async Task Insert(Guid id, DateTimeOffset createdAt, int? lane = null,
             DateTimeOffset? deliverAt = null, string status = "pending", DateTimeOffset? claimExpiresAt = null)
@@ -41,6 +59,7 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
             command.Parameters.Add(new MySqlParameter("id", id.ToByteArray(bigEndian: true)));
             await command.ExecuteNonQueryAsync();
         }
+
         public override async Task InsertDead(Guid id, DateTimeOffset failedAt)
         {
             await using var command = data.Source.CreateCommand($"INSERT INTO {Dead} (id,transport,destination,message_type,headers,body,created_at,attempts,failed_at) VALUES (@id,'events','orders','order',X'',X'',@at,1,@at)");
@@ -48,6 +67,7 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
             command.Parameters.Add(new MySqlParameter("at", failedAt));
             await command.ExecuteNonQueryAsync();
         }
+
         public override async Task InsertInbox(string consumer, Guid id, DateTimeOffset processedAt)
         {
             await using var command = data.Source.CreateCommand($"INSERT INTO {Inbox} (consumer,message_id,processed_at) VALUES (@consumer,@id,@at)");
@@ -56,27 +76,76 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
             command.Parameters.Add(new MySqlParameter("at", processedAt));
             await command.ExecuteNonQueryAsync();
         }
-        public override Task DropInboxTable() => data.Execute($"DROP TABLE {Inbox}");
-        public override Task MakeDueAndExpireClaims() => data.Execute($"UPDATE {Outbox} SET deliver_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE deliver_at IS NOT NULL; UPDATE {Outbox} SET claim_expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE claim_token IS NOT NULL");
-        public override async Task<int> Attempts(Guid id) => Convert.ToInt32(await Scalar($"SELECT attempts FROM {Outbox} WHERE id=X'{Convert.ToHexString(id.ToByteArray(bigEndian: true))}'"));
-        public override async Task<long> Count(Table table) => Convert.ToInt64(await Scalar($"SELECT COUNT(*) FROM {table switch { Table.Outbox => Outbox, Table.Dead => Dead, Table.Inbox => Inbox, _ => throw new ArgumentOutOfRangeException(nameof(table)) }}"));
+
+        public override Task DropInboxTable()
+        {
+            return data.Execute($"DROP TABLE {Inbox}");
+        }
+
+        public override Task MakeDueAndExpireClaims()
+        {
+            return data.Execute($"UPDATE {Outbox} SET deliver_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE deliver_at IS NOT NULL; UPDATE {Outbox} SET claim_expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE claim_token IS NOT NULL");
+        }
+
+        public override async Task<int> Attempts(Guid id)
+        {
+            return Convert.ToInt32(await Scalar($"SELECT attempts FROM {Outbox} WHERE id=X'{Convert.ToHexString(id.ToByteArray(bigEndian: true))}'"));
+        }
+
+        public override async Task<long> Count(Table table)
+        {
+            return Convert.ToInt64(await Scalar($"SELECT COUNT(*) FROM {table switch { Table.Outbox => Outbox, Table.Dead => Dead, Table.Inbox => Inbox, _ => throw new ArgumentOutOfRangeException(nameof(table)) }}"));
+        }
+
         private async Task<object?> Scalar(string sql)
         {
             await using var command = data.Source.CreateCommand(sql);
             return await command.ExecuteScalarAsync();
         }
-        public override ValueTask DisposeAsync() => data.DisposeAsync();
+
+        public override ValueTask DisposeAsync()
+        {
+            return data.DisposeAsync();
+        }
     }
 
     private sealed class WorkerAdapter(MySqlMaintenanceWorker worker) : MaintenanceWorker
     {
-        public override ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => worker.SweepAsync(cancellationToken);
+        public override ValueTask<int> SweepAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.SweepAsync(cancellationToken);
+        }
+
         public override bool CleanupPending => worker.CleanupPending;
-        public override ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default) => worker.CleanupAsync(cancellationToken);
-        public override ValueTask ReleaseAsync(CancellationToken cancellationToken = default) => worker.ReleaseAsync(cancellationToken);
-        public override Task StartAsync(CancellationToken cancellationToken = default) => worker.StartAsync(cancellationToken);
-        public override Task StopAsync(CancellationToken cancellationToken = default) => worker.StopAsync(cancellationToken);
-        public override ValueTask RefreshDepthAsync(CancellationToken cancellationToken = default) => worker.RefreshDepthAsync(cancellationToken);
-        public override void Dispose() => worker.Dispose();
+
+        public override ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.CleanupAsync(cancellationToken);
+        }
+
+        public override ValueTask ReleaseAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.ReleaseAsync(cancellationToken);
+        }
+
+        public override Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.StartAsync(cancellationToken);
+        }
+
+        public override Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.StopAsync(cancellationToken);
+        }
+
+        public override ValueTask RefreshDepthAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.RefreshDepthAsync(cancellationToken);
+        }
+
+        public override void Dispose()
+        {
+            worker.Dispose();
+        }
     }
 }

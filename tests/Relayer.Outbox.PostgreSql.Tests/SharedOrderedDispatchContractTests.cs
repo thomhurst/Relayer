@@ -12,8 +12,17 @@ public sealed class SharedOrderedDispatchContractTests : OutboxOrderedDispatchCo
     protected override async Task<OrderedFixture> CreateFixtureAsync()
     {
         var fixture = new Fixture();
-        try { await fixture.Start(); return fixture; }
-        catch { await fixture.DisposeAsync(); throw; }
+
+        try
+        {
+            await fixture.Start();
+            return fixture;
+        }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
     }
 
     private sealed class Fixture : OrderedFixture
@@ -28,8 +37,14 @@ public sealed class SharedOrderedDispatchContractTests : OutboxOrderedDispatchCo
             await PostgreSqlOutboxStoreTests.CreateSchema(_source);
         }
 
-        public override OrderedWorker Worker(RecordingTransport transport) => new WorkerAdapter(
-            new(_source!, new() { Lanes = 1 }, [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance));
+        public override OrderedWorker Worker(RecordingTransport transport)
+        {
+            return new WorkerAdapter(
+                        new(_source!, new()
+                        {
+                            Lanes = 1
+                        }, [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance));
+        }
 
         public override async Task Insert(Guid id, int? lane, string orderingKey = "customer-Ã©")
         {
@@ -83,21 +98,36 @@ public sealed class SharedOrderedDispatchContractTests : OutboxOrderedDispatchCo
             await using var command = _source!.CreateCommand("SELECT id, attempts, last_error, claim_token, claim_expires_at FROM relayer_outbox ORDER BY id");
             await using var reader = await command.ExecuteReaderAsync();
             var rows = new List<Row>();
+
             while (await reader.ReadAsync())
+            {
                 rows.Add(new(reader.GetGuid(0), reader.GetInt32(1), reader.IsDBNull(2) ? null : reader.GetString(2), !reader.IsDBNull(3), !reader.IsDBNull(4)));
+            }
+
             return rows.ToArray();
         }
 
         public override async ValueTask DisposeAsync()
         {
-            if (_source is not null) await _source.DisposeAsync();
+            if (_source is not null)
+            {
+                await _source.DisposeAsync();
+            }
+
             await _database.DisposeAsync();
         }
     }
 
     private sealed class WorkerAdapter(PostgreSqlOrderedDispatcher worker) : OrderedWorker
     {
-        public override ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken = default) => worker.DispatchLaneAsync(lane, cancellationToken);
-        public override void Dispose() => worker.Dispose();
+        public override ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken = default)
+        {
+            return worker.DispatchLaneAsync(lane, cancellationToken);
+        }
+
+        public override void Dispose()
+        {
+            worker.Dispose();
+        }
     }
 }

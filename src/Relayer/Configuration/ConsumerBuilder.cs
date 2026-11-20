@@ -1,6 +1,6 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer;
 
@@ -28,7 +28,10 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsu
     }
 
     /// <summary>The transport's native consumer options.</summary>
-    public TConsumerOptions Options { get; } = new();
+    public TConsumerOptions Options
+    {
+        get;
+    } = new();
 
     IServiceCollection IConsumerBuilder.Services => _services;
 
@@ -37,12 +40,22 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsu
         EnsureMutable();
         _registry.Add(descriptor);
         _selected.Add((descriptor.HandlerType, descriptor.MessageType, descriptor.IsBatch));
-        if (!_handlers.Contains(descriptor.HandlerType)) _handlers.Add(descriptor.HandlerType);
+
+        if (!_handlers.Contains(descriptor.HandlerType))
+        {
+            _handlers.Add(descriptor.HandlerType);
+        }
     }
 
-    IConsumerBuilder IConsumerBuilder.Concurrency(int maximum) => Concurrency(maximum);
+    IConsumerBuilder IConsumerBuilder.Concurrency(int maximum)
+    {
+        return Concurrency(maximum);
+    }
 
-    IConsumerBuilder IConsumerBuilder.Batch(int maxSize, TimeSpan maxWait) => Batch(maxSize, maxWait);
+    IConsumerBuilder IConsumerBuilder.Batch(int maxSize, TimeSpan maxWait)
+    {
+        return Batch(maxSize, maxWait);
+    }
 
     /// <summary>Sets the maximum number of concurrent handler invocations.</summary>
     public ConsumerBuilder<TConsumerOptions> Concurrency(int maximum)
@@ -70,7 +83,10 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsu
         return this;
     }
 
-    IConsumerBuilder IConsumerBuilder.ConfigurePipeline(Action<ConsumePipelineBuilder> configure) => ConfigurePipeline(configure);
+    IConsumerBuilder IConsumerBuilder.ConfigurePipeline(Action<ConsumePipelineBuilder> configure)
+    {
+        return ConfigurePipeline(configure);
+    }
 
     /// <summary>Sets this consumer's portable retry, redelivery and dead-letter policy.</summary>
     public ConsumerBuilder<TConsumerOptions> Failures(FailureOptions options)
@@ -90,12 +106,22 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsu
         return this;
     }
 
-    IConsumerBuilder IConsumerBuilder.Failures(FailureOptions options) => Failures(options);
-    IConsumerBuilder IConsumerBuilder.Classify(IFailureClassifier classifier) => Classify(classifier);
+    IConsumerBuilder IConsumerBuilder.Failures(FailureOptions options)
+    {
+        return Failures(options);
+    }
+
+    IConsumerBuilder IConsumerBuilder.Classify(IFailureClassifier classifier)
+    {
+        return Classify(classifier);
+    }
 
     private void EnsureMutable()
     {
-        if (_built) throw new InvalidOperationException("The consumer declaration is frozen.");
+        if (_built)
+        {
+            throw new InvalidOperationException("The consumer declaration is frozen.");
+        }
     }
 
     internal IConsumerDefinition Build()

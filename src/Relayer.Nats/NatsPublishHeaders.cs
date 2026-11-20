@@ -14,8 +14,12 @@ internal sealed class NatsPublishHeaders(bool caseSensitive)
     internal bool IsFailureCopy;
     internal StringValues TraceParent;
     internal StringValues TraceState;
-    public void Serialize(IBufferWriter<byte> writer, ReadOnlyMemory<byte> value) =>
+
+    public void Serialize(IBufferWriter<byte> writer, ReadOnlyMemory<byte> value)
+    {
         NatsRawSerializer<ReadOnlyMemory<byte>>.Default.Serialize(writer, value);
+    }
+
     public void Serialize(IBufferWriter<byte> writer, ReadOnlyMemory<byte> value, in NatsMsgContext context)
     {
         var headers = context.Headers ?? throw new InvalidOperationException("NATS publication requires a headers instance.");
@@ -31,12 +35,28 @@ internal sealed class NatsPublishHeaders(bool caseSensitive)
             headers.Remove("Nats-Expected-Last-Subject-Sequence");
             headers.Remove("Nats-Expected-Last-Subject-Sequence-Subject");
         }
-        if (TraceParent.Count > 0) headers["traceparent"] = TraceParent;
-        else headers.Remove("traceparent");
-        if (TraceState.Count > 0) headers["tracestate"] = TraceState;
-        else headers.Remove("tracestate");
+
+        if (TraceParent.Count > 0)
+        {
+            headers["traceparent"] = TraceParent;
+        }
+        else
+        {
+            headers.Remove("traceparent");
+        }
+
+        if (TraceState.Count > 0)
+        {
+            headers["tracestate"] = TraceState;
+        }
+        else
+        {
+            headers.Remove("tracestate");
+        }
+
         Serialize(writer, value);
     }
+
     internal void Reset()
     {
         Clear();

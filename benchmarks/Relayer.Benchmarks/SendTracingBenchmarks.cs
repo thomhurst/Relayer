@@ -29,7 +29,10 @@ public class SendTracingBenchmarks
     private readonly OutgoingMessage[] _batch = [new("orders", new byte[] { 1 }), new("orders", new byte[] { 2 })];
 
     [Params("NoListener", "Metrics", "Drop", "Record")]
-    public string Mode { get; set; } = "NoListener";
+    public string Mode
+    {
+        get; set;
+    } = "NoListener";
 
     [GlobalSetup]
     public void Setup()
@@ -45,6 +48,7 @@ public class SendTracingBenchmarks
         });
         _provider = services.BuildServiceProvider();
         var tracing = _provider.GetRequiredService<MessageTracing>();
+
         if (Mode is "Drop" or "Record")
         {
             _listener = new()
@@ -55,6 +59,7 @@ public class SendTracingBenchmarks
             };
             ActivitySource.AddActivityListener(_listener);
         }
+
         if (Mode == "Metrics")
         {
             var instrumentation = _provider.GetRequiredService<RelayerInstrumentation>();
@@ -62,12 +67,18 @@ public class SendTracingBenchmarks
             {
                 InstrumentPublished = (instrument, listener) =>
                 {
-                    if (ReferenceEquals(instrument.Meter.Scope, instrumentation)) listener.EnableMeasurementEvents(instrument);
+                    if (ReferenceEquals(instrument.Meter.Scope, instrumentation))
+                    {
+                        listener.EnableMeasurementEvents(instrument);
+                    }
                 },
             };
-            _metrics.SetMeasurementEventCallback<long>(static (_, _, _, _) => { });
+            _metrics.SetMeasurementEventCallback<long>(static (_, _, _, _) =>
+            {
+            });
             _metrics.Start();
         }
+
         var buffered = new BufferedOutboxMessage();
         buffered.Copy(new(Guid.CreateVersion7(), "sink", "benchmark.order;v=1", new("orders", new byte[] { 1 },
             new KeyValuePair<string, WireString>[]
@@ -90,22 +101,40 @@ public class SendTracingBenchmarks
     }
 
     [Benchmark, BenchmarkCategory("Single")]
-    public ValueTask DirectSend() => _sender.SendWithoutOutboxAsync(_message);
+    public ValueTask DirectSend()
+    {
+        return _sender.SendWithoutOutboxAsync(_message);
+    }
 
     [Benchmark(Baseline = true), BenchmarkCategory("Batch")]
-    public ValueTask NativeBatch() => _sink.SendBatchNative(_batch, default);
+    public ValueTask NativeBatch()
+    {
+        return _sink.SendBatchNative(_batch, default);
+    }
 
     [Benchmark, BenchmarkCategory("Batch")]
-    public ValueTask TracedBatch() => _sink.SendBatchAsync(_batch, default);
+    public ValueTask TracedBatch()
+    {
+        return _sink.SendBatchAsync(_batch, default);
+    }
 
     [Benchmark, BenchmarkCategory("Single")]
-    public ValueTask OutboxEnqueue() => _sender.SendViaOutboxAsync(_message);
+    public ValueTask OutboxEnqueue()
+    {
+        return _sender.SendViaOutboxAsync(_message);
+    }
 
     [Benchmark(Baseline = true), BenchmarkCategory("OutboxDispatch")]
-    public ValueTask NativeOutboxDispatch() => _sink.SendBatchNative(_outboxBatch, default);
+    public ValueTask NativeOutboxDispatch()
+    {
+        return _sink.SendBatchNative(_outboxBatch, default);
+    }
 
     [Benchmark, BenchmarkCategory("OutboxDispatch")]
-    public ValueTask TracedOutboxDispatch() => _sink.SendBatchAsync(_outboxBatch, default);
+    public ValueTask TracedOutboxDispatch()
+    {
+        return _sink.SendBatchAsync(_outboxBatch, default);
+    }
 
     [GlobalCleanup]
     public void Cleanup()
@@ -119,7 +148,9 @@ public class SendTracingBenchmarks
     private sealed class Enlistment : IOutboxEnlistment
     {
         private readonly BufferedOutboxMessage _row = new();
+
         public bool IsActive => true;
+
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
             _row.Copy(record, 32);
@@ -130,38 +161,93 @@ public class SendTracingBenchmarks
     private sealed class Sink : ITransport, ITransportSendTracing, IDisposable
     {
         private readonly SendTracing _tracing;
-        public int Bytes { get; private set; }
-        internal Sink(MessageTracing tracing) => _tracing = new(tracing,
-            new() { System = "relayer.inmemory", Destination = "orders" }, SendInstrumented, SendBatchInstrumented);
+
+        public int Bytes
+        {
+            get; private set;
+        }
+
+        internal Sink(MessageTracing tracing)
+        {
+            _tracing = new(tracing,
+                        new()
+                        {
+                            System = "relayer.inmemory",
+                            Destination = "orders"
+                        }, SendInstrumented, SendBatchInstrumented);
+        }
+
         public string Name => "sink";
-        public SendTracing GetSendTracing(string destination) => _tracing;
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = 100 };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => _tracing.SendAsync(message, cancellationToken);
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => _tracing.SendBatchAsync(messages, cancellationToken);
+
+        public SendTracing GetSendTracing(string destination)
+        {
+            return _tracing;
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = 100
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return _tracing.SendAsync(message, cancellationToken);
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return _tracing.SendBatchAsync(messages, cancellationToken);
+        }
+
         private ValueTask SendInstrumented(OutgoingMessage message, CancellationToken cancellationToken)
         {
             _tracing.RecordNativeSend();
             return SendNative(message, cancellationToken);
         }
+
         private ValueTask SendBatchInstrumented(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
         {
             _tracing.RecordNativeSend(messages.Length);
             return SendBatchNative(messages, cancellationToken);
         }
+
         internal ValueTask SendNative(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Bytes = message.Body.Length;
             return default;
         }
+
         internal ValueTask SendBatchNative(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
         {
             Bytes = messages.Length;
             return default;
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
-        public void Dispose() { }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
+
+        public void Dispose()
+        {
+        }
     }
 }

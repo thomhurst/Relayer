@@ -10,7 +10,11 @@ internal sealed class PostgreSqlServer : IAsyncDisposable
     private readonly Func<string[], Task<string>> _docker;
     private readonly Action<Exception> _reportCleanupFailure;
     private bool _startupAttempted;
-    public string ConnectionString { get; private set; } = "";
+
+    public string ConnectionString
+    {
+        get; private set;
+    } = "";
 
     internal PostgreSqlServer(Func<string[], Task<string>> docker, Action<Exception> reportCleanupFailure)
     {
@@ -22,6 +26,7 @@ internal sealed class PostgreSqlServer : IAsyncDisposable
     {
         // The daemon can create the container even if the CLI never returns its ID.
         _startupAttempted = true;
+
         try
         {
             await _docker(["run", "--detach", "--rm", "--name", _name, "--publish", "127.0.0.1::5432",
@@ -36,6 +41,7 @@ internal sealed class PostgreSqlServer : IAsyncDisposable
             // reconnect after authentication fails and replace the original failure.
             ConnectionString = $"Host=127.0.0.1;Port={port};Username=postgres;Password=relayer-test;Database=postgres;Pooling=false;SSL Mode=Disable;GSS Encryption Mode=Disable";
             var timeout = Stopwatch.StartNew();
+
             while (true)
             {
                 try
@@ -61,8 +67,13 @@ internal sealed class PostgreSqlServer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (!_startupAttempted) return;
+        if (!_startupAttempted)
+        {
+            return;
+        }
+
         _startupAttempted = false;
+
         try
         {
             await _docker(["rm", "--force", "--volumes", _name]);

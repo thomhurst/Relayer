@@ -1,5 +1,3 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Google.Cloud.PubSub.V1;
@@ -8,7 +6,9 @@ using Grpc.Net.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Relayer.GooglePubSub;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -63,33 +63,61 @@ public class GooglePubSubBrokerReceiveBenchmarks
             _serializer, static (_, error, _) => ValueTask.FromException(error))
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<PubSubBenchmarkOrder, PubSubBrokerBenchmarkHandler>()).Build(32);
         var receive = new ReceivePipeline<GooglePubSubDelivery, GooglePubSubBinding>(pipeline, new("ce-"), 32);
-        _worker = new(() => _prepared!, _tracing, _topic, null!) { Receive = receive.ProcessAsync };
+        _worker = new(() => _prepared!, _tracing, _topic, null!)
+        {
+            Receive = receive.ProcessAsync
+        };
     }
 
     [IterationSetup]
-    public void PrepareWorkload() => PrepareWorkloadAsync().GetAwaiter().GetResult();
+    public void PrepareWorkload()
+    {
+        PrepareWorkloadAsync().GetAwaiter().GetResult();
+    }
 
     // BenchmarkDotNet requires synchronous iteration hooks. All broker preparation stays outside measurement.
     private async Task PrepareWorkloadAsync()
     {
-        if (_raw is not null) await _raw.DisposeAsync();
-        if (_prepared is not null) await _prepared.DisposeAsync();
-        try { await _subscriberApi.DeleteSubscriptionAsync(_subscription); }
-        catch (Grpc.Core.RpcException error) when (error.StatusCode == Grpc.Core.StatusCode.NotFound) { }
+        if (_raw is not null)
+        {
+            await _raw.DisposeAsync();
+        }
+
+        if (_prepared is not null)
+        {
+            await _prepared.DisposeAsync();
+        }
+
+        try
+        {
+            await _subscriberApi.DeleteSubscriptionAsync(_subscription);
+        }
+        catch (Grpc.Core.RpcException error) when (error.StatusCode == Grpc.Core.StatusCode.NotFound)
+        {
+        }
+
         await _subscriberApi.CreateSubscriptionAsync(new Subscription { Name = _subscription, Topic = _topic, AckDeadlineSeconds = 60 });
         var message = new PubsubMessage { Data = ByteString.CopyFromUtf8("{\"Value\":42}") };
         message.Attributes["ce-type"] = "benchmarks.pubsub.order;v=1";
         message.Attributes["ce-id"] = "benchmark";
         message.Attributes["ce-source"] = "/";
         message.Attributes["ce-specversion"] = "1.0";
-        for (var i = 0; i < Records; i++) _pending[i] = _publisher.PublishAsync(message);
+
+        for (var i = 0; i < Records; i++)
+        {
+            _pending[i] = _publisher.PublishAsync(message);
+        }
+
         await Task.WhenAll(_pending);
         _raw = NewSubscriber();
         _prepared = NewSubscriber();
         _counter.Begin(Records);
     }
 
-    private SubscriberClient NewSubscriber() => new SubscriberClientImpl(SubscriptionName.Parse(_subscription), [_subscriberApi], _settings, static () => Task.CompletedTask);
+    private SubscriberClient NewSubscriber()
+    {
+        return new SubscriberClientImpl(SubscriptionName.Parse(_subscription), [_subscriberApi], _settings, static () => Task.CompletedTask);
+    }
 
     [Benchmark(Baseline = true, OperationsPerInvoke = Records)]
     public async Task NativeStreamingPull()
@@ -124,13 +152,41 @@ public class GooglePubSubBrokerReceiveBenchmarks
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        if (_worker is not null) await _worker.DisposeAsync();
-        if (_raw is not null) await _raw.DisposeAsync();
-        if (_prepared is not null) await _prepared.DisposeAsync();
-        if (_publisher is not null) await _publisher.DisposeAsync();
-        if (_provider is not null) await _provider.DisposeAsync();
-        if (_subscription is not null) await _subscriberApi.DeleteSubscriptionAsync(_subscription);
-        if (_topic is not null) await _publisherApi.DeleteTopicAsync(_topic);
+        if (_worker is not null)
+        {
+            await _worker.DisposeAsync();
+        }
+
+        if (_raw is not null)
+        {
+            await _raw.DisposeAsync();
+        }
+
+        if (_prepared is not null)
+        {
+            await _prepared.DisposeAsync();
+        }
+
+        if (_publisher is not null)
+        {
+            await _publisher.DisposeAsync();
+        }
+
+        if (_provider is not null)
+        {
+            await _provider.DisposeAsync();
+        }
+
+        if (_subscription is not null)
+        {
+            await _subscriberApi.DeleteSubscriptionAsync(_subscription);
+        }
+
+        if (_topic is not null)
+        {
+            await _publisherApi.DeleteTopicAsync(_topic);
+        }
+
         _channel?.Dispose();
         _tracing.Dispose();
     }
@@ -141,17 +197,37 @@ public sealed class PubSubReceiveCounter
     private int _count;
     private int _target;
     private TaskCompletionSource _completion = null!;
+
     internal Task Completion => _completion.Task;
-    internal void Begin(int count) { _count = 0; _target = count; _completion = new(TaskCreationOptions.RunContinuationsAsynchronously); }
+
+    internal void Begin(int count)
+    {
+        _count = 0;
+        _target = count;
+        _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
     internal void Record(PubSubBenchmarkOrder message)
     {
-        if (message.Value != 42) throw new InvalidOperationException("Unexpected benchmark payload.");
-        if (Interlocked.Increment(ref _count) == _target) _completion.TrySetResult();
+        if (message.Value != 42)
+        {
+            throw new InvalidOperationException("Unexpected benchmark payload.");
+        }
+
+        if (Interlocked.Increment(ref _count) == _target)
+        {
+            _completion.TrySetResult();
+        }
     }
 }
+
 public sealed class PubSubBrokerBenchmarkHandler(PubSubReceiveCounter counter) : IHandler<PubSubBenchmarkOrder>
 {
-    internal void Record(PubSubBenchmarkOrder message) => counter.Record(message);
+    internal void Record(PubSubBenchmarkOrder message)
+    {
+        counter.Record(message);
+    }
+
     public ValueTask HandleAsync(PubSubBenchmarkOrder message, MessageContext context, CancellationToken cancellationToken)
     {
         Record(message);

@@ -10,8 +10,10 @@ internal interface IOrderingKeySelector<TMessage>
 
 internal sealed class StringOrderingKeySelector<TMessage>(Func<TMessage, string> selector) : IOrderingKeySelector<TMessage>
 {
-    public WireString? Select(TMessage message, ArrayBufferWriter<byte> buffer) =>
-        selector(message) is { } key ? new WireString(key) : (WireString?)null;
+    public WireString? Select(TMessage message, ArrayBufferWriter<byte> buffer)
+    {
+        return selector(message) is { } key ? new WireString(key) : (WireString?)null;
+    }
 }
 
 internal sealed class FormattedOrderingKeySelector<TMessage, TKey>(Func<TMessage, TKey> selector) : IOrderingKeySelector<TMessage>
@@ -21,6 +23,7 @@ internal sealed class FormattedOrderingKeySelector<TMessage, TKey>(Func<TMessage
     {
         var key = selector(message);
         var size = 64;
+
         while (true)
         {
             if (key.TryFormat(buffer.GetSpan(size), out var written, default, CultureInfo.InvariantCulture))
@@ -28,6 +31,7 @@ internal sealed class FormattedOrderingKeySelector<TMessage, TKey>(Func<TMessage
                 buffer.Advance(written);
                 return new WireString(buffer.WrittenMemory);
             }
+
             size = checked(size * 2);
         }
     }

@@ -30,15 +30,26 @@ builder.Services.AddRelayer(relayer =>
         {
             options.Publisher = publisher;
             options.Subscriber = subscriber;
-            options.PublisherSettings = new() { EnableMessageOrdering = true };
+            options.PublisherSettings = new()
+            {
+                EnableMessageOrdering = true
+            };
             options.Topics.Add(TopicName.Parse(topic));
             options.Topics.Add(TopicName.Parse(topic + "-dead"));
-            options.Subscriptions.Add(new() { Name = subscription, Topic = topic, AckDeadlineSeconds = 10 });
+            options.Subscriptions.Add(new()
+            {
+                Name = subscription,
+                Topic = topic,
+                AckDeadlineSeconds = 10
+            });
         });
         transport.Send<SmokeOrder>(topic);
         transport.Consume(subscription, consumer =>
         {
-            consumer.Failures(new() { DeadLetterEndpoint = topic + "-dead" });
+            consumer.Failures(new()
+            {
+                DeadLetterEndpoint = topic + "-dead"
+            });
             consumer.Handler<SmokeHandler>();
         });
     });
@@ -47,12 +58,24 @@ using var host = builder.Build();
 try
 {
     await host.StartAsync(token);
+
     using (var scope = host.Services.CreateScope())
+    {
         await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new SmokeOrder(42), cancellationToken: token);
-    if (await completion.Value.Task.WaitAsync(token) != 42) throw new InvalidOperationException("AOT round trip changed the payload.");
+    }
+
+    if (await completion.Value.Task.WaitAsync(token) != 42)
+    {
+        throw new InvalidOperationException("AOT round trip changed the payload.");
+    }
+
     await host.StopAsync(token);
+
     if ((await host.Services.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count != 0)
+    {
         throw new InvalidOperationException("AOT topology validation failed.");
+    }
+
     Console.WriteLine("Google Pub/Sub Native AOT round trip passed.");
 }
 finally
@@ -64,19 +87,28 @@ finally
 
 [Message("tests.pubsub.aot")]
 public sealed record SmokeOrder(int Value);
+
 public sealed class SmokeCompletion
 {
-    internal TaskCompletionSource<int> Value { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal TaskCompletionSource<int> Value
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
+
 public sealed class SmokeHandler(SmokeCompletion completion) : IHandler<SmokeOrder>
 {
     public ValueTask HandleAsync(SmokeOrder message, MessageContext context, CancellationToken cancellationToken)
     {
         if (context.GooglePubSub().Message.Attributes["ce-type"] != "tests.pubsub.aot;v=1")
+        {
             throw new InvalidOperationException("CloudEvents type changed.");
+        }
+
         completion.Value.TrySetResult(message.Value);
         return default;
     }
 }
+
 [JsonSerializable(typeof(SmokeOrder))]
 internal partial class SmokeJson : JsonSerializerContext;

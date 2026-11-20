@@ -23,12 +23,32 @@ public sealed class PooledBuilderCompletionFixture : IDisposable
     private long _workerBytes;
     private bool _workerContextRestored;
 
-    public enum Mode { Native, Owned, PooledVoid, PooledResult }
+    public enum Mode
+    {
+        Native,
+        Owned,
+        PooledVoid,
+        PooledResult
+    }
+
     public int Count => _sources.Length;
-    public bool Asynchronous { get; }
-    public long CallerBytes { get; private set; }
+
+    public bool Asynchronous
+    {
+        get;
+    }
+
+    public long CallerBytes
+    {
+        get; private set;
+    }
+
     public long WorkerBytes => _workerBytes;
-    public bool ContextRestored { get; private set; }
+
+    public bool ContextRestored
+    {
+        get; private set;
+    }
 
     public PooledBuilderCompletionFixture(int count, bool asynchronous, bool ambientContext)
     {
@@ -37,21 +57,40 @@ public sealed class PooledBuilderCompletionFixture : IDisposable
         _operations = new OwnedOperation[count];
         _pending = new ValueTask[count];
         _results = new ValueTask<int>[count];
+
         for (var i = 0; i < count; i++)
         {
             _sources[i] = new Source(_ambient);
             _operations[i] = new OwnedOperation();
         }
-        if (ambientContext) _ambient.Value = "caller";
+
+        if (ambientContext)
+        {
+            _ambient.Value = "caller";
+        }
+
         _workers = [new(() => Work(0)), new(() => Work(1))];
         // Do not let thread startup inherit the caller's ambient context.
-        if (ExecutionContext.IsFlowSuppressed()) StartWorkers();
-        else { using (ExecutionContext.SuppressFlow()) StartWorkers(); }
+        if (ExecutionContext.IsFlowSuppressed())
+        {
+            StartWorkers();
+        }
+        else
+        {
+            using (ExecutionContext.SuppressFlow())
+            {
+                StartWorkers();
+            }
+        }
     }
 
     private void StartWorkers()
     {
-        foreach (var thread in _workers) { thread.IsBackground = true; thread.Start(); }
+        foreach (var thread in _workers)
+        {
+            thread.IsBackground = true;
+            thread.Start();
+        }
     }
 
     public long Run(Mode mode, Exception? error = null)
@@ -59,49 +98,90 @@ public sealed class PooledBuilderCompletionFixture : IDisposable
         _error = error;
         var expected = _ambient.Value;
         var start = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < Count; i++)
         {
             var native = _sources[i].Start(!Asynchronous, error);
-            if (mode == Mode.PooledResult) _results[i] = AwaitResult(native);
-            else _pending[i] = mode switch
+
+            if (mode == Mode.PooledResult)
             {
-                Mode.Native => native,
-                Mode.Owned => _operations[i].Start(native),
-                _ => AwaitVoid(native),
-            };
+                _results[i] = AwaitResult(native);
+            }
+            else
+            {
+                _pending[i] = mode switch
+                {
+                    Mode.Native => native,
+                    Mode.Owned => _operations[i].Start(native),
+                    _ => AwaitVoid(native),
+                };
+            }
         }
+
         if (Asynchronous)
         {
             _release[_worker].Set();
             _worker ^= 1;
-            if (!_finished.WaitOne(TimeSpan.FromSeconds(30))) throw new TimeoutException("Completion worker did not finish.");
+
+            if (!_finished.WaitOne(TimeSpan.FromSeconds(30)))
+            {
+                throw new TimeoutException("Completion worker did not finish.");
+            }
         }
+
         Exception? failure = null;
+
         for (var i = 0; i < Count; i++)
         {
             try
             {
                 if (mode == Mode.PooledResult)
                 {
-                    if (!_results[i].IsCompleted) throw new InvalidOperationException("Result did not complete.");
-                    if (_results[i].GetAwaiter().GetResult() != 1) throw new InvalidOperationException("Wrong result.");
+                    if (!_results[i].IsCompleted)
+                    {
+                        throw new InvalidOperationException("Result did not complete.");
+                    }
+
+                    if (_results[i].GetAwaiter().GetResult() != 1)
+                    {
+                        throw new InvalidOperationException("Wrong result.");
+                    }
                 }
                 else
                 {
-                    if (!_pending[i].IsCompleted) throw new InvalidOperationException("Operation did not complete.");
+                    if (!_pending[i].IsCompleted)
+                    {
+                        throw new InvalidOperationException("Operation did not complete.");
+                    }
+
                     _pending[i].GetAwaiter().GetResult();
                 }
             }
-            catch (Exception exception) { failure ??= exception; }
+            catch (Exception exception)
+            {
+                failure ??= exception;
+            }
+
             _pending[i] = default;
             _results[i] = default;
         }
+
         CallerBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         // Native GetResult runs on the caller; wrappers must resume in the captured caller context.
         ContextRestored = _ambient.Value == expected && (!Asynchronous || _workerContextRestored);
-        foreach (var source in _sources) ContextRestored &= source.Observed == expected;
+
+        foreach (var source in _sources)
+        {
+            ContextRestored &= source.Observed == expected;
+        }
+
         _error = null;
-        if (failure is not null) ExceptionDispatchInfo.Throw(failure);
+
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Throw(failure);
+        }
+
         return CallerBytes + (Asynchronous ? _workerBytes : 0);
     }
 
@@ -109,7 +189,10 @@ public sealed class PooledBuilderCompletionFixture : IDisposable
     [RuntimeAsyncMethodGeneration(false)]
 #endif
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private static async ValueTask AwaitVoid(ValueTask pending) => await pending.ConfigureAwait(false);
+    private static async ValueTask AwaitVoid(ValueTask pending)
+    {
+        await pending.ConfigureAwait(false);
+    }
 
 #if NET11_0_OR_GREATER
     [RuntimeAsyncMethodGeneration(false)]
@@ -124,12 +207,23 @@ public sealed class PooledBuilderCompletionFixture : IDisposable
     private void Work(int index)
     {
         _ambient.Value = "worker";
+
         while (true)
         {
             _release[index].WaitOne();
-            if (_stopping) return;
+
+            if (_stopping)
+            {
+                return;
+            }
+
             var start = GC.GetAllocatedBytesForCurrentThread();
-            foreach (var source in _sources) source.Complete(_error);
+
+            foreach (var source in _sources)
+            {
+                source.Complete(_error);
+            }
+
             _workerBytes = GC.GetAllocatedBytesForCurrentThread() - start;
             _workerContextRestored = _ambient.Value == "worker";
             _finished.Set();
@@ -139,9 +233,22 @@ public sealed class PooledBuilderCompletionFixture : IDisposable
     public void Dispose()
     {
         _stopping = true;
-        foreach (var release in _release) release.Set();
-        foreach (var worker in _workers) worker.Join();
-        foreach (var release in _release) release.Dispose();
+
+        foreach (var release in _release)
+        {
+            release.Set();
+        }
+
+        foreach (var worker in _workers)
+        {
+            worker.Join();
+        }
+
+        foreach (var release in _release)
+        {
+            release.Dispose();
+        }
+
         _finished.Dispose();
         _ambient.Value = null;
     }
@@ -150,22 +257,47 @@ public sealed class PooledBuilderCompletionFixture : IDisposable
     {
         private ManualResetValueTaskSourceCore<bool> _completion;
         internal string? Observed;
+
         internal ValueTask Start(bool synchronous, Exception? error)
         {
             _completion.Reset();
             Observed = null;
-            if (synchronous) Complete(error);
+
+            if (synchronous)
+            {
+                Complete(error);
+            }
+
             return new(this, _completion.Version);
         }
+
         internal void Complete(Exception? error)
         {
-            if (error is null) _completion.SetResult(true);
-            else _completion.SetException(error);
+            if (error is null)
+            {
+                _completion.SetResult(true);
+            }
+            else
+            {
+                _completion.SetException(error);
+            }
         }
-        public void GetResult(short token) { Observed = ambient.Value; _completion.GetResult(token); }
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+
+        public void GetResult(short token)
+        {
+            Observed = ambient.Value;
+            _completion.GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
             _completion.OnCompleted(continuation, state, token, flags);
+        }
     }
 
     private sealed class OwnedOperation : IValueTaskSource
@@ -174,43 +306,98 @@ public sealed class PooledBuilderCompletionFixture : IDisposable
         private ManualResetValueTaskSourceCore<bool> _completion;
         private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter _pending;
         private ExecutionContext? _context;
-        internal OwnedOperation() => _continuation = Resume;
+
+        internal OwnedOperation()
+        {
+            _continuation = Resume;
+        }
+
         internal ValueTask Start(ValueTask native)
         {
             _pending = native.ConfigureAwait(false).GetAwaiter();
+
             if (_pending.IsCompleted)
             {
-                try { _pending.GetResult(); return default; }
-                catch (Exception error) { return ValueTask.FromException(error); }
-                finally { _pending = default; }
+                try
+                {
+                    _pending.GetResult();
+                    return default;
+                }
+                catch (Exception error)
+                {
+                    return ValueTask.FromException(error);
+                }
+                finally
+                {
+                    _pending = default;
+                }
             }
+
             _context = ExecutionContext.Capture();
             _pending.UnsafeOnCompleted(_continuation);
             return new(this, _completion.Version);
         }
+
         private void Resume()
         {
             var context = _context;
             _context = null;
-            if (context is null) Complete();
-            else ExecutionContext.Run(context, static state => ((OwnedOperation)state!).Complete(), this);
+
+            if (context is null)
+            {
+                Complete();
+            }
+            else
+            {
+                ExecutionContext.Run(context, static state => ((OwnedOperation)state!).Complete(), this);
+            }
         }
+
         private void Complete()
         {
             Exception? error = null;
-            try { _pending.GetResult(); }
-            catch (Exception exception) { error = exception; }
+
+            try
+            {
+                _pending.GetResult();
+            }
+            catch (Exception exception)
+            {
+                error = exception;
+            }
+
             _pending = default;
-            if (error is null) _completion.SetResult(true);
-            else _completion.SetException(error);
+
+            if (error is null)
+            {
+                _completion.SetResult(true);
+            }
+            else
+            {
+                _completion.SetException(error);
+            }
         }
+
         public void GetResult(short token)
         {
-            try { _completion.GetResult(token); }
-            finally { _completion.Reset(); }
+            try
+            {
+                _completion.GetResult(token);
+            }
+            finally
+            {
+                _completion.Reset();
+            }
         }
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
             _completion.OnCompleted(continuation, state, token, flags);
+        }
     }
 }

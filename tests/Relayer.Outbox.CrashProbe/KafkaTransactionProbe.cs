@@ -58,7 +58,9 @@ public sealed record KafkaTransactionOutput(int Number);
 internal sealed class KafkaTransactionHandler(ISender sender) : IHandler<KafkaTransactionInput>
 {
     public ValueTask HandleAsync(KafkaTransactionInput message, MessageContext context, CancellationToken cancellationToken)
-        => sender.SendAsync(new KafkaTransactionOutput(message.Number), cancellationToken);
+    {
+        return sender.SendAsync(new KafkaTransactionOutput(message.Number), cancellationToken);
+    }
 }
 
 [JsonSerializable(typeof(KafkaTransactionInput))]

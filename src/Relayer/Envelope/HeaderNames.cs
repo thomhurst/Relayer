@@ -17,21 +17,50 @@ public sealed class HeaderNames
     }
 
     /// <summary>The event ID header.</summary>
-    public string Id { get; }
+    public string Id
+    {
+        get;
+    }
+
     /// <summary>The stable event type header.</summary>
-    public string Type { get; }
+    public string Type
+    {
+        get;
+    }
+
     /// <summary>The event source header.</summary>
-    public string Source { get; }
+    public string Source
+    {
+        get;
+    }
+
     /// <summary>The event time header.</summary>
-    public string Time { get; }
+    public string Time
+    {
+        get;
+    }
+
     /// <summary>The CloudEvents version header.</summary>
-    public string SpecVersion { get; }
+    public string SpecVersion
+    {
+        get;
+    }
+
     /// <summary>The optional CloudEvents correlationid extension header.</summary>
-    public string CorrelationId { get; }
+    public string CorrelationId
+    {
+        get;
+    }
+
     /// <summary>The optional CloudEvents replyto extension header.</summary>
-    public string ReplyTo { get; }
+    public string ReplyTo
+    {
+        get;
+    }
+
     /// <summary>The W3C trace parent header.</summary>
     public string TraceParent => "traceparent";
+
     /// <summary>The W3C trace state header.</summary>
     public string TraceState => "tracestate";
 }

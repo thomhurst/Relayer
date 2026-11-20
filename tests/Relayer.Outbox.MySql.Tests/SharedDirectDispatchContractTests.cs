@@ -1,6 +1,6 @@
 using System.Data.Common;
-using MySqlConnector;
 using Microsoft.Extensions.DependencyInjection;
+using MySqlConnector;
 using Relayer.TestFixtures;
 using Relayer.Transports;
 
@@ -20,8 +20,14 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
         await using var fixture = new Fixture(transport);
         await fixture.Start(2, 10);
         var invalid = failure == "missing" ? "absent" : "events";
-        await fixture.CommitAsync(Record(1, "alpha") with { TransportName = invalid },
-            Record(2, "alpha") with { TransportName = invalid }, Record(3, "beta"));
+        await fixture.CommitAsync(Record(1, "alpha") with
+        {
+            TransportName = invalid
+        },
+            Record(2, "alpha") with
+            {
+                TransportName = invalid
+            }, Record(3, "beta"));
         await fixture.StopAsync();
         await Assert.That(transport.Received.Select(message => message.Body[0])).IsEquivalentTo(new byte[] { 3 });
         var rows = await fixture.ReadRowsAsync();
@@ -105,6 +111,7 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
         var transport = new RecordingTransport();
         await using var fixture = new Fixture(transport);
         await fixture.Start(10, 10);
+
         await using (var scope = fixture.Provider!.CreateAsyncScope())
         {
             var outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
@@ -114,13 +121,17 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
             await using var abandoned = await outbox.BeginTransactionAsync(fixture.Source);
             await outbox.EnlistAsync(Record(2), default);
         }
+
         await fixture.StopAsync();
         await Assert.That(transport.Received.Select(message => message.Body[0])).IsEquivalentTo(new byte[] { 1 });
         await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(0);
     }
 
-    private static OutboxRecord Record(byte value, string destination = "destination") => new(Guid.CreateVersion7(),
-        "events", "dispatch.probe;v=1", new OutgoingMessage(destination, new byte[] { value }), DateTimeOffset.UtcNow);
+    private static OutboxRecord Record(byte value, string destination = "destination")
+    {
+        return new(Guid.CreateVersion7(),
+                "events", "dispatch.probe;v=1", new OutgoingMessage(destination, new byte[] { value }), DateTimeOffset.UtcNow);
+    }
 
     [Test]
     public async Task Native_batch_outcomes_fence_each_row_and_ignore_trigger_writes()
@@ -171,8 +182,17 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
         int queueCapacity = 256)
     {
         var fixture = new Fixture(transport);
-        try { await fixture.Start(batchSize, queueCapacity); return fixture; }
-        catch { await fixture.DisposeAsync(); throw; }
+
+        try
+        {
+            await fixture.Start(batchSize, queueCapacity);
+            return fixture;
+        }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
     }
 
     private sealed class Fixture(RecordingTransport transport) : DispatchFixture
@@ -183,12 +203,17 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
             DispatchStoreName = "store"
         };
         private readonly MySqlFixture _database = new();
+
         internal MySqlDataSource Source => _database.Source;
         private ServiceProvider? _provider;
         private MySqlDirectDispatcher? _worker;
+
         internal string Table => MySqlOutboxSchema.Table(_options);
+
         internal MySqlOutboxOptions Options => _options;
+
         internal ServiceProvider? Provider => _provider;
+
         internal MySqlDirectDispatcher? Worker => _worker;
 
         internal async Task Start(int batchSize, int queueCapacity, bool startWorker = true)
@@ -203,10 +228,18 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
             services.AddSingleton<RelayerInstrumentation>();
             services.AddRelayerMySqlOutbox(_options);
             services.AddRelayerMySqlDirectDispatch("store", Source, _options,
-                new() { BatchSize = batchSize, QueueCapacity = queueCapacity });
+                new()
+                {
+                    BatchSize = batchSize,
+                    QueueCapacity = queueCapacity
+                });
             _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
             _worker = _provider.GetRequiredKeyedService<MySqlDirectDispatcher>("store");
-            if (startWorker) await _worker.StartAsync(default);
+
+            if (startWorker)
+            {
+                await _worker.StartAsync(default);
+            }
         }
 
         internal async Task Sql(string sql)
@@ -218,8 +251,11 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
 
         public override RelayerInstrumentation Instrumentation => _provider!.GetRequiredService<RelayerInstrumentation>();
 
-        public override Task<DispatchSession> OpenSessionAsync() => Task.FromResult<DispatchSession>(
-            new Session(_provider!.CreateAsyncScope(), Source));
+        public override Task<DispatchSession> OpenSessionAsync()
+        {
+            return Task.FromResult<DispatchSession>(
+                        new Session(_provider!.CreateAsyncScope(), Source));
+        }
 
         public override async Task<Row[]> ReadRowsAsync()
         {
@@ -228,9 +264,13 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
                 $"SELECT id, attempts, last_error, claim_token, claim_expires_at FROM {Table} ORDER BY id", connection);
             await using var reader = await command.ExecuteReaderAsync();
             var rows = new List<Row>();
+
             while (await reader.ReadAsync())
+            {
                 rows.Add(new(ReadId(reader), reader.GetInt32(1),
                     reader.IsDBNull(2) ? null : reader.GetString(2), !reader.IsDBNull(3), !reader.IsDBNull(4)));
+            }
+
             return rows.ToArray();
         }
 
@@ -244,12 +284,14 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
         public override async ValueTask RecoverAsync(OutboxRecord[] records, CancellationToken cancellationToken = default)
         {
             var rows = new List<BufferedOutboxMessage>();
+
             foreach (var record in records)
             {
                 var row = new BufferedOutboxMessage();
                 row.Copy(record, 1);
                 rows.Add(row);
             }
+
             var batch = new OutboxDispatchBatch();
             batch.Take(rows, rows.Count, DateTimeOffset.UtcNow);
             await _worker!.DispatchRecoveredAsync(batch, cancellationToken);
@@ -257,7 +299,11 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
 
         public override async Task StopAsync()
         {
-            if (_worker is null) return;
+            if (_worker is null)
+            {
+                return;
+            }
+
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await _worker.StopAsync(timeout.Token);
         }
@@ -265,11 +311,24 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
         public override async ValueTask DisposeAsync()
         {
             transport.Release.TrySetResult();
-            try { await StopAsync(); }
+
+            try
+            {
+                await StopAsync();
+            }
             finally
             {
-                try { if (_provider is not null) await _provider.DisposeAsync(); }
-                finally { await _database.DisposeAsync(); }
+                try
+                {
+                    if (_provider is not null)
+                    {
+                        await _provider.DisposeAsync();
+                    }
+                }
+                finally
+                {
+                    await _database.DisposeAsync();
+                }
             }
         }
     }
@@ -278,25 +337,49 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
     {
         private readonly MySqlOutbox _outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
         private DbTransaction? _transaction;
-        public override async Task BeginTransactionAsync() => _transaction = await _outbox.BeginTransactionAsync(source);
-        public override ValueTask EnlistAsync(OutboxRecord record) => _outbox.EnlistAsync(record, default);
-        public override Task SaveAsync() => Task.CompletedTask;
+
+        public override async Task BeginTransactionAsync()
+        {
+            _transaction = await _outbox.BeginTransactionAsync(source);
+        }
+
+        public override ValueTask EnlistAsync(OutboxRecord record)
+        {
+            return _outbox.EnlistAsync(record, default);
+        }
+
+        public override Task SaveAsync()
+        {
+            return Task.CompletedTask;
+        }
+
         public override async Task CommitAsync()
         {
             await _transaction!.CommitAsync();
             await _transaction.DisposeAsync();
             _transaction = null;
         }
+
         public override async Task RollbackAsync()
         {
             await _transaction!.RollbackAsync();
             await _transaction.DisposeAsync();
             _transaction = null;
         }
+
         public override async ValueTask DisposeAsync()
         {
-            try { if (_transaction is not null) await _transaction.DisposeAsync(); }
-            finally { await scope.DisposeAsync(); }
+            try
+            {
+                if (_transaction is not null)
+                {
+                    await _transaction.DisposeAsync();
+                }
+            }
+            finally
+            {
+                await scope.DisposeAsync();
+            }
         }
     }
 }

@@ -26,13 +26,17 @@ public sealed class ServiceBusImpliedTopologyEmulatorTests
         await stack.CreateQueueAsync(sessions, true, token);
         await admin.CreateTopicAsync(new CreateTopicOptions(topic)
         {
-            DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100,
             DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
         }, token);
         await admin.CreateSubscriptionAsync(new CreateSubscriptionOptions(topic, "audit")
         {
-            DefaultMessageTimeToLive = TimeSpan.FromHours(1), LockDuration = TimeSpan.FromMinutes(1), MaxDeliveryCount = 10
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            LockDuration = TimeSpan.FromMinutes(1),
+            MaxDeliveryCount = 10
         }, token);
+
         try
         {
             await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString());
@@ -56,7 +60,11 @@ public sealed class ServiceBusImpliedTopologyEmulatorTests
                     });
                     bus.Consume(sessions, consumer =>
                     {
-                        consumer.Options.SessionProcessorOptions = new() { AutoCompleteMessages = false, MaxConcurrentSessions = 1 };
+                        consumer.Options.SessionProcessorOptions = new()
+                        {
+                            AutoCompleteMessages = false,
+                            MaxConcurrentSessions = 1
+                        };
                         consumer.Handler<ImpliedHandler>();
                     });
                 });
@@ -65,11 +73,27 @@ public sealed class ServiceBusImpliedTopologyEmulatorTests
             await ServiceBusReceiveTests.Start(provider, token);
 
             using (var scope = provider.CreateScope())
+            {
                 await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new ImpliedPayload(1), token);
-            await using (var sender = client.CreateSender(topic)) await sender.SendMessageAsync(Message(2), token);
-            await using (var sender = client.CreateSender(sessions)) await sender.SendMessageAsync(Message(3, "customer"), token);
+            }
+
+            await using (var sender = client.CreateSender(topic))
+            {
+                await sender.SendMessageAsync(Message(2), token);
+            }
+
+            await using (var sender = client.CreateSender(sessions))
+            {
+                await sender.SendMessageAsync(Message(3, "customer"), token);
+            }
+
             var delivered = new List<string>();
-            for (var i = 0; i < 3; i++) delivered.Add(await received.Reader.ReadAsync(token));
+
+            for (var i = 0; i < 3; i++)
+            {
+                delivered.Add(await received.Reader.ReadAsync(token));
+            }
+
             await Assert.That(delivered.Order().ToArray()).IsEquivalentTo(new[] { "1/", "2/", "3/customer" });
             await ServiceBusReceiveTests.Stop(provider, token);
         }

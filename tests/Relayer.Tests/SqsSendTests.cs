@@ -22,12 +22,24 @@ public class SqsSendTests
         OutgoingMessage[] messages = [new("ordered.fifo", "{}"u8.ToArray(), orderingKey: new WireString("key")),
             .. Enumerable.Repeat(new OutgoingMessage("orders", "{}"u8.ToArray()), 12)];
         AmazonSqsBatchException? failure = null;
-        try { await transport.SendBatchAsync(messages, default); }
-        catch (AmazonSqsBatchException error) { failure = error; }
+
+        try
+        {
+            await transport.SendBatchAsync(messages, default);
+        }
+        catch (AmazonSqsBatchException error)
+        {
+            failure = error;
+        }
+
         await Assert.That(failure).IsNotNull();
         await Assert.That(failure!.BatchOffset).IsEqualTo(10);
+
         for (var index = 0; index < 12; index++)
+        {
             await Assert.That(((IBatchSendFailure)failure).IsConfirmed(index)).IsTrue();
+        }
+
         await Assert.That(((IBatchSendFailure)failure).IsConfirmed(12)).IsFalse();
         await Assert.That(((IBatchSendFailure)failure).IsConfirmed(13)).IsFalse();
     }
@@ -42,12 +54,17 @@ public class SqsSendTests
             builder.AddMessageTypesFromThisAssembly();
             builder.AmazonSqs("test", sqs =>
             {
-                sqs.Options.Configure(o => { o.SqsClient = client; o.Queues.Add(new("orders")); });
+                sqs.Options.Configure(o =>
+                {
+                    o.SqsClient = client;
+                    o.Queues.Add(new("orders"));
+                });
                 sqs.Send<Order>("orders");
             });
         });
         using var host = app.Build();
         await host.StartAsync();
+
         try
         {
             await using var scope = host.Services.CreateAsyncScope();
@@ -59,7 +76,10 @@ public class SqsSendTests
             await Assert.That(sent.Attributes["content-type"]).IsEqualTo("application/json");
             await Assert.That(sent.Attributes.Count <= 10).IsTrue();
         }
-        finally { await host.StopAsync(); }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 
     [Test]
@@ -75,17 +95,27 @@ public class SqsSendTests
                 sqs.Options.Configure(o =>
                 {
                     o.SqsClient = client;
-                    o.Queues.Add(new("ordered.fifo") { Attributes = new() { ["FifoQueue"] = "true" } });
+                    o.Queues.Add(new("ordered.fifo")
+                    {
+                        Attributes = new()
+                        {
+                            ["FifoQueue"] = "true"
+                        }
+                    });
                 });
                 sqs.Send<Order>("ordered.fifo", route =>
                 {
-                    route.SendOptions = new() { HeaderNames = new("event_") };
+                    route.SendOptions = new()
+                    {
+                        HeaderNames = new("event_")
+                    };
                     route.OrderingKey(_ => "customer");
                 });
             });
         });
         using var host = app.Build();
         await host.StartAsync();
+
         try
         {
             await using var scope = host.Services.CreateAsyncScope();
@@ -107,7 +137,10 @@ public class SqsSendTests
             await Assert.That(client.Sent[2].Deduplication).IsEqualTo(first.Deduplication);
             await Assert.That(client.Batches.Single().All(entry => entry.Message.Deduplication == first.Deduplication)).IsTrue();
         }
-        finally { await host.StopAsync(); }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 
     [Test]
@@ -120,7 +153,13 @@ public class SqsSendTests
             sqs.Options.Configure(o =>
             {
                 o.SqsClient = client;
-                o.Queues.Add(new("ordered.fifo") { Attributes = new() { ["FifoQueue"] = "true" } });
+                o.Queues.Add(new("ordered.fifo")
+                {
+                    Attributes = new()
+                    {
+                        ["FifoQueue"] = "true"
+                    }
+                });
             });
             sqs.Send<Order>("ordered.fifo");
             sqs.Send<Audit>("ordered.fifo", route => route.SendOptions = new() { HeaderNames = new("event_") });
@@ -143,26 +182,42 @@ public class SqsSendTests
         {
             builder.AmazonSqs("first", sqs =>
             {
-                sqs.Options.Configure(o => { o.SqsClient = first; o.Sqs = config; o.Queues.Add(new("orders")); });
+                sqs.Options.Configure(o =>
+                {
+                    o.SqsClient = first;
+                    o.Sqs = config;
+                    o.Queues.Add(new("orders"));
+                });
                 sqs.Send<Order>("orders");
             });
             builder.AmazonSqs("second", sqs =>
             {
-                sqs.Options.Configure(o => { o.SqsClient = second; o.Queues.Add(new("audit")); });
+                sqs.Options.Configure(o =>
+                {
+                    o.SqsClient = second;
+                    o.Queues.Add(new("audit"));
+                });
                 sqs.Send<Audit>("audit");
             });
         });
+
         await using (var provider = services.BuildServiceProvider())
         {
             var options = provider.GetRequiredService<IOptionsMonitor<AmazonSqsTransportOptions>>();
             await Assert.That(options.Get("first").Sqs).IsSameReferenceAs(config);
             var transports = provider.GetServices<ITransport>().ToArray();
-            foreach (var transport in transports) await transport.StartAsync(default);
+
+            foreach (var transport in transports)
+            {
+                await transport.StartAsync(default);
+            }
+
             await transports[0].SendAsync(new("orders", "{}"u8.ToArray()), default);
             await transports[1].SendAsync(new("audit", "{}"u8.ToArray()), default);
             await Assert.That(first.Sent.Single().Url).Contains("orders");
             await Assert.That(second.Sent.Single().Url).Contains("audit");
         }
+
         await Assert.That(first.Disposals).IsEqualTo(0);
         await Assert.That(second.Disposals).IsEqualTo(0);
     }
@@ -177,8 +232,16 @@ public class SqsSendTests
         var options = new SendOptions().AmazonSqs(request =>
         {
             calls++;
-            request.MessageAttributes["native"] = new() { DataType = "String", StringValue = "value" };
-            request.MessageAttributes["traceparent"] = new() { DataType = "String", StringValue = "wrong" };
+            request.MessageAttributes["native"] = new()
+            {
+                DataType = "String",
+                StringValue = "value"
+            };
+            request.MessageAttributes["traceparent"] = new()
+            {
+                DataType = "String",
+                StringValue = "wrong"
+            };
             request.MessageDeduplicationId = "wrong";
         });
         KeyValuePair<string, WireString>[] headers = [new("ce_id", new("event-1")), new("traceparent", new("creation"u8.ToArray()))];
@@ -240,12 +303,20 @@ public class SqsSendTests
         var calls = 0;
         var options = new SendOptions().AmazonSqs(_ => calls++);
         var messages = new List<OutgoingMessage>();
-        for (var i = 0; i < 11; i++) messages.Add(new("orders", "{}"u8.ToArray(), options: options));
+
+        for (var i = 0; i < 11; i++)
+        {
+            messages.Add(new("orders", "{}"u8.ToArray(), options: options));
+        }
+
         var large = Encoding.UTF8.GetBytes(new string('x', 600_000));
         messages.Add(new("orders", large, options: options));
         messages.Add(new("orders", large, options: options));
-        messages.Add(new("ordered.fifo", "{}"u8.ToArray(), orderingKey: new WireString("key"), options:
-            new SendOptions().AmazonSqs(request => { calls++; request.MessageDeduplicationId = "native-id"; })));
+        messages.Add(new("ordered.fifo", "{}"u8.ToArray(), orderingKey: new WireString("key"), options: new SendOptions().AmazonSqs(request =>
+        {
+            calls++;
+            request.MessageDeduplicationId = "native-id";
+        })));
         await transport.SendBatchAsync(messages.ToArray(), default);
         await Assert.That(client.Batches.Select(batch => batch.Length).SequenceEqual(new[] { 10, 2, 1, 1 })).IsTrue();
         await Assert.That(calls).IsEqualTo(messages.Count);
@@ -260,8 +331,16 @@ public class SqsSendTests
         await using var transport = Transport(client);
         await transport.StartAsync(default);
         AmazonSqsBatchException? failure = null;
-        try { await transport.SendBatchAsync(new OutgoingMessage[] { new("orders", "{}"u8.ToArray()), new("orders", "{}"u8.ToArray()) }, default); }
-        catch (AmazonSqsBatchException error) { failure = error; }
+
+        try
+        {
+            await transport.SendBatchAsync(new OutgoingMessage[] { new("orders", "{}"u8.ToArray()), new("orders", "{}"u8.ToArray()) }, default);
+        }
+        catch (AmazonSqsBatchException error)
+        {
+            failure = error;
+        }
+
         await Assert.That(failure).IsNotNull();
         await Assert.That(failure!.Response.Failed.Single().Id).IsEqualTo("1");
         await Assert.That(failure.Response.Successful.Single().Id).IsEqualTo("0");
@@ -331,7 +410,10 @@ public class SqsSendTests
     {
         using var client = new SqsTestClient { Missing = true };
         var options = Options(client);
-        options.Queues[0].Attributes = new() { ["MaximumMessageSize"] = "4096" };
+        options.Queues[0].Attributes = new()
+        {
+            ["MaximumMessageSize"] = "4096"
+        };
         await using var transport = new SqsSendTransport("test", client, false, options);
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.None, default)).Differences.Count).IsEqualTo(0);
         await Assert.That(client.Lookups).IsEqualTo(0);
@@ -352,7 +434,10 @@ public class SqsSendTests
     {
         using var client = new SqsTestClient();
         var options = Options(client);
-        options.Queues[0].Attributes = new() { ["Policy"] = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" };
+        options.Queues[0].Attributes = new()
+        {
+            ["Policy"] = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
+        };
         client.NativeAttributes["Policy"] = "{ \"Statement\": [], \"Version\": \"2012-10-17\" }";
         await using var transport = new SqsSendTransport("test", client, false, options);
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, default)).Differences.Count).IsEqualTo(0);
@@ -384,7 +469,11 @@ public class SqsSendTests
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
         await Assert.That(async () => await transport.SendAsync(new("orders", "{}"u8.ToArray()), cancelled.Token)).Throws<OperationCanceledException>();
-        var options = new SendOptions().AmazonSqs(request => { request.MessageGroupId = "bad"; throw new InvalidOperationException("callback"); });
+        var options = new SendOptions().AmazonSqs(request =>
+        {
+            request.MessageGroupId = "bad";
+            throw new InvalidOperationException("callback");
+        });
         await Assert.That(async () => await transport.SendAsync(new("orders", "{}"u8.ToArray(), options: options), default)).Throws<InvalidOperationException>();
         await transport.SendAsync(new("orders", "{}"u8.ToArray()), default);
         await Assert.That(client.Sent.Single().Group).IsNull();
@@ -399,7 +488,9 @@ public class SqsSendTests
     {
         using var client = new SqsTestClient();
         var services = new ServiceCollection();
-        services.AddRelayer(_ => { });
+        services.AddRelayer(_ =>
+        {
+        });
         await using var provider = services.BuildServiceProvider();
         var tracing = provider.GetRequiredService<MessageTracing>();
         var spans = new List<Activity>();
@@ -441,7 +532,9 @@ public class SqsSendTests
             InstrumentPublished = (instrument, observer) =>
             {
                 if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                {
                     observer.EnableMeasurementEvents(instrument);
+                }
             },
         };
         meter.SetMeasurementEventCallback<long>((_, value, _, _) => sent += value);
@@ -455,10 +548,25 @@ public class SqsSendTests
         await Assert.That(pending.IsCompleted).IsFalse();
         await Assert.That(sent).IsEqualTo(batch ? 2L : 1L);
         await Assert.That(durations.Values.Count).IsEqualTo(0);
-        if (fail) client.Gate.SetException(new AmazonSQSException("failure"));
-        else client.Gate.SetResult();
-        if (fail) await Assert.That(async () => await pending).Throws<AmazonSQSException>();
-        else await pending;
+
+        if (fail)
+        {
+            client.Gate.SetException(new AmazonSQSException("failure"));
+        }
+        else
+        {
+            client.Gate.SetResult();
+        }
+
+        if (fail)
+        {
+            await Assert.That(async () => await pending).Throws<AmazonSQSException>();
+        }
+        else
+        {
+            await pending;
+        }
+
         var duration = durations.Values.Single();
         await Assert.That(duration.Tags["messaging.system"]).IsEqualTo("aws_sqs");
         await Assert.That(duration.Tags["messaging.destination.name"]).IsEqualTo("orders");
@@ -491,18 +599,34 @@ public class SqsSendTests
     {
         var options = new AmazonSqsTransportOptions { SqsClient = client };
         options.Queues.Add(new("orders"));
-        options.Queues.Add(new("ordered.fifo") { Attributes = new() { ["FifoQueue"] = "true", ["ContentBasedDeduplication"] = "true" } });
+        options.Queues.Add(new("ordered.fifo")
+        {
+            Attributes = new()
+            {
+                ["FifoQueue"] = "true",
+                ["ContentBasedDeduplication"] = "true"
+            }
+        });
         return options;
     }
 
-    private static SqsSendTransport Transport(IAmazonSQS client) => new("test", client, false, Options(client));
+    private static SqsSendTransport Transport(IAmazonSQS client)
+    {
+        return new("test", client, false, Options(client));
+    }
+
     [Message("sqs.test.order")]
     public sealed record Order;
+
     [Message("sqs.test.audit")]
     public sealed record Audit;
+
     public sealed class OrderHandler : IHandler<Order>
     {
-        public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }
 
@@ -526,18 +650,38 @@ internal sealed class SqsTestClient() : AmazonSQSClient(new AnonymousAWSCredenti
     {
         Requests.Add(request);
         Sent.Add(Snapshot(request));
-        if (Gate is not null) await Gate.Task.WaitAsync(cancellationToken);
-        return new() { ResponseMetadata = new() { RequestId = "request-1" } };
+
+        if (Gate is not null)
+        {
+            await Gate.Task.WaitAsync(cancellationToken);
+        }
+
+        return new()
+        {
+            ResponseMetadata = new()
+            {
+                RequestId = "request-1"
+            }
+        };
     }
 
     public override async Task<SendMessageBatchResponse> SendMessageBatchAsync(SendMessageBatchRequest request, CancellationToken cancellationToken = default)
     {
         Batches.Add(request.Entries.Select(entry => (entry.Id, Snapshot(new()
         {
-            QueueUrl = request.QueueUrl, MessageBody = entry.MessageBody, MessageGroupId = entry.MessageGroupId,
-            MessageDeduplicationId = entry.MessageDeduplicationId, DelaySeconds = entry.DelaySeconds, MessageAttributes = entry.MessageAttributes,
+            QueueUrl = request.QueueUrl,
+            MessageBody = entry.MessageBody,
+            MessageGroupId = entry.MessageGroupId,
+            MessageDeduplicationId = entry.MessageDeduplicationId,
+            DelaySeconds = entry.DelaySeconds,
+            MessageAttributes = entry.MessageAttributes,
         }))).ToArray());
-        if (Gate is not null) await Gate.Task.WaitAsync(cancellationToken);
+
+        if (Gate is not null)
+        {
+            await Gate.Task.WaitAsync(cancellationToken);
+        }
+
         return new SendMessageBatchResponse
         {
             Successful = [new() { Id = "0" }],
@@ -549,20 +693,41 @@ internal sealed class SqsTestClient() : AmazonSQSClient(new AnonymousAWSCredenti
     public override Task<GetQueueUrlResponse> GetQueueUrlAsync(string queueName, CancellationToken cancellationToken = default)
     {
         Lookups++;
-        if (Missing) throw new QueueDoesNotExistException("missing");
+
+        if (Missing)
+        {
+            throw new QueueDoesNotExistException("missing");
+        }
+
         return Task.FromResult(new GetQueueUrlResponse { QueueUrl = "http://localhost/queues/" + queueName });
     }
+
     public override Task<CreateQueueResponse> CreateQueueAsync(CreateQueueRequest request, CancellationToken cancellationToken = default)
     {
         Creates.Add(request);
         Missing = false;
         return Task.FromResult(new CreateQueueResponse { QueueUrl = "http://localhost/queues/" + request.QueueName });
     }
-    public override Task<GetQueueAttributesResponse> GetQueueAttributesAsync(GetQueueAttributesRequest request, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new GetQueueAttributesResponse { Attributes = NativeAttributes });
-    protected override void Dispose(bool disposing) { if (disposing) Disposals++; base.Dispose(disposing); }
 
-    private static SqsSent Snapshot(SendMessageRequest request) => new(request.QueueUrl, request.MessageBody, request.MessageGroupId,
-        request.MessageDeduplicationId, request.DelaySeconds,
-        request.MessageAttributes?.ToDictionary(item => item.Key, item => item.Value.StringValue) ?? []);
+    public override Task<GetQueueAttributesResponse> GetQueueAttributesAsync(GetQueueAttributesRequest request, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(new GetQueueAttributesResponse { Attributes = NativeAttributes });
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            Disposals++;
+        }
+
+        base.Dispose(disposing);
+    }
+
+    private static SqsSent Snapshot(SendMessageRequest request)
+    {
+        return new(request.QueueUrl, request.MessageBody, request.MessageGroupId,
+                request.MessageDeduplicationId, request.DelaySeconds,
+                request.MessageAttributes?.ToDictionary(item => item.Key, item => item.Value.StringValue) ?? []);
+    }
 }

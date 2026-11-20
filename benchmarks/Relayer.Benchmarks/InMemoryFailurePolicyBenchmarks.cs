@@ -21,7 +21,10 @@ public class InMemoryFailurePolicyBenchmarks
     private OutgoingMessage _message;
 
     [Params(false, true)]
-    public bool PortableFailures { get; set; }
+    public bool PortableFailures
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()

@@ -28,12 +28,18 @@ public class AvroSerializerBenchmarks
     [GlobalSetup]
     public async Task Setup()
     {
-        _client = new(new() { Url = "http://registry" }, new AvroRegistryResponses());
+        _client = new(new()
+        {
+            Url = "http://registry"
+        }, new AvroRegistryResponses());
         _serializer = new AvroMessageSerializer(_client).Add<AvroOrder, AvroOrder.AvroCodec>("orders");
         await _serializer.InitializeAsync(default);
         _writer = new(_client);
         await _writer.WarmupAsync("orders");
-        _reader = new(_client, new() { SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix });
+        _reader = new(_client, new()
+        {
+            SchemaIdStrategy = SchemaIdDeserializerStrategy.Prefix
+        });
         await _reader.WarmupAsync(7);
         _serializer.Serialize(_message, _buffer);
         _body = _buffer.WrittenMemory.ToArray();
@@ -60,13 +66,22 @@ public class AvroSerializerBenchmarks
     }
 
     [Benchmark(Baseline = true), BenchmarkCategory("Read")]
-    public AvroOrder NativeRead() => _reader.Deserialize(_body, _context);
+    public AvroOrder NativeRead()
+    {
+        return _reader.Deserialize(_body, _context);
+    }
 
     [Benchmark, BenchmarkCategory("Read")]
-    public AvroOrder RelayerRead() => _serializer.Deserialize<AvroOrder>(new(_body));
+    public AvroOrder RelayerRead()
+    {
+        return _serializer.Deserialize<AvroOrder>(new(_body));
+    }
 
     [Benchmark, BenchmarkCategory("Read")]
-    public AvroOrder RelayerSegmentedRead() => _serializer.Deserialize<AvroOrder>(_segmented);
+    public AvroOrder RelayerSegmentedRead()
+    {
+        return _serializer.Deserialize<AvroOrder>(_segmented);
+    }
 
     [GlobalCleanup]
     public async Task Cleanup()
@@ -79,7 +94,11 @@ public class AvroSerializerBenchmarks
 
     private sealed class Segment : ReadOnlySequenceSegment<byte>
     {
-        internal Segment(ReadOnlyMemory<byte> memory) => Memory = memory;
+        internal Segment(ReadOnlyMemory<byte> memory)
+        {
+            Memory = memory;
+        }
+
         internal Segment Append(ReadOnlyMemory<byte> memory)
         {
             var next = new Segment(memory) { RunningIndex = RunningIndex + Memory.Length };

@@ -29,18 +29,37 @@ public class ConsumePipelineBenchmarks
     private ConsumeMessage _message;
 
     [Params(false, true)]
-    public bool ScopedHandler { get; set; }
+    public bool ScopedHandler
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         var services = new ServiceCollection();
-        if (ScopedHandler) services.AddScoped<Handler>();
-        else services.AddSingleton<Handler>();
+
+        if (ScopedHandler)
+        {
+            services.AddScoped<Handler>();
+        }
+        else
+        {
+            services.AddSingleton<Handler>();
+        }
+
 #if RELAYER_REDUCED_BUILDERS
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload"); r.AddTransport<object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>())); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload");
+            r.AddTransport<object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>()));
+        });
 #else
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload"); r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>())); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload");
+            r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>()));
+        });
 #endif
         _provider = services.BuildServiceProvider();
         _scopes = _provider.GetRequiredService<IServiceScopeFactory>();
@@ -51,7 +70,9 @@ public class ConsumePipelineBenchmarks
             .Handler(_descriptor).Use(new PassThrough()).Build(contextPoolCapacity: 1);
         _message = new ConsumeMessage
         {
-            MessageId = "benchmark", MessageType = new("benchmark.payload", 1), Body = ReadOnlySequence<byte>.Empty,
+            MessageId = "benchmark",
+            MessageType = new("benchmark.payload", 1),
+            Body = ReadOnlySequence<byte>.Empty,
         };
     }
 
@@ -66,6 +87,7 @@ public class ConsumePipelineBenchmarks
     public async ValueTask<IHandlerMarker> ScopeAndHandlerResolution()
     {
         var scope = new AsyncServiceScope(_scopes.CreateScope());
+
         try
         {
             return _descriptor.Resolve(scope.ServiceProvider);
@@ -80,6 +102,7 @@ public class ConsumePipelineBenchmarks
     public async ValueTask DirectScopedDispatch()
     {
         var scope = new AsyncServiceScope(_scopes.CreateScope());
+
         try
         {
             _directContext.Provider = scope.ServiceProvider;
@@ -101,16 +124,26 @@ public class ConsumePipelineBenchmarks
     }
 
     [GlobalCleanup]
-    public void Cleanup() => _provider.Dispose();
+    public void Cleanup()
+    {
+        _provider.Dispose();
+    }
 
     public sealed class Payload
     {
-        public int Value { get; init; } = 42;
+        public int Value
+        {
+            get; init;
+        } = 42;
     }
 
     public sealed class Handler : IHandler<Payload>
     {
-        public int LastValue { get; private set; }
+        public int LastValue
+        {
+            get; private set;
+        }
+
         public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
         {
             LastValue = message.Value;
@@ -120,26 +153,51 @@ public class ConsumePipelineBenchmarks
 
     private sealed class PassThrough : IConsumeMiddleware
     {
-        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next) => next(context);
+        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
+        {
+            return next(context);
+        }
     }
 
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "benchmark/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private sealed class DirectContext : MessageContext
     {
-        public IServiceProvider Provider { get; set; } = null!;
+        public IServiceProvider Provider
+        {
+            get; set;
+        } = null!;
+
         public override string MessageId => "benchmark";
+
         public override MessageType MessageType => new("benchmark.payload", 1);
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
+
         public override IServiceProvider Services => Provider;
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

@@ -1,4 +1,5 @@
 using Relayer.Pipeline;
+
 namespace Relayer.Tests;
 
 public class MessageTypeRegistryTests
@@ -109,5 +110,6 @@ public class MessageTypeRegistryTests
     }
 
     private sealed record Ping;
+
     private sealed record Pong;
 }

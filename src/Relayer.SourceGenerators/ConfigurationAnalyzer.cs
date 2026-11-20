@@ -10,21 +10,24 @@ namespace Relayer.SourceGenerators;
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
 {
-    private static readonly DiagnosticDescriptor MissingMessage = Rule("RLY001", "Message has no stable identity",
+    private static readonly DiagnosticDescriptor s_missingMessage = Rule("RLY001", "Message has no stable identity",
         "Message type '{0}' has no stable identity. Add [Message(\"stable.name\")] or call MessageTypes.Add<T>(\"stable.name\") in this compilation.");
-    private static readonly DiagnosticDescriptor DuplicateMessage = Rule("RLY002", "Duplicate message identity",
+    private static readonly DiagnosticDescriptor s_duplicateMessage = Rule("RLY002", "Duplicate message identity",
         "Message type '{0}' duplicates message identity '{1}' version {2}. Choose a unique name and version.", DiagnosticSeverity.Error);
-    private static readonly DiagnosticDescriptor UnregisteredHandler = Rule("RLY003", "Handler is never registered",
+    private static readonly DiagnosticDescriptor s_unregisteredHandler = Rule("RLY003", "Handler is never registered",
         "Handler '{0}' is never registered in this compilation. Call consumer.Handler<{0}>() inside a consumer configuration callback.");
-    private static readonly DiagnosticDescriptor EmptyConsumer = Rule("RLY004", "Consumer has no handler",
+    private static readonly DiagnosticDescriptor s_emptyConsumer = Rule("RLY004", "Consumer has no handler",
         "Consumer has no handler. Call consumer.Handler<THandler>() inside its configuration callback.");
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        [MissingMessage, DuplicateMessage, UnregisteredHandler, EmptyConsumer];
+        [s_missingMessage, s_duplicateMessage, s_unregisteredHandler, s_emptyConsumer];
 
     private static DiagnosticDescriptor Rule(string id, string title, string message,
-        DiagnosticSeverity severity = DiagnosticSeverity.Warning) => new(id, title, message, "Relayer", severity,
-        isEnabledByDefault: true, helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#" + id.ToLowerInvariant());
+        DiagnosticSeverity severity = DiagnosticSeverity.Warning)
+    {
+        return new(id, title, message, "Relayer", severity,
+                isEnabledByDefault: true, helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#" + id.ToLowerInvariant());
+    }
 
     public override void Initialize(AnalysisContext context)
     {
@@ -34,7 +37,11 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
         {
             var compilation = start.Compilation;
             var attribute = compilation.GetTypeByMetadataName("Relayer.MessageAttribute");
-            if (attribute is null) return;
+
+            if (attribute is null)
+            {
+                return;
+            }
 
             var single = compilation.GetTypeByMetadataName("Relayer.IHandler`1");
             var batch = compilation.GetTypeByMetadataName("Relayer.IBatchHandler`1");
@@ -62,12 +69,27 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             void CheckMessage(ITypeSymbol message, Location use)
             {
                 // An open contract (T, Envelope<T>, T[]) is checked where it is closed.
-                if (message.TypeKind is TypeKind.Error || ContainsTypeParameter(message)) return;
+                if (message.TypeKind is TypeKind.Error || ContainsTypeParameter(message))
+                {
+                    return;
+                }
+
                 if (message is INamedTypeSymbol wrapper && SymbolEqualityComparer.Default.Equals(wrapper.OriginalDefinition, tombstone))
+                {
                     message = wrapper.TypeArguments[0];
+                }
+
                 if (registeredAtStartup.Contains(message)
-                    || (message is INamedTypeSymbol named && registeredAtStartup.Contains(named.OriginalDefinition))) return;
-                if (message.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, attribute))) return;
+                    || (message is INamedTypeSymbol named && registeredAtStartup.Contains(named.OriginalDefinition)))
+                {
+                    return;
+                }
+
+                if (message.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, attribute)))
+                {
+                    return;
+                }
+
                 var location = message.Locations.FirstOrDefault(static l => l.IsInSource) ?? use;
                 missing.GetOrAdd(message, static _ => new ConcurrentDictionary<Location, byte>()).TryAdd(location, 0);
             }
@@ -76,18 +98,28 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             {
                 var type = (INamedTypeSymbol)symbolContext.Symbol;
                 var identity = type.GetAttributes().FirstOrDefault(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, attribute));
-                if (identity is not null) messages.TryAdd(type, identity);
+
+                if (identity is not null)
+                {
+                    messages.TryAdd(type, identity);
+                }
 
                 foreach (var contract in type.AllInterfaces)
                 {
                     if (!SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, single)
-                        && !SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, batch)) continue;
+                        && !SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, batch))
+                    {
+                        continue;
+                    }
+
                     CheckMessage(contract.TypeArguments[0], type.Locations[0]);
                     // A public handler can be registered by a referencing assembly, so only
                     // handlers that this compilation alone can register are candidates.
                     if (type.TypeKind == TypeKind.Class && !type.IsAbstract && CanReference(type, compilation)
                         && !IsPublic(type))
+                    {
                         handlers.TryAdd(type, 0);
+                    }
                 }
             }, SymbolKind.NamedType);
 
@@ -95,34 +127,59 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             {
                 var invocation = (IInvocationOperation)operationContext.Operation;
                 var method = invocation.TargetMethod;
+
                 if (method.Name == "Add" && method.TypeArguments.Length == 1
                     && SymbolEqualityComparer.Default.Equals(method.ContainingType, messageRegistry))
+                {
                     explicitIdentities.TryAdd(method.TypeArguments[0], 0);
+                }
+
                 if (helperRegistration is not null && method.TypeArguments.Length > 0)
+                {
                     AddHelperRegistrations(method, helperRegistration, explicitIdentities);
+                }
 
                 if (SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, transport))
                 {
                     if (method.Name == "Send" && method.TypeArguments.Length == 1)
+                    {
                         CheckMessage(method.TypeArguments[0], invocation.Syntax.GetLocation());
-                    if (method.Name == "Consume") CheckConsumer(operationContext, invocation, consumer, consumerInterface);
+                    }
+
+                    if (method.Name == "Consume")
+                    {
+                        CheckConsumer(operationContext, invocation, consumer, consumerInterface);
+                    }
                 }
 
                 if (method.TypeArguments.Length > 0)
+                {
                     foreach (var message in AddHandlerArguments(method, marker, single, batch, registered, operationContext.Compilation))
+                    {
                         CheckMessage(message, invocation.Syntax.GetLocation());
+                    }
+                }
 
                 // Only our generated registration methods count. Unrelated APIs with the same
                 // names must not hide an unregistered handler.
-                if (!SymbolEqualityComparer.Default.Equals(method.ContainingType, registration)) return;
+                if (!SymbolEqualityComparer.Default.Equals(method.ContainingType, registration))
+                {
+                    return;
+                }
+
                 if (method.Name is "Handler" or "Consume" && method.TypeArguments.Length == 1)
                 {
                     var handler = method.TypeArguments[0];
                     registered.TryAdd(handler, 0);
+
                     foreach (var contract in handler.AllInterfaces)
+                    {
                         if (SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, single)
                             || SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, batch))
+                        {
                             CheckMessage(contract.TypeArguments[0], invocation.Syntax.GetLocation());
+                        }
+                    }
                 }
             }, OperationKind.Invocation);
 
@@ -130,25 +187,42 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             {
                 foreach (var pair in missing)
                 {
-                    if (explicitIdentities.ContainsKey(pair.Key)) continue;
+                    if (explicitIdentities.ContainsKey(pair.Key))
+                    {
+                        continue;
+                    }
+
                     var declaration = pair.Key.DeclaringSyntaxReferences.FirstOrDefault();
                     var locations = declaration is null ? ImmutableArray<Location>.Empty
                         : ImmutableArray.Create(Location.Create(declaration.SyntaxTree, declaration.Span));
+
                     foreach (var location in pair.Value.Keys)
-                        end.ReportDiagnostic(Diagnostic.Create(MissingMessage, location, locations, null, pair.Key.ToDisplayString()));
+                    {
+                        end.ReportDiagnostic(Diagnostic.Create(s_missingMessage, location, locations, null, pair.Key.ToDisplayString()));
+                    }
                 }
 
                 foreach (var group in messages.GroupBy(static pair => Identity(pair.Value)))
                 {
-                    if (group.Key.Name is null || group.Count() < 2) continue;
+                    if (group.Key.Name is null || group.Count() < 2)
+                    {
+                        continue;
+                    }
+
                     foreach (var pair in group)
-                        end.ReportDiagnostic(Diagnostic.Create(DuplicateMessage, pair.Key.Locations[0],
+                    {
+                        end.ReportDiagnostic(Diagnostic.Create(s_duplicateMessage, pair.Key.Locations[0],
                             pair.Key.ToDisplayString(), group.Key.Name, group.Key.Version));
+                    }
                 }
 
                 foreach (var handler in handlers.Keys)
+                {
                     if (!registered.ContainsKey(handler))
-                        end.ReportDiagnostic(Diagnostic.Create(UnregisteredHandler, handler.Locations[0], handler.ToDisplayString()));
+                    {
+                        end.ReportDiagnostic(Diagnostic.Create(s_unregisteredHandler, handler.Locations[0], handler.ToDisplayString()));
+                    }
+                }
             });
         });
     }
@@ -161,9 +235,18 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
         foreach (var attribute in method.OriginalDefinition.GetAttributes())
         {
             if (!SymbolEqualityComparer.Default.Equals(attribute.AttributeClass, helperRegistration)
-                || attribute.ConstructorArguments.Length != 1 || attribute.ConstructorArguments[0].Value is not string name) continue;
+                || attribute.ConstructorArguments.Length != 1 || attribute.ConstructorArguments[0].Value is not string name)
+            {
+                continue;
+            }
+
             for (var i = 0; i < method.TypeParameters.Length; i++)
-                if (method.TypeParameters[i].Name == name) explicitIdentities.TryAdd(method.TypeArguments[i], 0);
+            {
+                if (method.TypeParameters[i].Name == name)
+                {
+                    explicitIdentities.TryAdd(method.TypeArguments[i], 0);
+                }
+            }
         }
     }
 
@@ -175,16 +258,28 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
     {
         var messages = new List<ITypeSymbol>();
         var parameters = method.OriginalDefinition.TypeParameters;
+
         for (var i = 0; i < parameters.Length; i++)
+        {
             foreach (var constraint in parameters[i].ConstraintTypes)
             {
                 var contract = SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, single)
                     || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, batch);
-                if (!contract && !SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker)) continue;
+
+                if (!contract && !SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker))
+                {
+                    continue;
+                }
+
                 registered.TryAdd(method.TypeArguments[i], 0);
+
                 if (contract && constraint is INamedTypeSymbol { TypeArguments.Length: 1 } named)
+                {
                     messages.Add(Substitute(named.TypeArguments[0], method, compilation));
+                }
             }
+        }
+
         return messages;
     }
 
@@ -195,28 +290,44 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
     private static ITypeSymbol Substitute(ITypeSymbol type, IMethodSymbol method, Compilation compilation)
     {
         if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } parameter)
+        {
             return method.TypeArguments[parameter.Ordinal];
+        }
+
         if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Type } typeParameter)
         {
             for (var containing = method.ContainingType; containing is not null; containing = containing.ContainingType)
+            {
                 if (SymbolEqualityComparer.Default.Equals(containing.OriginalDefinition, typeParameter.ContainingSymbol))
+                {
                     return containing.TypeArguments[typeParameter.Ordinal];
+                }
+            }
+
             return type;
         }
+
         if (type is IArrayTypeSymbol array)
         {
             var element = Substitute(array.ElementType, method, compilation);
             return SymbolEqualityComparer.Default.Equals(element, array.ElementType) ? array
                 : compilation.CreateArrayTypeSymbol(element, array.Rank, array.ElementNullableAnnotation);
         }
-        if (type is not INamedTypeSymbol { IsGenericType: true } named) return type;
+
+        if (type is not INamedTypeSymbol { IsGenericType: true } named)
+        {
+            return type;
+        }
+
         var arguments = new ITypeSymbol[named.TypeArguments.Length];
         var changed = false;
+
         for (var i = 0; i < arguments.Length; i++)
         {
             arguments[i] = Substitute(named.TypeArguments[i], method, compilation);
             changed |= !SymbolEqualityComparer.Default.Equals(arguments[i], named.TypeArguments[i]);
         }
+
         return changed ? named.ConstructedFrom.Construct(arguments) : named;
     }
 
@@ -224,52 +335,88 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
     {
         var name = attribute.ConstructorArguments.Length == 1 ? attribute.ConstructorArguments[0].Value as string : null;
         var version = 1;
+
         foreach (var argument in attribute.NamedArguments)
-            if (argument.Key == "Version" && argument.Value.Value is int value) version = value;
+        {
+            if (argument.Key == "Version" && argument.Value.Value is int value)
+            {
+                version = value;
+            }
+        }
+
         return (name, version);
     }
 
-    private static bool ContainsTypeParameter(ITypeSymbol type) => type switch
+    private static bool ContainsTypeParameter(ITypeSymbol type)
     {
-        ITypeParameterSymbol => true,
-        IArrayTypeSymbol array => ContainsTypeParameter(array.ElementType),
-        INamedTypeSymbol named => named.TypeArguments.Any(ContainsTypeParameter),
-        _ => false,
-    };
+        return type switch
+        {
+            ITypeParameterSymbol => true,
+            IArrayTypeSymbol array => ContainsTypeParameter(array.ElementType),
+            INamedTypeSymbol named => named.TypeArguments.Any(ContainsTypeParameter),
+            _ => false,
+        };
+    }
 
-    private static bool CanReference(INamedTypeSymbol type, Compilation compilation) =>
-        !type.IsFileLocal && !type.IsUnboundGenericType && type.TypeArguments.All(static t => t.TypeKind != TypeKind.TypeParameter)
-        && compilation.IsSymbolAccessibleWithin(type, compilation.Assembly)
-        && (type.ContainingType is null || CanReference(type.ContainingType, compilation));
+    private static bool CanReference(INamedTypeSymbol type, Compilation compilation)
+    {
+        return !type.IsFileLocal && !type.IsUnboundGenericType && type.TypeArguments.All(static t => t.TypeKind != TypeKind.TypeParameter)
+                && compilation.IsSymbolAccessibleWithin(type, compilation.Assembly)
+                && (type.ContainingType is null || CanReference(type.ContainingType, compilation));
+    }
 
-    private static bool IsPublic(INamedTypeSymbol type) =>
-        type.DeclaredAccessibility == Accessibility.Public && (type.ContainingType is null || IsPublic(type.ContainingType));
+    private static bool IsPublic(INamedTypeSymbol type)
+    {
+        return type.DeclaredAccessibility == Accessibility.Public && (type.ContainingType is null || IsPublic(type.ContainingType));
+    }
 
     private static void CheckConsumer(OperationAnalysisContext context, IInvocationOperation invocation,
         INamedTypeSymbol? consumer, INamedTypeSymbol? consumerInterface)
     {
         var configure = invocation.Arguments.FirstOrDefault(static a => a.Parameter?.Name == "configure")?.Value;
-        while (configure is IConversionOperation conversion) configure = conversion.Operand;
-        if (configure is IDelegateCreationOperation creation) configure = creation.Target;
-        if (configure is not IAnonymousFunctionOperation callback || callback.Symbol.Parameters.Length != 1) return;
+
+        while (configure is IConversionOperation conversion)
+        {
+            configure = conversion.Operand;
+        }
+
+        if (configure is IDelegateCreationOperation creation)
+        {
+            configure = creation.Target;
+        }
+
+        if (configure is not IAnonymousFunctionOperation callback || callback.Symbol.Parameters.Length != 1)
+        {
+            return;
+        }
 
         // A helper, alias or capture can register the handler. Warn only when
         // the inline callback is visibly empty apart from native options/portable settings.
         var parameter = callback.Symbol.Parameters[0];
+
         foreach (var operation in callback.Body.DescendantsAndSelf())
         {
             if (operation is IInvocationOperation call)
             {
                 var method = call.TargetMethod;
+
                 if (method.Name is not ("Concurrency" or "Batch")
                     || !SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, consumer)
-                        && !SymbolEqualityComparer.Default.Equals(method.ContainingType, consumerInterface)) return;
+                        && !SymbolEqualityComparer.Default.Equals(method.ContainingType, consumerInterface))
+                {
+                    return;
+                }
             }
+
             if (operation is IParameterReferenceOperation reference
                 && SymbolEqualityComparer.Default.Equals(reference.Parameter, parameter)
                 && reference.Parent is not IPropertyReferenceOperation { Property.Name: "Options" }
-                && reference.Parent is not IInvocationOperation) return;
+                && reference.Parent is not IInvocationOperation)
+            {
+                return;
+            }
         }
-        context.ReportDiagnostic(Diagnostic.Create(EmptyConsumer, callback.Syntax.GetLocation()));
+
+        context.ReportDiagnostic(Diagnostic.Create(s_emptyConsumer, callback.Syntax.GetLocation()));
     }
 }

@@ -29,13 +29,29 @@ public class SentHistoryTests
         using Microsoft.Extensions.Hosting.BackgroundService worker = mode switch
         {
             "direct" => new PostgreSqlDirectDispatcher(source, options, new(), [transport], NullLogger<PostgreSqlDirectDispatcher>.Instance),
-            "ordered" => new PostgreSqlOrderedDispatcher(source, new() { Schema = options.Schema, TablePrefix = options.TablePrefix, RetainSentMessages = true },
+            "ordered" => new PostgreSqlOrderedDispatcher(source, new()
+            {
+                Schema = options.Schema,
+                TablePrefix = options.TablePrefix,
+                RetainSentMessages = true
+            },
                 [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance),
-            "maintenance" => new PostgreSqlMaintenanceWorker(source, new() { Schema = options.Schema, TablePrefix = options.TablePrefix, RetainSentMessages = true },
+            "maintenance" => new PostgreSqlMaintenanceWorker(source, new()
+            {
+                Schema = options.Schema,
+                TablePrefix = options.TablePrefix,
+                RetainSentMessages = true
+            },
                 [transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance),
             "cdc" => new PostgreSqlChangeCaptureWorker(source, () => throw new InvalidOperationException("Must not open replication"),
-                new() { Schema = options.Schema, TablePrefix = options.TablePrefix, RetainSentMessages = true,
-                    Slot = new("unused"), Replication = new("unused", Npgsql.Replication.PgOutput.PgOutputProtocolVersion.V1) },
+                new()
+                {
+                    Schema = options.Schema,
+                    TablePrefix = options.TablePrefix,
+                    RetainSentMessages = true,
+                    Slot = new("unused"),
+                    Replication = new("unused", Npgsql.Replication.PgOutput.PgOutputProtocolVersion.V1)
+                },
                 [transport], NullLogger<PostgreSqlChangeCaptureWorker>.Instance, NullLogger<PostgreSqlMaintenanceWorker>.Instance,
                 NullLogger<PostgreSqlDirectDispatcher>.Instance),
             _ => new PostgreSqlTenantDispatcher(new HistoryCatalog(new PostgreSqlTenantStore("tenant", source, options)), new(), [transport], NullLoggerFactory.Instance)
@@ -82,8 +98,15 @@ public class SentHistoryTests
 
     private sealed class HistoryCatalog(params PostgreSqlTenantStore[] entries) : ITenantSource
     {
-        internal IReadOnlyList<PostgreSqlTenantStore> Entries { get; set; } = entries;
-        public IReadOnlyList<PostgreSqlTenantStore> GetTenants() => Entries;
+        internal IReadOnlyList<PostgreSqlTenantStore> Entries
+        {
+            get; set;
+        } = entries;
+
+        public IReadOnlyList<PostgreSqlTenantStore> GetTenants()
+        {
+            return Entries;
+        }
     }
 
     [Test]
@@ -101,11 +124,13 @@ public class SentHistoryTests
         var live = new OutboxClaim(Guid.NewGuid(), Guid.NewGuid());
         var expired = new OutboxClaim(Guid.NewGuid(), Guid.NewGuid());
         var replaced = new OutboxClaim(Guid.NewGuid(), Guid.NewGuid());
+
         foreach (var claim in new[] { live, expired, replaced })
         {
             await PostgreSqlOutboxStoreTests.Insert(source, options, claim.MessageId, now);
             await store.TryClaimAsync(claim, now, now.AddMinutes(1), default);
         }
+
         await Assert.That(await store.CompleteAsync(new(live.MessageId, Guid.NewGuid()), now, default)).IsFalse();
         await Assert.That(await store.CompleteAsync(expired, now.AddMinutes(1), default)).IsFalse();
         await Assert.That(await store.CompleteBatchAsync(new OutboxClaim[] { expired }, now.AddMinutes(1), default)).IsEqualTo(0L);
@@ -124,7 +149,11 @@ public class SentHistoryTests
         await Sql(source, $"ALTER TABLE {history} DROP CONSTRAINT reject_history");
         // Default completion neither needs nor touches the sent table.
         await Sql(source, $"DROP TABLE {history}");
-        var disabled = new PostgreSqlOutboxStore(source, new() { Schema = options.Schema, TablePrefix = options.TablePrefix });
+        var disabled = new PostgreSqlOutboxStore(source, new()
+        {
+            Schema = options.Schema,
+            TablePrefix = options.TablePrefix
+        });
         await Assert.That(await disabled.CompleteAsync(expired, now, default)).IsTrue();
     }
 
@@ -143,6 +172,7 @@ public class SentHistoryTests
         var transport = new Transport(batchSize);
         var logger = new DirectDispatchTests.CaptureLogger();
         var rows = new List<BufferedOutboxMessage>();
+
         for (var i = 0; i < 3; i++)
         {
             var id = Guid.CreateVersion7();
@@ -151,17 +181,30 @@ public class SentHistoryTests
             row.Copy(new(id, "events", "order.placed.v1", new("orders", new byte[] { 1 }), now), 32);
             rows.Add(row);
         }
-        using (var direct = new PostgreSqlDirectDispatcher(source, options, new() { BatchSize = 3 }, [transport], logger))
+
+        using (var direct = new PostgreSqlDirectDispatcher(source, options, new()
+        {
+            BatchSize = 3
+        }, [transport], logger))
         {
             direct.Committed(rows, rows.Count);
             await direct.DispatchQueuedAsync(default);
         }
+
         await Assert.That(transport.Count).IsEqualTo(3);
         await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(retain ? 3L : 0L);
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
+
         for (var i = 0; i < 3; i++)
+        {
             await PostgreSqlOutboxStoreTests.Insert(source, options, Guid.CreateVersion7(), now.AddDays(-1));
-        using var recovery = new PostgreSqlMaintenanceWorker(source, new() { RetainSentMessages = retain, RecoveryDelay = TimeSpan.Zero },
+        }
+
+        using var recovery = new PostgreSqlMaintenanceWorker(source, new()
+        {
+            RetainSentMessages = retain,
+            RecoveryDelay = TimeSpan.Zero
+        },
             [transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance, logger);
         // Unordered writer rows have no ordering key; the shared store helper deliberately supplies one.
         await Sql(source, "UPDATE relayer_outbox SET ordering_key = NULL WHERE lane IS NULL");
@@ -183,6 +226,7 @@ public class SentHistoryTests
         await PostgreSqlOutboxStoreTests.Insert(source, options, id, DateTimeOffset.UtcNow, lane: 0);
         using var lane = new PostgreSqlOrderedLane(source, options, TimeSpan.FromMinutes(1));
         await using var connection = await source.OpenConnectionAsync();
+
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             var claim = new OutboxClaim(id, Guid.NewGuid());
@@ -193,6 +237,7 @@ public class SentHistoryTests
             await Assert.That(await lane.CompleteAsync(connection, transaction, claim, default)).IsFalse();
             await transaction.RollbackAsync();
         }
+
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             var claim = new OutboxClaim(id, Guid.NewGuid());
@@ -200,11 +245,19 @@ public class SentHistoryTests
             await Assert.That(await lane.CompleteAsync(connection, transaction, claim, default)).IsTrue();
             await transaction.RollbackAsync();
         }
+
         await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(0L);
-        using var ordered = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, RetainSentMessages = true },
+        using var ordered = new PostgreSqlOrderedDispatcher(source, new()
+        {
+            Lanes = 1,
+            RetainSentMessages = true
+        },
             [new Transport(1)], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
         await ordered.DispatchPassAsync(TimeSpan.MaxValue, default);
-        await Assert.That((await new PostgreSqlMessageLookup(source, new() { RetainSentMessages = true }).FindAsync(id)).State).IsEqualTo("sent");
+        await Assert.That((await new PostgreSqlMessageLookup(source, new()
+        {
+            RetainSentMessages = true
+        }).FindAsync(id)).State).IsEqualTo("sent");
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
     }
 
@@ -216,25 +269,52 @@ public class SentHistoryTests
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         var id = Guid.NewGuid();
+
         await using (var insert = source.CreateCommand("INSERT INTO relayer_outbox_sent VALUES (@id, 'orders', clock_timestamp()), (gen_random_uuid(), 'old', clock_timestamp() - interval '10 days'), (gen_random_uuid(), 'old', clock_timestamp() - interval '10 days')"))
-        { insert.Parameters.AddWithValue("id", id); await insert.ExecuteNonQueryAsync(); }
+        {
+            insert.Parameters.AddWithValue("id", id);
+            await insert.ExecuteNonQueryAsync();
+        }
+
         await using (var columns = source.CreateCommand("SELECT string_agg(column_name, ',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_name = 'relayer_outbox_sent'"))
+        {
             await Assert.That((string)(await columns.ExecuteScalarAsync())!).IsEqualTo("id,destination,sent_at");
+        }
+
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true };
         start.ArgumentList.Add(typeof(RelayerCommand).Assembly.Location);
-        foreach (var argument in new[] { "message", "locate", "--sent-history", "--id", id.ToString() }) start.ArgumentList.Add(argument);
+
+        foreach (var argument in new[] { "message", "locate", "--sent-history", "--id", id.ToString() })
+        {
+            start.ArgumentList.Add(argument);
+        }
+
         start.Environment["RELAYER_POSTGRES_CONNECTION_STRING"] = fixture.ConnectionString;
+
         using (var process = Process.Start(start)!)
         {
-            var output = process.StandardOutput.ReadToEndAsync(); var error = process.StandardError.ReadToEndAsync();
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            try { await process.WaitForExitAsync(timeout.Token); }
-            finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            finally
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+
             await Assert.That(process.ExitCode).IsEqualTo(0);
             await Assert.That(await output).Contains("State: sent\nDestination: orders");
             await Assert.That(await output).Contains("Sent: ");
             await Assert.That(await error).IsEqualTo("");
         }
+
         await Assert.That((await new PostgreSqlMessageLookup(source).FindAsync(id)).State).IsEqualTo("not present");
         var settings = new PostgreSqlMaintenanceOptions { RetainSentMessages = true, BatchSize = 1, CleanupBatchLimit = 1, DeadRetention = null, InboxRetention = null };
         using var first = new PostgreSqlMaintenanceWorker(source, settings, [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
@@ -246,7 +326,10 @@ public class SentHistoryTests
         await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(1L);
         await Sql(source, "UPDATE relayer_outbox_sent SET sent_at = clock_timestamp() - interval '10 days'");
         await Assert.That(await rival.CleanupAsync(default)).IsEqualTo(1);
-        await Assert.That((await new PostgreSqlMessageLookup(source, new() { RetainSentMessages = true }).FindAsync(id)).State).IsEqualTo("not present");
+        await Assert.That((await new PostgreSqlMessageLookup(source, new()
+        {
+            RetainSentMessages = true
+        }).FindAsync(id)).State).IsEqualTo("not present");
     }
 
     [Test]
@@ -258,7 +341,14 @@ public class SentHistoryTests
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await Sql(source, "INSERT INTO relayer_outbox_sent SELECT gen_random_uuid(), 'orders', clock_timestamp() - interval '10 days' FROM generate_series(1, 7)");
         using var worker = new PostgreSqlMaintenanceWorker(source,
-            new() { RetainSentMessages = true, BatchSize = 2, CleanupBatchLimit = 2, DeadRetention = null, InboxRetention = null },
+            new()
+            {
+                RetainSentMessages = true,
+                BatchSize = 2,
+                CleanupBatchLimit = 2,
+                DeadRetention = null,
+                InboxRetention = null
+            },
             [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
         await Assert.That(await worker.CleanupAsync(default)).IsEqualTo(4);
         await Assert.That(worker.CleanupPending).IsTrue();
@@ -286,7 +376,13 @@ public class SentHistoryTests
             CREATE TRIGGER transfer_cleanup AFTER DELETE ON relayer_outbox_sent FOR EACH STATEMENT EXECUTE FUNCTION transfer_cleanup();
             """);
         using var worker = new PostgreSqlMaintenanceWorker(source,
-            new() { RetainSentMessages = true, BatchSize = 1, DeadRetention = null, InboxRetention = null },
+            new()
+            {
+                RetainSentMessages = true,
+                BatchSize = 1,
+                DeadRetention = null,
+                InboxRetention = null
+            },
             [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
         await Assert.That(await worker.CleanupAsync(default)).IsEqualTo(1);
         await Assert.That(worker.CleanupPending).IsFalse();
@@ -307,11 +403,20 @@ public class SentHistoryTests
         await Sql(source, "INSERT INTO relayer_inbox SELECT 'consumer', gen_random_uuid(), clock_timestamp() - interval '10 days' FROM generate_series(1, 3)");
         await using var blocker = await source.OpenConnectionAsync();
         await using var transaction = await blocker.BeginTransactionAsync();
+
         await using (var command = new NpgsqlCommand("SELECT id FROM relayer_outbox_sent FOR UPDATE", blocker, transaction))
+        {
             await command.ExecuteNonQueryAsync();
+        }
+
         using var worker = new PostgreSqlMaintenanceWorker(source,
-            new() { RetainSentMessages = true, BatchSize = 1 }, [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+            new()
+            {
+                RetainSentMessages = true,
+                BatchSize = 1
+            }, [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
         try
         {
             // First turn starts with history and is cancelled during its actual native row-lock wait.
@@ -320,12 +425,17 @@ public class SentHistoryTests
             {
                 using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
                 var cleanup = worker.CleanupAsync(cancellation.Token).AsTask();
+
                 try
                 {
                     await using var blocked = source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE @pid = ANY(pg_blocking_pids(pid)))");
                     blocked.Parameters.AddWithValue("pid", blocker.ProcessID);
+
                     while (await blocked.ExecuteScalarAsync(timeout.Token) is not true)
+                    {
                         await Task.Delay(10, timeout.Token);
+                    }
+
                     await Assert.That(await Count(source, "relayer_inbox")).IsEqualTo(turn == 0 ? 3L : 2L);
                 }
                 finally
@@ -334,12 +444,16 @@ public class SentHistoryTests
                     await Assert.ThrowsAsync<OperationCanceledException>(async () => await cleanup);
                 }
             }
+
             await transaction.RollbackAsync();
             await Assert.That(await worker.CleanupAsync(timeout.Token)).IsEqualTo(5);
             await Assert.That(await Count(source, "relayer_inbox")).IsEqualTo(0L);
             await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(0L);
         }
-        finally { await worker.ReleaseAsync(default); }
+        finally
+        {
+            await worker.ReleaseAsync(default);
+        }
     }
 
     [Test]
@@ -351,8 +465,13 @@ public class SentHistoryTests
         var options = new PostgreSqlOutboxOptions { RetainSentMessages = true };
         await PostgreSqlOutboxStoreTests.CreateSchema(source, options);
         var id = Guid.NewGuid();
+
         await using (var insert = source.CreateCommand("INSERT INTO relayer_outbox_sent VALUES (@id, 'old', clock_timestamp() - interval '10 days')"))
-        { insert.Parameters.AddWithValue("id", id); await insert.ExecuteNonQueryAsync(); }
+        {
+            insert.Parameters.AddWithValue("id", id);
+            await insert.ExecuteNonQueryAsync();
+        }
+
         var clock = DateTimeOffset.UtcNow;
         // PostgreSQL timestamps retain microseconds, while Linux UtcNow can include 100 ns ticks.
         var now = clock.AddTicks(-(clock.Ticks % 10));
@@ -365,18 +484,28 @@ public class SentHistoryTests
         store.UseDispatchTransaction(completion, transaction);
         await Assert.That(await store.CompleteAsync(claim, now, default)).IsTrue();
         using var worker = new PostgreSqlMaintenanceWorker(source,
-            new() { RetainSentMessages = true, DeadRetention = null, InboxRetention = null },
+            new()
+            {
+                RetainSentMessages = true,
+                DeadRetention = null,
+                InboxRetention = null
+            },
             [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var cleanup = worker.CleanupAsync(timeout.Token).AsTask();
         var committed = false;
+
         try
         {
             // Wait for the DELETE's actual lock wait, rather than guessing when its snapshot was taken.
             await using var blocked = source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE @pid = ANY(pg_blocking_pids(pid)))");
             blocked.Parameters.AddWithValue("pid", completion.ProcessID);
+
             while (await blocked.ExecuteScalarAsync(timeout.Token) is not true)
+            {
                 await Task.Delay(10, timeout.Token);
+            }
+
             await transaction.CommitAsync(timeout.Token);
             committed = true;
             await Assert.That(await cleanup).IsEqualTo(0);
@@ -387,9 +516,19 @@ public class SentHistoryTests
         finally
         {
             // Release the row lock even if observing the wait fails; never strand the cleanup task.
-            if (!committed) await transaction.RollbackAsync();
-            try { await cleanup; }
-            finally { await worker.ReleaseAsync(default); }
+            if (!committed)
+            {
+                await transaction.RollbackAsync();
+            }
+
+            try
+            {
+                await cleanup;
+            }
+            finally
+            {
+                await worker.ReleaseAsync(default);
+            }
         }
     }
 
@@ -398,7 +537,10 @@ public class SentHistoryTests
     {
         await using var source = NpgsqlDataSource.Create("Host=unused");
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        { ["RetainSentMessages"] = "true", ["SentRetention"] = "2.00:00:00" }).Build();
+        {
+            ["RetainSentMessages"] = "true",
+            ["SentRetention"] = "2.00:00:00"
+        }).Build();
         var services = new ServiceCollection().AddLogging();
         services.AddRelayerPostgreSqlMaintenance("test", source, configuration);
         services.AddRelayerPostgreSqlOrderedDispatch("test", source, configuration);
@@ -412,21 +554,71 @@ public class SentHistoryTests
     }
 
     private static async Task Sql(NpgsqlDataSource source, string sql)
-    { await using var command = source.CreateCommand(sql); await command.ExecuteNonQueryAsync(); }
+    {
+        await using var command = source.CreateCommand(sql);
+        await command.ExecuteNonQueryAsync();
+    }
+
     private static async Task<long> Count(NpgsqlDataSource source, string table)
-    { await using var command = source.CreateCommand($"SELECT count(*) FROM {table}"); return (long)(await command.ExecuteScalarAsync())!; }
+    {
+        await using var command = source.CreateCommand($"SELECT count(*) FROM {table}");
+        return (long)(await command.ExecuteScalarAsync())!;
+    }
 
     private sealed class Transport(int batchSize) : ITransport
     {
         public string Name => "events";
-        internal int Count { get; private set; }
-        internal int Batches { get; private set; }
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = batchSize, OrderedByKey = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Count++; return ValueTask.CompletedTask; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) { Batches++; Count += messages.Length; return ValueTask.CompletedTask; }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        internal int Count
+        {
+            get; private set;
+        }
+
+        internal int Batches
+        {
+            get; private set;
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = batchSize,
+                OrderedByKey = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Count++;
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            Batches++;
+            Count += messages.Length;
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

@@ -35,6 +35,12 @@ Rules for code on the per-message path (pipeline, middleware, dispatch, serializ
 - Hosted runners are noisy, so a red gate is a lead, not a bug. Open an issue only when the regression reproduces in a fresh run (the gate's confirmation step, or one manual `workflow_dispatch` of `Performance`) and a specific change is suspected; the issue names that change and the case, and is closed by a fix or a reasoned revert. Do not open "attribute run N" investigations, replay historical benchmark builds, or build tooling to explain a past run: its host state cannot be recovered. Close an existing investigation once a fresh run does not reproduce it.
 - Local benchmark numbers are diagnostic only. Do not commit benchmark outputs, logs, reports or evidence Markdown.
 
+## C# style
+
+- Follow the [shared C# EditorConfig profile](https://github.com/thomhurst/editorconfig/blob/main/.editorconfig) and [C# style guide](https://github.com/thomhurst/editorconfig/blob/main/csharp.md). The local `.editorconfig` applies the profile and records any Relayer overrides. If the references are unavailable, say so and use the local guidance.
+- Use braces for control-flow bodies, including single statements. Separate logical groups with one blank line and keep related statements together.
+- Use [Curb](https://github.com/nullean/curb) for routine C# formatting. Run `curb format <changed-path>` and `curb check <changed-path>` on changed C# files, then build for Roslyn style analysis. Keep formatting changes scoped to the work.
+
 ## Library conventions and contracts
 
 - .NET 10 and later (D2): libraries and tests multi-target `net10.0;net11.0`, and `net11.0` builds compile with runtime async (`runtime-async=on` in `Directory.Build.targets`). Runtime async ignores `[AsyncMethodBuilder]`, so every method with a pooled builder also needs `[RuntimeAsyncMethodGeneration(false)]`. Nullable reference types on, warnings are errors, Central Package Management in `Directory.Packages.props`, shared settings in `Directory.Build.props` (D21).

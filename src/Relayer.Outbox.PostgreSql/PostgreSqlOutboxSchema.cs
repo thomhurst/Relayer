@@ -8,13 +8,17 @@ public static class PostgreSqlOutboxSchema
     /// <summary>Returns idempotent SQL for a new schema. This does not upgrade existing table definitions.</summary>
     /// <remarks>Null schema means public. Identifiers are quoted and must fit PostgreSQL's 63-byte limit.</remarks>
     public static string CreateScript(PostgreSqlOutboxOptions? options = null)
-        => Render("Schema.sql", options);
+    {
+        return Render("Schema.sql", options);
+    }
 
     /// <summary>Returns SQL to upgrade a pre-sequence outbox table. Stop writers and dispatchers first.</summary>
     /// <remarks>Existing rows retain their former UUID order; historical insertion order cannot be recovered.
     /// Run once in an application-owned migration transaction before starting upgraded workers.</remarks>
     public static string CreateInsertSequenceMigrationScript(PostgreSqlOutboxOptions? options = null)
-        => Render("InsertSequenceMigration.sql", options);
+    {
+        return Render("InsertSequenceMigration.sql", options);
+    }
 
     private static string Render(string resource, PostgreSqlOutboxOptions? options)
     {
@@ -28,14 +32,17 @@ public static class PostgreSqlOutboxSchema
 
         // Replace template tokens in one pass: identifiers may themselves contain token-like text.
         var result = new StringBuilder(template.Length);
+
         for (var position = 0; position < template.Length;)
         {
             var start = template.IndexOf("{{", position, StringComparison.Ordinal);
+
             if (start < 0)
             {
                 result.Append(template, position, template.Length - position);
                 break;
             }
+
             result.Append(template, position, start - position);
             var end = template.IndexOf("}}", start, StringComparison.Ordinal);
             var token = template[(start + 2)..end];
@@ -47,13 +54,17 @@ public static class PostgreSqlOutboxSchema
             });
             position = end + 2;
         }
+
         return result.ToString();
     }
 
     internal static string QuoteIdentifier(string identifier)
     {
         if (identifier.Length == 0 || identifier.Contains('\0') || Encoding.UTF8.GetByteCount(identifier) > 63)
+        {
             throw new ArgumentException("PostgreSQL identifiers must be nonempty, contain no NUL, and fit in 63 UTF-8 bytes.", nameof(identifier));
+        }
+
         return "\"" + identifier.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
 }

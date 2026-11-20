@@ -14,7 +14,10 @@ namespace Relayer.Benchmarks;
 public class PostgreSqlLocalTransportBenchmarks
 {
     [Params(false, true)]
-    public bool MetricsEnabled { get; set; }
+    public bool MetricsEnabled
+    {
+        get; set;
+    }
     private MeterListener? _listener;
     private NpgsqlDataSource _source = null!;
     private NpgsqlConnection _connection = null!;
@@ -35,11 +38,13 @@ public class PostgreSqlLocalTransportBenchmarks
         await Execute(PostgreSqlOutboxSchema.CreateScript(_options));
         KeyValuePair<string, WireString>[] headers = [new("ce_id", new(_claim.MessageId.ToString())), new("ce_type", new("benchmark.local;v=1")), new("ce_source", new("/benchmark")), new("ce_specversion", new("1.0"))];
         _message = new("work", "{\"Value\":1}"u8.ToArray(), headers);
+
         await using (var insert = new NpgsqlCommand($"INSERT INTO {_table} (id, transport, destination, message_type, body, headers, created_at, claim_token, claim_expires_at) VALUES (@id, 'local', 'work', 'benchmark.local;v=1', ''::bytea, ''::bytea, clock_timestamp(), @token, 'infinity')", _connection))
         {
             AddClaims(insert);
             await insert.ExecuteNonQueryAsync();
         }
+
         var services = new ServiceCollection().AddLogging();
         services.AddRelayer(builder =>
         {
@@ -52,20 +57,35 @@ public class PostgreSqlLocalTransportBenchmarks
         });
         services.AddRelayerPostgreSqlDirectDispatch("local", _source, _options);
         _provider = services.BuildServiceProvider();
+
         if (MetricsEnabled)
         {
             var instrumentation = _provider.GetRequiredService<RelayerInstrumentation>();
             _listener = new MeterListener();
             _listener.InstrumentPublished = (instrument, listener) =>
             {
-                if (ReferenceEquals(instrument.Meter.Scope, instrumentation)) listener.EnableMeasurementEvents(instrument);
+                if (ReferenceEquals(instrument.Meter.Scope, instrumentation))
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
             };
-            _listener.SetMeasurementEventCallback<long>(static (_, _, _, _) => { });
-            _listener.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
+            _listener.SetMeasurementEventCallback<long>(static (_, _, _, _) =>
+            {
+            });
+            _listener.SetMeasurementEventCallback<double>(static (_, _, _, _) =>
+            {
+            });
             _listener.Start();
         }
+
         foreach (var service in _provider.GetServices<IHostedService>())
-            if (service is not PostgreSqlDirectDispatcher) await service.StartAsync(default);
+        {
+            if (service is not PostgreSqlDirectDispatcher)
+            {
+                await service.StartAsync(default);
+            }
+        }
+
         _transport = PostgreSqlLocalTransport.Find(_provider.GetServices<ITransport>().Single())!;
         await LocalConsume();
     }
@@ -77,7 +97,12 @@ public class PostgreSqlLocalTransportBenchmarks
         await transaction.SaveAsync("relayer_local_attempt");
         await using var command = new NpgsqlCommand($"DELETE FROM {_table} WHERE id = @id AND claim_token = @token AND claim_expires_at > clock_timestamp() RETURNING true", _connection, transaction);
         AddClaims(command);
-        if (await command.ExecuteScalarAsync() is not true) throw new InvalidOperationException("Benchmark claim was lost.");
+
+        if (await command.ExecuteScalarAsync() is not true)
+        {
+            throw new InvalidOperationException("Benchmark claim was lost.");
+        }
+
         await transaction.ReleaseAsync("relayer_local_attempt");
         await transaction.RollbackAsync();
     }
@@ -87,20 +112,31 @@ public class PostgreSqlLocalTransportBenchmarks
     {
         await using var transaction = await _connection.BeginTransactionAsync();
         var admission = _transport.TryEnter(_message.Destination) ?? throw new InvalidOperationException("Unexpected concurrent benchmark invocation.");
-        try { await _transport.ConsumeAsync(_message, _claim, 1, transaction, default); }
-        finally { admission.Exit(); }
+
+        try
+        {
+            await _transport.ConsumeAsync(_message, _claim, 1, transaction, default);
+        }
+        finally
+        {
+            admission.Exit();
+        }
+
         await transaction.RollbackAsync();
     }
+
     private void AddClaims(NpgsqlCommand command)
     {
         command.Parameters.Add(new NpgsqlParameter<Guid>("id", NpgsqlDbType.Uuid) { TypedValue = _claim.MessageId });
         command.Parameters.Add(new NpgsqlParameter<Guid>("token", NpgsqlDbType.Uuid) { TypedValue = _claim.Token });
     }
+
     private async Task Execute(string sql)
     {
         await using var command = new NpgsqlCommand(sql, _connection);
         await command.ExecuteNonQueryAsync();
     }
+
     [GlobalCleanup]
     public async Task Cleanup()
     {
@@ -110,10 +146,15 @@ public class PostgreSqlLocalTransportBenchmarks
         await _connection.DisposeAsync();
         await _source.DisposeAsync();
     }
+
     [Message("benchmark.local")]
     public sealed record LocalBenchmarkMessage(int Value);
+
     public sealed class LocalBenchmarkHandler : IHandler<LocalBenchmarkMessage>
     {
-        public ValueTask HandleAsync(LocalBenchmarkMessage message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(LocalBenchmarkMessage message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
 }

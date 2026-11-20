@@ -16,11 +16,17 @@ public class PostgreSqlConnectionTests
         await using var fixture = new PostgreSqlFixture();
         await fixture.StartAsync();
         var settings = new NpgsqlConnectionStringBuilder(fixture.ConnectionString);
-        if (invalidPassword) settings.Password = "incorrect-password";
+
+        if (invalidPassword)
+        {
+            settings.Password = "incorrect-password";
+        }
+
         var negotiations = 0;
         var builder = new NpgsqlDataSourceBuilder(settings.ConnectionString)
             .UseNegotiateOptionsCallback(_ => Interlocked.Increment(ref negotiations));
         await using var source = builder.Build();
+
         if (invalidPassword)
         {
             var failure = await Assert.ThrowsAsync<PostgresException>(async () =>
@@ -35,6 +41,7 @@ public class PostgreSqlConnectionTests
             await using var command = new NpgsqlCommand("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()", connection);
             await Assert.That((bool)(await command.ExecuteScalarAsync())!).IsFalse();
         }
+
         await Assert.That(negotiations).IsEqualTo(0);
         await Assert.That(settings.SslMode).IsEqualTo(SslMode.Disable);
         await Assert.That(settings.GssEncryptionMode).IsEqualTo(GssEncryptionMode.Disable);
@@ -54,6 +61,7 @@ public class PostgreSqlConnectionTests
             Port = ((IPEndPoint)listener.LocalEndpoint).Port
         };
         var rejected = RejectAuthenticationAsync(listener, timeout.Token);
+
         try
         {
             await using var source = NpgsqlDataSource.Create(settings.ConnectionString);
@@ -68,8 +76,14 @@ public class PostgreSqlConnectionTests
         {
             listener.Stop();
             await timeout.CancelAsync();
-            try { await rejected; }
-            catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
+
+            try
+            {
+                await rejected;
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+            }
         }
     }
 
@@ -78,17 +92,20 @@ public class PostgreSqlConnectionTests
         using var client = await listener.AcceptTcpClientAsync(token);
         await using var stream = client.GetStream();
         var length = new byte[4];
+
         while (true)
         {
             await stream.ReadExactlyAsync(length, token);
             var payload = new byte[BinaryPrimitives.ReadInt32BigEndian(length) - 4];
             await stream.ReadExactlyAsync(payload, token);
+
             if (payload.Length == 4 && BinaryPrimitives.ReadInt32BigEndian(payload) is 80877103 or 80877104)
             {
                 // Refuse optional SSL/GSS probes, just like the plaintext fixture server.
                 await stream.WriteAsync(new byte[] { (byte)'N' }, token);
                 continue;
             }
+
             break; // StartupMessage received; authentication can now fail.
         }
         // Preserve the accepted socket, but make a hidden second connection fail.

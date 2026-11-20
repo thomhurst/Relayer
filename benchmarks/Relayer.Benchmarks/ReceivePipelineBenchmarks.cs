@@ -1,10 +1,10 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Collections.Frozen;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -24,22 +24,40 @@ public class ReceivePipelineBenchmarks
     private readonly Disposition[] _dispositions = new Disposition[10];
 
     [Params(1, 100)]
-    public int HandledIdentityCount { get; set; }
+    public int HandledIdentityCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Utf8Headers { get; set; }
+    public bool Utf8Headers
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Tenancy { get; set; }
+    public bool Tenancy
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         var services = new ServiceCollection();
-        if (Tenancy) services.AddRelayerTenancy();
+
+        if (Tenancy)
+        {
+            services.AddRelayerTenancy();
+        }
+
         services.AddSingleton<Handler>();
         services.AddSingleton<TombstoneHandler>();
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TombstoneHandler>(); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TombstoneHandler>();
+        });
         _provider = services.BuildServiceProvider();
         _consumer = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
                 _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
@@ -49,18 +67,25 @@ public class ReceivePipelineBenchmarks
         // Alias identities reuse the same dispatch work to isolate wire matching at scale.
         using (var context = _consumer.RentContext(new ConsumeMessage
         {
-            MessageId = "setup", MessageType = new("benchmark.payload", 1), Body = ReadOnlySequence<byte>.Empty
+            MessageId = "setup",
+            MessageType = new("benchmark.payload", 1),
+            Body = ReadOnlySequence<byte>.Empty
         }))
         {
             var dispatch = _consumer.ResolveDispatch(context);
             var identities = new Dictionary<MessageType, ConsumeDelegate>();
             identities.Add(new("benchmark.payload", 1), dispatch);
+
             for (var i = 1; i < HandledIdentityCount; i++)
+            {
                 identities.Add(new($"benchmark.padding-{i}", 1), dispatch);
+            }
+
             _consumer = new ConsumePipeline(_provider.GetRequiredService<IServiceScopeFactory>(),
                 identities.ToFrozenDictionary(), [], static (_, error, _) => ValueTask.FromException(error),
                 new DefaultFailureClassifier(), 1, null, null, null, null);
         }
+
         _receive = new(_consumer, new HeaderNames(), 1);
         _incoming = new Incoming(Utf8Headers ? new WireString("benchmark.payload;v=1"u8.ToArray()) : new("benchmark.payload;v=1"));
         _tombstone = new Incoming(_incoming.Type, tombstone: true);
@@ -68,7 +93,9 @@ public class ReceivePipelineBenchmarks
         Array.Fill(_batch, _incoming);
         _message = new ConsumeMessage
         {
-            MessageId = "benchmark", MessageType = new("benchmark.payload", 1), Body = _incoming.Body,
+            MessageId = "benchmark",
+            MessageType = new("benchmark.payload", 1),
+            Body = _incoming.Body,
         };
     }
 
@@ -77,7 +104,12 @@ public class ReceivePipelineBenchmarks
     public Payload NativeScope()
     {
         using var scope = _provider.CreateScope();
-        if (Tenancy) scope.ServiceProvider.GetRequiredService<TenantContext>().Id = _incoming.Tenant;
+
+        if (Tenancy)
+        {
+            scope.ServiceProvider.GetRequiredService<TenantContext>().Id = _incoming.Tenant;
+        }
+
         _ = scope.ServiceProvider.GetRequiredService<Handler>();
         return _serializer.Deserialize<Payload>(_incoming.Body);
     }
@@ -90,47 +122,110 @@ public class ReceivePipelineBenchmarks
     }
 
     [Benchmark]
-    public ValueTask<Disposition> NativeReceive() => _receive.ProcessAsync(_incoming);
+    public ValueTask<Disposition> NativeReceive()
+    {
+        return _receive.ProcessAsync(_incoming);
+    }
 
     [Benchmark]
-    public ValueTask<Disposition> NativeTombstone() => _receive.ProcessAsync(_tombstone);
+    public ValueTask<Disposition> NativeTombstone()
+    {
+        return _receive.ProcessAsync(_tombstone);
+    }
 
     [Benchmark(OperationsPerInvoke = 10)]
-    public ValueTask NativeBatch() => _receive.ProcessBatchAsync(_batch, _dispositions);
+    public ValueTask NativeBatch()
+    {
+        return _receive.ProcessBatchAsync(_batch, _dispositions);
+    }
 
     [GlobalCleanup]
-    public void Cleanup() => _provider.Dispose();
+    public void Cleanup()
+    {
+        _provider.Dispose();
+    }
 
     [Message("benchmark.payload")]
     public sealed class Payload;
+
     public sealed class Handler : IHandler<Payload>
     {
-        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
+
     public sealed class TombstoneHandler : IHandler<Tombstone<Payload>>
     {
-        public ValueTask HandleAsync(Tombstone<Payload> message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(Tombstone<Payload> message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "benchmark/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class Incoming(WireString type, bool tombstone = false)
     {
-        public WireString Type { get; } = type;
-        public WireString Tenant { get; } = new("tenant-1"u8.ToArray());
-        public bool Tombstone { get; } = tombstone;
-        public ReadOnlySequence<byte> Body { get; } = tombstone ? ReadOnlySequence<byte>.Empty : new(new byte[64]);
+        public WireString Type
+        {
+            get;
+        } = type;
+
+        public WireString Tenant
+        {
+            get;
+        } = new("tenant-1"u8.ToArray());
+
+        public bool Tombstone
+        {
+            get;
+        } = tombstone;
+
+        public ReadOnlySequence<byte> Body
+        {
+            get;
+        } = tombstone ? ReadOnlySequence<byte>.Empty : new(new byte[64]);
     }
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => message.Body;
-        public static bool IsTombstone(Incoming message) => message.Tombstone;
-        public static WireString? GetTombstoneKey(Incoming message) => new WireString("customer-1");
-        public static int? GetDeliveryCount(Incoming message) => 1;
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return message.Body;
+        }
+
+        public static bool IsTombstone(Incoming message)
+        {
+            return message.Tombstone;
+        }
+
+        public static WireString? GetTombstoneKey(Incoming message)
+        {
+            return new WireString("customer-1");
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
             value = name switch

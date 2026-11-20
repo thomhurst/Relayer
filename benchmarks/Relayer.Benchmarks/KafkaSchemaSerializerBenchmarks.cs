@@ -30,7 +30,10 @@ public class KafkaSchemaSerializerBenchmarks
     public async Task Setup()
     {
         // HTTP is used only for startup preparation, never by a measured operation.
-        _client = new(new() { Url = "http://registry" }, new RegistryResponses());
+        _client = new(new()
+        {
+            Url = "http://registry"
+        }, new RegistryResponses());
         _nativeWriter = new(_client, Schema, RegistryBenchmarkJson.Default.RegistryOrder);
         _nativeReader = new(_client, RegistryBenchmarkJson.Default.RegistryOrder);
         await _nativeWriter.PrepareAsync("orders", _message);
@@ -59,10 +62,16 @@ public class KafkaSchemaSerializerBenchmarks
     }
 
     [Benchmark(Baseline = true), BenchmarkCategory("Read")]
-    public RegistryOrder DekafRead() => _nativeReader.Deserialize(_body, _context);
+    public RegistryOrder DekafRead()
+    {
+        return _nativeReader.Deserialize(_body, _context);
+    }
 
     [Benchmark, BenchmarkCategory("Read")]
-    public RegistryOrder RelayerRead() => _serializer.Deserialize<RegistryOrder>(new(_body));
+    public RegistryOrder RelayerRead()
+    {
+        return _serializer.Deserialize<RegistryOrder>(new(_body));
+    }
 
     [GlobalCleanup]
     public async Task Cleanup()
@@ -77,13 +86,16 @@ public class KafkaSchemaSerializerBenchmarks
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            const string response = """{"id":7,"subject":"orders-value","version":1,"schemaType":"JSON","schema":"{\"type\":\"object\",\"properties\":{\"Number\":{\"type\":\"integer\"}}}"}""";
+            const string Response = """{"id":7,"subject":"orders-value","version":1,"schemaType":"JSON","schema":"{\"type\":\"object\",\"properties\":{\"Number\":{\"type\":\"integer\"}}}"}""";
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            { Content = new StringContent(response, Encoding.UTF8, "application/json") });
+            {
+                Content = new StringContent(Response, Encoding.UTF8, "application/json")
+            });
         }
     }
 }
 
 public sealed record RegistryOrder(int Number);
+
 [JsonSerializable(typeof(RegistryOrder))]
 internal partial class RegistryBenchmarkJson : JsonSerializerContext;

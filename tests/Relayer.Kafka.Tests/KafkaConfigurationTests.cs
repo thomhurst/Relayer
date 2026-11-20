@@ -16,7 +16,10 @@ public class KafkaConfigurationTests
         services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
         {
             consumer.Options.Group = "orders";
-            consumer.Failures(new() { RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) } });
+            consumer.Failures(new()
+            {
+                RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) }
+            });
             consumer.Handler<KafkaReceiveHandler>();
         })));
         await using var provider = services.BuildServiceProvider();
@@ -50,8 +53,10 @@ public class KafkaConfigurationTests
 
     private sealed class UnexpectedScheduler : IFailureScheduler
     {
-        public ValueTask ScheduleAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken) =>
+        public ValueTask ScheduleAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken)
+        {
             throw new InvalidOperationException("Startup must reject this policy before scheduling.");
+        }
     }
 
     [Test]
@@ -137,7 +142,10 @@ public class KafkaConfigurationTests
         services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
         {
             consumer.Options.Group = "orders";
-            consumer.Options.Processing = new() { CommitPolicy = PartitionCommitPolicy.CommitCompletedInTransaction };
+            consumer.Options.Processing = new()
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedInTransaction
+            };
             consumer.Options.CircuitBreaker = new();
             consumer.Handler<KafkaReceiveHandler>();
         })));
@@ -155,7 +163,15 @@ public class KafkaConfigurationTests
         services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
         {
             consumer.Options.Group = "orders";
-            if (transactional) consumer.Options.Processing = new() { CommitPolicy = PartitionCommitPolicy.CommitCompletedInTransaction };
+
+            if (transactional)
+            {
+                consumer.Options.Processing = new()
+                {
+                    CommitPolicy = PartitionCommitPolicy.CommitCompletedInTransaction
+                };
+            }
+
             consumer.Options.TransactionalId = id;
             consumer.Handler<KafkaReceiveHandler>();
         })));
@@ -171,9 +187,17 @@ public class KafkaConfigurationTests
         await Assert.That(options.Ordering).IsEqualTo(PartitionedProcessingOrder.Key);
         await Assert.That(options.MaxConcurrentHandlersPerPartition).IsEqualTo(4);
         await Assert.That(options.CommitPolicy).IsEqualTo(PartitionCommitPolicy.CommitCompletedPeriodically);
-        var composed = KafkaProcessing.Compose(new() { StopTimeout = TimeSpan.FromSeconds(3), MaxBufferedRecords = 100 }, 4,
+        var composed = KafkaProcessing.Compose(new()
+        {
+            StopTimeout = TimeSpan.FromSeconds(3),
+            MaxBufferedRecords = 100
+        }, 4,
             new(), null, new KafkaCommitObserver(new(new(Options.Create(new TracingOptions()), []),
-                new() { System = "kafka", Destination = "orders" }, MessagingOperation.Settle, "commit")));
+                new()
+                {
+                    System = "kafka",
+                    Destination = "orders"
+                }, MessagingOperation.Settle, "commit")));
         await Assert.That(composed.MaxConcurrentHandlers).IsEqualTo(4);
         await Assert.That(composed.StopTimeout).IsEqualTo(TimeSpan.FromSeconds(3));
         await Assert.That(composed.MaxBufferedRecords).IsEqualTo(100);

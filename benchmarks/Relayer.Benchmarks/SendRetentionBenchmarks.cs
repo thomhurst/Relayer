@@ -16,10 +16,16 @@ public class SendRetentionBenchmarks
     private byte[] _body = null!;
 
     [Params(1, 64, 128)]
-    public int Concurrency { get; set; }
+    public int Concurrency
+    {
+        get; set;
+    }
 
     [Params(256, 131072)]
-    public int BodySize { get; set; }
+    public int BodySize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -36,7 +42,12 @@ public class SendRetentionBenchmarks
     public void NativeBurst()
     {
         _sink.Reset();
-        for (var i = 0; i < _pending.Length; i++) _pending[i] = _sink.SendAsync(new("orders", _body), default);
+
+        for (var i = 0; i < _pending.Length; i++)
+        {
+            _pending[i] = _sink.SendAsync(new("orders", _body), default);
+        }
+
         Complete();
     }
 
@@ -44,7 +55,12 @@ public class SendRetentionBenchmarks
     public void DirectBurst()
     {
         _sink.Reset();
-        for (var i = 0; i < _pending.Length; i++) _pending[i] = _route.SendAsync(_body, null, null, default, null);
+
+        for (var i = 0; i < _pending.Length; i++)
+        {
+            _pending[i] = _route.SendAsync(_body, null, null, default, null);
+        }
+
         Complete();
     }
 
@@ -60,35 +76,108 @@ public class SendRetentionBenchmarks
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/octet-stream";
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => destination.Write((byte[])(object)message!);
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            destination.Write((byte[])(object)message!);
+        }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private sealed class PendingSend : IValueTaskSource
     {
         private ManualResetValueTaskSourceCore<bool> _completion;
-        internal void Reset() => _completion.Reset();
-        internal ValueTask Wait() => new(this, _completion.Version);
-        internal void Complete() => _completion.SetResult(true);
-        public void GetResult(short token) => _completion.GetResult(token);
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+
+        internal void Reset()
+        {
+            _completion.Reset();
+        }
+
+        internal ValueTask Wait()
+        {
+            return new(this, _completion.Version);
+        }
+
+        internal void Complete()
+        {
+            _completion.SetResult(true);
+        }
+
+        public void GetResult(short token)
+        {
+            _completion.GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
             _completion.OnCompleted(continuation, state, token, flags);
+        }
     }
 
     private sealed class Sink : ITransport
     {
         internal PendingSend[] Pending = null!;
         private int _next;
-        internal void Initialize(int count) => Pending = Enumerable.Range(0, count).Select(_ => new PendingSend()).ToArray();
-        internal void Reset() { _next = 0; foreach (var pending in Pending) pending.Reset(); }
+
+        internal void Initialize(int count)
+        {
+            Pending = Enumerable.Range(0, count).Select(_ => new PendingSend()).ToArray();
+        }
+
+        internal void Reset()
+        {
+            _next = 0;
+
+            foreach (var pending in Pending)
+            {
+                pending.Reset();
+            }
+        }
+
         public string Name => "sink";
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => Pending[_next++].Wait();
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return Pending[_next++].Wait();
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

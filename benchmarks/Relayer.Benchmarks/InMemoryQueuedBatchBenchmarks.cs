@@ -21,15 +21,26 @@ public class InMemoryQueuedBatchBenchmarks
     private int _count;
 
     [GlobalSetup(Target = nameof(QueuedBatchRoundTrip))]
-    public Task Setup() => SetupNative(Receive);
+    public Task Setup()
+    {
+        return SetupNative(Receive);
+    }
 
     [GlobalSetup(Target = nameof(QueuedBatchWithPooledCallback))]
-    public Task SetupPooledCallback() => SetupNative(ReceiveWithPooledCallback);
+    public Task SetupPooledCallback()
+    {
+        return SetupNative(ReceiveWithPooledCallback);
+    }
 
     private async Task SetupNative(InMemoryReceiveDelegate receive)
     {
         var body = new byte[] { 42 };
-        for (var i = 0; i < _batch.Length; i++) _batch[i] = new("orders", body);
+
+        for (var i = 0; i < _batch.Length; i++)
+        {
+            _batch[i] = new("orders", body);
+        }
+
         _transport = new("native", new Dictionary<string, InMemoryEndpointOptions>
         {
             ["orders"] = new() { Capacity = BatchSize, MessagePoolCapacity = BatchSize, Capabilities = new() { MaxBatchSize = BatchSize } },
@@ -39,7 +50,10 @@ public class InMemoryQueuedBatchBenchmarks
     }
 
     [GlobalSetup(Target = nameof(ChannelBatchControl))]
-    public void SetupChannelControl() => _controlLoop = Task.Run(RunChannelControl);
+    public void SetupChannelControl()
+    {
+        _controlLoop = Task.Run(RunChannelControl);
+    }
 
     private async Task RunChannelControl()
     {
@@ -51,38 +65,62 @@ public class InMemoryQueuedBatchBenchmarks
                 await Receive(default, default);
             }
         }
-        catch (ChannelClosedException) { }
+        catch (ChannelClosedException)
+        {
+        }
     }
 
     private ValueTask<Disposition> Receive(InMemoryDelivery delivery, CancellationToken cancellationToken)
     {
         // Return the gate's source directly: a pooled async callback can allocate on worker migration.
         // The receiver cannot fetch another message until this disposition completes.
-        if (++_count == 1) return _release.Reader.ReadAsync();
+        if (++_count == 1)
+        {
+            return _release.Reader.ReadAsync();
+        }
+
         if (_count == BatchSize)
         {
             _count = 0;
-            if (!_received.Writer.TryWrite(BatchSize)) throw new InvalidOperationException("Completion channel is full.");
+
+            if (!_received.Writer.TryWrite(BatchSize))
+            {
+                throw new InvalidOperationException("Completion channel is full.");
+            }
         }
+
         return new(Disposition.Complete);
     }
 
     // Attribution control for the original fixture's extra pooled async continuation.
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    private async ValueTask<Disposition> ReceiveWithPooledCallback(InMemoryDelivery delivery, CancellationToken cancellationToken) =>
-        await Receive(delivery, cancellationToken);
+    private async ValueTask<Disposition> ReceiveWithPooledCallback(InMemoryDelivery delivery, CancellationToken cancellationToken)
+    {
+        return await Receive(delivery, cancellationToken);
+    }
 
     [Benchmark(Description = "Native queue (64 messages/batch)")]
-    public ValueTask<int> QueuedBatchRoundTrip() => RoundTrip();
+    public ValueTask<int> QueuedBatchRoundTrip()
+    {
+        return RoundTrip();
+    }
 
     [Benchmark(Description = "Native queue + pooled callback (64 messages/batch)")]
-    public ValueTask<int> QueuedBatchWithPooledCallback() => RoundTrip();
+    public ValueTask<int> QueuedBatchWithPooledCallback()
+    {
+        return RoundTrip();
+    }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<int> RoundTrip()
     {
         await _transport!.SendBatchAsync(_batch, default);
-        if (!_release.Writer.TryWrite(Disposition.Complete)) throw new InvalidOperationException("Release channel is full.");
+
+        if (!_release.Writer.TryWrite(Disposition.Complete))
+        {
+            throw new InvalidOperationException("Release channel is full.");
+        }
+
         return await _received.Reader.ReadAsync();
     }
 
@@ -92,15 +130,29 @@ public class InMemoryQueuedBatchBenchmarks
     public async ValueTask<int> ChannelBatchControl()
     {
         for (var i = 0; i < BatchSize; i++)
-            if (!_control.Writer.TryWrite(0)) throw new InvalidOperationException("Control channel is full.");
-        if (!_release.Writer.TryWrite(Disposition.Complete)) throw new InvalidOperationException("Release channel is full.");
+        {
+            if (!_control.Writer.TryWrite(0))
+            {
+                throw new InvalidOperationException("Control channel is full.");
+            }
+        }
+
+        if (!_release.Writer.TryWrite(Disposition.Complete))
+        {
+            throw new InvalidOperationException("Release channel is full.");
+        }
+
         return await _received.Reader.ReadAsync();
     }
 
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        if (_transport is not null) await _transport.DisposeAsync();
+        if (_transport is not null)
+        {
+            await _transport.DisposeAsync();
+        }
+
         if (_controlLoop is not null)
         {
             _control.Writer.TryComplete();

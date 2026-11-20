@@ -14,77 +14,163 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
     private readonly FrozenDictionary<string, Subscription> _subscriptions;
     private readonly MessageTracing _tracing;
     private bool _disposed;
-    internal List<GooglePubSubConsumer> Consumers { get; } = [];
+
+    internal List<GooglePubSubConsumer> Consumers
+    {
+        get;
+    } = [];
 
     internal GooglePubSubTransport(string name, GooglePubSubTransportOptions options, TransportDefinition definition, MessageTracing tracing)
     {
         Name = name;
         _tracing = tracing;
+
         if (options.Publisher is null || options.Subscriber is null)
+        {
             throw new InvalidOperationException($"Pub/Sub transport '{name}': supply prepared native Publisher and Subscriber API clients. Clients and their channels remain caller-owned.");
+        }
+
         ArgumentNullException.ThrowIfNull(options.PublisherSettings);
-        _options = new() { Publisher = options.Publisher, Subscriber = options.Subscriber, PublisherSettings = options.PublisherSettings.Clone() };
-        foreach (var topic in options.Topics) _options.Topics.Add(topic);
+        _options = new()
+        {
+            Publisher = options.Publisher,
+            Subscriber = options.Subscriber,
+            PublisherSettings = options.PublisherSettings.Clone()
+        };
+
+        foreach (var topic in options.Topics)
+        {
+            _options.Topics.Add(topic);
+        }
+
         _subscriptions = options.Subscriptions.ToFrozenDictionary(subscription => SubscriptionName.Parse(subscription.Name).ToString(), subscription => subscription.Clone(), StringComparer.Ordinal);
         var topics = new Dictionary<string, Endpoint>(StringComparer.Ordinal);
+
         foreach (var topic in options.Topics)
         {
             var destination = topic.ToString();
-            if (topics.ContainsKey(destination)) throw new InvalidOperationException($"Pub/Sub transport '{name}': duplicate topic '{destination}'.");
+
+            if (topics.ContainsKey(destination))
+            {
+                throw new InvalidOperationException($"Pub/Sub transport '{name}': duplicate topic '{destination}'.");
+            }
+
             topics.Add(destination, new(new PublisherClientImpl(topic, [options.Publisher], options.PublisherSettings.Clone(), static () => Task.CompletedTask),
-                new() { OrderedByKey = options.PublisherSettings.EnableMessageOrdering == true, MaxBatchSize = 1000, MaxMessageBytes = 10_000_000 },
-                new(tracing, new() { System = "gcp_pubsub", Destination = destination }, SendCoreAsync, SendBatchCoreAsync, headerNames: new("ce-"))));
+                new()
+                {
+                    OrderedByKey = options.PublisherSettings.EnableMessageOrdering == true,
+                    MaxBatchSize = 1000,
+                    MaxMessageBytes = 10_000_000
+                },
+                new(tracing, new()
+                {
+                    System = "gcp_pubsub",
+                    Destination = destination
+                }, SendCoreAsync, SendBatchCoreAsync, headerNames: new("ce-"))));
         }
+
         _topics = topics.ToFrozenDictionary(StringComparer.Ordinal);
+
         foreach (var subscription in _subscriptions.Values)
         {
             GetEndpoint(subscription.Topic);
             GooglePubSubTopology.ValidateDeclaration(subscription);
         }
-        foreach (var route in definition.Routes) GetEndpoint(route.Destination);
+
+        foreach (var route in definition.Routes)
+        {
+            GetEndpoint(route.Destination);
+        }
+
         foreach (var declaration in definition.Consumers)
         {
             var consumer = (ConsumerDefinition<GooglePubSubConsumerOptions>)declaration;
             ArgumentNullException.ThrowIfNull(consumer.Options.Settings);
             ArgumentNullException.ThrowIfNull(consumer.Failure);
             TopicFor(consumer.Source);
+
             if (consumer.BatchSize != 1)
+            {
                 throw new NotSupportedException($"Pub/Sub consumer '{consumer.Source}': native streaming callbacks deliver individual messages. Use single-message handlers.");
+            }
+
             if (consumer.Concurrency < 1 || consumer.Options.Settings.FlowControlSettings?.MaxOutstandingElementCount != consumer.Concurrency)
+            {
                 throw new InvalidOperationException($"Pub/Sub consumer '{consumer.Source}': set native Settings.FlowControlSettings.MaxOutstandingElementCount equal to Concurrency({consumer.Concurrency}). Native flow control owns the concurrency bound.");
+            }
+
             if (consumer.Failure.RedeliveryDelays.Length != 0)
+            {
                 throw new NotSupportedException($"Pub/Sub consumer '{consumer.Source}': Nack cannot persist updated failure attributes. Use in-process RetryDelays and a DeadLetterEndpoint topic; durable redelivery is not supported.");
+            }
+
             if (string.IsNullOrWhiteSpace(consumer.Failure.DeadLetterEndpoint))
+            {
                 throw new InvalidOperationException($"Pub/Sub consumer '{consumer.Source}': set Failure.DeadLetterEndpoint to a declared topic. Native DeadLetterPolicy cannot dead-letter on demand with error metadata.");
+            }
+
             GetEndpoint(consumer.Failure.DeadLetterEndpoint);
             // Incoming keys can originate outside Relayer, even on unordered subscriptions.
             // Failure copies preserve them, and the native publisher rejects keys unless enabled.
             if (_options.PublisherSettings.EnableMessageOrdering != true)
+            {
                 throw new InvalidOperationException($"Pub/Sub consumer '{consumer.Source}': set PublisherSettings.EnableMessageOrdering = true so dead-letter copies can preserve incoming ordering keys.");
+            }
         }
     }
 
-    public string Name { get; }
-    public PublisherServiceApiClient PublisherApi => _options.Publisher!;
-    public SubscriberServiceApiClient SubscriberApi => _options.Subscriber!;
-    public PublisherClient PublisherFor(string topic) => GetEndpoint(topic).Publisher;
-    private Endpoint GetEndpoint(string name) => _topics.TryGetValue(name, out var endpoint) ? endpoint
-        : throw new InvalidOperationException($"Pub/Sub transport '{Name}': undeclared topic '{name}'. Use its fully qualified projects/.../topics/... name and declare it in Topics.");
-    internal string TopicFor(string source) => _subscriptions.TryGetValue(source, out var subscription) ? subscription.Topic
-        : throw new InvalidOperationException($"Pub/Sub transport '{Name}': undeclared subscription '{source}'. Declare it in Subscriptions using its fully qualified name.");
+    public string Name
+    {
+        get;
+    }
 
-    public TransportCapabilities GetCapabilities(string endpoint) => _subscriptions.TryGetValue(endpoint, out var subscription)
-        ? new() { OrderedByKey = subscription.EnableMessageOrdering, MaxMessageBytes = 10_000_000 }
-        : GetEndpoint(endpoint).Capabilities;
-    public SendTracing? GetSendTracing(string destination) => GetEndpoint(destination).Tracing;
+    public PublisherServiceApiClient PublisherApi => _options.Publisher!;
+
+    public SubscriberServiceApiClient SubscriberApi => _options.Subscriber!;
+
+    public PublisherClient PublisherFor(string topic)
+    {
+        return GetEndpoint(topic).Publisher;
+    }
+
+    private Endpoint GetEndpoint(string name)
+    {
+        return _topics.TryGetValue(name, out var endpoint) ? endpoint
+                : throw new InvalidOperationException($"Pub/Sub transport '{Name}': undeclared topic '{name}'. Use its fully qualified projects/.../topics/... name and declare it in Topics.");
+    }
+
+    internal string TopicFor(string source)
+    {
+        return _subscriptions.TryGetValue(source, out var subscription) ? subscription.Topic
+                : throw new InvalidOperationException($"Pub/Sub transport '{Name}': undeclared subscription '{source}'. Declare it in Subscriptions using its fully qualified name.");
+    }
+
+    public TransportCapabilities GetCapabilities(string endpoint)
+    {
+        return _subscriptions.TryGetValue(endpoint, out var subscription)
+                ? new()
+                {
+                    OrderedByKey = subscription.EnableMessageOrdering,
+                    MaxMessageBytes = 10_000_000
+                }
+                : GetEndpoint(endpoint).Capabilities;
+    }
+
+    public SendTracing? GetSendTracing(string destination)
+    {
+        return GetEndpoint(destination).Tracing;
+    }
+
     public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return GooglePubSubTopology.ApplyAsync(_options, _subscriptions.Values, mode, cancellationToken);
     }
 
-    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
-        GetEndpoint(message.Destination).Tracing.SendAsync(message, cancellationToken);
+    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    {
+        return GetEndpoint(message.Destination).Tracing.SendAsync(message, cancellationToken);
+    }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -92,6 +178,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
     {
         var endpoint = Validate(message, cancellationToken);
         var state = endpoint.Rent();
+
         try
         {
             state.Prepare(message);
@@ -99,6 +186,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
             endpoint.Tracing.RecordNativeSend();
             var duration = endpoint.Tracing.StartNativeSend();
             var failed = true;
+
             try
             {
                 // PublishAsync has no cancellation parameter and borrows the message until completion.
@@ -106,20 +194,39 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
                 await endpoint.Publisher.PublishAsync(state.Message).ConfigureAwait(false);
                 failed = false;
             }
-            finally { duration.Complete(failed); }
+            finally
+            {
+                duration.Complete(failed);
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
         }
-        finally { endpoint.Return(state); }
+        finally
+        {
+            endpoint.Return(state);
+        }
     }
 
     public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        if (messages.IsEmpty) return default;
+
+        if (messages.IsEmpty)
+        {
+            return default;
+        }
+
         var destination = messages.Span[0].Destination;
+
         for (var i = 1; i < messages.Length; i++)
-            if (messages.Span[i].Destination != destination) return SendMixedAsync(messages, cancellationToken);
+        {
+            if (messages.Span[i].Destination != destination)
+            {
+                return SendMixedAsync(messages, cancellationToken);
+            }
+        }
+
         return GetEndpoint(destination).Tracing.SendBatchAsync(messages, cancellationToken);
     }
 
@@ -127,12 +234,22 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendMixedAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
-        for (var i = 0; i < messages.Length; i++) Validate(messages.Span[i], cancellationToken);
+        for (var i = 0; i < messages.Length; i++)
+        {
+            Validate(messages.Span[i], cancellationToken);
+        }
+
         var start = 0;
+
         while (start < messages.Length)
         {
             var end = start + 1;
-            while (end < messages.Length && messages.Span[end].Destination == messages.Span[start].Destination) end++;
+
+            while (end < messages.Length && messages.Span[end].Destination == messages.Span[start].Destination)
+            {
+                end++;
+            }
+
             await SendBatchAsync(messages.Slice(start, end - start), cancellationToken).ConfigureAwait(false);
             start = end;
         }
@@ -142,13 +259,18 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
-        for (var i = 0; i < messages.Length; i++) Validate(messages.Span[i], cancellationToken);
+        for (var i = 0; i < messages.Length; i++)
+        {
+            Validate(messages.Span[i], cancellationToken);
+        }
+
         var endpoint = GetEndpoint(messages.Span[0].Destination);
         var pending = System.Buffers.ArrayPool<SendState>.Shared.Rent(messages.Length);
         var count = 0;
         Exception? failure = null;
         var duration = endpoint.Tracing.StartNativeSend();
         var failed = true;
+
         try
         {
             try
@@ -158,6 +280,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
                     cancellationToken.ThrowIfCancellationRequested();
                     var state = endpoint.Rent();
                     pending[count] = state;
+
                     try
                     {
                         state.Prepare(messages.Span[count]);
@@ -165,25 +288,52 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
                         endpoint.Tracing.RecordNativeSend();
                         state.Pending = endpoint.Publisher.PublishAsync(state.Message);
                     }
-                    catch { count++; throw; }
+                    catch
+                    {
+                        count++;
+                        throw;
+                    }
                 }
             }
-            catch (Exception error) { failure = error; }
+            catch (Exception error)
+            {
+                failure = error;
+            }
             // Drain every admitted native send, including when a later callback throws.
             for (var i = 0; i < count; i++)
             {
-                if (pending[i].Pending is not { } task) continue;
-                try { await task.ConfigureAwait(false); }
-                catch (Exception error) { failure ??= error; }
+                if (pending[i].Pending is not { } task)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await task.ConfigureAwait(false);
+                }
+                catch (Exception error)
+                {
+                    failure ??= error;
+                }
             }
-            if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+
+            if (failure is not null)
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
+
             failed = false;
             cancellationToken.ThrowIfCancellationRequested();
         }
         finally
         {
             duration.Complete(failed);
-            for (var i = 0; i < count; i++) endpoint.Return(pending[i]);
+
+            for (var i = 0; i < count; i++)
+            {
+                endpoint.Return(pending[i]);
+            }
+
             System.Buffers.ArrayPool<SendState>.Shared.Return(pending, clearArray: true);
         }
     }
@@ -192,11 +342,19 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         token.ThrowIfCancellationRequested();
+
         if (message.IsTombstone || message.DeliverAt is not null)
+        {
             throw new NotSupportedException("Pub/Sub has no native tombstones or per-message scheduled sends. Use the durable outbox for scheduling.");
+        }
+
         var endpoint = GetEndpoint(message.Destination);
+
         if (message.OrderingKey is not null && !endpoint.Capabilities.OrderedByKey)
+        {
             throw new InvalidOperationException("Pub/Sub ordering requires native PublisherSettings.EnableMessageOrdering and ordering-enabled subscriptions.");
+        }
+
         return endpoint;
     }
 
@@ -212,40 +370,100 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        foreach (var worker in Consumers) worker.Start();
+
+        foreach (var worker in Consumers)
+        {
+            worker.Start();
+        }
+
         return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         List<Exception>? errors = null;
+
         foreach (var worker in Consumers)
-            try { await worker.StopAsync(cancellationToken).ConfigureAwait(false); }
-            catch (Exception error) { (errors ??= []).Add(error); }
-        if (errors is not null) throw new AggregateException(errors);
+        {
+            try
+            {
+                await worker.StopAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                (errors ??= []).Add(error);
+            }
+        }
+
+        if (errors is not null)
+        {
+            throw new AggregateException(errors);
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
         List<Exception>? errors = null;
+
         foreach (var worker in Consumers)
-            try { await worker.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception error) { (errors ??= []).Add(error); }
+        {
+            try
+            {
+                await worker.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                (errors ??= []).Add(error);
+            }
+        }
+
         foreach (var endpoint in _topics.Values)
-            try { await endpoint.Publisher.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception error) { (errors ??= []).Add(error); }
-        if (errors is not null) throw new AggregateException(errors);
+        {
+            try
+            {
+                await endpoint.Publisher.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                (errors ??= []).Add(error);
+            }
+        }
+
+        if (errors is not null)
+        {
+            throw new AggregateException(errors);
+        }
     }
 
     private sealed class Endpoint(PublisherClient publisher, TransportCapabilities capabilities, SendTracing tracing)
     {
-        internal PublisherClient Publisher { get; } = publisher;
-        internal TransportCapabilities Capabilities { get; } = capabilities;
-        internal SendTracing Tracing { get; } = tracing;
+        internal PublisherClient Publisher
+        {
+            get;
+        } = publisher;
+
+        internal TransportCapabilities Capabilities
+        {
+            get;
+        } = capabilities;
+
+        internal SendTracing Tracing
+        {
+            get;
+        } = tracing;
         private readonly GooglePubSubPool<SendState> _states = new(static () => new());
-        internal SendState Rent() => _states.Rent();
+
+        internal SendState Rent()
+        {
+            return _states.Rent();
+        }
+
         internal void Return(SendState state)
         {
             state.Message.Data = ByteString.Empty;
@@ -262,11 +480,13 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
     {
         internal readonly PubsubMessage Message = new();
         internal Task<string>? Pending;
+
         internal void Prepare(OutgoingMessage outgoing)
         {
             Message.Data = UnsafeByteOperations.UnsafeWrap(outgoing.Body);
             Message.OrderingKey = outgoing.OrderingKey?.ToString() ?? "";
             var failure = false;
+
             foreach (var header in outgoing.Headers.Span)
             {
                 if (header.Key == FailureHeaders.History)
@@ -274,10 +494,18 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
                     GooglePubSubFailureHeaders.Write(Message, header.Value.ToString());
                     failure = true;
                 }
-                else Message.Attributes[header.Key] = header.Value.ToString();
+                else
+                {
+                    Message.Attributes[header.Key] = header.Value.ToString();
+                }
             }
+
             outgoing.ApplyNative(Message);
-            if (failure) GooglePubSubFailureHeaders.Validate(Message);
+
+            if (failure)
+            {
+                GooglePubSubFailureHeaders.Validate(Message);
+            }
         }
     }
 }

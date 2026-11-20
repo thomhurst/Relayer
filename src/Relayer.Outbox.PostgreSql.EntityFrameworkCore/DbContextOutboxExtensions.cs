@@ -12,10 +12,18 @@ public static class DbContextOutboxExtensions
     {
         ArgumentNullException.ThrowIfNull(context);
         var options = context.GetService<IDbContextOptions>().FindExtension<CoreOptionsExtension>();
+
         if (options?.Interceptors is { } interceptors)
+        {
             foreach (var interceptor in interceptors)
+            {
                 if (interceptor is OutboxSaveChangesInterceptor save)
+                {
                     return save.Outbox.Select(context, save.Configuration, save.Services);
+                }
+            }
+        }
+
         throw new InvalidOperationException("Configure this DbContext with AddRelayerOutbox before calling EnlistRelayerOutbox.");
     }
 }

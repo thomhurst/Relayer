@@ -13,7 +13,11 @@ internal sealed class DefaultOutboxCapabilities(IOptionsMonitor<EntityFrameworkC
     {
         var value = options.CurrentValue;
         var current = Volatile.Read(ref _current);
-        if (current is not null && ReferenceEquals(current.Options, value)) return current;
+
+        if (current is not null && ReferenceEquals(current.Options, value))
+        {
+            return current;
+        }
 
         current = new(value,
             PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix),

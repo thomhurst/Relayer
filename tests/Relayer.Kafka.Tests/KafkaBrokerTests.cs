@@ -20,12 +20,14 @@ public class KafkaBrokerTests
     public async Task Named_sender_and_ordered_batches_round_trip_with_native_tracing_and_reusable_state()
     {
         var brokerBuilder = new KafkaBuilder("apache/kafka:4.0.2").WithVendor(KafkaVendor.ApacheSoftwareFoundation);
+
         if (OperatingSystem.IsLinux())
         {
             // Avoid Linux's default outbound ephemeral range (32768-60999). Docker can exhaust
             // its ten bind attempts on occupied ephemeral ports: moby/moby#54079.
             brokerBuilder = brokerBuilder.WithPortBinding("20000-29999", "9092").WithPortBinding("20000-29999", "9093");
         }
+
         await using var broker = brokerBuilder.AfterStartupCopy().Build();
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -91,6 +93,7 @@ public class KafkaBrokerTests
             .Throws<InvalidOperationException>().WithMessageContaining("undeclared topic");
         await Assert.That(async () => await transport.SendAsync(new(topic, default, deliverAt: DateTimeOffset.UtcNow), token))
             .Throws<NotSupportedException>();
+
         using (var cancelled = new CancellationTokenSource())
         {
             cancelled.Cancel();
@@ -99,6 +102,7 @@ public class KafkaBrokerTests
             await Assert.That(async () => await transport.SendBatchAsync(ReadOnlyMemory<OutgoingMessage>.Empty, cancelled.Token))
                 .Throws<OperationCanceledException>();
         }
+
         var failing = new SendOptions().ConfigureNative<Headers>(static _ => throw new InvalidOperationException("callback failure"));
         await Assert.That(async () => await transport.SendAsync(new(topic, default, options: failing), token))
             .Throws<InvalidOperationException>().WithMessageContaining("callback failure");
@@ -109,16 +113,18 @@ public class KafkaBrokerTests
 
         using var scope = host.Services.CreateScope();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-        const string creation = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        const string Creation = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
         await sender.SendAsync(new Order("customer-1", 0), options =>
-        {
-            options.ConfigureNative<Headers>(static headers => headers.Add("native", "configured"));
-        }, token);
+        options.ConfigureNative<Headers>(static headers => headers.Add("native", "configured")), token);
         var senderCreation = spans.Last(span => span.Source.Name == "Relayer" && span.DisplayName == "send " + topic).Id;
-        KeyValuePair<string, WireString>[] originalHeaders = [new("traceparent", new(creation)), new("tracestate", new("tenant=original"))];
+        KeyValuePair<string, WireString>[] originalHeaders = [new("traceparent", new(Creation)), new("tracestate", new("tenant=original"))];
         var batch = new OutgoingMessage[32];
+
         for (var i = 0; i < batch.Length; i++)
+        {
             batch[i] = new(topic, Encoding.UTF8.GetBytes(i.ToString()), originalHeaders, orderingKey: new WireString("customer-1"));
+        }
+
         await transport.SendBatchAsync(batch, token);
         await transport.SendAsync(new(topic, "no-key"u8.ToArray()), token);
         await transport.SendAsync(new(topic, "empty-key"u8.ToArray(), orderingKey: new WireString("")), token);
@@ -137,11 +143,18 @@ public class KafkaBrokerTests
         var noKey = false;
         var emptyKey = false;
         var mixed = false;
+
         while (received < batch.Length + 4)
         {
             var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), token);
-            if (result is not { } message) throw new InvalidOperationException("Kafka receive timed out.");
+
+            if (result is not { } message)
+            {
+                throw new InvalidOperationException("Kafka receive timed out.");
+            }
+
             var value = Encoding.UTF8.GetString(message.Value);
+
             if (value.StartsWith('{'))
             {
                 partition = message.Partition;
@@ -151,20 +164,31 @@ public class KafkaBrokerTests
                 await Assert.That(ReadHeader(message.Headers, "traceparent")).IsEqualTo(senderCreation);
                 await Assert.That(message.Headers.Count(header => header.Key == "traceparent")).IsEqualTo(1);
             }
-            else if (value == "no-key") { noKey = message.Key is null; }
-            else if (value == "empty-key") { emptyKey = message.Key is { Length: 0 }; }
-            else if (value == "mixed") { mixed = true; }
+            else if (value == "no-key")
+            {
+                noKey = message.Key is null;
+            }
+            else if (value == "empty-key")
+            {
+                emptyKey = message.Key is { Length: 0 };
+            }
+            else if (value == "mixed")
+            {
+                mixed = true;
+            }
             else
             {
                 await Assert.That(message.Partition).IsEqualTo(partition);
                 await Assert.That(int.Parse(value)).IsEqualTo(expected++);
-                await Assert.That(ReadHeader(message.Headers, "traceparent")).IsEqualTo(creation);
+                await Assert.That(ReadHeader(message.Headers, "traceparent")).IsEqualTo(Creation);
                 await Assert.That(ReadHeader(message.Headers, "tracestate")).IsEqualTo("tenant=original");
                 await Assert.That(message.Headers!.Count(header => header.Key == "traceparent")).IsEqualTo(1);
                 await Assert.That(ReadHeader(message.Headers, "native")).IsNull();
             }
+
             received++;
         }
+
         await Assert.That(expected).IsEqualTo(32);
         await Assert.That(noKey && emptyKey && mixed).IsTrue();
         var sendSpans = spans.Where(span => span.Source.Name == "Relayer" && span.DisplayName == "send " + topic).ToArray();
@@ -174,25 +198,36 @@ public class KafkaBrokerTests
         await host.StopAsync(token);
     }
 
-    private static string? ReadHeader(IReadOnlyList<Header>? headers, string name) =>
-        headers?.FirstOrDefault(header => header.Key == name) is { Key: not null } header ? header.GetValueAsString() : null;
+    private static string? ReadHeader(IReadOnlyList<Header>? headers, string name)
+    {
+        return headers?.FirstOrDefault(header => header.Key == name) is { Key: not null } header ? header.GetValueAsString() : null;
+    }
 
     private sealed class NativeLogProvider : ILoggerProvider
     {
-        internal ConcurrentBag<string> Categories { get; } = [];
+        internal ConcurrentBag<string> Categories
+        {
+            get;
+        } = [];
+
         public ILogger CreateLogger(string categoryName)
         {
             Categories.Add(categoryName);
             return Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         }
-        public void Dispose() { }
+
+        public void Dispose()
+        {
+        }
     }
 }
 
 [Message("tests.kafka.order")]
 public sealed record Order(string Customer, int Number);
+
 [Message("tests.kafka.other")]
 public sealed record OtherOrder(int Number);
+
 [JsonSerializable(typeof(Order))]
 [JsonSerializable(typeof(OtherOrder))]
 internal partial class KafkaJson : JsonSerializerContext;

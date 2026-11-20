@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using System.Data;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Microsoft.Data.SqlClient;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer;
 
@@ -49,9 +49,14 @@ internal sealed class SqlServerOrderedLane : IDisposable
         object boxedLane = 0;
         laneParameter.Value = boxedLane;
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
         for (var lane = 0; lane < assigned.Length; lane++)
         {
-            if (!assigned[lane]) continue;
+            if (!assigned[lane])
+            {
+                continue;
+            }
+
             Unsafe.Unbox<int>(boxedLane) = lane;
             ready[lane] = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
         }
@@ -67,10 +72,25 @@ internal sealed class SqlServerOrderedLane : IDisposable
         return await _reader.ReadRowsAsync(command, rows, cancellationToken, includeOrderedSequence: true).ConfigureAwait(false);
     }
 
-    internal ValueTask<bool> ClaimAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, CancellationToken token) => MutateAsync(connection, transaction, _claim, claim, null, token);
-    internal ValueTask<bool> CompleteAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, CancellationToken token) => MutateAsync(connection, transaction, _complete, claim, null, token);
-    internal ValueTask<bool> FailAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, string error, CancellationToken token) => MutateAsync(connection, transaction, _fail, claim, error, token);
-    internal ValueTask<bool> RetryAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, string error, CancellationToken token) => MutateAsync(connection, transaction, _retry, claim, error, token);
+    internal ValueTask<bool> ClaimAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, CancellationToken token)
+    {
+        return MutateAsync(connection, transaction, _claim, claim, null, token);
+    }
+
+    internal ValueTask<bool> CompleteAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, CancellationToken token)
+    {
+        return MutateAsync(connection, transaction, _complete, claim, null, token);
+    }
+
+    internal ValueTask<bool> FailAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, string error, CancellationToken token)
+    {
+        return MutateAsync(connection, transaction, _fail, claim, error, token);
+    }
+
+    internal ValueTask<bool> RetryAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, string error, CancellationToken token)
+    {
+        return MutateAsync(connection, transaction, _retry, claim, error, token);
+    }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
@@ -80,13 +100,25 @@ internal sealed class SqlServerOrderedLane : IDisposable
         claim.Token.TryWriteBytes(_token, bigEndian: true, out _);
         command.Connection = connection;
         command.Transaction = transaction;
-        if (error is not null) command.Parameters["@error"].Value = error;
-        try { return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true; }
+
+        if (error is not null)
+        {
+            command.Parameters["@error"].Value = error;
+        }
+
+        try
+        {
+            return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
+        }
         finally
         {
             command.Transaction = null;
             command.Connection = null;
-            if (error is not null) command.Parameters["@error"].Value = DBNull.Value;
+
+            if (error is not null)
+            {
+                command.Parameters["@error"].Value = DBNull.Value;
+            }
         }
     }
 
@@ -98,5 +130,11 @@ internal sealed class SqlServerOrderedLane : IDisposable
         return command;
     }
 
-    public void Dispose() { _claim.Dispose(); _complete.Dispose(); _fail.Dispose(); _retry.Dispose(); }
+    public void Dispose()
+    {
+        _claim.Dispose();
+        _complete.Dispose();
+        _fail.Dispose();
+        _retry.Dispose();
+    }
 }

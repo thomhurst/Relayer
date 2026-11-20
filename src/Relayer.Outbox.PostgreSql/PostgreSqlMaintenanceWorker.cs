@@ -50,12 +50,22 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         var store = options.Validate();
         _store = new(source, store);
         _logger = logger;
-        _dispatcher = new(source, store, new() { BatchSize = options.BatchSize, QueueCapacity = 1, ClaimDuration = options.ClaimDuration },
+        _dispatcher = new(source, store, new()
+        {
+            BatchSize = options.BatchSize,
+            QueueCapacity = 1,
+            ClaimDuration = options.ClaimDuration
+        },
             transports, dispatchLogger ?? NullLogger<PostgreSqlDirectDispatcher>.Instance, _store, instrumentation, scopes);
         _rows = new OutboxRecord[options.BatchSize];
         _detached = new OutboxRecord[options.BatchSize];
         var schema = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + ".";
-        string Table(string suffix) => schema + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + suffix);
+
+        string Table(string suffix)
+        {
+            return schema + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + suffix);
+        }
+
         var leases = Table("leases");
         _acquire = $"INSERT INTO {leases} (name, owner, expires_at) VALUES (@name, @owner, clock_timestamp() + @duration) ON CONFLICT (name) DO UPDATE SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at WHERE {leases}.owner = @owner OR {leases}.expires_at <= clock_timestamp() RETURNING true";
         _renew = $"UPDATE {leases} SET expires_at = clock_timestamp() + @duration WHERE name = @name AND owner = @owner";
@@ -84,25 +94,61 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         await RunMaintenanceAsync(stoppingToken, idleStop.Token).ConfigureAwait(false);
     }
 
-    protected override ValueTask<int> RecoverAsync(CancellationToken cancellationToken) => SweepAsync(cancellationToken);
-    protected override ValueTask ReleaseMaintenanceAsync(CancellationToken cancellationToken) => ReleaseAsync(cancellationToken);
-    protected override void ReportFailure(string job, Exception error) => Failed(_logger, job, error);
+    protected override ValueTask<int> RecoverAsync(CancellationToken cancellationToken)
+    {
+        return SweepAsync(cancellationToken);
+    }
+
+    protected override ValueTask ReleaseMaintenanceAsync(CancellationToken cancellationToken)
+    {
+        return ReleaseAsync(cancellationToken);
+    }
+
+    protected override void ReportFailure(string job, Exception error)
+    {
+        Failed(_logger, job, error);
+    }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (!_dispatcher.HasLocalTransport) { await base.StopAsync(cancellationToken).ConfigureAwait(false); return; }
+        if (!_dispatcher.HasLocalTransport)
+        {
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         Interlocked.Exchange(ref _localStop, 1);
         _dispatcher.Quiesce();
         // Wake idle maintenance without cancelling the token draining active local deliveries.
         await _idleStop.CancelAsync().ConfigureAwait(false);
-        try { if (ExecuteTask is { } task) await task.WaitAsync(cancellationToken).ConfigureAwait(false); }
-        finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
+
+        try
+        {
+            if (ExecuteTask is { } task)
+            {
+                await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
-    internal ValueTask<int> SweepAsync(CancellationToken cancellationToken) => RunAsync("sweeper", false, cancellationToken);
-    internal ValueTask<int> SweepAsync(TimeSpan turnBudget, CancellationToken cancellationToken) => RunAsync("sweeper", false, cancellationToken, turnBudget);
-    protected override ValueTask<int> DeleteRetentionBatchAsync(int table, CancellationToken cancellationToken) =>
-        RunAsync("cleanup", true, cancellationToken, cleanupTable: table);
+    internal ValueTask<int> SweepAsync(CancellationToken cancellationToken)
+    {
+        return RunAsync("sweeper", false, cancellationToken);
+    }
+
+    internal ValueTask<int> SweepAsync(TimeSpan turnBudget, CancellationToken cancellationToken)
+    {
+        return RunAsync("sweeper", false, cancellationToken, turnBudget);
+    }
+
+    protected override ValueTask<int> DeleteRetentionBatchAsync(int table, CancellationToken cancellationToken)
+    {
+        return RunAsync("cleanup", true, cancellationToken, cleanupTable: table);
+    }
 
     // The native replication slot serializes CDC readers. Fenced row claims still arbitrate with
     // direct dispatch and the recovery leader; CDC must not wait for the sweeper's idle lease.
@@ -112,10 +158,19 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
     {
         _after = null;
         _through = null;
+
         do
         {
-            try { await DispatchCommittedPassAsync(cancellationToken).ConfigureAwait(false); }
-            catch { ClearDetached(); throw; }
+            try
+            {
+                await DispatchCommittedPassAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                ClearDetached();
+                throw;
+            }
+
             await DispatchDetachedAsync(cancellationToken).ConfigureAwait(false);
         } while (_through is not null);
     }
@@ -123,6 +178,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
     private async ValueTask DispatchCommittedPassAsync(CancellationToken cancellationToken)
     {
         var committed = false;
+
         try
         {
             await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -131,7 +187,10 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             committed = true;
         }
-        finally { _dispatcher.FinishRecovery(committed); }
+        finally
+        {
+            _dispatcher.FinishRecovery(committed);
+        }
     }
 
     private async ValueTask<int> RunAsync(string name, bool cleanup, CancellationToken cancellationToken, TimeSpan? turnBudget = null, int cleanupTable = -1)
@@ -139,15 +198,28 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         var started = turnBudget.HasValue ? Stopwatch.GetTimestamp() : 0;
         int count;
         // Rows deferred by a pass that did not commit are revisited by a later pass instead.
-        try { count = await RunPassAsync(name, cleanup, cancellationToken, started, turnBudget, cleanupTable).ConfigureAwait(false); }
-        catch { ClearDetached(); throw; }
-        if (!cleanup) await DispatchDetachedAsync(cancellationToken, turnBudget.HasValue ? (turnBudget.Value - Stopwatch.GetElapsedTime(started)) / 2 : null).ConfigureAwait(false);
+        try
+        {
+            count = await RunPassAsync(name, cleanup, cancellationToken, started, turnBudget, cleanupTable).ConfigureAwait(false);
+        }
+        catch
+        {
+            ClearDetached();
+            throw;
+        }
+
+        if (!cleanup)
+        {
+            await DispatchDetachedAsync(cancellationToken, turnBudget.HasValue ? (turnBudget.Value - Stopwatch.GetElapsedTime(started)) / 2 : null).ConfigureAwait(false);
+        }
+
         return count;
     }
 
     private async ValueTask<int> RunPassAsync(string name, bool cleanup, CancellationToken cancellationToken, long started, TimeSpan? turnBudget, int cleanupTable)
     {
         var committed = false;
+
         try
         {
             await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -157,7 +229,12 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
             lease.Parameters.AddWithValue("name", name);
             lease.Parameters.AddWithValue("owner", _owner);
             lease.Parameters.AddWithValue("duration", _options.LeaseDuration);
-            if (await lease.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) return cleanup ? -1 : 0;
+
+            if (await lease.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true)
+            {
+                return cleanup ? -1 : 0;
+            }
+
             var count = cleanup
                 ? await DeleteExpiredAsync(connection, transaction, cleanupTable, cancellationToken).ConfigureAwait(false)
                 : await DispatchAsync(connection, transaction, cancellationToken, turnBudget - (turnBudget.HasValue ? Stopwatch.GetElapsedTime(started) : TimeSpan.Zero)).ConfigureAwait(false);
@@ -173,38 +250,60 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         }
         finally
         {
-            if (!cleanup) _dispatcher.FinishRecovery(committed);
+            if (!cleanup)
+            {
+                _dispatcher.FinishRecovery(committed);
+            }
         }
     }
 
     private async ValueTask<int> DispatchAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken, TimeSpan? turnBudget = null)
     {
         var started = turnBudget.HasValue ? Stopwatch.GetTimestamp() : 0;
+
         if (_through is null)
         {
             await using var boundary = new NpgsqlCommand(_highWaterMark, connection, transaction);
-            if (await boundary.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not Guid through) return 0;
+
+            if (await boundary.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not Guid through)
+            {
+                return 0;
+            }
+
             _through = through;
         }
+
         await using var command = new NpgsqlCommand(_read, connection, transaction);
         command.Parameters.AddWithValue("age", _options.RecoveryDelay);
         command.Parameters.Add(new NpgsqlParameter<Guid?>("after", NpgsqlDbType.Uuid) { TypedValue = _after });
         command.Parameters.Add(new NpgsqlParameter<Guid?>("through", NpgsqlDbType.Uuid) { TypedValue = _through });
         command.Parameters.AddWithValue("limit", _rows.Length);
         var count = await _store.ReadRowsAsync(command, _rows, cancellationToken).ConfigureAwait(false);
+
         try
         {
             _after = count == 0 ? null : _rows[count - 1].Id;
             // A fixed boundary forces wrapping even while newer rows arrive, revisiting failed or newly eligible rows.
-            if (count == 0) _through = null;
+            if (count == 0)
+            {
+                _through = null;
+            }
             // An at-least-once claim must commit before its handler runs, and the pass must not hold its
             // connection or transaction for that run; defer those rows until the pass commits.
             var enlisted = 0;
+
             for (var i = 0; i < count; i++)
             {
-                if (_dispatcher.IsAtLeastOnce(_rows[i])) _detached[_detachedCount++] = _rows[i];
-                else _rows[enlisted++] = _rows[i];
+                if (_dispatcher.IsAtLeastOnce(_rows[i]))
+                {
+                    _detached[_detachedCount++] = _rows[i];
+                }
+                else
+                {
+                    _rows[enlisted++] = _rows[i];
+                }
             }
+
             _store.UseDispatchTransaction(connection, transaction);
             // Preserve native destination batching; stop before another group and reserve time to commit.
             // The UUID boundary still wraps, so unadmitted durable rows are revisited.
@@ -224,7 +323,11 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
     // transition commits on its own, so poison recorded before a failure is reported either way.
     private async ValueTask DispatchDetachedAsync(CancellationToken cancellationToken, TimeSpan? admissionBudget = null)
     {
-        if (_detachedCount == 0) return;
+        if (_detachedCount == 0)
+        {
+            return;
+        }
+
         try
         {
             await _dispatcher.DispatchRecoveredAsync(_detached.AsMemory(0, _detachedCount), cancellationToken,

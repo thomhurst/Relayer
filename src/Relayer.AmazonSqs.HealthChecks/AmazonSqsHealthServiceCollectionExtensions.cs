@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Relayer.HealthChecks;
+using Relayer.Transports;
 
 namespace Relayer.AmazonSqs;
 
@@ -20,11 +20,13 @@ public static class AmazonSqsHealthServiceCollectionExtensions
             new AmazonSqsHealthProvider(provider.GetRequiredKeyedService<SqsSendTransport>(name)));
         services.TryAddKeyedSingleton<IConsumerHealthProvider>(name, (provider, _) =>
             new AmazonSqsHealthProvider(provider.GetRequiredKeyedService<SqsSendTransport>(name)));
+
         if (!services.Any(descriptor => descriptor.ServiceType == typeof(HealthRegistration) && Equals(descriptor.ServiceKey, name)))
         {
             services.AddKeyedSingleton(name, new HealthRegistration());
             services.AddSingleton<IHostedService>(provider => new AmazonSqsHealthStartup(provider, name));
         }
+
         return services;
     }
 
@@ -38,11 +40,31 @@ public static class AmazonSqsHealthServiceCollectionExtensions
             provider.GetRequiredKeyedService<SqsSendTransport>(name).EnableHealthTracking();
             return Task.CompletedTask;
         }
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StartedAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StoppingAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StoppedAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class AmazonSqsHealthProvider(SqsSendTransport transport) : ITransportHealthProbe, IConsumerHealthProvider
@@ -55,19 +77,31 @@ public static class AmazonSqsHealthServiceCollectionExtensions
                 cancellationToken.ThrowIfCancellationRequested();
                 return HealthCheckResult.Healthy("Native SQS queues are accessible.");
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception error) { return HealthCheckResult.Unhealthy("Native SQS connectivity failed: " + error.Message, error); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                return HealthCheckResult.Unhealthy("Native SQS connectivity failed: " + error.Message, error);
+            }
         }
 
         public ValueTask<ConsumerHealthState?> GetStateAsync(IConsumerDefinition consumer, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
             foreach (var receiver in transport.Consumers)
             {
-                if (!ReferenceEquals(receiver.Declaration, consumer)) continue;
+                if (!ReferenceEquals(receiver.Declaration, consumer))
+                {
+                    continue;
+                }
+
                 var state = receiver.GetHealthState();
                 return ValueTask.FromResult<ConsumerHealthState?>(state is { } value ? new(value.IsIdle, value.LastProgressAt) : null);
             }
+
             return ValueTask.FromResult<ConsumerHealthState?>(null);
         }
     }

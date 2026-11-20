@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using System.Text;
+using Relayer.Transports;
 
 namespace Relayer;
 
@@ -27,43 +27,77 @@ public sealed class OutboxTenantBinding
     }
 
     /// <summary>The immutable authorized ID written to durable tenant metadata.</summary>
-    public string TenantId { get; }
+    public string TenantId
+    {
+        get;
+    }
 
     internal void ValidateContext(TenantContext context)
     {
         if (!ReferenceEquals(context, _context))
+        {
             throw new InvalidOperationException("The outbox tenant binding belongs to a different scope. Create it in this scope's authorized native store factory.");
+        }
+
         Validate();
     }
 
     internal void Validate()
     {
         var current = _context.Id;
+
         if (_context.LeaseVersion != _leaseVersion)
+        {
             throw new InvalidOperationException("The outbox tenant binding belongs to an earlier scope. Create a fresh binding in the authorized native store factory.");
+        }
+
         if (!Matches(current))
+        {
             throw new InvalidOperationException("The current tenant does not match the authorized outbox store. Create a fresh authorized scope and native store for each tenant or retry.");
+        }
     }
 
     internal OutboxRecord Bind(OutboxRecord record)
     {
         Validate();
+
         if (record.TenantId is not null && !string.Equals(record.TenantId, TenantId, StringComparison.Ordinal))
+        {
             throw new InvalidOperationException("OutboxRecord.TenantId does not match the authorized outbox store.");
+        }
+
         var found = false;
+
         foreach (var header in record.Message.Headers.Span)
         {
-            if (header.Key != TenantContext.HeaderName) continue;
+            if (header.Key != TenantContext.HeaderName)
+            {
+                continue;
+            }
+
             if (found || !Matches(header.Value))
+            {
                 throw new InvalidOperationException("The outgoing tenant header must occur once and match the authorized outbox store.");
+            }
+
             found = true;
         }
+
         if (!found)
+        {
             throw new InvalidOperationException("The outgoing message requires a tenant header matching the authorized outbox store. Use the scoped ISender or supply the tenant header explicitly.");
-        return record with { TenantId = TenantId };
+        }
+
+        return record with
+        {
+            TenantId = TenantId
+        };
     }
 
-    private bool Matches(WireString value) => value.Text is { } text
-        ? string.Equals(text, TenantId, StringComparison.Ordinal)
-        : value.Utf8.Span.SequenceEqual(_utf8);
+    private bool Matches(WireString value)
+    {
+        return value.Text is { } text
+                ? string.Equals(text, TenantId, StringComparison.Ordinal)
+                : value.Utf8.Span.SequenceEqual(_utf8);
+    }
 }

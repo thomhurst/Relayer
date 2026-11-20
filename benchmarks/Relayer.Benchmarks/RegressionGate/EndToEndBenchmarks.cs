@@ -55,8 +55,17 @@ public class EndToEndBenchmarks
             return new(Disposition.Complete);
         });
         _hosted = _provider.GetServices<IHostedService>().ToArray();
-        foreach (var lifecycle in _hosted.OfType<IHostedLifecycleService>()) await lifecycle.StartingAsync(_limit.Token);
-        foreach (var service in _hosted) await service.StartAsync(_limit.Token);
+
+        foreach (var lifecycle in _hosted.OfType<IHostedLifecycleService>())
+        {
+            await lifecycle.StartingAsync(_limit.Token);
+        }
+
+        foreach (var service in _hosted)
+        {
+            await service.StartAsync(_limit.Token);
+        }
+
         _scope = _provider.CreateAsyncScope();
         _sender = _scope.ServiceProvider.GetRequiredService<ISender>();
     }
@@ -81,12 +90,28 @@ public class EndToEndBenchmarks
     public async ValueTask<int> ConcurrentRoundTrip()
     {
         // This loop is the workload: eight live deliveries, not eight serial benchmark repetitions.
-        for (var i = 0; i < ConcurrentMessages; i++) await _sender.SendAsync(_concurrent, _limit.Token);
-        for (var i = 0; i < ConcurrentMessages; i++) await _signals.Entered.Reader.ReadAsync(_limit.Token);
+        for (var i = 0; i < ConcurrentMessages; i++)
+        {
+            await _sender.SendAsync(_concurrent, _limit.Token);
+        }
+
+        for (var i = 0; i < ConcurrentMessages; i++)
+        {
+            await _signals.Entered.Reader.ReadAsync(_limit.Token);
+        }
         // All handlers have reached an incomplete await before any can finish.
-        for (var i = 0; i < ConcurrentMessages; i++) _signals.Release.Writer.TryWrite(0);
+        for (var i = 0; i < ConcurrentMessages; i++)
+        {
+            _signals.Release.Writer.TryWrite(0);
+        }
+
         var total = 0;
-        for (var i = 0; i < ConcurrentMessages; i++) total += await _signals.Completed.Reader.ReadAsync(_limit.Token);
+
+        for (var i = 0; i < ConcurrentMessages; i++)
+        {
+            total += await _signals.Completed.Reader.ReadAsync(_limit.Token);
+        }
+
         return total;
     }
 
@@ -95,8 +120,15 @@ public class EndToEndBenchmarks
     {
         // Verify direct sends reached the native receiver before stopping owned services.
         while (Interlocked.Read(ref _received) != Interlocked.Read(ref _sent))
+        {
             await Task.Delay(1, _limit.Token);
-        for (var i = _hosted.Length - 1; i >= 0; i--) await _hosted[i].StopAsync(_limit.Token);
+        }
+
+        for (var i = _hosted.Length - 1; i >= 0; i--)
+        {
+            await _hosted[i].StopAsync(_limit.Token);
+        }
+
         await _scope.DisposeAsync();
         await _provider.DisposeAsync();
         _limit.Dispose();
@@ -105,15 +137,28 @@ public class EndToEndBenchmarks
 
 public sealed class EndToEndSignals
 {
-    public Channel<int> Completed { get; } = Channel.CreateBounded<int>(8);
-    public Channel<byte> Entered { get; } = Channel.CreateBounded<byte>(8);
-    public Channel<byte> Release { get; } = Channel.CreateBounded<byte>(8);
+    public Channel<int> Completed
+    {
+        get;
+    } = Channel.CreateBounded<int>(8);
+
+    public Channel<byte> Entered
+    {
+        get;
+    } = Channel.CreateBounded<byte>(8);
+
+    public Channel<byte> Release
+    {
+        get;
+    } = Channel.CreateBounded<byte>(8);
 }
 
 [Message("bench.end-to-end")]
 public sealed record EndToEndOrder(int Id);
+
 [Message("bench.concurrent")]
 public sealed record ConcurrentOrder(int Id);
+
 [Message("bench.send-only")]
 public sealed record SendOnlyOrder(int Id);
 
@@ -121,7 +166,11 @@ public sealed class EndToEndHandler(EndToEndSignals signals) : IHandler<EndToEnd
 {
     public ValueTask HandleAsync(EndToEndOrder message, MessageContext context, CancellationToken cancellationToken)
     {
-        if (!signals.Completed.Writer.TryWrite(message.Id)) throw new InvalidOperationException("Completion channel is full.");
+        if (!signals.Completed.Writer.TryWrite(message.Id))
+        {
+            throw new InvalidOperationException("Completion channel is full.");
+        }
+
         return default;
     }
 }
@@ -134,6 +183,10 @@ public sealed class ConcurrentHandler(EndToEndSignals signals) : IHandler<Concur
         // Publish entry only after the release continuation is registered. Merely observing
         // an incomplete read before signalling leaves a race with the driver's release.
         await new PendingReadBarrier(signals.Release.Reader.ReadAsync(cancellationToken), signals.Entered.Writer);
-        if (!signals.Completed.Writer.TryWrite(message.Id)) throw new InvalidOperationException("Completion channel is full.");
+
+        if (!signals.Completed.Writer.TryWrite(message.Id))
+        {
+            throw new InvalidOperationException("Completion channel is full.");
+        }
     }
 }

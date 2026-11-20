@@ -1,7 +1,7 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -29,16 +29,31 @@ public class BatchPipelineTests
         };
         var errors = new List<(string Id, Exception Error)>();
         var input = Input(3);
-        input[1] = input[1] with { Type = "unknown;v=1" };
-        await Pipeline(provider, (context, error, _) => { errors.Add((context.MessageId, error)); return default; })
+        input[1] = input[1] with
+        {
+            Type = "unknown;v=1"
+        };
+        await Pipeline(provider, (context, error, _) =>
+        {
+            errors.Add((context.MessageId, error));
+            return default;
+        })
             .ProcessBatchAsync(input, new Disposition[3]);
         await Assert.That(errors.Count).IsEqualTo(3);
         await Assert.That(errors.Single(item => item.Id == "1").Error).IsTypeOf<UnknownMessageTypeException>();
+
         foreach (var item in errors.Where(item => item.Id != "1"))
         {
-            if (nullResult) await Assert.That(item.Error).IsTypeOf<ArgumentNullException>();
-            else await Assert.That(item.Error).IsSameReferenceAs(wholeError);
+            if (nullResult)
+            {
+                await Assert.That(item.Error).IsTypeOf<ArgumentNullException>();
+            }
+            else
+            {
+                await Assert.That(item.Error).IsSameReferenceAs(wholeError);
+            }
         }
+
         await Assert.That(() => BatchResult.Failure(null!)).Throws<ArgumentNullException>();
     }
 
@@ -54,7 +69,11 @@ public class BatchPipelineTests
             return new(BatchResult.Success);
         };
         Exception? observed = null;
-        await Pipeline(provider, (_, error, _) => { observed = error; return default; })
+        await Pipeline(provider, (_, error, _) =>
+        {
+            observed = error;
+            return default;
+        })
             .ProcessBatchAsync(Input(2), new Disposition[2]);
         await Assert.That(observed).IsSameReferenceAs(lastError);
     }
@@ -71,7 +90,11 @@ public class BatchPipelineTests
             return new(BatchResult.Success);
         };
         var failedIds = new List<string>();
-        var pipeline = Pipeline(provider, (context, _, _) => { failedIds.Add(context.MessageId); return default; });
+        var pipeline = Pipeline(provider, (context, _, _) =>
+        {
+            failedIds.Add(context.MessageId);
+            return default;
+        });
         await pipeline.ProcessBatchAsync(Input(3), new Disposition[3]);
         await Assert.That(string.Join(",", failedIds)).IsEqualTo("2");
         control.Invoke = null;
@@ -88,7 +111,11 @@ public class BatchPipelineTests
         await using var provider = Provider();
         var control = provider.GetRequiredService<Control>();
         BatchItem<Payload> retained = default;
-        control.Invoke = (batch, _) => { retained = batch.Items[0]; return new(BatchResult.Success); };
+        control.Invoke = (batch, _) =>
+        {
+            retained = batch.Items[0];
+            return new(BatchResult.Success);
+        };
         var pipeline = Pipeline(provider);
         await pipeline.ProcessBatchAsync(Input(2), new Disposition[2]);
         await Assert.That(() => retained.Fail(new Exception())).Throws<InvalidOperationException>();
@@ -123,7 +150,10 @@ public class BatchPipelineTests
 
     private sealed class SingleMiddleware : IConsumeMiddleware
     {
-        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next) => next(context);
+        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
+        {
+            return next(context);
+        }
     }
 
     [Test]
@@ -134,7 +164,10 @@ public class BatchPipelineTests
         var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
             static (_, error, _) => ValueTask.FromException(error));
-        builder.Telemetry(instrumentation.CreateEndpoint(new() { System = "test" }));
+        builder.Telemetry(instrumentation.CreateEndpoint(new()
+        {
+            System = "test"
+        }));
 
         await Assert.That(() => builder.BuildBatch(
             provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<Payload, Handler>(), Definition(provider)))
@@ -156,7 +189,12 @@ public class BatchPipelineTests
         control.Invoke = async (batch, _) =>
         {
             var result = await handlerDone.Task;
-            if (failureMode == 1) batch.Items[1].Fail(new InvalidOperationException("partial"));
+
+            if (failureMode == 1)
+            {
+                batch.Items[1].Fail(new InvalidOperationException("partial"));
+            }
+
             return result;
         };
         var failedIds = new List<string>();
@@ -172,23 +210,42 @@ public class BatchPipelineTests
         var output = Sentinels(3);
         var pending = pipeline.ProcessBatchAsync(Input(3), output);
         await Assert.That(pending.IsCompleted).IsFalse();
-        if (failureMode == 2) handlerDone.SetException(new InvalidOperationException("total failure"));
-        else handlerDone.SetResult(BatchResult.Success);
+
+        if (failureMode == 2)
+        {
+            handlerDone.SetException(new InvalidOperationException("total failure"));
+        }
+        else
+        {
+            handlerDone.SetResult(BatchResult.Success);
+        }
+
         await control.DisposalStarted.Task;
         await Assert.That(output.All(d => d.Kind == DispositionKind.SettledByHandler)).IsTrue();
         await Assert.That(failedIds.Count).IsEqualTo(0);
         disposalDone.SetResult();
+
         if (failureMode > 0)
         {
             await failureStarted.Task;
             await Assert.That(pending.IsCompleted).IsFalse();
             await Assert.That(output.All(d => d.Kind == DispositionKind.SettledByHandler)).IsTrue();
         }
+
         failureDone.SetResult();
         await pending;
-        await Assert.That(string.Join(",", failedIds)).IsEqualTo(failureMode switch { 0 => "", 1 => "1", _ => "0,1,2" });
+        await Assert.That(string.Join(",", failedIds)).IsEqualTo(failureMode switch
+        {
+            0 => "",
+            1 => "1",
+            _ => "0,1,2"
+        });
+
         for (var i = 0; i < 3; i++)
+        {
             await Assert.That(output[i].Kind).IsEqualTo(failureMode == 2 || failureMode == 1 && i == 1 ? DispositionKind.DeadLetter : DispositionKind.Complete);
+        }
+
         await Assert.That(control.Scopes.Count).IsEqualTo(1);
         await Assert.That(control.Disposed).IsEqualTo(1);
     }
@@ -204,7 +261,11 @@ public class BatchPipelineTests
             batches.Add(string.Join(",", batch.Items.Select(item => item.Context.MessageId + ":" + item.Context.Attempt)));
             return new(Fail(batch.Items[batch.Count - 1], new InvalidOperationException("failed")));
         };
-        var failures = new FailurePipeline(provider, "test", "source", "batch", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+        var failures = new FailurePipeline(provider, "test", "source", "batch", new()
+        {
+            RetryDelays = new[] { TimeSpan.Zero },
+            Jitter = 0
+        });
         var pipeline = Pipeline(provider, failures: failures);
         var output = new Disposition[3];
         await pipeline.ProcessBatchAsync(Input(3), output);
@@ -225,15 +286,29 @@ public class BatchPipelineTests
         var control = provider.GetRequiredService<Control>();
         control.Invoke = (batch, _) =>
         {
-            if (string.Join(",", batch.Items.Select(item => item.Context.MessageId)) != "0,3") throw new Exception("Wrong batch");
+            if (string.Join(",", batch.Items.Select(item => item.Context.MessageId)) != "0,3")
+            {
+                throw new Exception("Wrong batch");
+            }
+
             return new(Fail(batch.Items[1], new ApplicationException("handler")));
         };
         var errors = new List<(string Id, Exception Error, FailureAction Action)>();
         var input = Input(4);
-        input[1] = input[1] with { Type = "unknown;v=1" };
-        input[2] = input[2] with { Value = 0 };
+        input[1] = input[1] with
+        {
+            Type = "unknown;v=1"
+        };
+        input[2] = input[2] with
+        {
+            Value = 0
+        };
         var output = new Disposition[4];
-        await Pipeline(provider, (context, error, action) => { errors.Add((context.MessageId, error, action)); return default; }).ProcessBatchAsync(input, output);
+        await Pipeline(provider, (context, error, action) =>
+        {
+            errors.Add((context.MessageId, error, action));
+            return default;
+        }).ProcessBatchAsync(input, output);
         await Assert.That(string.Join(",", errors.Select(e => e.Id))).IsEqualTo("1,2,3");
         await Assert.That(errors[0].Error is UnknownMessageTypeException).IsTrue();
         await Assert.That(errors[1].Error is MessageDeserializationException).IsTrue();
@@ -248,7 +323,11 @@ public class BatchPipelineTests
         await using var provider = Provider();
         provider.GetRequiredService<Control>().Invoke = (batch, _) => new(Fail(default, new Exception()));
         var failures = 0;
-        await Pipeline(provider, (_, _, _) => { failures++; return default; }).ProcessBatchAsync(Input(3), new Disposition[3]);
+        await Pipeline(provider, (_, _, _) =>
+        {
+            failures++;
+            return default;
+        }).ProcessBatchAsync(Input(3), new Disposition[3]);
         await Assert.That(failures).IsEqualTo(3);
     }
 
@@ -259,8 +338,16 @@ public class BatchPipelineTests
     {
         await using var provider = Provider();
         var control = provider.GetRequiredService<Control>();
-        if (failDisposal) control.Disposal = Task.FromException(new ApplicationException("dispose"));
-        else control.Invoke = (_, _) => ValueTask.FromException<BatchResult>(new Exception("handler"));
+
+        if (failDisposal)
+        {
+            control.Disposal = Task.FromException(new ApplicationException("dispose"));
+        }
+        else
+        {
+            control.Invoke = (_, _) => ValueTask.FromException<BatchResult>(new Exception("handler"));
+        }
+
         var output = Sentinels(3);
         await Assert.That(async () => await Pipeline(provider, (_, _, _) => ValueTask.FromException(new ApplicationException("durability")))
             .ProcessBatchAsync(Input(3), output)).Throws<ApplicationException>();
@@ -300,36 +387,50 @@ public class BatchPipelineTests
         var transport = provider.GetRequiredService<Transport>();
         using var cancellation = new CancellationTokenSource();
         var disposalDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         if (duringDisposal)
         {
             control.Disposal = disposalDone.Task;
             control.DisposalStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
+
         control.Invoke = async (batch, _) =>
         {
             await batch.Items[0].Context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
-            if (!duringDisposal) cancellation.Cancel();
+
+            if (!duringDisposal)
+            {
+                cancellation.Cancel();
+            }
+
             return BatchResult.Success;
         };
         var failures = 0;
-        var pipeline = Consumer(provider, (_, _, _) => { failures++; return default; });
+        var pipeline = Consumer(provider, (_, _, _) =>
+        {
+            failures++;
+            return default;
+        });
         var message = new ConsumeMessage { MessageId = "cancelled", MessageType = new("batch.payload", 1), Body = new(new byte[] { 1 }) };
         {
             using var first = pipeline.RentContext(message);
             using var second = pipeline.RentContext(message, cancellation.Token);
             var contexts = new[] { first, second };
             var pending = pipeline.ProcessBatchAsync(contexts);
+
             if (duringDisposal)
             {
                 await control.DisposalStarted!.Task;
                 cancellation.Cancel();
                 disposalDone.SetResult();
             }
+
             await Assert.That(async () => await pending).Throws<OperationCanceledException>();
             await Assert.That(transport.Sends).IsEqualTo(0);
             await Assert.That(failures).IsEqualTo(0);
             await Assert.That(control.Disposed).IsEqualTo(1);
         }
+
         control.Invoke = null;
         using var reused = pipeline.RentContext(message);
         await pipeline.ProcessBatchAsync(new[] { reused });
@@ -356,19 +457,32 @@ public class BatchPipelineTests
         control.Invoke = async (batch, _) =>
         {
             var sender = batch.Items[0].Context.Services.GetRequiredService<ISender>();
-            for (var i = 0; i < 3; i++) await sender.SendWithoutOutboxAsync(new Payload());
+
+            for (var i = 0; i < 3; i++)
+            {
+                await sender.SendWithoutOutboxAsync(new Payload());
+            }
+
             return BatchResult.Success;
         };
         transport.Send = async (_, token) =>
         {
-            if (transport.Sends != (lastSend ? 3 : 1)) return;
+            if (transport.Sends != (lastSend ? 3 : 1))
+            {
+                return;
+            }
+
             using var registration = token.Register(() => observed.TrySetResult());
             started.TrySetResult();
             // Deliberately return success after cancellation, as a native client may do.
             await release.Task;
         };
         var failures = 0;
-        var pipeline = Consumer(provider, (_, _, _) => { failures++; return default; });
+        var pipeline = Consumer(provider, (_, _, _) =>
+        {
+            failures++;
+            return default;
+        });
         var message = new ConsumeMessage { MessageId = "flush", MessageType = new("batch.payload", 1), Body = new(new byte[] { 1 }) };
         {
             using var first = pipeline.RentContext(message, tokenIndex == 0 ? cancellation.Token : otherDelivery.Token);
@@ -398,7 +512,11 @@ public class BatchPipelineTests
         using var cancellation = new CancellationTokenSource();
         var control = provider.GetRequiredService<Control>();
         control.Invoke = (batch, _) => new(Fail(batch.Items[1], new Exception("retry")));
-        var failures = new FailurePipeline(provider, "test", "source", "batch", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+        var failures = new FailurePipeline(provider, "test", "source", "batch", new()
+        {
+            RetryDelays = new[] { TimeSpan.Zero },
+            Jitter = 0
+        });
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
             failures, new CancelOnClassify(cancellation))
@@ -419,11 +537,18 @@ public class BatchPipelineTests
         var control = provider.GetRequiredService<Control>();
         var release = new TaskCompletionSource<BatchResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var batches = new List<Batch<Payload>>();
-        control.Invoke = (batch, _) => { batches.Add(batch); return new(release.Task); };
+        control.Invoke = (batch, _) =>
+        {
+            batches.Add(batch);
+            return new(release.Task);
+        };
         var pipeline = Pipeline(provider);
         var first = pipeline.ProcessBatchAsync(Input(3), new Disposition[3]);
         var secondInput = Input(2);
-        secondInput[0] = secondInput[0] with { Id = "second" };
+        secondInput[0] = secondInput[0] with
+        {
+            Id = "second"
+        };
         var second = pipeline.ProcessBatchAsync(secondInput, new Disposition[2]);
         await Assert.That(batches[0]).IsNotSameReferenceAs(batches[1]);
         await Assert.That(batches[0].Count).IsEqualTo(3);
@@ -452,7 +577,13 @@ public class BatchPipelineTests
             Sample = (ref ActivityCreationOptions<ActivityContext> options) =>
             {
                 foreach (var tag in options.Tags!)
-                    if (tag.Key == "messaging.batch.message_count") sampledCount = (int)tag.Value!;
+                {
+                    if (tag.Key == "messaging.batch.message_count")
+                    {
+                        sampledCount = (int)tag.Value!;
+                    }
+                }
+
                 return ActivitySamplingResult.AllDataAndRecorded;
             },
             ActivityStopped = activity => observed = activity
@@ -462,9 +593,18 @@ public class BatchPipelineTests
         var expectedActivity = Activity.Current;
         var expectedParent = expectedActivity?.Context ?? default;
         var input = Input(3);
+
         if (utf8)
+        {
             for (var i = 0; i < input.Length; i++)
-                input[i] = input[i] with { TraceParent = new("00-11111111111111111111111111111111-2222222222222222-01"u8.ToArray()) };
+            {
+                input[i] = input[i] with
+                {
+                    TraceParent = new("00-11111111111111111111111111111111-2222222222222222-01"u8.ToArray())
+                };
+            }
+        }
+
         var pipeline = Pipeline(provider, source: source);
         await pipeline.ProcessBatchAsync(input, new Disposition[3]);
         await Assert.That(observed!.DisplayName).IsEqualTo("process source");
@@ -527,13 +667,21 @@ public class BatchPipelineTests
         {
             calls++;
             attempts.Add(string.Join(",", batch.Items.Select(item => item.Context.MessageId + ":" + item.Context.Attempt)));
+
             for (var i = 0; i < batch.Count; i++)
+            {
                 await batch.Items[i].Context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
+            }
+
             return poison || calls == 1
                 ? Fail(batch.Items[1], new Exception("partial"))
                 : BatchResult.Success;
         };
-        var failures = new FailurePipeline(provider, "test", "source", "batch", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+        var failures = new FailurePipeline(provider, "test", "source", "batch", new()
+        {
+            RetryDelays = new[] { TimeSpan.Zero },
+            Jitter = 0
+        });
         var output = Sentinels(3);
         await Pipeline(provider, failures: failures).ProcessBatchAsync(Input(3), output);
         await Assert.That(string.Join(";", attempts)).IsEqualTo("0:1,1:1,2:1;0:2,1:2,2:2");
@@ -550,9 +698,16 @@ public class BatchPipelineTests
         transport.NativeDeadLetter = false;
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var durable = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        transport.Send = (_, _) => { started.SetResult(); return new(durable.Task); };
+        transport.Send = (_, _) =>
+        {
+            started.SetResult();
+            return new(durable.Task);
+        };
         provider.GetRequiredService<Control>().Invoke = (batch, _) => new(Fail(batch.Items[1], new Exception("failed")));
-        var failures = new FailurePipeline(provider, "test", "source", "batch", new() { DeadLetterEndpoint = "dead" },
+        var failures = new FailurePipeline(provider, "test", "source", "batch", new()
+        {
+            DeadLetterEndpoint = "dead"
+        },
             context => new("source", new byte[] { 1 }, new[] { new KeyValuePair<string, WireString>("ce_id", new(context.MessageId)) }));
         var output = Sentinels(3);
         var pending = Pipeline(provider, failures: failures).ProcessBatchAsync(Input(3), output);
@@ -582,7 +737,12 @@ public class BatchPipelineTests
             batch.Items[0].Context.Features.GetRequired<ISettlementFeature>().Complete();
             batch.Items[1].Context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.FromSeconds(5));
             batch.Items[2].Context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
-            if (failureMode == 2) throw new InvalidOperationException("whole batch failed");
+
+            if (failureMode == 2)
+            {
+                throw new InvalidOperationException("whole batch failed");
+            }
+
             return new(failureMode == 1 ? Fail(batch.Items[0], new InvalidOperationException("first failed")) : BatchResult.Success);
         };
         var failures = executable ? new FailurePipeline(provider, "test", "source", "consumer") : null;
@@ -610,10 +770,18 @@ public class BatchPipelineTests
         {
             var context = batch.Items[0].Context;
             context.Features.GetRequired<ISettlementFeature>().Complete();
-            if (context.Attempt > 1) return new(BatchResult.Success);
+
+            if (context.Attempt > 1)
+            {
+                return new(BatchResult.Success);
+            }
+
             return new(Fail(batch.Items[0], new InvalidOperationException("retry")));
         };
-        var failures = new FailurePipeline(provider, "test", "source", "consumer", new() { RetryDelays = new[] { TimeSpan.Zero } });
+        var failures = new FailurePipeline(provider, "test", "source", "consumer", new()
+        {
+            RetryDelays = new[] { TimeSpan.Zero }
+        });
         var output = new Disposition[1];
         await Pipeline(provider, failures: failures).ProcessBatchAsync(Input(1), output);
         await Assert.That(output[0].Kind).IsEqualTo(DispositionKind.Complete);
@@ -629,7 +797,12 @@ public class BatchPipelineTests
         provider.GetRequiredService<Control>().Invoke = async (batch, _) =>
         {
             batch.Items[0].Context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
-            if (!mixed) batch.Items[1].Context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
+
+            if (!mixed)
+            {
+                batch.Items[1].Context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
+            }
+
             await batch.Items[0].Context.Services.GetRequiredService<ISender>().SendAsync(new Payload());
             return BatchResult.Success;
         };
@@ -650,7 +823,10 @@ public class BatchPipelineTests
         var message = new ConsumeMessage { MessageId = "id", MessageType = new("batch.payload", 1), Body = new(new byte[] { 1 }) };
         using var owned = first.RentContext(message);
         using var foreign = second.RentContext(message);
-        await Assert.That(() => { _ = first.ProcessAsync(owned); }).Throws<InvalidOperationException>();
+        await Assert.That(() =>
+        {
+            _ = first.ProcessAsync(owned);
+        }).Throws<InvalidOperationException>();
         await Assert.That(async () => await first.ProcessBatchAsync(new[] { owned, foreign })).Throws<InvalidOperationException>();
         // Rejection must not consume the foreign rental.
         await second.ProcessBatchAsync(new[] { foreign });
@@ -672,33 +848,64 @@ public class BatchPipelineTests
             .BuildBatch(provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<Payload, AllocationHandler>(), Definition(provider));
         var message = new ConsumeMessage { MessageId = "allocation", MessageType = new("batch.payload", 1), Body = new(new byte[] { 1 }) };
         var contexts = new DefaultMessageContext[10];
+
         for (var iteration = 0; iteration < 1000; iteration++)
         {
-            for (var i = 0; i < contexts.Length; i++) contexts[i] = consumer.RentContext(message, deliveries[i].Token);
+            for (var i = 0; i < contexts.Length; i++)
+            {
+                contexts[i] = consumer.RentContext(message, deliveries[i].Token);
+            }
+
             await consumer.ProcessBatchAsync(contexts, batchCancellation.Token);
-            for (var i = 0; i < contexts.Length; i++) contexts[i].Dispose();
+
+            for (var i = 0; i < contexts.Length; i++)
+            {
+                contexts[i].Dispose();
+            }
+
             using var scope = scopes.CreateScope();
             _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
         }
         // Preserve native finite deadlines and parallel execution; warm their shared
         // runtime lock state separately from the native-DI versus pipeline comparison.
-        if (bufferedSends) TimerQueueWarmup.WarmContention();
+        if (bufferedSends)
+        {
+            TimerQueueWarmup.WarmContention();
+        }
+
         var start = GC.GetAllocatedBytesForCurrentThread();
+
         for (var iteration = 0; iteration < 1000; iteration++)
         {
             using var scope = scopes.CreateScope();
             _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
         }
+
         var baseline = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
+
         for (var iteration = 0; iteration < 1000; iteration++)
         {
-            for (var i = 0; i < contexts.Length; i++) contexts[i] = consumer.RentContext(message, deliveries[i].Token);
+            for (var i = 0; i < contexts.Length; i++)
+            {
+                contexts[i] = consumer.RentContext(message, deliveries[i].Token);
+            }
+
             await consumer.ProcessBatchAsync(contexts, batchCancellation.Token);
-            for (var i = 0; i < contexts.Length; i++) contexts[i].Dispose();
+
+            for (var i = 0; i < contexts.Length; i++)
+            {
+                contexts[i].Dispose();
+            }
         }
+
         var composed = GC.GetAllocatedBytesForCurrentThread() - start;
-        foreach (var delivery in deliveries) delivery.Dispose();
+
+        foreach (var delivery in deliveries)
+        {
+            delivery.Dispose();
+        }
+
         await Assert.That(composed).IsEqualTo(baseline);
     }
 
@@ -712,7 +919,11 @@ public class BatchPipelineTests
         var offset = 0;
         BatchReceiveDelegate<Incoming> read = (destination, wait, _) =>
         {
-            if (wait > Definition(provider).BatchWait) throw new Exception("Wait exceeds declaration");
+            if (wait > Definition(provider).BatchWait)
+            {
+                throw new Exception("Wait exceeds declaration");
+            }
+
             incoming.AsMemory(offset, destination.Length).CopyTo(destination);
             offset += destination.Length;
             return new(destination.Length);
@@ -777,7 +988,11 @@ public class BatchPipelineTests
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
-    internal static IConsumerDefinition Definition(ServiceProvider provider) => provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0];
+    internal static IConsumerDefinition Definition(ServiceProvider provider)
+    {
+        return provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0];
+    }
+
     internal static ConsumePipeline Consumer(ServiceProvider provider, ConsumeFailureDelegate? failure = null, FailurePipeline? failures = null, ActivitySource? source = null)
     {
         var scopes = provider.GetRequiredService<IServiceScopeFactory>();
@@ -787,24 +1002,59 @@ public class BatchPipelineTests
             : new ConsumePipelineBuilder(scopes, messages, serializer, failures);
         return builder.BuildBatch(provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<Payload, Handler>(), Definition(provider), source);
     }
+
     private static ReceivePipeline<Incoming, Binding> Pipeline(ServiceProvider provider, ConsumeFailureDelegate? failure = null, FailurePipeline? failures = null, ActivitySource? source = null)
-        => new(Consumer(provider, failure, failures, source), new HeaderNames(), 8);
-    internal static Incoming[] Input(int count) => Enumerable.Range(0, count).Select(i => new Incoming(i.ToString())).ToArray();
-    private static Disposition[] Sentinels(int count) => Enumerable.Repeat(Disposition.SettledByHandler, count).ToArray();
+    {
+        return new(Consumer(provider, failure, failures, source), new HeaderNames(), 8);
+    }
+
+    internal static Incoming[] Input(int count)
+    {
+        return Enumerable.Range(0, count).Select(i => new Incoming(i.ToString())).ToArray();
+    }
+
+    private static Disposition[] Sentinels(int count)
+    {
+        return Enumerable.Repeat(Disposition.SettledByHandler, count).ToArray();
+    }
+
     public sealed class Options;
+
     [Message("batch.payload")]
     public sealed class Payload;
+
     public sealed class Control
     {
-        public Func<Batch<Payload>, CancellationToken, ValueTask<BatchResult>>? Invoke { get; set; }
-        public List<IServiceProvider> Scopes { get; } = [];
+        public Func<Batch<Payload>, CancellationToken, ValueTask<BatchResult>>? Invoke
+        {
+            get; set;
+        }
+
+        public List<IServiceProvider> Scopes
+        {
+            get;
+        } = [];
         // Concurrent batches dispose their scopes on different threads.
         private int _disposed;
+
         public int Disposed => Volatile.Read(ref _disposed);
-        public void ScopeDisposed() => Interlocked.Increment(ref _disposed);
-        public Task? Disposal { get; set; }
-        public TaskCompletionSource? DisposalStarted { get; set; }
+
+        public void ScopeDisposed()
+        {
+            Interlocked.Increment(ref _disposed);
+        }
+
+        public Task? Disposal
+        {
+            get; set;
+        }
+
+        public TaskCompletionSource? DisposalStarted
+        {
+            get; set;
+        }
     }
+
     private sealed class CancelOnClassify(CancellationTokenSource cancellation) : IFailureClassifier
     {
         public FailureAction Classify(Exception exception, MessageContext context)
@@ -819,71 +1069,186 @@ public class BatchPipelineTests
         public async ValueTask DisposeAsync()
         {
             control.DisposalStarted?.TrySetResult();
-            if (control.Disposal is { } disposal) await disposal;
+
+            if (control.Disposal is { } disposal)
+            {
+                await disposal;
+            }
+
             control.ScopeDisposed();
         }
     }
+
     public sealed class Handler(Control control, Lifetime lifetime) : IBatchHandler<Payload>
     {
         public ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken)
         {
             _ = lifetime;
             var scope = batch.Items[0].Context.Services;
-            if (batch.Items.Any(item => !ReferenceEquals(scope, item.Context.Services))) throw new Exception("Scopes differ");
+
+            if (batch.Items.Any(item => !ReferenceEquals(scope, item.Context.Services)))
+            {
+                throw new Exception("Scopes differ");
+            }
+
             control.Scopes.Add(scope);
             return control.Invoke?.Invoke(batch, cancellationToken) ?? new(BatchResult.Success);
         }
     }
+
     public sealed class AllocationHandler : IBatchHandler<Payload>
     {
-        public bool BufferedSends { get; set; }
+        public bool BufferedSends
+        {
+            get; set;
+        }
+
         public async ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken)
         {
             if (BufferedSends)
             {
                 var sender = batch.Items[0].Context.Services.GetRequiredService<ISender>();
-                for (var i = 0; i < batch.Count; i++) await sender.SendWithoutOutboxAsync(batch.Items[i].Message, cancellationToken);
+
+                for (var i = 0; i < batch.Count; i++)
+                {
+                    await sender.SendWithoutOutboxAsync(batch.Items[i].Message, cancellationToken);
+                }
             }
+
             return BatchResult.Success;
         }
     }
+
     internal sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "test/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => source.FirstSpan[0] == 0 ? throw new FormatException() : (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) { destination.GetSpan(1)[0] = 1; destination.Advance(1); }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return source.FirstSpan[0] == 0 ? throw new FormatException() : (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            destination.GetSpan(1)[0] = 1;
+            destination.Advance(1);
+        }
     }
+
     internal sealed record Incoming(string Id)
     {
-        public WireString TraceParent { get; init; } = new("00-11111111111111111111111111111111-2222222222222222-01");
-        public string Type { get; init; } = "batch.payload;v=1";
-        public byte Value { get; init; } = 1;
+        public WireString TraceParent
+        {
+            get; init;
+        } = new("00-11111111111111111111111111111111-2222222222222222-01");
+
+        public string Type
+        {
+            get; init;
+        } = "batch.payload;v=1";
+
+        public byte Value
+        {
+            get; init;
+        } = 1;
     }
+
     internal readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => new(new[] { message.Value });
-        public static int? GetDeliveryCount(Incoming message) => 1;
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return new(new[] { message.Value });
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
-            value = name switch { "ce_id" => new(message.Id), "ce_type" => new(message.Type), "traceparent" => message.TraceParent, _ => default };
+            value = name switch
+            {
+                "ce_id" => new(message.Id),
+                "ce_type" => new(message.Type),
+                "traceparent" => message.TraceParent,
+                _ => default
+            };
             return !value.IsEmpty;
         }
     }
+
     internal sealed class Transport(int nativeSize) : ITransport
     {
         public string Name => "test";
-        public int Reads { get; private set; }
-        public int Sends { get; private set; }
-        public bool NativeDeadLetter { get; set; } = true;
-        public TimeSpan? RedeliveryDelay { get; set; }
-        public Func<OutgoingMessage, CancellationToken, ValueTask>? Send { get; set; }
-        public TransportCapabilities GetCapabilities(string endpoint) { Reads++; return new() { DeadLetter = NativeDeadLetter, MaxBatchSize = nativeSize, MaxRedeliveryDelay = RedeliveryDelay }; }
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Sends++; return Send?.Invoke(message, cancellationToken) ?? default; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public int Reads
+        {
+            get; private set;
+        }
+
+        public int Sends
+        {
+            get; private set;
+        }
+
+        public bool NativeDeadLetter
+        {
+            get; set;
+        } = true;
+
+        public TimeSpan? RedeliveryDelay
+        {
+            get; set;
+        }
+
+        public Func<OutgoingMessage, CancellationToken, ValueTask>? Send
+        {
+            get; set;
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            Reads++;
+            return new()
+            {
+                DeadLetter = NativeDeadLetter,
+                MaxBatchSize = nativeSize,
+                MaxRedeliveryDelay = RedeliveryDelay
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Sends++;
+            return Send?.Invoke(message, cancellationToken) ?? default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

@@ -17,17 +17,28 @@ public class KafkaSendHeaderBenchmarks
     private Header _nativeHeader;
 
     [Params(8, 32)]
-    public int HeaderCount { get; set; }
+    public int HeaderCount
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Populated { get; set; }
+    public bool Populated
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _application = new(HeaderCount);
         _native = new(HeaderCount + 1);
-        for (var i = 0; i < HeaderCount; i++) _application.Add("header-" + i, "value");
+
+        for (var i = 0; i < HeaderCount; i++)
+        {
+            _application.Add("header-" + i, "value");
+        }
+
         _nativeHeader = new("native-only", "value"u8.ToArray());
     }
 
@@ -35,28 +46,42 @@ public class KafkaSendHeaderBenchmarks
     {
         _output.Clear();
         _native.Clear();
-        if (Populated) _native.Add(_nativeHeader);
+
+        if (Populated)
+        {
+            _native.Add(_nativeHeader);
+        }
     }
 
     [Benchmark(Baseline = true)]
     public void RawNative()
     {
         Reset();
-        for (var i = 0; i < _application.Count; i++) _native.Add(_application[i]);
+
+        for (var i = 0; i < _application.Count; i++)
+        {
+            _native.Add(_application[i]);
+        }
     }
 
     [Benchmark]
     public void Relayer()
     {
         Reset();
-        _serializer.Serialize((ReadOnlyMemory<byte>.Empty, _application), ref _output, new() { Headers = _native });
+        _serializer.Serialize((ReadOnlyMemory<byte>.Empty, _application), ref _output, new()
+        {
+            Headers = _native
+        });
     }
 
     [Benchmark]
     public void Previous()
     {
         Reset();
-        _previous.Serialize((ReadOnlyMemory<byte>.Empty, _application), ref _output, new() { Headers = _native });
+        _previous.Serialize((ReadOnlyMemory<byte>.Empty, _application), ref _output, new()
+        {
+            Headers = _native
+        });
     }
 
     // Frozen pre-#752 serializer with the same call boundary as the current serializer.
@@ -69,13 +94,23 @@ public class KafkaSendHeaderBenchmarks
         {
             var value = record.GetValueOrDefault();
             var headers = context.Headers ?? throw new InvalidOperationException("Dekaf did not provide record header storage.");
+
             if (value.Headers.GetFirst("traceparent") is not null)
             {
                 headers.Remove("traceparent");
                 headers.Remove("tracestate");
             }
-            for (var i = 0; i < value.Headers.Count; i++) headers.Remove(value.Headers[i].Key);
-            for (var i = 0; i < value.Headers.Count; i++) headers.Add(value.Headers[i]);
+
+            for (var i = 0; i < value.Headers.Count; i++)
+            {
+                headers.Remove(value.Headers[i].Key);
+            }
+
+            for (var i = 0; i < value.Headers.Count; i++)
+            {
+                headers.Add(value.Headers[i]);
+            }
+
             value.Body.Span.CopyTo(destination.GetSpan(value.Body.Length));
             destination.Advance(value.Body.Length);
         }

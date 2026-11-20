@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Relayer.Transports;
 
 namespace Relayer.HealthChecks;
 
@@ -17,9 +17,13 @@ public static class OutboxHealthServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(storeName);
+
         if (!services.Any(descriptor => descriptor.ImplementationInstance is OutboxHealthRegistration registration &&
             string.Equals(registration.StoreName, storeName, StringComparison.Ordinal)))
+        {
             services.AddSingleton(new OutboxHealthRegistration(storeName));
+        }
+
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddKeyedScoped<IOutboxHealthProvider>(storeName, static (provider, key) =>
             new OutboxStoreHealthProvider(provider.GetRequiredKeyedService<IOutboxStore>(key),

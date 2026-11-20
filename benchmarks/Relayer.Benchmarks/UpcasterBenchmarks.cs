@@ -1,9 +1,9 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -17,7 +17,10 @@ public class UpcasterBenchmarks
     private readonly DefaultMessageContext[] _contexts = new DefaultMessageContext[10];
 
     [Params(1, 2, 3)]
-    public int WireVersion { get; set; }
+    public int WireVersion
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -41,50 +44,121 @@ public class UpcasterBenchmarks
             _provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0]);
     }
 
-    private ConsumePipelineBuilder Builder() => new(_provider.GetRequiredService<IServiceScopeFactory>(),
-        _provider.GetRequiredService<MessageTypeRegistry>(), _provider.GetRequiredService<IMessageSerializer>(),
-        static (_, error, _) => ValueTask.FromException(error));
+    private ConsumePipelineBuilder Builder()
+    {
+        return new(_provider.GetRequiredService<IServiceScopeFactory>(),
+                _provider.GetRequiredService<MessageTypeRegistry>(), _provider.GetRequiredService<IMessageSerializer>(),
+                static (_, error, _) => ValueTask.FromException(error));
+    }
 
-    private ConsumeMessage Message() => new() { MessageId = "benchmark", MessageType = new("benchmark.upgrade", WireVersion), Body = default };
+    private ConsumeMessage Message()
+    {
+        return new()
+        {
+            MessageId = "benchmark",
+            MessageType = new("benchmark.upgrade", WireVersion),
+            Body = default
+        };
+    }
 
     [Benchmark]
     public async ValueTask Single()
     {
         var context = _single.RentContext(Message());
-        try { await _single.ProcessAsync(context); }
-        finally { context.Dispose(); }
+
+        try
+        {
+            await _single.ProcessAsync(context);
+        }
+        finally
+        {
+            context.Dispose();
+        }
     }
 
     [Benchmark(OperationsPerInvoke = 10)]
     public async ValueTask Batch()
     {
-        for (var i = 0; i < _contexts.Length; i++) _contexts[i] = _batch.RentContext(Message());
-        try { await _batch.ProcessBatchAsync(_contexts); }
-        finally { foreach (var context in _contexts) context.Dispose(); }
+        for (var i = 0; i < _contexts.Length; i++)
+        {
+            _contexts[i] = _batch.RentContext(Message());
+        }
+
+        try
+        {
+            await _batch.ProcessBatchAsync(_contexts);
+        }
+        finally
+        {
+            foreach (var context in _contexts)
+            {
+                context.Dispose();
+            }
+        }
     }
 
     [GlobalCleanup]
-    public void Cleanup() => _provider.Dispose();
+    public void Cleanup()
+    {
+        _provider.Dispose();
+    }
 
-    [Message("benchmark.upgrade", Version = 1)] public readonly record struct V1(int Value);
-    [Message("benchmark.upgrade", Version = 2)] public readonly record struct V2(long Value);
-    [Message("benchmark.upgrade", Version = 3)] public readonly record struct V3(long Value);
-    public sealed class FirstUpgrade : IUpcaster<V1, V2> { public V2 Upcast(V1 message) => new(message.Value); }
-    public sealed class SecondUpgrade : IUpcaster<V2, V3> { public V3 Upcast(V2 message) => new(message.Value); }
+    [Message("benchmark.upgrade", Version = 1)]
+    public readonly record struct V1(int Value);
+
+    [Message("benchmark.upgrade", Version = 2)]
+    public readonly record struct V2(long Value);
+
+    [Message("benchmark.upgrade", Version = 3)]
+    public readonly record struct V3(long Value);
+
+    public sealed class FirstUpgrade : IUpcaster<V1, V2>
+    {
+        public V2 Upcast(V1 message)
+        {
+            return new(message.Value);
+        }
+    }
+
+    public sealed class SecondUpgrade : IUpcaster<V2, V3>
+    {
+        public V3 Upcast(V2 message)
+        {
+            return new(message.Value);
+        }
+    }
+
     public sealed class Options;
+
     public sealed class Handler : IHandler<V3>
     {
-        public ValueTask HandleAsync(V3 message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(V3 message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
+
     public sealed class BatchHandler : IBatchHandler<V3>
     {
-        public ValueTask<BatchResult> HandleAsync(Batch<V3> batch, CancellationToken cancellationToken) => new(BatchResult.Success);
+        public ValueTask<BatchResult> HandleAsync(Batch<V3> batch, CancellationToken cancellationToken)
+        {
+            return new(BatchResult.Success);
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "benchmark/value";
+
         // Default value structs avoid allocations and boxing for every requested contract.
-        public T Deserialize<T>(ReadOnlySequence<byte> source) => default!;
-        public void Serialize<T>(T message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+        public T Deserialize<T>(ReadOnlySequence<byte> source)
+        {
+            return default!;
+        }
+
+        public void Serialize<T>(T message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

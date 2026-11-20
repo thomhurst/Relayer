@@ -25,9 +25,15 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
         _ = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(connectionString);
         options ??= new();
         _ = options.Validate();
+
         foreach (var descriptor in services)
+        {
             if (descriptor.ServiceType == typeof(SqlServerOrderedDispatcher) && Equals(descriptor.ServiceKey, name))
+            {
                 throw new InvalidOperationException($"Ordered outbox dispatcher '{name}' is already registered.");
+            }
+        }
+
         var snapshot = options;
         services.AddOptions<SqlServerOrderedDispatchOptions>(name);
         services.AddSingleton(new OrderedRegistration(name, snapshot));
@@ -66,8 +72,17 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
     private static T ReadOrdered<T>(IConfiguration configuration, string key, T fallback) where T : IParsable<T>
     {
         var value = configuration[key];
-        if (value is null) return fallback;
-        if (T.TryParse(value, CultureInfo.InvariantCulture, out var result)) return result;
+
+        if (value is null)
+        {
+            return fallback;
+        }
+
+        if (T.TryParse(value, CultureInfo.InvariantCulture, out var result))
+        {
+            return result;
+        }
+
         throw new ArgumentException($"Ordered dispatch {key}: '{value}' is invalid.", nameof(configuration));
     }
 
@@ -82,9 +97,14 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
         protected override SqlServerOrderedDispatchOptions CreateInstance(string requestedName)
         {
             foreach (var registration in registrations)
-                if (registration.Name == requestedName) return registration.Options;
+            {
+                if (registration.Name == requestedName)
+                {
+                    return registration.Options;
+                }
+            }
+
             return new();
         }
     }
-
 }

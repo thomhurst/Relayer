@@ -6,9 +6,17 @@ namespace Relayer.GooglePubSub;
 public interface IGooglePubSubClients
 {
     /// <summary>The unchanged caller-owned administration/publisher API client.</summary>
-    PublisherServiceApiClient PublisherApi { get; }
+    PublisherServiceApiClient PublisherApi
+    {
+        get;
+    }
+
     /// <summary>The unchanged caller-owned administration/subscriber API client.</summary>
-    SubscriberServiceApiClient SubscriberApi { get; }
+    SubscriberServiceApiClient SubscriberApi
+    {
+        get;
+    }
+
     /// <summary>The adapter-owned native topic publisher, including ResumePublish.</summary>
     /// <remarks>Do not shut down or dispose this publisher; the transport owns its lifetime.</remarks>
     PublisherClient PublisherFor(string topic);

@@ -2,8 +2,8 @@ using System.Buffers;
 using System.Data;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -38,12 +38,17 @@ public class EnlistmentTests
         }
 
         var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox();
+
         if (factory)
+        {
             services.AddPooledDbContextFactory<OrdersContext>((sp, options) =>
                 options.UseNpgsql("Host=unused").AddRelayerOutbox(sp));
+        }
         else
+        {
             services.AddDbContextPool<OrdersContext>((sp, options) =>
                 options.UseNpgsql("Host=unused").AddRelayerOutbox(sp));
+        }
         // Without scope validation EF can build the options, but must not silently capture a root coordinator.
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = false });
         await using var scope = provider.CreateAsyncScope();
@@ -78,6 +83,7 @@ public class EnlistmentTests
         await using var schedulerSource = NpgsqlDataSource.Create(database.ConnectionString);
         await using var provider = database.Services(schedulerSource: schedulerSource);
         var scheduled = DateTimeOffset.UtcNow.AddDays(1);
+
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
@@ -91,18 +97,41 @@ public class EnlistmentTests
             await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(1);
             using var enlistment = db.EnlistRelayerOutbox();
             db.Add(new Order { Id = 1 });
-            await enlistment.EnqueueAsync(new Probe(1), o => { o.OrderingKey = "café"; o.DeliverAt = scheduled; o.Headers["custom"] = "é"; });
+            await enlistment.EnqueueAsync(new Probe(1), o =>
+            {
+                o.OrderingKey = "café";
+                o.DeliverAt = scheduled;
+                o.Headers["custom"] = "é";
+            });
             await sender.SendViaOutboxAsync(new Probe(2));
             await Assert.That(await database.Count()).IsEqualTo(0L);
-            if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+
+            if (synchronous)
+            {
+                db.SaveChanges();
+            }
+            else
+            {
+                await db.SaveChangesAsync();
+            }
+
             await Assert.That(await database.Count()).IsEqualTo(2L);
             await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(1L);
             await Assert.That(await database.Scalar("SELECT count(*) FROM batch_log")).IsEqualTo(1L);
 
             // An outbox-only save must also create and commit a transaction.
             await sender.SendAsync(new Probe(3));
-            if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+
+            if (synchronous)
+            {
+                db.SaveChanges();
+            }
+            else
+            {
+                await db.SaveChangesAsync();
+            }
         }
+
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
@@ -110,14 +139,42 @@ public class EnlistmentTests
             await using var transaction = synchronous ? db.Database.BeginTransaction() : await db.Database.BeginTransactionAsync();
             await sender.SendAsync(new Probe(4));
             db.Add(new Order { Id = 2 });
-            if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+
+            if (synchronous)
+            {
+                db.SaveChanges();
+            }
+            else
+            {
+                await db.SaveChangesAsync();
+            }
+
             await sender.SendAsync(new Probe(5));
-            if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+
+            if (synchronous)
+            {
+                db.SaveChanges();
+            }
+            else
+            {
+                await db.SaveChangesAsync();
+            }
+
             await sender.SendAsync(new Probe(6)); // No final SaveChanges required for these rows.
             await Assert.That(await database.Count()).IsEqualTo(3L);
-            if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+
+            if (synchronous)
+            {
+                transaction.Commit();
+            }
+            else
+            {
+                await transaction.CommitAsync();
+            }
+
             await Assert.That(scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>().IsActive).IsFalse();
         }
+
         await Assert.That(await database.Count()).IsEqualTo(6L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM batch_log")).IsEqualTo(3L);
         await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(1);
@@ -132,18 +189,24 @@ public class EnlistmentTests
         await using var provider = database.Services();
         await using var scope = provider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+
         using (var abandoned = db.EnlistRelayerOutbox())
+        {
             await abandoned.EnqueueAsync(new Probe(1));
+        }
+
         await db.SaveChangesAsync();
         await Assert.That(await database.Count()).IsEqualTo(0L);
 
         await using var transaction = await db.Database.BeginTransactionAsync();
+
         using (var selected = db.EnlistRelayerOutbox())
         {
             await Assert.That(async () => await selected.EnqueueAsync(new Probe(2), new CancellationToken(canceled: true)))
                 .Throws<OperationCanceledException>();
             await selected.EnqueueAsync(new Probe(3));
         }
+
         await db.SaveChangesAsync();
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await transaction.CommitAsync();
@@ -163,6 +226,7 @@ public class EnlistmentTests
 
         using var orderOutbox = orders.EnlistRelayerOutbox();
         var auditOutbox = audit.EnlistRelayerOutbox();
+
         using (auditOutbox)
         {
             await auditOutbox.EnqueueAsync(new Probe(2));
@@ -170,6 +234,7 @@ public class EnlistmentTests
             orders.Add(new Order { Id = 1 });
             await orders.SaveChangesAsync();
         }
+
         await Assert.That(async () => await auditOutbox.EnqueueAsync(new Probe(3))).Throws<ObjectDisposedException>();
         await Assert.That(await database.Count()).IsEqualTo(1L);
         await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE get_byte(body, 0) = 1")).IsEqualTo(1L);
@@ -190,20 +255,63 @@ public class EnlistmentTests
         await using var transaction = synchronous ? db.Database.BeginTransaction() : await db.Database.BeginTransactionAsync();
         await sender.SendAsync(new Probe(1));
         db.Add(new Order { Id = 1 });
-        if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+
+        if (synchronous)
+        {
+            db.SaveChanges();
+        }
+        else
+        {
+            await db.SaveChangesAsync();
+        }
         // An empty successful save must also establish the next send boundary.
         await sender.SendAsync(new Probe(2));
-        if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+
+        if (synchronous)
+        {
+            db.SaveChanges();
+        }
+        else
+        {
+            await db.SaveChangesAsync();
+        }
+
         await sender.SendAsync(new Probe(3));
         db.Add(new Order { Id = -1 });
-        if (synchronous) await Assert.That(() => db.SaveChanges()).Throws<DbUpdateException>();
-        else await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();
+
+        if (synchronous)
+        {
+            await Assert.That(() => db.SaveChanges()).Throws<DbUpdateException>();
+        }
+        else
+        {
+            await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();
+        }
+
         db.ChangeTracker.Clear();
         await sender.SendAsync(new Probe(4));
         db.Add(new Order { Id = 2 });
-        if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+
+        if (synchronous)
+        {
+            db.SaveChanges();
+        }
+        else
+        {
+            await db.SaveChangesAsync();
+        }
+
         await sender.SendAsync(new Probe(5)); // Sends after the final save still commit.
-        if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+
+        if (synchronous)
+        {
+            transaction.Commit();
+        }
+        else
+        {
+            await transaction.CommitAsync();
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(4L);
         await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE get_byte(body, 0) IN (1, 2, 4, 5)")).IsEqualTo(4L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(2L);
@@ -222,6 +330,7 @@ public class EnlistmentTests
         var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
         await using var transaction = await db.Database.BeginTransactionAsync();
         await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(1));
+
         if (cancellation)
         {
             // Without an automatic savepoint EF starts the business command before the cancellation is observed.
@@ -236,6 +345,7 @@ public class EnlistmentTests
             await transaction.CreateSavepointAsync("manual");
             await transaction.RollbackToSavepointAsync("manual");
         }
+
         await Assert.That(async () => await transaction.CommitAsync()).Throws<InvalidOperationException>();
         await transaction.RollbackAsync();
         await Assert.That(await database.Count()).IsEqualTo(0L);
@@ -256,12 +366,14 @@ public class EnlistmentTests
         await db.SaveChangesAsync();
         await sender.SendAsync(new Probe(2));
         db.Add(new Order { Id = 2 });
+
         using (var canceled = new CancellationTokenSource())
         {
             canceled.Cancel();
             // EF fails to create its automatic savepoint, so no command from this save runs.
             await Assert.That(async () => await db.SaveChangesAsync(canceled.Token)).Throws<OperationCanceledException>();
         }
+
         db.ChangeTracker.Clear();
         await sender.SendAsync(new Probe(3));
         db.Add(new Order { Id = 3 });
@@ -289,13 +401,37 @@ public class EnlistmentTests
         await sender.SendAsync(new Probe(1));
         db.Add(new Order { Id = 1 });
         // The command cancels without canceling the caller token, so EF can roll back its savepoint.
-        if (synchronous) await Assert.That(() => db.SaveChanges()).Throws<OperationCanceledException>();
-        else await Assert.That(async () => await db.SaveChangesAsync()).Throws<OperationCanceledException>();
+        if (synchronous)
+        {
+            await Assert.That(() => db.SaveChanges()).Throws<OperationCanceledException>();
+        }
+        else
+        {
+            await Assert.That(async () => await db.SaveChangesAsync()).Throws<OperationCanceledException>();
+        }
+
         db.ChangeTracker.Clear();
         await sender.SendAsync(new Probe(2));
         db.Add(new Order { Id = 2 });
-        if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
-        if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+
+        if (synchronous)
+        {
+            db.SaveChanges();
+        }
+        else
+        {
+            await db.SaveChangesAsync();
+        }
+
+        if (synchronous)
+        {
+            transaction.Commit();
+        }
+        else
+        {
+            await transaction.CommitAsync();
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(1L);
         await Assert.That(await database.Scalar($"SELECT get_byte(body, 0)::bigint FROM {Database.Table}")).IsEqualTo(2L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM orders WHERE \"Id\" = 2")).IsEqualTo(1L);
@@ -304,6 +440,7 @@ public class EnlistmentTests
     private sealed class CancelCommand : DbCommandInterceptor
     {
         private bool _cancel = true;
+
         public override InterceptionResult<DbDataReader> ReaderExecuting(DbCommand command, CommandEventData eventData,
             InterceptionResult<DbDataReader> result)
         {
@@ -312,12 +449,15 @@ public class EnlistmentTests
                 _cancel = false;
                 throw new OperationCanceledException("Cancel the first business command.");
             }
+
             return result;
         }
 
         public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
-            CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default) =>
-            new(ReaderExecuting(command, eventData, result));
+            CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            return new(ReaderExecuting(command, eventData, result));
+        }
     }
 
     [Test]
@@ -333,8 +473,17 @@ public class EnlistmentTests
         await using var transaction = await db.Database.BeginTransactionAsync();
         audits.Database.SetDbConnection(db.Database.GetDbConnection());
         await using var joined = await audits.Database.UseTransactionAsync(transaction.GetDbTransaction());
-        using (audits.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(1));
-        using (db.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(2));
+
+        using (audits.EnlistRelayerOutbox())
+        {
+            await sender.SendAsync(new Probe(1));
+        }
+
+        using (db.EnlistRelayerOutbox())
+        {
+            await sender.SendAsync(new Probe(2));
+        }
+
         db.Add(new Order { Id = -1 });
         await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();
         db.ChangeTracker.Clear();
@@ -352,6 +501,7 @@ public class EnlistmentTests
         await using var scope = provider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
         await using (var transaction = await db.Database.BeginTransactionAsync())
         {
             await sender.SendAsync(new Probe(1));
@@ -359,8 +509,14 @@ public class EnlistmentTests
             await db.SaveChangesAsync();
             await transaction.RollbackAsync();
         }
-        await using (await db.Database.BeginTransactionAsync()) await sender.SendAsync(new Probe(2));
+
+        await using (await db.Database.BeginTransactionAsync())
+        {
+            await sender.SendAsync(new Probe(2));
+        }
+
         await Assert.That(scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>().IsActive).IsFalse();
+
         using (db.EnlistRelayerOutbox())
         {
             await sender.SendAsync(new Probe(3));
@@ -368,16 +524,20 @@ public class EnlistmentTests
             cancellation.Cancel();
             await Assert.That(async () => await db.SaveChangesAsync(cancellation.Token)).Throws<OperationCanceledException>();
         }
+
         db.ChangeTracker.Clear();
+
         using (db.EnlistRelayerOutbox())
         {
             db.Add(new Order { Id = -1 }); // Database CHECK violation.
             await sender.SendAsync(new Probe(4));
             await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();
         }
+
         db.ChangeTracker.Clear();
         // Without native automatic savepoint recovery a failed explicit unit still cannot commit.
         db.Database.AutoSavepointsEnabled = false;
+
         await using (var transaction = await db.Database.BeginTransactionAsync())
         {
             await sender.SendAsync(new Probe(5));
@@ -386,6 +546,7 @@ public class EnlistmentTests
             await Assert.That(async () => await transaction.CommitAsync()).Throws<InvalidOperationException>();
             await transaction.RollbackAsync();
         }
+
         db.ChangeTracker.Clear();
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(0L);
@@ -396,6 +557,7 @@ public class EnlistmentTests
             await sender.SendAsync(new Probe(6));
             await db.SaveChangesAsync();
         }
+
         await Assert.That(await database.Count()).IsEqualTo(1L);
     }
 
@@ -414,6 +576,7 @@ public class EnlistmentTests
         var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         var transport = provider.GetRequiredService<Transport>();
+
         if (serializationFailure)
         {
             // Raise 40001 only when PostgreSQL executes COMMIT, after the outbox insert.
@@ -428,17 +591,32 @@ public class EnlistmentTests
                     EXECUTE FUNCTION fail_order_commit();
                 """);
         }
+
         DbTransaction? failedTransaction = null;
+
         await using (var transaction = synchronous
             ? db.Database.BeginTransaction(IsolationLevel.Serializable)
             : await db.Database.BeginTransactionAsync(IsolationLevel.Serializable))
         {
             // Explicit selection must not survive into the retry unit.
-            using (db.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(1));
+            using (db.EnlistRelayerOutbox())
+            {
+                await sender.SendAsync(new Probe(1));
+            }
+
             if (serializationFailure)
             {
                 db.Add(new Order { Id = 1 });
-                if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+
+                if (synchronous)
+                {
+                    db.SaveChanges();
+                }
+                else
+                {
+                    await db.SaveChangesAsync();
+                }
+
                 var failure = synchronous
                     ? await Assert.That(() => transaction.Commit()).Throws<PostgresException>()
                     : await Assert.That(async () => await transaction.CommitAsync()).Throws<PostgresException>();
@@ -448,19 +626,47 @@ public class EnlistmentTests
             {
                 db.Database.AutoSavepointsEnabled = false;
                 db.Add(new Order { Id = -1 });
-                if (synchronous) await Assert.That(() => db.SaveChanges()).Throws<DbUpdateException>();
-                else await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();
-                if (synchronous) await Assert.That(() => transaction.Commit()).Throws<InvalidOperationException>();
-                else await Assert.That(async () => await transaction.CommitAsync()).Throws<InvalidOperationException>();
+
+                if (synchronous)
+                {
+                    await Assert.That(() => db.SaveChanges()).Throws<DbUpdateException>();
+                }
+                else
+                {
+                    await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();
+                }
+
+                if (synchronous)
+                {
+                    await Assert.That(() => transaction.Commit()).Throws<InvalidOperationException>();
+                }
+                else
+                {
+                    await Assert.That(async () => await transaction.CommitAsync()).Throws<InvalidOperationException>();
+                }
             }
+
             if (serializationFailure)
             {
                 failedTransaction = transaction.GetDbTransaction();
-                if (synchronous) await Assert.That(() => transaction.Rollback()).Throws<InvalidOperationException>();
-                else await Assert.That(async () => await transaction.RollbackAsync()).Throws<InvalidOperationException>();
+
+                if (synchronous)
+                {
+                    await Assert.That(() => transaction.Rollback()).Throws<InvalidOperationException>();
+                }
+                else
+                {
+                    await Assert.That(async () => await transaction.RollbackAsync()).Throws<InvalidOperationException>();
+                }
             }
-            else if (synchronous) transaction.Rollback();
-            else await transaction.RollbackAsync();
+            else if (synchronous)
+            {
+                transaction.Rollback();
+            }
+            else
+            {
+                await transaction.RollbackAsync();
+            }
         }
 
         // Rent the original connector before the outbox can observe its disposed transaction.
@@ -468,20 +674,41 @@ public class EnlistmentTests
         await using var peerScope = provider.CreateAsyncScope();
         var peer = peerScope.ServiceProvider.GetRequiredService<OrdersContext>();
         await using var peerTransaction = serializationFailure ? await peer.Database.BeginTransactionAsync() : null;
+
         if (peerTransaction is not null)
+        {
             await Assert.That(ReferenceEquals(peerTransaction.GetDbTransaction(), failedTransaction)).IsTrue();
+        }
 
         await Assert.That(scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>().IsActive).IsFalse();
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(transport.Sends).IsEqualTo(0);
         db.ChangeTracker.Clear();
+
         await using (var retry = synchronous ? db.Database.BeginTransaction() : await db.Database.BeginTransactionAsync())
         {
             db.Add(new Order { Id = 3 });
             await sender.SendAsync(new Probe(2)); // Automatic selection of the new unit.
-            if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
-            if (synchronous) retry.Commit(); else await retry.CommitAsync();
+
+            if (synchronous)
+            {
+                db.SaveChanges();
+            }
+            else
+            {
+                await db.SaveChangesAsync();
+            }
+
+            if (synchronous)
+            {
+                retry.Commit();
+            }
+            else
+            {
+                await retry.CommitAsync();
+            }
         }
+
         await Assert.That(scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>().IsActive).IsFalse();
         await Assert.That(await database.Count()).IsEqualTo(1L);
         await Assert.That(await database.Scalar($"SELECT get_byte(body, 0)::bigint FROM {Database.Table}")).IsEqualTo(2L);
@@ -507,21 +734,35 @@ public class EnlistmentTests
         var orders = scope.ServiceProvider.GetRequiredService<OrdersContext>();
         var audits = scope.ServiceProvider.GetRequiredService<AuditContext>();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
         using (orders.EnlistRelayerOutbox())
         {
             // Nested selection of the same context must not discard the outer unit's sends.
-            using (orders.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(1));
+            using (orders.EnlistRelayerOutbox())
+            {
+                await sender.SendAsync(new Probe(1));
+            }
             // Saving another context must not steal the buffered row.
             await audits.SaveChangesAsync();
             await Assert.That(await database.Count()).IsEqualTo(0L);
             await orders.SaveChangesAsync();
         }
+
         await using (var first = await orders.Database.BeginTransactionAsync())
         await using (var second = await audits.Database.BeginTransactionAsync())
         {
             await Assert.That(async () => await sender.SendAsync(new Probe(2))).Throws<InvalidOperationException>();
-            using (orders.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(3));
-            using (audits.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(4));
+
+            using (orders.EnlistRelayerOutbox())
+            {
+                await sender.SendAsync(new Probe(3));
+            }
+
+            using (audits.EnlistRelayerOutbox())
+            {
+                await sender.SendAsync(new Probe(4));
+            }
+
             orders.Add(new Order { Id = 10 });
             audits.Add(new Order { Id = 20 });
             await orders.SaveChangesAsync();
@@ -529,6 +770,7 @@ public class EnlistmentTests
             await first.CommitAsync();
             await second.RollbackAsync();
         }
+
         await Assert.That(await database.Count()).IsEqualTo(2L);
 
         // EF's UseTransaction joins the same native transaction across contexts.
@@ -540,9 +782,22 @@ public class EnlistmentTests
         orders.Database.SetDbConnection(connection);
         await using var shared = await orders.Database.BeginTransactionAsync();
         await joined.Database.UseTransactionAsync(shared.GetDbTransaction());
-        using (orders.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(5));
-        using (joined.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(6));
-        using (orders.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(7));
+
+        using (orders.EnlistRelayerOutbox())
+        {
+            await sender.SendAsync(new Probe(5));
+        }
+
+        using (joined.EnlistRelayerOutbox())
+        {
+            await sender.SendAsync(new Probe(6));
+        }
+
+        using (orders.EnlistRelayerOutbox())
+        {
+            await sender.SendAsync(new Probe(7));
+        }
+
         orders.Add(new Order { Id = 30 });
         joined.Add(new Order { Id = 40 });
         await orders.SaveChangesAsync();
@@ -571,16 +826,22 @@ public class EnlistmentTests
         KeyValuePair<string, WireString>[] headers = [new("custom", new WireString(value))];
         var message = new OutgoingMessage("target", body, headers, new WireString(key));
         var record = new OutboxRecord(Guid.CreateVersion7(), "events", "wire.type;v=2", message, DateTimeOffset.UtcNow, TenantId: "tenant-a");
+
         using (db.EnlistRelayerOutbox())
         {
             await outbox.EnlistAsync(record, default);
-            body[0] = 9; value[0] = 9; key[0] = 9; headers[0] = default;
+            body[0] = 9;
+            value[0] = 9;
+            key[0] = 9;
+            headers[0] = default;
             await db.SaveChangesAsync();
         }
+
         await using var connection = new NpgsqlConnection(database.ConnectionString);
         await connection.OpenAsync();
         await using var command = new NpgsqlCommand($"SELECT body, headers, ordering_key, tenant_id, lane FROM {Database.Table}", connection);
         int lane;
+
         await using (var reader = await command.ExecuteReaderAsync())
         {
             await reader.ReadAsync();
@@ -590,8 +851,13 @@ public class EnlistmentTests
             await Assert.That(reader.GetString(3)).IsEqualTo("tenant-a");
             lane = reader.GetInt32(4);
         }
+
         await using var dataSource = NpgsqlDataSource.Create(database.ConnectionString);
-        var store = new PostgreSqlOutboxStore(dataSource, new() { Schema = Database.Options.Schema, TablePrefix = Database.Options.TablePrefix });
+        var store = new PostgreSqlOutboxStore(dataSource, new()
+        {
+            Schema = Database.Options.Schema,
+            TablePrefix = Database.Options.TablePrefix
+        });
         var rows = new OutboxRecord[1];
         await Assert.That(await store.ReadPendingAsync(new(lane, DateTimeOffset.UtcNow), rows, default)).IsEqualTo(1);
         await Assert.That(rows[0].Id).IsEqualTo(record.Id);
@@ -600,13 +866,18 @@ public class EnlistmentTests
         await Assert.That(rows[0].Message.Headers.Span[0].Value.ToString()).IsEqualTo("héllo");
         await Assert.That(await store.GetPendingCountAsync(DateTimeOffset.UtcNow, default)).IsEqualTo(1L);
         // Duplicate original identity makes the single INSERT fail. Business data must roll back as well.
-        record = record with { Message = new OutgoingMessage("target", default) };
+        record = record with
+        {
+            Message = new OutgoingMessage("target", default)
+        };
+
         using (db.EnlistRelayerOutbox())
         {
             await outbox.EnlistAsync(record, default);
             db.Add(new Order { Id = 1 });
             await Assert.That(async () => await db.SaveChangesAsync()).Throws<PostgresException>();
         }
+
         await Assert.That(await database.Count()).IsEqualTo(1L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(0L);
         await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(0);
@@ -624,7 +895,14 @@ public class EnlistmentTests
         await using var transaction = await db.Database.BeginTransactionAsync();
         var record = new OutboxRecord(default, "events", "wire.type;v=1", new("target", new byte[256]), DateTimeOffset.UtcNow);
         // A per-row parameter strategy would exceed PostgreSQL's 65,535 parameter limit.
-        for (var i = 0; i < 7000; i++) await outbox.EnlistAsync(record with { Id = Guid.CreateVersion7() }, default);
+        for (var i = 0; i < 7000; i++)
+        {
+            await outbox.EnlistAsync(record with
+            {
+                Id = Guid.CreateVersion7()
+            }, default);
+        }
+
         await transaction.CommitAsync();
         await Assert.That(await database.Count()).IsEqualTo(7000L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM batch_log")).IsEqualTo(1L);
@@ -637,9 +915,15 @@ public class EnlistmentTests
         await using var provider = services.BuildServiceProvider();
         await using var scope = provider.CreateAsyncScope();
         await Assert.That(() => new DbContextOptionsBuilder().AddRelayerOutbox(scope.ServiceProvider,
-            new() { Lanes = 0 })).Throws<ArgumentOutOfRangeException>();
+            new()
+            {
+                Lanes = 0
+            })).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new DbContextOptionsBuilder().AddRelayerOutbox(scope.ServiceProvider,
-            new() { Schema = "" })).Throws<ArgumentException>();
+            new()
+            {
+                Schema = ""
+            })).Throws<ArgumentException>();
         using var context = new DbContext(new DbContextOptionsBuilder().Options);
         await Assert.That(() => context.EnlistRelayerOutbox()).Throws<InvalidOperationException>();
 
@@ -652,7 +936,9 @@ public class EnlistmentTests
         var record = new OutboxRecord(default, "events", "wire.type;v=1", new("target", default), DateTimeOffset.UtcNow);
         await Assert.That(async () => await outbox.EnlistAsync(record, default)).Throws<InvalidOperationException>();
         var native = new SendOptions();
-        native.ConfigureNative<object>(static _ => { });
+        native.ConfigureNative<object>(static _ =>
+        {
+        });
         await Assert.That(async () => await outbox.EnlistAsync(record with { Message = new("target", default, options: native) }, default)).Throws<InvalidOperationException>();
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -663,7 +949,11 @@ public class EnlistmentTests
     public async Task Immutable_options_bind_validate_and_reload_for_new_scopes()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        { ["Schema"] = "messages", ["TablePrefix"] = "orders_", ["Lanes"] = "7" }).Build();
+        {
+            ["Schema"] = "messages",
+            ["TablePrefix"] = "orders_",
+            ["Lanes"] = "7"
+        }).Build();
         var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox(configuration);
         await using var provider = services.BuildServiceProvider();
         using var first = provider.CreateScope();
@@ -707,24 +997,50 @@ public class EnlistmentTests
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         await using var transaction = await orders.Database.BeginTransactionAsync();
         var wrapper = await joined.Database.UseTransactionAsync(transaction.GetDbTransaction());
+
         using (joined.EnlistRelayerOutbox())
         {
             await sender.SendAsync(new Probe(1));
             joined.Add(new Order { Id = 1 });
             await joined.SaveChangesAsync();
         }
+
         if (disposeContext)
         {
-            if (synchronous) joined.Dispose(); else await joined.DisposeAsync();
+            if (synchronous)
+            {
+                joined.Dispose();
+            }
+            else
+            {
+                await joined.DisposeAsync();
+            }
         }
         else
         {
-            if (synchronous) wrapper!.Dispose(); else await wrapper!.DisposeAsync();
+            if (synchronous)
+            {
+                wrapper!.Dispose();
+            }
+            else
+            {
+                await wrapper!.DisposeAsync();
+            }
+
             await Assert.That(() => joined.EnlistRelayerOutbox()).Throws<InvalidOperationException>();
         }
         // Automatic routing must ignore the detached participant without discarding its durable work.
         await sender.SendAsync(new Probe(2));
-        if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+
+        if (synchronous)
+        {
+            transaction.Commit();
+        }
+        else
+        {
+            await transaction.CommitAsync();
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(2L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(1L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM batch_log")).IsEqualTo(1L);
@@ -745,17 +1061,27 @@ public class EnlistmentTests
         options.UseNpgsql(db.Database.GetDbConnection()).AddRelayerOutbox(scope.ServiceProvider, Database.Options);
         await using var joined = new AuditContext(options.Options);
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
         await using (var abandoned = await db.Database.BeginTransactionAsync())
         {
             await joined.Database.UseTransactionAsync(abandoned.GetDbTransaction());
-            using (joined.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(1));
+
+            using (joined.EnlistRelayerOutbox())
+            {
+                await sender.SendAsync(new Probe(1));
+            }
         }
         // No send or IsActive probe between disposal and the next BeginTransaction.
         await using (var next = await db.Database.BeginTransactionAsync())
         {
-            using (db.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(2));
+            using (db.EnlistRelayerOutbox())
+            {
+                await sender.SendAsync(new Probe(2));
+            }
+
             await next.CommitAsync();
         }
+
         await Assert.That(await database.Count()).IsEqualTo(1L);
         await Assert.That(await database.Scalar($"SELECT sum(get_byte(body, 0)) FROM {Database.Table}")).IsEqualTo(2L);
     }
@@ -770,6 +1096,7 @@ public class EnlistmentTests
         await using var provider = database.Services(retries: true);
         await using var scope = provider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+
         using (db.EnlistRelayerOutbox())
         {
             await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(1));
@@ -780,6 +1107,7 @@ public class EnlistmentTests
             await Assert.That(error!.Message).Contains("Relayer outbox");
             await Assert.That(error.Message).Contains("explicit transaction");
         }
+
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(0L);
         var attempts = 0;
@@ -792,9 +1120,29 @@ public class EnlistmentTests
             await using var transaction = synchronous ? attemptDb.Database.BeginTransaction() : await attemptDb.Database.BeginTransactionAsync();
             await sender.SendAsync(new Probe(2));
             attemptDb.Add(new Order { Id = 2 });
-            if (synchronous) attemptDb.SaveChanges(); else await attemptDb.SaveChangesAsync();
-            if (++attempts == 1) throw new TimeoutException("Retry this complete unit after rollback.");
-            if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+
+            if (synchronous)
+            {
+                attemptDb.SaveChanges();
+            }
+            else
+            {
+                await attemptDb.SaveChangesAsync();
+            }
+
+            if (++attempts == 1)
+            {
+                throw new TimeoutException("Retry this complete unit after rollback.");
+            }
+
+            if (synchronous)
+            {
+                transaction.Commit();
+            }
+            else
+            {
+                await transaction.CommitAsync();
+            }
         });
         await Assert.That(attempts).IsEqualTo(2);
         await Assert.That(await database.Count()).IsEqualTo(1L);
@@ -807,7 +1155,12 @@ public class EnlistmentTests
         KeyValuePair<string, WireString>[] entries = [];
         var headers = OutboxHeaderCodec.Read(data, ref entries);
         var result = new List<KeyValuePair<string, string>>(headers.Length);
-        foreach (var header in headers.Span) result.Add(new(header.Key, header.Value.ToString()));
+
+        foreach (var header in headers.Span)
+        {
+            result.Add(new(header.Key, header.Value.ToString()));
+        }
+
         return result;
     }
 
@@ -816,13 +1169,19 @@ public class EnlistmentTests
         internal static EntityFrameworkCoreOutboxOptions Options => new() { Schema = "Case\"Schema", TablePrefix = "test_" };
         internal const string Table = "\"Case\"\"Schema\".\"test_outbox\"";
         private readonly PostgreSqlFixture _fixture = new();
+
         internal string ConnectionString => _fixture.ConnectionString;
+
         internal async Task Start()
         {
             await _fixture.StartAsync();
             await using var connection = new NpgsqlConnection(ConnectionString);
             await connection.OpenAsync();
-            var sql = PostgreSqlOutboxSchema.CreateScript(new() { Schema = Options.Schema, TablePrefix = Options.TablePrefix }) + $"""
+            var sql = PostgreSqlOutboxSchema.CreateScript(new()
+            {
+                Schema = Options.Schema,
+                TablePrefix = Options.TablePrefix
+            }) + $"""
                 CREATE TABLE orders ("Id" integer PRIMARY KEY CHECK ("Id" > 0));
                 CREATE TABLE batch_log (id integer);
                 CREATE FUNCTION log_batch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO batch_log VALUES (1); RETURN NULL; END; $$;
@@ -831,18 +1190,24 @@ public class EnlistmentTests
             await using var command = new NpgsqlCommand(sql, connection);
             await command.ExecuteNonQueryAsync();
         }
+
         internal ServiceProvider Services(bool retries = false, NpgsqlDataSource? schedulerSource = null, NpgsqlDataSource? dispatchSource = null, bool poolContexts = false)
         {
             var services = new ServiceCollection();
+
             if (schedulerSource is not null)
+            {
                 services.AddRelayerPostgreSqlOrderedDispatch("schedule", schedulerSource,
                     new PostgreSqlOrderedDispatchOptions { Schema = Options.Schema, TablePrefix = Options.TablePrefix, Lanes = Options.Lanes });
+            }
+
             if (dispatchSource is not null)
             {
                 services.AddLogging();
                 services.AddRelayerPostgreSqlDirectDispatch("replay", dispatchSource,
                     new PostgreSqlOutboxOptions { Schema = Options.Schema, TablePrefix = Options.TablePrefix });
             }
+
             services.AddSingleton<Transport>();
             services.AddSingleton<ITransport>(static sp => sp.GetRequiredService<Transport>());
             services.AddSingleton<IMessageSerializer, Serializer>();
@@ -852,9 +1217,17 @@ public class EnlistmentTests
                 : ConnectionString;
             services.AddDbContext<OrdersContext>((sp, o) => o.UseNpgsql(contextConnectionString, native =>
             {
-                if (retries) native.EnableRetryOnFailure(1, TimeSpan.Zero, null);
-            }).AddRelayerOutbox(sp, new EntityFrameworkCoreOutboxOptions { Schema = Options.Schema, TablePrefix = Options.TablePrefix,
-                Lanes = Options.Lanes, DispatchStoreName = dispatchSource is null ? null : "replay" }));
+                if (retries)
+                {
+                    native.EnableRetryOnFailure(1, TimeSpan.Zero, null);
+                }
+            }).AddRelayerOutbox(sp, new EntityFrameworkCoreOutboxOptions
+            {
+                Schema = Options.Schema,
+                TablePrefix = Options.TablePrefix,
+                Lanes = Options.Lanes,
+                DispatchStoreName = dispatchSource is null ? null : "replay"
+            }));
             services.AddDbContext<AuditContext>((sp, o) => o.UseNpgsql(ConnectionString).AddRelayerOutbox(sp, Options));
             services.AddRelayer(builder =>
             {
@@ -863,7 +1236,12 @@ public class EnlistmentTests
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }
-        internal Task<long> Count() => Scalar($"SELECT count(*) FROM {Table}");
+
+        internal Task<long> Count()
+        {
+            return Scalar($"SELECT count(*) FROM {Table}");
+        }
+
         internal async Task<long> Scalar(string sql)
         {
             await using var connection = new NpgsqlConnection(ConnectionString);
@@ -871,6 +1249,7 @@ public class EnlistmentTests
             await using var command = new NpgsqlCommand(sql, connection);
             return (long)(await command.ExecuteScalarAsync())!;
         }
+
         internal async Task VerifyEnvelope(DateTimeOffset scheduled)
         {
             await using var connection = new NpgsqlConnection(ConnectionString);
@@ -889,39 +1268,110 @@ public class EnlistmentTests
             await Assert.That(reader.GetInt32(5) is >= 0 and < 32).IsTrue();
             await Assert.That(reader.GetFieldValue<DateTimeOffset>(6)).IsEqualTo(scheduled.AddTicks(-(scheduled.Ticks % 10)));
         }
-        public ValueTask DisposeAsync() => _fixture.DisposeAsync();
+
+        public ValueTask DisposeAsync()
+        {
+            return _fixture.DisposeAsync();
+        }
     }
 
     public sealed class OrdersContext(DbContextOptions<OrdersContext> options) : DbContext(options)
     {
-        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Order>().ToTable("orders").HasKey(x => x.Id);
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Order>().ToTable("orders").HasKey(x => x.Id);
+        }
     }
+
     public sealed class AuditContext(DbContextOptions<AuditContext> options) : DbContext(options)
     {
-        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Order>().ToTable("orders").HasKey(x => x.Id);
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Order>().ToTable("orders").HasKey(x => x.Id);
+        }
     }
-    public sealed class Order { public int Id { get; set; } }
+
+    public sealed class Order
+    {
+        public int Id
+        {
+            get; set;
+        }
+    }
+
     [Message("outbox.probe")]
     public sealed record Probe(byte Value);
+
     public sealed class Empty;
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
-        { destination.GetSpan(1)[0] = ((Probe)(object)message!).Value; destination.Advance(1); }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+        {
+            destination.GetSpan(1)[0] = ((Probe)(object)message!).Value;
+            destination.Advance(1);
+        }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class Transport : ITransport
     {
-        public int Sends { get; private set; }
-        public List<byte[]> Bodies { get; } = [];
+        public int Sends
+        {
+            get; private set;
+        }
+
+        public List<byte[]> Bodies
+        {
+            get;
+        } = [];
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Sends++; Bodies.Add(message.Body.ToArray()); return default; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Sends++;
+            Bodies.Add(message.Body.ToArray());
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

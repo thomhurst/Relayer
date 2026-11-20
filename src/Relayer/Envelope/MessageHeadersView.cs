@@ -1,4 +1,5 @@
 using Relayer.Transports;
+
 namespace Relayer;
 
 /// <summary>A lazy, non-enumerating view of native headers. Values retain their native encoding.</summary>
@@ -6,7 +7,10 @@ namespace Relayer;
 public abstract class MessageHeaders
 {
     /// <summary>An immutable empty header view.</summary>
-    public static MessageHeaders Empty { get; } = new EmptyHeaders();
+    public static MessageHeaders Empty
+    {
+        get;
+    } = new EmptyHeaders();
 
     /// <summary>Reads one named header without decoding its value.</summary>
     public abstract bool TryGetValue(string name, out WireString value);

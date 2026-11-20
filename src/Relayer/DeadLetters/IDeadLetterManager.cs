@@ -26,11 +26,22 @@ public sealed record DeadLetterSource(string Id, string Destination);
 public sealed class DeadLetterMessage
 {
     /// <summary>Native message identifier, if present.</summary>
-    public string? MessageId { get; init; }
+    public string? MessageId
+    {
+        get; init;
+    }
+
     /// <summary>Owned body storage, valid after the management call returns.</summary>
-    public ReadOnlyMemory<byte> Body { get; init; }
+    public ReadOnlyMemory<byte> Body
+    {
+        get; init;
+    }
+
     /// <summary>Transport-native message properties and metadata.</summary>
-    public MessageFeatures Features { get; } = new();
+    public MessageFeatures Features
+    {
+        get;
+    } = new();
 }
 
 /// <summary>A bounded peek result. A continuation can return an empty page when the source has changed.</summary>

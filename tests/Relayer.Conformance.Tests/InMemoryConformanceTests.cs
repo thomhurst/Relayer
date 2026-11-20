@@ -62,11 +62,15 @@ public class InMemoryConformanceTests
         });
         var run = suite.RunAsync(TransportConformanceCase.DeadLetter, cancellation.Token);
         var watchdog = TimeSpan.FromSeconds(5);
+
         try
         {
             await readStarted.Task.WaitAsync(watchdog);
             cancellation.Cancel();
-            var error = await Assert.That(async () => { await run.WaitAsync(watchdog); }).Throws<InvalidOperationException>();
+            var error = await Assert.That(async () =>
+            {
+                await run.WaitAsync(watchdog);
+            }).Throws<InvalidOperationException>();
             await Assert.That(error!.Message).Contains("dead-letter receive");
             await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
             await Assert.That(fixture!.StoppedBeforeDisposal).IsTrue();
@@ -76,8 +80,14 @@ public class InMemoryConformanceTests
         finally
         {
             pendingRead.TrySetResult();
-            try { await run.WaitAsync(watchdog); }
-            catch (InvalidOperationException) { }
+
+            try
+            {
+                await run.WaitAsync(watchdog);
+            }
+            catch (InvalidOperationException)
+            {
+            }
         }
     }
 
@@ -110,7 +120,11 @@ public class InMemoryConformanceTests
     {
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
             new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new InMemoryFixture(tracing,
-                capabilities: new() { MaxRedeliveryDelay = TimeSpan.Zero, MaxDeliveryDelay = TimeSpan.FromMilliseconds(100) })));
+                capabilities: new()
+                {
+                    MaxRedeliveryDelay = TimeSpan.Zero,
+                    MaxDeliveryDelay = TimeSpan.FromMilliseconds(100)
+                })));
         await Assert.That((await suite.RunAsync(TransportConformanceCase.Retry)).Skipped).IsFalse();
         await Assert.That((await suite.RunAsync(TransportConformanceCase.RedeliveryDelay)).Skipped).IsTrue();
         await Assert.That((await suite.RunAsync(TransportConformanceCase.Delay)).Skipped).IsFalse();
@@ -134,13 +148,23 @@ public class InMemoryConformanceTests
             .Throws<InvalidOperationException>();
     }
 
-    private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(bool log) =>
-        new((tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new InMemoryFixture(tracing, log)));
+    private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(bool log)
+    {
+        return new((tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new InMemoryFixture(tracing, log)));
+    }
 
     private readonly struct BrokenCreationBinding : IMessageBinding<InMemoryDelivery>
     {
-        public static ReadOnlySequence<byte> GetBody(InMemoryDelivery message) => InMemoryMessageBinding.GetBody(message);
-        public static int? GetDeliveryCount(InMemoryDelivery message) => message.Attempt;
+        public static ReadOnlySequence<byte> GetBody(InMemoryDelivery message)
+        {
+            return InMemoryMessageBinding.GetBody(message);
+        }
+
+        public static int? GetDeliveryCount(InMemoryDelivery message)
+        {
+            return message.Attempt;
+        }
+
         public static bool TryGetHeader(InMemoryDelivery message, string name, out WireString value)
         {
             if (name == "traceparent")
@@ -148,6 +172,7 @@ public class InMemoryConformanceTests
                 value = new WireString("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01");
                 return true;
             }
+
             return InMemoryMessageBinding.TryGetHeader(message, name, out value);
         }
     }
@@ -158,11 +183,31 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
     private readonly InMemoryTransport _transport;
     private readonly bool _log;
     private int _completed;
-    internal Func<Task>? AfterDeadLetterRead { get; init; }
-    internal Func<ValueTask>? AfterDisposal { get; init; }
-    internal bool StoppedBeforeDisposal { get; private set; }
-    internal bool Disposed { get; private set; }
-    public ConformanceLogCapture Logs { get; } = new();
+
+    internal Func<Task>? AfterDeadLetterRead
+    {
+        get; init;
+    }
+
+    internal Func<ValueTask>? AfterDisposal
+    {
+        get; init;
+    }
+
+    internal bool StoppedBeforeDisposal
+    {
+        get; private set;
+    }
+
+    internal bool Disposed
+    {
+        get; private set;
+    }
+
+    public ConformanceLogCapture Logs
+    {
+        get;
+    } = new();
 
     internal InMemoryFixture(MessageTracing? tracing, bool log = false, TransportCapabilities? capabilities = null, int capacity = 256)
     {
@@ -186,45 +231,88 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
     }
 
     public ITransport Transport => _transport;
+
     public string Destination => "conformance";
+
     public string MessagingSystem => "relayer.inmemory";
+
     public string SettlementOperation => "complete";
-    public HeaderNames HeaderNames { get; } = new();
-    public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive) =>
+
+    public HeaderNames HeaderNames
+    {
+        get;
+    } = new();
+
+    public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive)
+    {
         _transport.RegisterConsumer(Destination, (delivery, token) => receive(delivery, token), _log ? "conformance" : null, 2);
+    }
+
     public ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken cancellationToken)
     {
         switch (disposition.Kind)
         {
-            case DispositionKind.Complete: incoming.Complete(); Interlocked.Increment(ref _completed); break;
-            case DispositionKind.Redeliver: incoming.Redeliver(disposition.Delay); break;
-            case DispositionKind.DeadLetter: incoming.DeadLetter(disposition.DeadLetter); break;
-            default: throw new InvalidOperationException("Unexpected conformance disposition.");
+            case DispositionKind.Complete:
+                incoming.Complete();
+                Interlocked.Increment(ref _completed);
+                break;
+            case DispositionKind.Redeliver:
+                incoming.Redeliver(disposition.Delay);
+                break;
+            case DispositionKind.DeadLetter:
+                incoming.DeadLetter(disposition.DeadLetter);
+                break;
+            default:
+                throw new InvalidOperationException("Unexpected conformance disposition.");
         }
+
         return default;
     }
+
     public async ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken)
     {
         var dead = await _transport.DeadLetters(Destination).ReadAsync(cancellationToken);
-        if (AfterDeadLetterRead is { } afterRead) await afterRead();
+
+        if (AfterDeadLetterRead is { } afterRead)
+        {
+            await afterRead();
+        }
+
         return new(dead.Body, dead.Headers.ToArray().ToDictionary(header => header.Key, header => header.Value.ToString()),
             dead.Error.Reason, dead.Error.Description);
     }
-    public Task DisconnectAsync(CancellationToken cancellationToken) => _transport.StopAsync(cancellationToken);
-    public Task ReconnectAsync(CancellationToken cancellationToken) => _transport.StartAsync(cancellationToken);
+
+    public Task DisconnectAsync(CancellationToken cancellationToken)
+    {
+        return _transport.StopAsync(cancellationToken);
+    }
+
+    public Task ReconnectAsync(CancellationToken cancellationToken)
+    {
+        return _transport.StartAsync(cancellationToken);
+    }
+
     public ValueTask VerifyShutdownAsync(CancellationToken cancellationToken)
     {
         // Completion is the production native-loop task; it includes handler execution and settlement.
         if (!_transport.Completion.IsCompletedSuccessfully || Volatile.Read(ref _completed) != 1)
+        {
             throw new InvalidOperationException("In-memory shutdown did not drain and complete the in-flight delivery.");
+        }
+
         return ValueTask.CompletedTask;
     }
+
     // InMemoryTransport has no logger or external native receiver. Its completed loop is its closure boundary.
     public async ValueTask DisposeAsync()
     {
         StoppedBeforeDisposal = _transport.Completion.IsCompletedSuccessfully;
         await _transport.DisposeAsync();
         Disposed = true;
-        if (AfterDisposal is { } afterDisposal) await afterDisposal();
+
+        if (AfterDisposal is { } afterDisposal)
+        {
+            await afterDisposal();
+        }
     }
 }

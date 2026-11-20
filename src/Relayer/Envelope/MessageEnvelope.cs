@@ -18,12 +18,14 @@ public sealed class MessageEnvelope
         ArgumentException.ThrowIfNullOrWhiteSpace(messageType.Name);
         ArgumentOutOfRangeException.ThrowIfLessThan(messageType.Version, 1);
         ArgumentException.ThrowIfNullOrWhiteSpace(source);
+
         if (!Uri.TryCreate(source, UriKind.RelativeOrAbsolute, out _))
         {
             throw new ArgumentException("The CloudEvents source must be a URI reference.", nameof(source));
         }
 
         ArgumentNullException.ThrowIfNull(names);
+
         if (mode is not (MessageEnvelopeMode.CloudEvents or MessageEnvelopeMode.Raw))
         {
             throw new ArgumentOutOfRangeException(nameof(mode));
@@ -89,6 +91,7 @@ public sealed class MessageEnvelope
         buffer[53] = "0123456789abcdef"[(flags >> 4) & 0xF];
         buffer[54] = "0123456789abcdef"[flags & 0xF];
         TWriter.SetHeader(message, names.TraceParent, buffer);
+
         if (!string.IsNullOrEmpty(context.TraceState))
         {
             TWriter.SetHeader(message, names.TraceState, context.TraceState);

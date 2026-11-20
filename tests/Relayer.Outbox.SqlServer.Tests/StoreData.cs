@@ -7,9 +7,20 @@ namespace Relayer.Outbox.SqlServer.Tests;
 internal sealed class StoreData(SqlServerFixture database, SqlServerOutboxOptions? options = null)
 {
     // A fixed base plus TUnit's integer isolation ID stays SQL-safe and leaves room for schema suffixes.
-    internal SqlServerOutboxOptions Options { get; } = options ?? new() { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("t") + "_" };
+    internal SqlServerOutboxOptions Options
+    {
+        get;
+    } = options ?? new()
+    {
+        TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("t") + "_"
+    };
+
     internal string Table => "[" + (Options.Schema ?? "dbo").Replace("]", "]]") + "].[" + Options.TablePrefix.Replace("]", "]]") + "outbox]";
-    internal SqlServerOutboxStore Store() => new(database.ConnectionString, Options);
+
+    internal SqlServerOutboxStore Store()
+    {
+        return new(database.ConnectionString, Options);
+    }
 
     internal async Task Create()
     {
@@ -29,15 +40,22 @@ internal sealed class StoreData(SqlServerFixture database, SqlServerOutboxOption
     {
         // Independent encoding fixture: little-endian version/count and byte lengths.
         using var headers = new MemoryStream();
+
         using (var writer = new BinaryWriter(headers, Encoding.UTF8, leaveOpen: true))
         {
             writer.Write(1);
             writer.Write(orderedHeaders ? 4 : 3);
-            if (orderedHeaders) WriteHeader(writer, "ce_id", Encoding.UTF8.GetBytes(id.ToString()));
+
+            if (orderedHeaders)
+            {
+                WriteHeader(writer, "ce_id", Encoding.UTF8.GetBytes(id.ToString()));
+            }
+
             WriteHeader(writer, "duplicate", Encoding.UTF8.GetBytes("é"));
             WriteHeader(writer, "duplicate", [255, 0, 254]);
             WriteHeader(writer, "empty", []);
         }
+
         await using var connection = new SqlConnection(database.ConnectionString);
         await connection.OpenAsync();
         await using var command = new SqlCommand($"""
@@ -49,7 +67,14 @@ internal sealed class StoreData(SqlServerFixture database, SqlServerOutboxOption
         command.Parameters.Add("@id", SqlDbType.Binary, 16).Value = id.ToByteArray(bigEndian: true);
         command.Parameters.Add("@lane", SqlDbType.Int).Value = (object?)lane ?? DBNull.Value;
         var body = new byte[bodySize];
-        if (bodySize >= 3) { body[0] = 0; body[1] = 255; body[2] = 1; }
+
+        if (bodySize >= 3)
+        {
+            body[0] = 0;
+            body[1] = 255;
+            body[2] = 1;
+        }
+
         command.Parameters.Add("@body", SqlDbType.VarBinary, -1).Value = body;
         command.Parameters.Add("@headers", SqlDbType.VarBinary, -1).Value = headers.ToArray();
         command.Parameters.Add("@due", SqlDbType.DateTimeOffset).Value = (object?)deliverAt ?? DBNull.Value;

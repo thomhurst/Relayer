@@ -22,6 +22,7 @@ public class PoisonTests
         var id = Guid.CreateVersion7();
         await PostgreSqlOutboxStoreTests.Insert(source, options, id, DateTimeOffset.UtcNow, lane: ordered ? 0 : null);
         var store = new PostgreSqlOutboxStore(source, options);
+
         for (var attempt = 1; attempt <= 2; attempt++)
         {
             var claim = new OutboxClaim(id, Guid.NewGuid());
@@ -30,6 +31,7 @@ public class PoisonTests
             await Assert.That(await store.RecordDispatchFailureAsync(new(id, Guid.NewGuid()), "stale", now, default)).IsEqualTo(0);
             await Assert.That(await store.RecordDispatchFailureAsync(claim, "broker failed", now, default)).IsEqualTo(attempt);
         }
+
         var services = new ServiceCollection().AddRelayerPostgreSqlDeadLetters("store", source, options);
         await using var provider = services.BuildServiceProvider();
         var manager = provider.GetRequiredKeyedService<IDeadLetterManager>("store");
@@ -65,6 +67,7 @@ public class PoisonTests
         var id = Guid.CreateVersion7();
         await PostgreSqlOutboxStoreTests.Insert(source, options, id, DateTimeOffset.UtcNow);
         var store = new PostgreSqlOutboxStore(source, options);
+
         await using (var connection = await source.OpenConnectionAsync())
         await using (var transaction = await connection.BeginTransactionAsync())
         {
@@ -76,8 +79,12 @@ public class PoisonTests
             await transaction.RollbackAsync();
             store.UseDispatchTransaction(null, null);
         }
+
         await using (var unordered = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL"))
+        {
             await unordered.ExecuteNonQueryAsync();
+        }
+
         var transport = new FailingTransport();
         using var dispatcher = new PostgreSqlDirectDispatcher(source, options, new(), [transport], NullLogger<PostgreSqlDirectDispatcher>.Instance);
         var rows = new OutboxRecord[1];
@@ -102,15 +109,21 @@ public class PoisonTests
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         var options = new PostgreSqlOutboxOptions { MaxDispatchAttempts = 1 };
         await PostgreSqlOutboxStoreTests.Insert(source, options, Guid.CreateVersion7(), DateTimeOffset.UtcNow);
+
         await using (var unordered = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL"))
+        {
             await unordered.ExecuteNonQueryAsync();
+        }
+
         using var instrumentation = new RelayerInstrumentation();
         long pending = 0, poisoned = 0;
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
             if (instrument == instrumentation.OutboxPending || instrument == instrumentation.OutboxPoison)
+            {
                 meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((instrument, value, _, _) =>
             Interlocked.Add(ref instrument == instrumentation.OutboxPending ? ref pending : ref poisoned, value));
@@ -126,6 +139,7 @@ public class PoisonTests
         var rows = new OutboxRecord[1];
         await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
         await dispatcher.DispatchRecoveredAsync(rows, default, propagateDatabaseFailures: recoveryTransaction);
+
         if (recoveryTransaction)
         {
             // Recovery reports poison only after its transaction commits.
@@ -133,6 +147,7 @@ public class PoisonTests
             await Assert.That(idle.IsCompleted).IsFalse();
             dispatcher.FinishRecovery(committed: true);
         }
+
         await Assert.That(Interlocked.Read(ref pending)).IsEqualTo(0L);
         await Assert.That(Interlocked.Read(ref poisoned)).IsEqualTo(1L);
         await idle.WaitAsync(TimeSpan.FromSeconds(30));
@@ -148,8 +163,12 @@ public class PoisonTests
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         var options = new PostgreSqlOutboxOptions();
         await PostgreSqlOutboxStoreTests.Insert(source, options, Guid.CreateVersion7(), DateTimeOffset.UtcNow);
+
         await using (var unordered = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL"))
+        {
             await unordered.ExecuteNonQueryAsync();
+        }
+
         using var instrumentation = new RelayerInstrumentation();
         var harness = new RelayerHarness();
         instrumentation.Observer = harness;
@@ -160,6 +179,7 @@ public class PoisonTests
         using var dispatcher = new PostgreSqlDirectDispatcher(source, options, new(), [new SucceedingTransport()],
             NullLogger<PostgreSqlDirectDispatcher>.Instance, store, instrumentation);
         var rows = new OutboxRecord[1];
+
         foreach (var commit in new[] { false, true })
         {
             await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
@@ -169,6 +189,7 @@ public class PoisonTests
             await dispatcher.DispatchRecoveredAsync(rows, default, propagateDatabaseFailures: true);
             store.UseDispatchTransaction(null, null);
             await Assert.That(idle.IsCompleted).IsFalse();
+
             if (!commit)
             {
                 // The deletion rolls back, so the row is still outstanding.
@@ -179,9 +200,11 @@ public class PoisonTests
                 await Assert.That(idle.IsCompleted).IsFalse();
                 continue;
             }
+
             await transaction.CommitAsync();
             dispatcher.FinishRecovery(committed: true);
         }
+
         await idle.WaitAsync(TimeSpan.FromSeconds(30));
         await Assert.That(await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default)).IsEqualTo(0);
     }
@@ -200,7 +223,13 @@ public class PoisonTests
         await MakeDead(source, options, second);
         var manager = new PostgreSqlDeadLetterManager("store", source, options);
         var scanned = 0;
-        bool Match(DeadLetterMessage message) { scanned++; return message.MessageId == second.ToString("D"); }
+
+        bool Match(DeadLetterMessage message)
+        {
+            scanned++;
+            return message.MessageId == second.ToString("D");
+        }
+
         await Assert.That(await manager.RedriveAsync("store", Match, 1)).IsEqualTo(0);
         await Assert.That(await manager.RedriveAsync("store", Match, 1)).IsEqualTo(0);
         await Assert.That(scanned).IsEqualTo(2);
@@ -229,7 +258,10 @@ public class PoisonTests
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
-            if (instrument == instrumentation.OutboxPending) meterListener.EnableMeasurementEvents(instrument);
+            if (instrument == instrumentation.OutboxPending)
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((_, value, _, _) => Interlocked.Add(ref pending, value));
         listener.Start();
@@ -244,8 +276,12 @@ public class PoisonTests
         // Stands for the dispatcher settling the redriven row.
         instrumentation.AddOutboxPending(-1);
         await idle.WaitAsync(TimeSpan.FromSeconds(30));
+
         await using (var sent = source.CreateCommand("DELETE FROM relayer_outbox"))
+        {
             await sent.ExecuteNonQueryAsync();
+        }
+
         Interlocked.Exchange(ref pending, 0);
         await MakeDead(source, options, purged, lane);
         await Assert.That(await manager.PurgeAsync("store")).IsEqualTo(1);
@@ -265,12 +301,15 @@ public class PoisonTests
         var broken = Guid.Parse("00000000-0000-0000-0000-000000000002");
         await MakeDead(source, options, first);
         await MakeDead(source, options, broken, 0);
+
         await using (var command = source.CreateCommand("DELETE FROM relayer_outbox WHERE id = @id"))
         {
             command.Parameters.AddWithValue("id", broken);
             await command.ExecuteNonQueryAsync();
         }
+
         var manager = new PostgreSqlDeadLetterManager("store", source, options);
+
         try
         {
             await manager.RedriveAsync("store");
@@ -281,6 +320,7 @@ public class PoisonTests
             await Assert.That(exception.Message).Contains(broken.ToString("D"));
             await Assert.That(exception.Message).Contains("rolled back");
         }
+
         await Assert.That((await manager.PeekAsync("store")).Messages.Count).IsEqualTo(2);
         var rows = new OutboxRecord[2];
         await Assert.That(await new PostgreSqlOutboxStore(source, options).ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default)).IsEqualTo(0);
@@ -302,24 +342,80 @@ public class PoisonTests
     private sealed class SucceedingTransport : ITransport
     {
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class FailingTransport : ITransport
     {
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => throw new PostgreSqlLocalFailure(new InvalidOperationException("broker failed"), FailureAction.DeadLetter);
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new PostgreSqlLocalFailure(new InvalidOperationException("broker failed"), FailureAction.DeadLetter);
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            throw new PostgreSqlLocalFailure(new InvalidOperationException("broker failed"), FailureAction.DeadLetter);
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new PostgreSqlLocalFailure(new InvalidOperationException("broker failed"), FailureAction.DeadLetter);
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

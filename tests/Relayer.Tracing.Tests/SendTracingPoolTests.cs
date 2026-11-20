@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Options;
 using Relayer.TestFixtures;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -20,10 +20,20 @@ public class SendTracingPoolTests
     public async Task Cross_thread_sends_retain_continuations_after_warmup(bool batch, bool listener, bool asynchronousCaller)
     {
         using var fixture = new SendTracingCompletionFixture(batch, listener);
-        for (var i = 0; i < 16; i++) fixture.Run(traced: true, asynchronousCaller);
+
+        for (var i = 0; i < 16; i++)
+        {
+            fixture.Run(traced: true, asynchronousCaller);
+        }
+
         var native = fixture.Run(traced: false, asynchronousCaller);
         long allocated = 0;
-        for (var i = 0; i < 8; i++) allocated += fixture.Run(traced: true, asynchronousCaller);
+
+        for (var i = 0; i < 8; i++)
+        {
+            allocated += fixture.Run(traced: true, asynchronousCaller);
+        }
+
         await Assert.That(native).IsEqualTo(0L);
         await Assert.That(allocated).IsEqualTo(0L);
     }
@@ -44,14 +54,20 @@ public class SendTracingPoolTests
         // Exclude ActivitySource's root trace ID allocation. Dropped spans still prepare headers and batch links.
         using var ambient = new Activity("request").Start();
         var sink = new AllocationSink();
-        var send = new SendTracing(tracing, new() { System = "test.native", Destination = "orders" }, sink.Send, sink.SendBatch);
+        var send = new SendTracing(tracing, new()
+        {
+            System = "test.native",
+            Destination = "orders"
+        }, sink.Send, sink.SendBatch);
         var messages = new[] { new OutgoingMessage("orders", new byte[] { 1 }), new("orders", new byte[] { 2 }) };
         var pending = new ValueTask[128];
         long allocated = 0;
+
         for (var round = 0; round < 4; round++)
         {
             sink.Completion = new();
             allocated = 0;
+
             for (var i = 0; i < pending.Length; i++)
             {
                 var before = GC.GetAllocatedBytesForCurrentThread();
@@ -60,9 +76,15 @@ public class SendTracingPoolTests
                 // from framework async state-machine pooling, which has its own bounded retention policy.
                 allocated += sink.EntryAllocated - before;
             }
+
             sink.Completion.SetResult();
-            foreach (var operation in pending) await operation;
+
+            foreach (var operation in pending)
+            {
+                await operation;
+            }
         }
+
         await Assert.That(allocated).IsEqualTo(0L);
     }
 
@@ -83,43 +105,76 @@ public class SendTracingPoolTests
         await Task.WhenAll(fixtures.SelectMany(fixture => Enumerable.Range(0, 64).Select(index => Task.Run(() =>
         {
             var slot = fixture.Slots[index];
-            if (index % 3 == 0) slot.Completion.SetException(slot.Error);
+
+            if (index % 3 == 0)
+            {
+                slot.Completion.SetException(slot.Error);
+            }
             else if (index % 3 == 1)
             {
                 slot.Cancellation.Cancel();
                 slot.Completion.SetCanceled(slot.Cancellation.Token);
             }
-            else slot.Completion.SetResult();
+            else
+            {
+                slot.Completion.SetResult();
+            }
         }))));
+
         foreach (var fixture in fixtures)
         {
             for (var i = 0; i < 64; i++)
             {
                 var slot = fixture.Slots[i];
                 Exception? error = null;
-                try { await slot.Pending; }
-                catch (Exception caught) { error = caught; }
-                if (i % 3 == 0) await Assert.That(error).IsSameReferenceAs(slot.Error);
+
+                try
+                {
+                    await slot.Pending;
+                }
+                catch (Exception caught)
+                {
+                    error = caught;
+                }
+
+                if (i % 3 == 0)
+                {
+                    await Assert.That(error).IsSameReferenceAs(slot.Error);
+                }
                 else if (i % 3 == 1)
+                {
                     await Assert.That(((OperationCanceledException)error!).CancellationToken).IsEqualTo(slot.Cancellation.Token);
-                else await Assert.That(error).IsNull();
+                }
+                else
+                {
+                    await Assert.That(error).IsNull();
+                }
+
                 await Assert.That(slot.NativeCalls).IsEqualTo(1);
                 await Assert.That(slot.AcceptedBody).IsEqualTo(slot.Messages[0].Body);
                 slot.Reset();
             }
         }
+
         await Task.WhenAll(fixtures.SelectMany(fixture => Enumerable.Range(0, 64)
             .Select(index => Task.Run(() => fixture.Start(index)))));
         await VerifyBorrowedStorage(fixtures, batch, createSpans);
         await Task.WhenAll(fixtures.SelectMany(fixture => fixture.Slots.Select(slot => Task.Run(() => slot.Completion.SetResult()))));
+
         foreach (var fixture in fixtures)
-            foreach (var slot in fixture.Slots) await slot.Pending;
+        {
+            foreach (var slot in fixture.Slots)
+            {
+                await slot.Pending;
+            }
+        }
     }
 
     private static async Task VerifyBorrowedStorage(ConcurrentFixture[] fixtures, bool batch, bool createSpans)
     {
         var headerArrays = new HashSet<object>(ReferenceEqualityComparer.Instance);
         var batchArrays = new HashSet<object>(ReferenceEqualityComparer.Instance);
+
         foreach (var fixture in fixtures)
         {
             foreach (var slot in fixture.Slots)
@@ -134,7 +189,12 @@ public class SendTracingPoolTests
                 await Assert.That(Header(message, "traceparent").ToString()).IsEqualTo(slot.TraceParent);
                 MemoryMarshal.TryGetArray(message.Headers, out var headers);
                 await Assert.That(headerArrays.Add(headers.Array!)).IsTrue();
-                if (!batch) continue;
+
+                if (!batch)
+                {
+                    continue;
+                }
+
                 MemoryMarshal.TryGetArray(slot.Batch, out var messages);
                 await Assert.That(batchArrays.Add(messages.Array!)).IsTrue();
                 await Assert.That(slot.Batch.Length).IsEqualTo(2);
@@ -142,6 +202,7 @@ public class SendTracingPoolTests
                 await Assert.That(slot.Batch.Span[1].Headers).IsEqualTo(slot.Messages[1].Headers);
                 await Assert.That(slot.Activity.Links.Count()).IsEqualTo(createSpans ? 2 : 1);
                 await Assert.That(slot.Activity.Links.Last().Context.SpanId.ToString()).IsEqualTo("0123456789abcdef");
+
                 if (createSpans)
                 {
                     ActivityContext.TryParse(slot.TraceParent, null, true, out var context);
@@ -154,7 +215,13 @@ public class SendTracingPoolTests
     private static WireString Header(OutgoingMessage message, string name)
     {
         foreach (var header in message.Headers.Span)
-            if (header.Key == name) return header.Value;
+        {
+            if (header.Key == name)
+            {
+                return header.Value;
+            }
+        }
+
         throw new InvalidOperationException($"Missing header {name}.");
     }
 
@@ -179,7 +246,11 @@ public class SendTracingPoolTests
             };
             ActivitySource.AddActivityListener(_listener);
             Slots = Enumerable.Range(0, 128).Select(index => new Slot(index, owner)).ToArray();
-            _send = new(Tracing, new() { System = "test.native", Destination = "orders" }, Send, SendBatch);
+            _send = new(Tracing, new()
+            {
+                System = "test.native",
+                Destination = "orders"
+            }, Send, SendBatch);
         }
 
         internal void Start(int index)
@@ -216,7 +287,11 @@ public class SendTracingPoolTests
 
         public void Dispose()
         {
-            foreach (var slot in Slots) slot.Cancellation.Dispose();
+            foreach (var slot in Slots)
+            {
+                slot.Cancellation.Dispose();
+            }
+
             _listener.Dispose();
             Tracing.Dispose();
         }
@@ -258,11 +333,13 @@ public class SendTracingPoolTests
     {
         internal TaskCompletionSource Completion = null!;
         internal long EntryAllocated;
+
         internal ValueTask Send(OutgoingMessage message, CancellationToken cancellationToken)
         {
             EntryAllocated = GC.GetAllocatedBytesForCurrentThread();
             return new(Completion.Task);
         }
+
         internal ValueTask SendBatch(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
         {
             EntryAllocated = GC.GetAllocatedBytesForCurrentThread();

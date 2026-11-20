@@ -89,17 +89,22 @@ public sealed class SqsConsumerControlTests
                 {
                     options.SqsClient = client;
                     options.AutoStartConsumers = false;
-                    options.Queues.Add(new(source)); options.Queues.Add(new(dead));
+                    options.Queues.Add(new(source));
+                    options.Queues.Add(new(dead));
                 });
                 sqs.Consume(source, consumer =>
                 {
                     consumer.Handler<SqsReceiveFlociTests.Handler>();
                     consumer.Options.ConfigureReceive = request => request.WaitTimeSeconds = 1;
-                    consumer.Failures(new() { DeadLetterEndpoint = dead });
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = dead
+                    });
                 });
             });
         });
         using var host = builder.Build();
+
         try
         {
             await host.StartAsync(token);
@@ -114,7 +119,10 @@ public sealed class SqsConsumerControlTests
             await host.Services.GetRequiredKeyedService<IConsumerControl>("sqs").StartAsync(token);
             await control.Healthy.Task.WaitAsync(token);
         }
-        finally { await host.StopAsync(CancellationToken.None); }
+        finally
+        {
+            await host.StopAsync(CancellationToken.None);
+        }
     }
 
     private static ServiceProvider Provider(SqsReceiveTests.ReceiveClient client, bool autoStart = true)
@@ -132,16 +140,19 @@ public sealed class SqsConsumerControlTests
                 {
                     options.SqsClient = client;
                     options.AutoStartConsumers = autoStart;
-                    options.Queues.Add(new("orders")); options.Queues.Add(new("dead"));
+                    options.Queues.Add(new("orders"));
+                    options.Queues.Add(new("dead"));
                 });
                 sqs.Consume("orders", consumer =>
                 {
                     consumer.Handler<SqsReceiveFlociTests.Handler>();
-                    consumer.Failures(new() { DeadLetterEndpoint = "dead" });
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = "dead"
+                    });
                 });
             });
         });
         return services.BuildServiceProvider();
     }
 }
-

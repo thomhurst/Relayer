@@ -38,8 +38,12 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
         _options = options;
         var settings = options.Validate();
         _store = new(connectionString, settings);
-        _dispatcher = new(connectionString, settings, new() { BatchSize = options.BatchSize, QueueCapacity = 1,
-            ClaimDuration = options.ClaimDuration }, transports, dispatchLogger ?? NullLogger<SqlServerDirectDispatcher>.Instance, _store, instrumentation);
+        _dispatcher = new(connectionString, settings, new()
+        {
+            BatchSize = options.BatchSize,
+            QueueCapacity = 1,
+            ClaimDuration = options.ClaimDuration
+        }, transports, dispatchLogger ?? NullLogger<SqlServerDirectDispatcher>.Instance, _store, instrumentation);
         _logger = logger;
         _table = SqlServerOutboxSchema.Table(settings);
         _leases = SqlServerOutboxSchema.LeaseTable(settings);
@@ -80,13 +84,30 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
 
     }
 
-    protected override ValueTask<int> RecoverAsync(CancellationToken cancellationToken) => SweepAsync(cancellationToken);
-    protected override ValueTask ReleaseMaintenanceAsync(CancellationToken cancellationToken) => ReleaseAsync(cancellationToken);
-    protected override void ReportFailure(string job, Exception error) => Failed(_logger, error);
+    protected override ValueTask<int> RecoverAsync(CancellationToken cancellationToken)
+    {
+        return SweepAsync(cancellationToken);
+    }
 
-    internal ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => RunAsync(false, cancellationToken);
-    protected override ValueTask<int> DeleteRetentionBatchAsync(int table, CancellationToken cancellationToken) =>
-        RunAsync(true, cancellationToken, table);
+    protected override ValueTask ReleaseMaintenanceAsync(CancellationToken cancellationToken)
+    {
+        return ReleaseAsync(cancellationToken);
+    }
+
+    protected override void ReportFailure(string job, Exception error)
+    {
+        Failed(_logger, error);
+    }
+
+    internal ValueTask<int> SweepAsync(CancellationToken cancellationToken = default)
+    {
+        return RunAsync(false, cancellationToken);
+    }
+
+    protected override ValueTask<int> DeleteRetentionBatchAsync(int table, CancellationToken cancellationToken)
+    {
+        return RunAsync(true, cancellationToken, table);
+    }
 
     private async ValueTask<int> RunAsync(bool cleanup, CancellationToken cancellationToken, int cleanupTable = -1)
     {
@@ -101,9 +122,15 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
         acquire.Parameters.AddWithValue("@name", name);
         acquire.Parameters.AddWithValue("@owner", _owner);
         acquire.Parameters.AddWithValue("@duration", (int)_options.LeaseDuration.TotalMilliseconds);
-        if (await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) return cleanup ? -1 : 0;
+
+        if (await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true)
+        {
+            return cleanup ? -1 : 0;
+        }
+
         _store.UseDispatchTransaction(connection, transaction);
         var committed = false;
+
         try
         {
             var count = cleanup ? await DeleteExpiredAsync(connection, transaction, cleanupTable, cancellationToken).ConfigureAwait(false)
@@ -135,29 +162,44 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
         if (!_hasThrough)
         {
             await using var boundary = new SqlCommand(_highWater, connection, transaction);
-            if (await boundary.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not byte[] through) return 0;
+
+            if (await boundary.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not byte[] through)
+            {
+                return 0;
+            }
+
             through.CopyTo(_through, 0);
             _hasThrough = true;
         }
+
         await using var command = new SqlCommand(_read, connection, transaction);
         command.Parameters.AddWithValue("@limit", _rows.Length);
         AddDuration(command, "@ageDays", "@ageRemainder", _options.RecoveryDelay);
         command.Parameters.Add("@after", SqlDbType.Binary, 16).Value = _hasAfter ? _after : DBNull.Value;
         command.Parameters.Add("@through", SqlDbType.Binary, 16).Value = _through;
         var count = await _store.ReadRecoveryAsync(command, _rows, cancellationToken).ConfigureAwait(false);
+
         try
         {
-            if (count == 0) { _hasAfter = _hasThrough = false; return 0; }
+            if (count == 0)
+            {
+                _hasAfter = _hasThrough = false;
+                return 0;
+            }
+
             _rows[count - 1].Id.TryWriteBytes(_after, bigEndian: true, out _);
             _hasAfter = true;
             var valid = 0;
+
             for (var i = 0; i < count; i++)
             {
                 var row = _rows[i];
+
                 if (row.TransportName.Length == 0)
                 {
                     var claim = new OutboxClaim(row.Id, Guid.NewGuid());
                     var now = DateTimeOffset.UtcNow;
+
                     if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
                     {
                         if (await _store.QuarantineAsync(claim, row.LastError!, cancellationToken).ConfigureAwait(false))
@@ -166,16 +208,27 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
                             Quarantined(_logger, row.Id, row.LastError!);
                         }
                     }
+
                     continue;
                 }
-                if (valid == _buffers.Count) _buffers.Add(new());
+
+                if (valid == _buffers.Count)
+                {
+                    _buffers.Add(new());
+                }
+
                 _buffers[valid++].Copy(row, 1, unordered: true);
             }
+
             _batch.Take(_buffers, valid, DateTimeOffset.UtcNow);
             await _dispatcher.DispatchRecoveredAsync(_batch, cancellationToken).ConfigureAwait(false);
             return count;
         }
-        finally { _batch.Clear(); Array.Clear(_rows, 0, count); }
+        finally
+        {
+            _batch.Clear();
+            Array.Clear(_rows, 0, count);
+        }
     }
 
     private async ValueTask<int> DeleteExpiredAsync(SqlConnection connection, SqlTransaction transaction, int table, CancellationToken cancellationToken)
@@ -227,7 +280,11 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
         return (reader.GetInt64(0), reader.GetInt64(1));
     }
 
-    public override void Dispose() { _dispatcher.Dispose(); base.Dispose(); }
+    public override void Dispose()
+    {
+        _dispatcher.Dispose();
+        base.Dispose();
+    }
 
     [LoggerMessage(2, LogLevel.Error, "SQL Server outbox row {MessageId} moved to dead storage: {Error}")]
     private static partial void Quarantined(ILogger logger, Guid messageId, string error);

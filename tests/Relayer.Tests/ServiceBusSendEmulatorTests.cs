@@ -1,11 +1,11 @@
-using Relayer.Transports;
 using System.Diagnostics.Metrics;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using DotNet.Testcontainers.Builders;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Relayer.AzureServiceBus;
+using Relayer.Transports;
 using Testcontainers.MsSql;
 using Testcontainers.ServiceBus;
 
@@ -26,10 +26,15 @@ public class ServiceBusSendEmulatorTests
         var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
         var queue = TestContext.Current!.Isolation.GetIsolatedName("batch-isolation");
         var options = new ServiceBusTransportOptions { Client = client, AdministrationClient = admin };
-        options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
-            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
+        options.Queues.Add(new(queue)
+        {
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
+        });
         await using var transport = new ServiceBusSendTransport("isolation", client, false, options,
             [queue], TopologyMode.Provision, admin);
+
         try
         {
             var report = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
@@ -47,7 +52,10 @@ public class ServiceBusSendEmulatorTests
             await Assert.That(delivered!.Body.ToArray()).IsEquivalentTo(new byte[] { 42 });
             await receiver.CompleteMessageAsync(delivered, token);
         }
-        finally { await admin.DeleteQueueAsync(queue, token); }
+        finally
+        {
+            await admin.DeleteQueueAsync(queue, token);
+        }
     }
 
     [Test]
@@ -65,8 +73,12 @@ public class ServiceBusSendEmulatorTests
             bus.Options.Configure(options =>
             {
                 options.Client = client;
-                options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
-                    DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
+                options.Queues.Add(new(queue)
+                {
+                    DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+                    MaxSizeInMegabytes = 100,
+                    DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
+                });
             });
             bus.Send<ServiceBusSendTests.First>(queue, route => route.ServiceBus(static (_, native) =>
             {
@@ -78,6 +90,7 @@ public class ServiceBusSendEmulatorTests
         await using var provider = services.BuildServiceProvider();
         var transport = provider.GetServices<ITransport>().Single();
         await admin.CreateQueueAsync(new CreateQueueOptions(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100 }, token);
+
         try
         {
             // The headers-only shape that outbox dispatch sends for a stored row.
@@ -92,7 +105,10 @@ public class ServiceBusSendEmulatorTests
             await Assert.That(delivered.Subject).IsEqualTo("servicebus.first;v=1");
             await receiver.CompleteMessageAsync(delivered, token);
         }
-        finally { await admin.DeleteQueueAsync(queue, token); }
+        finally
+        {
+            await admin.DeleteQueueAsync(queue, token);
+        }
     }
 
     [Test]
@@ -105,19 +121,28 @@ public class ServiceBusSendEmulatorTests
         var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
         var topic = TestContext.Current!.Isolation.GetIsolatedName("trusted-topic");
         var provisionOptions = new ServiceBusTransportOptions { Client = client, AdministrationClient = admin };
-        provisionOptions.Topics.Add(new(topic) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
-            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10), SupportOrdering = true });
+        provisionOptions.Topics.Add(new(topic)
+        {
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10),
+            SupportOrdering = true
+        });
         provisionOptions.TrustedSessionEntities.Add(topic);
         await using var provision = new ServiceBusSendTransport("provision", client, false, provisionOptions,
             [topic], TopologyMode.Provision, admin);
+
         try
         {
             await Assert.That((await provision.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
             // Another application owns the subscriptions; this producer declares only the topic.
             await admin.CreateSubscriptionAsync(new CreateSubscriptionOptions(topic, "owned")
             {
-                RequiresSession = true, DefaultMessageTimeToLive = TimeSpan.FromHours(1), AutoDeleteOnIdle = TimeSpan.FromHours(1)
+                RequiresSession = true,
+                DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+                AutoDeleteOnIdle = TimeSpan.FromHours(1)
             }, token);
+
             foreach (var mode in new[] { TopologyMode.Validate, TopologyMode.None })
             {
                 var options = new ServiceBusTransportOptions { Client = client };
@@ -134,15 +159,20 @@ public class ServiceBusSendEmulatorTests
                 await Assert.That(received.SessionId).IsEqualTo(key);
                 await session.CompleteMessageAsync(received, token);
             }
+
             await admin.CreateSubscriptionAsync(new CreateSubscriptionOptions(topic, "plain")
             {
-                DefaultMessageTimeToLive = TimeSpan.FromHours(1), AutoDeleteOnIdle = TimeSpan.FromHours(1)
+                DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+                AutoDeleteOnIdle = TimeSpan.FromHours(1)
             }, token);
             var report = await provision.ApplyTopologyAsync(TopologyMode.Provision, token);
             await Assert.That(report.Differences.Single())
                 .Contains($"'{topic}/Subscriptions/plain': RequiresSession expected 'True', actual 'False'");
         }
-        finally { await admin.DeleteTopicAsync(topic, CancellationToken.None); }
+        finally
+        {
+            await admin.DeleteTopicAsync(topic, CancellationToken.None);
+        }
     }
 
     [Test]
@@ -155,10 +185,16 @@ public class ServiceBusSendEmulatorTests
         var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
         var queue = TestContext.Current!.Isolation.GetIsolatedName("duplicate-detection");
         var options = new ServiceBusTransportOptions { Client = client, AdministrationClient = admin };
-        options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
-            RequiresDuplicateDetection = true, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromSeconds(20) });
+        options.Queues.Add(new(queue)
+        {
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100,
+            RequiresDuplicateDetection = true,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromSeconds(20)
+        });
         await using var transport = new ServiceBusSendTransport("duplicates", client, false, options,
             [queue], TopologyMode.Provision, admin);
+
         try
         {
             var report = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
@@ -172,15 +208,20 @@ public class ServiceBusSendEmulatorTests
             await transport.SendAsync(new(queue, new byte[] { 3 }, other), token);
             await using var receiver = client.CreateReceiver(queue);
             var received = new List<ServiceBusReceivedMessage>();
+
             while (received.Count < 3 && await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(5), token) is { } message)
             {
                 received.Add(message);
                 await receiver.CompleteMessageAsync(message, token);
             }
+
             await Assert.That(received.Select(message => message.Body.ToArray()[0])).IsEquivalentTo(new byte[] { 1, 3 });
             await Assert.That(received[0].MessageId).IsEqualTo(id);
         }
-        finally { await admin.DeleteQueueAsync(queue, token); }
+        finally
+        {
+            await admin.DeleteQueueAsync(queue, token);
+        }
     }
 
     [Test]
@@ -194,7 +235,9 @@ public class ServiceBusSendEmulatorTests
             InstrumentPublished = (instrument, listener) =>
             {
                 if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                {
                     listener.EnableMeasurementEvents(instrument);
+                }
             },
         };
         metrics.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref sent, count));
@@ -208,15 +251,42 @@ public class ServiceBusSendEmulatorTests
         var admin = new ServiceBusAdministrationClient(emulator.GetHttpConnectionString());
         var options = new ServiceBusTransportOptions { Client = client, AdministrationClient = admin };
         // Match the emulator's documented TTL/size quotas and its duplicate-window default.
-        options.Queues.Add(new("send-orders") { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
-        options.Queues.Add(new("send-sessions") { RequiresSession = true, DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
-        options.Topics.Add(new("send-events") { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10), SupportOrdering = true });
-        options.Subscriptions.Add(new("send-events", "audit") { DefaultMessageTimeToLive = TimeSpan.FromHours(1), AutoDeleteOnIdle = TimeSpan.FromHours(1) });
+        options.Queues.Add(new("send-orders")
+        {
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
+        });
+        options.Queues.Add(new("send-sessions")
+        {
+            RequiresSession = true,
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
+        });
+        options.Topics.Add(new("send-events")
+        {
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10),
+            SupportOrdering = true
+        });
+        options.Subscriptions.Add(new("send-events", "audit")
+        {
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            AutoDeleteOnIdle = TimeSpan.FromHours(1)
+        });
+
         await using (var transport = new ServiceBusSendTransport("emulator", client, false, options,
             ["send-orders", "send-sessions", "send-events"], TopologyMode.Provision, admin, tracing))
         {
             var provisioned = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
-            foreach (var difference in provisioned.Differences) Console.WriteLine(difference);
+
+            foreach (var difference in provisioned.Differences)
+            {
+                Console.WriteLine(difference);
+            }
+
             await Assert.That(string.Join(Environment.NewLine, provisioned.Differences)).IsEqualTo("");
             var repeated = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
             await Assert.That(repeated.Differences.Count).IsEqualTo(0);
@@ -228,7 +298,11 @@ public class ServiceBusSendEmulatorTests
             KeyValuePair<string, WireString>[] headers = [new("cloudEvents:id", new("original-id")),
                 new("cloudEvents:type", new("orders;v=1")), new("traceparent", new("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"))];
             KeyValuePair<string, WireString>[] contentHeaders = [.. headers, new("content-type", new("application/x-protobuf"))];
-            var native = new SendOptions().ServiceBus(message => { message.Subject = "native"; message.ContentType = "application/json"; });
+            var native = new SendOptions().ServiceBus(message =>
+            {
+                message.Subject = "native";
+                message.ContentType = "application/json";
+            });
             await transport.SendAsync(new("send-orders", new byte[] { 42 }, contentHeaders, options: native), token);
             await Assert.That(sent).IsEqualTo(1);
             await using var orders = client.CreateReceiver("send-orders");
@@ -238,7 +312,12 @@ public class ServiceBusSendEmulatorTests
             await Assert.That(order.Subject).IsEqualTo("native");
             await Assert.That(order.ContentType).IsEqualTo("application/x-protobuf");
             await Assert.That(order.ApplicationProperties.ContainsKey("content-type")).IsFalse();
-            foreach (var header in headers) await Assert.That(order.ApplicationProperties[header.Key]).IsEqualTo(header.Value.ToString());
+
+            foreach (var header in headers)
+            {
+                await Assert.That(order.ApplicationProperties[header.Key]).IsEqualTo(header.Value.ToString());
+            }
+
             await orders.CompleteMessageAsync(order, token);
 
             await transport.SendBatchAsync(new[] {
@@ -247,6 +326,7 @@ public class ServiceBusSendEmulatorTests
                 new OutgoingMessage("send-events", new byte[] { 3 }, contentHeaders) }, token);
             await Assert.That(sent).IsEqualTo(4);
             await using var session = await client.AcceptSessionAsync("send-sessions", "customer", cancellationToken: token);
+
             for (byte expected = 1; expected <= 2; expected++)
             {
                 var message = await session.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
@@ -255,6 +335,7 @@ public class ServiceBusSendEmulatorTests
                 await Assert.That(message.Body.ToMemory().Span[0]).IsEqualTo(expected);
                 await session.CompleteMessageAsync(message, token);
             }
+
             await using var audit = client.CreateReceiver("send-events", "audit");
             var published = await audit.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
                 ?? throw new InvalidOperationException("Topic send was not delivered to the subscription.");
@@ -282,7 +363,10 @@ public class ServiceBusSendEmulatorTests
             foreach (var mode in new[] { TopologyMode.Validate, TopologyMode.None })
             {
                 var trustedOptions = new ServiceBusTransportOptions { Client = client };
-                trustedOptions.Queues.Add(new("send-sessions") { RequiresSession = true });
+                trustedOptions.Queues.Add(new("send-sessions")
+                {
+                    RequiresSession = true
+                });
                 trustedOptions.TrustedSessionEntities.Add("send-sessions");
                 await using var trusted = new ServiceBusSendTransport("trusted", client, false, trustedOptions,
                     ["send-sessions"], mode);
@@ -297,7 +381,10 @@ public class ServiceBusSendEmulatorTests
                 await trustedSession.CompleteMessageAsync(received, token);
 
                 var untrustedOptions = new ServiceBusTransportOptions { Client = client };
-                untrustedOptions.Queues.Add(new("send-sessions") { RequiresSession = true });
+                untrustedOptions.Queues.Add(new("send-sessions")
+                {
+                    RequiresSession = true
+                });
                 await using var untrusted = new ServiceBusSendTransport("untrusted", client, false, untrustedOptions,
                     ["send-sessions"], mode);
                 await Assert.That(async () => await untrusted.SendAsync(new("send-sessions", default,

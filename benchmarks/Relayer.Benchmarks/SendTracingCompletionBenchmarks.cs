@@ -10,25 +10,44 @@ public class SendTracingCompletionBenchmarks
     private SendTracingCompletionFixture _fixture = null!;
 
     [Params(false, true)]
-    public bool Batch { get; set; }
+    public bool Batch
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Listener { get; set; }
+    public bool Listener
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _fixture = new(Batch, Listener);
-        for (var i = 0; i < 16; i++) _fixture.Run(traced: true);
+
+        for (var i = 0; i < 16; i++)
+        {
+            _fixture.Run(traced: true);
+        }
     }
 
     // One operation is one native call, including one whole batch when Batch is true.
     [Benchmark(Baseline = true, OperationsPerInvoke = SendTracingCompletionFixture.Count)]
-    public long Native() => _fixture.Run(traced: false);
+    public long Native()
+    {
+        return _fixture.Run(traced: false);
+    }
 
     [Benchmark(OperationsPerInvoke = SendTracingCompletionFixture.Count)]
-    public long Traced() => _fixture.Run(traced: true);
+    public long Traced()
+    {
+        return _fixture.Run(traced: true);
+    }
 
     [GlobalCleanup]
-    public void Cleanup() => _fixture.Dispose();
+    public void Cleanup()
+    {
+        _fixture.Dispose();
+    }
 }

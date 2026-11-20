@@ -95,8 +95,14 @@ public sealed class RabbitMqConsumerControlTests
         await control.StartAsync(token);
         var consumer = ((RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>()).Consumers.Single();
 
-        try { await host.StopAsync(new CancellationToken(true)); }
-        catch (OperationCanceledException) { }
+        try
+        {
+            await host.StopAsync(new CancellationToken(true));
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
         await Assert.That(consumer.Completion.IsCompleted).IsTrue();
         await using var connection = await broker.Factory().CreateConnectionAsync(token);
         await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
@@ -114,9 +120,19 @@ public sealed class RabbitMqConsumerControlTests
         var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
         await Assert.That(transport.Consumers.Count).IsEqualTo(2);
 
-        try { await host.StopAsync(new CancellationToken(true)); }
-        catch (OperationCanceledException) { }
-        foreach (var consumer in transport.Consumers) await Assert.That(consumer.Completion.IsCompleted).IsTrue();
+        try
+        {
+            await host.StopAsync(new CancellationToken(true));
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        foreach (var consumer in transport.Consumers)
+        {
+            await Assert.That(consumer.Completion.IsCompleted).IsTrue();
+        }
+
         await Assert.That(transport.IsConnected).IsFalse();
         await using var connection = await broker.Factory().CreateConnectionAsync(token);
         await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
@@ -159,7 +175,11 @@ public sealed class RabbitMqConsumerControlTests
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
             ActivityStarted = activity =>
             {
-                if (!activity.OperationName.StartsWith("ack ", StringComparison.Ordinal)) return;
+                if (!activity.OperationName.StartsWith("ack ", StringComparison.Ordinal))
+                {
+                    return;
+                }
+
                 entered.TrySetResult();
                 release.Wait(token);
             }
@@ -180,16 +200,25 @@ public sealed class RabbitMqConsumerControlTests
         // Pause immediately before BasicAckAsync, after the receive pipeline's cancellation checks.
         using var start = CancellationTokenSource.CreateLinkedTokenSource(token);
         var starting = control.StartAsync(start.Token);
+
         try
         {
             await entered.Task.WaitAsync(token);
             // The broker can count a consumer before the client processes basic.consume-ok.
             // Wait for Relayer to finish starting orders before cancelling the group.
-            while (orders.GetHealthState() is null) await Task.Delay(10, token);
+            while (orders.GetHealthState() is null)
+            {
+                await Task.Delay(10, token);
+            }
+
             start.Cancel();
             await channelClosed.Task.WaitAsync(token);
         }
-        finally { release.Set(); }
+        finally
+        {
+            release.Set();
+        }
+
         await Assert.That(async () => await starting.WaitAsync(token)).ThrowsException();
         await Assert.That(await failedAck.Task.WaitAsync(token)).IsTypeOf<AlreadyClosedException>();
         var redelivery = await channel.BasicGetAsync("audit", autoAck: true, token);

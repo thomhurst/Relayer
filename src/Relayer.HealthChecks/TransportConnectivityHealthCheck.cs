@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Relayer.Transports;
 
 namespace Relayer.HealthChecks;
 
@@ -10,6 +10,7 @@ internal sealed class TransportConnectivityHealthCheck(RelayerConfiguration conf
     {
         cancellationToken.ThrowIfCancellationRequested();
         var report = new HealthReport();
+
         foreach (var transport in configuration.Transports)
         {
             var result = await HealthReport.RunAsync(token =>
@@ -21,6 +22,7 @@ internal sealed class TransportConnectivityHealthCheck(RelayerConfiguration conf
             }, cancellationToken).ConfigureAwait(false);
             report.Add(transport.Name, result);
         }
+
         return report.Build("No transports configured.");
     }
 }

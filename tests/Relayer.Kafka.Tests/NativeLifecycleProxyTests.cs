@@ -33,6 +33,7 @@ public class NativeLifecycleProxyTests
     public interface ICalls : IAsyncDisposable
     {
         ICalls ForTopic();
+
         ValueTask CommitAsync();
     }
 
@@ -41,13 +42,27 @@ public class NativeLifecycleProxyTests
         internal bool Disposed;
         internal int Commits;
         internal Exception? Failure;
-        public ICalls ForTopic() => this;
+
+        public ICalls ForTopic()
+        {
+            return this;
+        }
+
         public ValueTask CommitAsync()
         {
-            if (Failure is not null) return ValueTask.FromException(Failure);
+            if (Failure is not null)
+            {
+                return ValueTask.FromException(Failure);
+            }
+
             Commits++;
             return default;
         }
-        public ValueTask DisposeAsync() { Disposed = true; return default; }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return default;
+        }
     }
 }

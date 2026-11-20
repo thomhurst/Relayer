@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
 
@@ -12,7 +12,9 @@ public static class PostgreSqlOutboxRegistration
 {
     /// <summary>Adds the PostgreSQL outbox and the scoped IOutboxEnlistment used by ISender.</summary>
     public static IServiceCollection AddRelayerPostgreSqlOutbox(this IServiceCollection services, PostgreSqlOutboxOptions? options = null)
-        => Register(services, options, null);
+    {
+        return Register(services, options, null);
+    }
 
     /// <summary>Adds transactional enqueue with immediate commit-triggered dispatch through a named shared worker.</summary>
     public static IServiceCollection AddRelayerPostgreSqlOutbox(this IServiceCollection services, string dispatchStoreName,
@@ -25,26 +27,44 @@ public static class PostgreSqlOutboxRegistration
     private static IServiceCollection Register(IServiceCollection services, PostgreSqlOutboxOptions? options, string? dispatchStoreName)
     {
         ArgumentNullException.ThrowIfNull(services);
+
         if (services.Any(static descriptor => descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
             !services.Any(static descriptor => descriptor.ServiceType == typeof(PostgreSqlOutbox)))
+        {
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
-        if (options is not null) PostgreSqlOutbox.ValidateOptions(options);
+        }
+
+        if (options is not null)
+        {
+            PostgreSqlOutbox.ValidateOptions(options);
+        }
+
         services.TryAddScoped<PostgreSqlOutbox>(provider =>
         {
             var snapshot = provider.GetRequiredService<IOptionsSnapshot<PostgreSqlOutboxOptions>>();
+
             if (provider.GetService<TenantContext>() is { } tenant)
             {
                 if (snapshot.Value.TenantBinding is null)
+                {
                     throw new InvalidOperationException("Configure TenantBinding in the authorized native store factory when using AddRelayerTenancy with the PostgreSQL outbox.");
+                }
+
                 snapshot.Value.TenantBinding.ValidateContext(tenant);
             }
+
             return new(snapshot, provider.GetServices<PostgreSqlSchedulingRegistration>(), provider.GetService<RelayerInstrumentation>(),
                 dispatchStoreName is null ? null : provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(dispatchStoreName));
         });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<PostgreSqlOutbox>());
         services.TryAddSingleton<IValidateOptions<PostgreSqlOutboxOptions>, Validator>();
         services.AddOptions<PostgreSqlOutboxOptions>().ValidateOnStart();
-        if (options is not null) AddFactory(services, options, null);
+
+        if (options is not null)
+        {
+            AddFactory(services, options, null);
+        }
+
         return services;
     }
 
@@ -59,18 +79,27 @@ public static class PostgreSqlOutboxRegistration
         return services;
     }
 
-    private static void AddFactory(IServiceCollection services, PostgreSqlOutboxOptions options, IConfiguration? configuration) =>
+    private static void AddFactory(IServiceCollection services, PostgreSqlOutboxOptions options, IConfiguration? configuration)
+    {
         services.AddSingleton<IOptionsFactory<PostgreSqlOutboxOptions>>(provider => new Factory(options, configuration,
-            provider.GetServices<IConfigureOptions<PostgreSqlOutboxOptions>>(),
-            provider.GetServices<IPostConfigureOptions<PostgreSqlOutboxOptions>>(),
-            provider.GetServices<IValidateOptions<PostgreSqlOutboxOptions>>()));
+                    provider.GetServices<IConfigureOptions<PostgreSqlOutboxOptions>>(),
+                    provider.GetServices<IPostConfigureOptions<PostgreSqlOutboxOptions>>(),
+                    provider.GetServices<IValidateOptions<PostgreSqlOutboxOptions>>()));
+    }
 
     private sealed class Validator : IValidateOptions<PostgreSqlOutboxOptions>
     {
         public ValidateOptionsResult Validate(string? name, PostgreSqlOutboxOptions options)
         {
-            try { PostgreSqlOutbox.ValidateOptions(options); return ValidateOptionsResult.Success; }
-            catch (ArgumentException error) { return ValidateOptionsResult.Fail(error.Message); }
+            try
+            {
+                PostgreSqlOutbox.ValidateOptions(options);
+                return ValidateOptionsResult.Success;
+            }
+            catch (ArgumentException error)
+            {
+                return ValidateOptionsResult.Fail(error.Message);
+            }
         }
     }
 
@@ -81,22 +110,34 @@ public static class PostgreSqlOutboxRegistration
         IEnumerable<IValidateOptions<PostgreSqlOutboxOptions>> validations)
         : OptionsFactory<PostgreSqlOutboxOptions>(setups, postConfigures, validations)
     {
-        protected override PostgreSqlOutboxOptions CreateInstance(string name) => new()
+        protected override PostgreSqlOutboxOptions CreateInstance(string name)
         {
-            TenantBinding = defaults.TenantBinding,
-            Schema = configuration?[nameof(defaults.Schema)] ?? defaults.Schema,
-            TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
-            Lanes = Read(nameof(defaults.Lanes), defaults.Lanes),
-            LeaseDuration = Read(nameof(defaults.LeaseDuration), defaults.LeaseDuration),
-            RetainSentMessages = Read(nameof(defaults.RetainSentMessages), defaults.RetainSentMessages),
-            MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts)
-        };
+            return new()
+            {
+                TenantBinding = defaults.TenantBinding,
+                Schema = configuration?[nameof(defaults.Schema)] ?? defaults.Schema,
+                TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
+                Lanes = Read(nameof(defaults.Lanes), defaults.Lanes),
+                LeaseDuration = Read(nameof(defaults.LeaseDuration), defaults.LeaseDuration),
+                RetainSentMessages = Read(nameof(defaults.RetainSentMessages), defaults.RetainSentMessages),
+                MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts)
+            };
+        }
 
         private T Read<T>(string key, T fallback) where T : IParsable<T>
         {
             var value = configuration?[key];
-            if (value is null) return fallback;
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+
+            if (value is null)
+            {
+                return fallback;
+            }
+
+            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+
             throw new OptionsValidationException(Options.DefaultName, typeof(PostgreSqlOutboxOptions), [$"{key}: '{value}' is invalid."]);
         }
     }

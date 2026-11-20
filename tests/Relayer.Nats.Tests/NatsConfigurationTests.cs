@@ -86,14 +86,44 @@ public class NatsConfigurationTests
         {
             switch (scenario)
             {
-                case 0: options.ConnectionOptions = null!; break;
-                case 1: options.Streams.Add(new("")); break;
-                case 2: options.Streams.Add(new("orders.*")); break;
-                case 3: options.Streams.Add(new("orders")); options.Streams.Add(new("orders")); break;
-                case 4: options.Streams.Add(new("orders") { Configuration = new("different", ["orders.>"]) }); break;
-                case 5: options.Consumers.Add(new("orders", "handler") { Configuration = new("different") }); break;
-                case 6: options.Consumers.Add(new("orders", "handler")); options.Consumers.Add(new("orders", "handler")); break;
-                case 7: options.Consumers.Add(new("orders", "handler") { Configuration = new("handler") { DurableName = "different" } }); break;
+                case 0:
+                    options.ConnectionOptions = null!;
+                    break;
+                case 1:
+                    options.Streams.Add(new(""));
+                    break;
+                case 2:
+                    options.Streams.Add(new("orders.*"));
+                    break;
+                case 3:
+                    options.Streams.Add(new("orders"));
+                    options.Streams.Add(new("orders"));
+                    break;
+                case 4:
+                    options.Streams.Add(new("orders")
+                    {
+                        Configuration = new("different", ["orders.>"])
+                    });
+                    break;
+                case 5:
+                    options.Consumers.Add(new("orders", "handler")
+                    {
+                        Configuration = new("different")
+                    });
+                    break;
+                case 6:
+                    options.Consumers.Add(new("orders", "handler"));
+                    options.Consumers.Add(new("orders", "handler"));
+                    break;
+                case 7:
+                    options.Consumers.Add(new("orders", "handler")
+                    {
+                        Configuration = new("handler")
+                        {
+                            DurableName = "different"
+                        }
+                    });
+                    break;
             }
         });
         await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
@@ -107,13 +137,23 @@ public class NatsConfigurationTests
     public async Task Unsafe_native_consumers_are_rejected_before_receiving(int scenario)
     {
         var config = new ConsumerConfig("worker");
+
         switch (scenario)
         {
-            case 0: config.AckPolicy = ConsumerConfigAckPolicy.None; break;
-            case 1: config.DeliverSubject = "push"; break;
-            case 2: config.HeadersOnly = true; break;
-            case 3: config.MaxDeliver = 1; break;
+            case 0:
+                config.AckPolicy = ConsumerConfigAckPolicy.None;
+                break;
+            case 1:
+                config.DeliverSubject = "push";
+                break;
+            case 2:
+                config.HeadersOnly = true;
+                break;
+            case 3:
+                config.MaxDeliver = 1;
+                break;
         }
+
         await Assert.That(() => NatsConsumerWorker.Validate(config, "events", "worker")).Throws<InvalidOperationException>();
     }
 
@@ -129,6 +169,9 @@ public class NatsConfigurationTests
 
     public sealed class SampleHandler : IHandler<Sample>
     {
-        public ValueTask HandleAsync(Sample message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask HandleAsync(Sample message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

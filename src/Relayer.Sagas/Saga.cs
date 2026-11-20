@@ -15,7 +15,9 @@ public abstract class Saga<TState, TMessage> : IHandler<TMessage>
 
     /// <summary>Creates state for a starting message. The default rejects missing state.</summary>
     protected virtual TState Create(TMessage message)
-        => throw new InvalidOperationException("No saga state exists for this message. Override Create only for messages that may start the process.");
+    {
+        throw new InvalidOperationException("No saga state exists for this message. Override Create only for messages that may start the process.");
+    }
 
     /// <summary>Changes tracked state and sends through the scoped ISender. The runtime saves changes afterward.</summary>
     protected abstract ValueTask TransitionAsync(TState state, TMessage message, MessageContext context,
@@ -26,12 +28,32 @@ public abstract class Saga<TState, TMessage> : IHandler<TMessage>
 
     /// <inheritdoc />
     public ValueTask HandleAsync(TMessage message, MessageContext context, CancellationToken cancellationToken)
-        => context.Services.GetRequiredService<SagaExecution<TState, TMessage>>().Start(this, message, context, cancellationToken);
+    {
+        return context.Services.GetRequiredService<SagaExecution<TState, TMessage>>().Start(this, message, context, cancellationToken);
+    }
 
-    internal void Validate() => ValidateTransaction();
-    internal ValueTask<TState?> Load(TMessage message, CancellationToken cancellation) => LoadAsync(message, cancellation);
-    internal TState New(TMessage message) => Create(message);
+    internal void Validate()
+    {
+        ValidateTransaction();
+    }
+
+    internal ValueTask<TState?> Load(TMessage message, CancellationToken cancellation)
+    {
+        return LoadAsync(message, cancellation);
+    }
+
+    internal TState New(TMessage message)
+    {
+        return Create(message);
+    }
+
     internal ValueTask Apply(TState state, TMessage message, MessageContext context, CancellationToken cancellation)
-        => TransitionAsync(state, message, context, cancellation);
-    internal ValueTask Save(TState state, bool isNew, CancellationToken cancellation) => SaveAsync(state, isNew, cancellation);
+    {
+        return TransitionAsync(state, message, context, cancellation);
+    }
+
+    internal ValueTask Save(TState state, bool isNew, CancellationToken cancellation)
+    {
+        return SaveAsync(state, isNew, cancellation);
+    }
 }

@@ -12,6 +12,7 @@ public class InboxPoolTests
         await using var provider = services.BuildServiceProvider();
         MySqlInboxPool pool;
         MySqlInboxPool.Scratch first;
+
         using (var scope = provider.CreateScope())
         {
             pool = scope.ServiceProvider.GetRequiredService<MySqlInboxPools>().Get("orders_");
@@ -22,6 +23,7 @@ public class InboxPoolTests
             pool.Return(first);
             pool.Return(concurrent);
         }
+
         using (var scope = provider.CreateScope())
         {
             var next = scope.ServiceProvider.GetRequiredService<MySqlInboxPools>().Get("orders_");
@@ -39,15 +41,37 @@ public class InboxPoolTests
     {
         using var pool = new MySqlInboxPool(new());
         var items = new MySqlInboxPool.Scratch[concurrency];
-        for (var i = 0; i < items.Length; i++) items[i] = pool.Rent();
-        foreach (var item in items) pool.Return(item);
-        for (var i = 0; i < 1000; i++) pool.Return(pool.Rent());
+
+        for (var i = 0; i < items.Length; i++)
+        {
+            items[i] = pool.Rent();
+        }
+
+        foreach (var item in items)
+        {
+            pool.Return(item);
+        }
+
+        for (var i = 0; i < 1000; i++)
+        {
+            pool.Return(pool.Rent());
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
+
         for (var iteration = 0; iteration < 100; iteration++)
         {
-            for (var i = 0; i < items.Length; i++) items[i] = pool.Rent();
-            foreach (var item in items) pool.Return(item);
+            for (var i = 0; i < items.Length; i++)
+            {
+                items[i] = pool.Rent();
+            }
+
+            foreach (var item in items)
+            {
+                pool.Return(item);
+            }
         }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0);
     }

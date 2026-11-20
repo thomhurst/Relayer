@@ -4,14 +4,26 @@ namespace Relayer.Outbox.MySql;
 public sealed class MySqlOutboxOptions
 {
     /// <summary>Explicit poison failures before dead-lettering; native send failures retry with durable backoff. Match across dispatchers for the same tables.</summary>
-    public int MaxDispatchAttempts { get; init; } = 10;
+    public int MaxDispatchAttempts
+    {
+        get; init;
+    } = 10;
 
     /// <summary>Stable lane count for ordering keys. All writers and ordered workers must agree.</summary>
-    public int Lanes { get; init; } = 64;
+    public int Lanes
+    {
+        get; init;
+    } = 64;
 
     /// <summary>Optional registered direct-dispatch store name. Null keeps committed rows durable without notification.</summary>
-    public string? DispatchStoreName { get; init; }
+    public string? DispatchStoreName
+    {
+        get; init;
+    }
 
     /// <summary>Prefix for table names. Each endpoint can use a separate prefix in the same database.</summary>
-    public string TablePrefix { get; init; } = "relayer_";
+    public string TablePrefix
+    {
+        get; init;
+    } = "relayer_";
 }

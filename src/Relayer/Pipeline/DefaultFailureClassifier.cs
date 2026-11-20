@@ -5,6 +5,8 @@ public sealed class DefaultFailureClassifier : IFailureClassifier
 {
     /// <inheritdoc />
     public FailureAction Classify(Exception exception, MessageContext context)
-        => exception is UnknownMessageTypeException or MessageDeserializationException or MessageEnvelopeException
-            ? FailureAction.DeadLetter : FailureAction.Retry;
+    {
+        return exception is UnknownMessageTypeException or MessageDeserializationException or MessageEnvelopeException
+                    ? FailureAction.DeadLetter : FailureAction.Retry;
+    }
 }

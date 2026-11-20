@@ -1,9 +1,9 @@
-using Relayer.Pipeline;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Outbox.EntityFrameworkCore;
+using Relayer.Pipeline;
 
 namespace Relayer.Sagas.EntityFrameworkCore;
 
@@ -29,13 +29,21 @@ public static class SagaConsumerExtensions
             var entity = database.Model.FindEntityType(typeof(TState))
                 ?? throw new InvalidOperationException($"Map saga state '{typeof(TState)}' in the selected DbContext.");
             var key = entity.FindPrimaryKey();
+
             if (key is null || key.Properties.Count != 1 || key.Properties[0].Name != nameof(EntityFrameworkCoreSagaData.Id)
                 || key.Properties[0].ValueGenerated != ValueGenerated.Never)
+            {
                 throw new InvalidOperationException("Saga state requires Id as its sole primary key with ValueGeneratedNever.");
+            }
+
             var version = entity.FindProperty(nameof(EntityFrameworkCoreSagaData.Version));
+
             if (version is not { IsConcurrencyToken: true, ValueGenerated: ValueGenerated.OnAddOrUpdate }
                 || version.GetColumnName() != "xmin")
+            {
                 throw new InvalidOperationException("Configure saga state Version with Property(s => s.Version).IsRowVersion() to use PostgreSQL xmin concurrency.");
+            }
+
             return middleware;
         });
     }

@@ -2,8 +2,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace Relayer.Outbox.PostgreSql;
 
@@ -18,15 +18,22 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         options ??= new();
         options.Validate();
+
         foreach (var descriptor in services)
+        {
             if (descriptor.ServiceType == typeof(PostgreSqlTenantDispatcher))
+            {
                 throw new InvalidOperationException("The PostgreSQL tenant dispatcher is already registered.");
+            }
+        }
+
         services.AddSingleton(options);
         services.AddSingleton<IOptions<PostgreSqlTenantDispatchOptions>>(Options.Create(options));
         services.AddSingleton<PostgreSqlTenantDispatcher>();
         services.AddSingleton<IHostedService>(static provider => provider.GetRequiredService<PostgreSqlTenantDispatcher>());
         return services;
     }
+
     /// <summary>Snapshots immutable tenant scheduler limits from configuration without runtime reflection.</summary>
     [Experimental("RLYEXP004", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp004")]
     public static IServiceCollection AddRelayerPostgreSqlTenantDispatch(this IServiceCollection services, IConfiguration configuration)
@@ -47,16 +54,28 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             SentRetention = Read(nameof(defaults.SentRetention), defaults.SentRetention),
             InboxRetention = Retention(nameof(defaults.InboxRetention), defaults.InboxRetention)
         });
+
         T Read<T>(string key, T fallback) where T : IParsable<T>
         {
             var value = configuration[key];
-            if (value is null) return fallback;
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var result)) return result;
+
+            if (value is null)
+            {
+                return fallback;
+            }
+
+            if (T.TryParse(value, CultureInfo.InvariantCulture, out var result))
+            {
+                return result;
+            }
+
             throw new ArgumentException($"Tenant dispatch {key}: '{value}' is invalid.", nameof(configuration));
         }
-        TimeSpan? Retention(string key, TimeSpan? fallback) =>
-            string.Equals(configuration[key], "infinite", StringComparison.OrdinalIgnoreCase)
-                ? null : Read(key, fallback!.Value);
-    }
 
+        TimeSpan? Retention(string key, TimeSpan? fallback)
+        {
+            return string.Equals(configuration[key], "infinite", StringComparison.OrdinalIgnoreCase)
+                            ? null : Read(key, fallback!.Value);
+        }
+    }
 }

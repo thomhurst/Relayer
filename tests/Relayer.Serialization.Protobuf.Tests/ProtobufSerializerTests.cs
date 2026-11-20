@@ -1,16 +1,19 @@
-using Relayer.Transports;
 using System.Buffers;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Relayer.Transports;
 using StringValue = Google.Protobuf.WellKnownTypes.StringValue;
 
 namespace Relayer.Serialization.Protobuf.Tests;
 
 public class ProtobufSerializerTests
 {
-    private static ProtobufMessageSerializer CreateSerializer() => new(types => types.Add(StringValue.Parser).Add(Int32Value.Parser));
+    private static ProtobufMessageSerializer CreateSerializer()
+    {
+        return new(types => types.Add(StringValue.Parser).Add(Int32Value.Parser));
+    }
 
     [Test]
     public async Task Writes_native_bytes_and_round_trips_multiple_contracts()
@@ -34,7 +37,12 @@ public class ProtobufSerializerTests
         var bytes = message.ToByteArray();
         var first = new Segment(bytes.AsMemory(0, 1));
         var last = first;
-        for (var i = 1; i < bytes.Length; i++) last = last.Append(bytes.AsMemory(i, 1));
+
+        for (var i = 1; i < bytes.Length; i++)
+        {
+            last = last.Append(bytes.AsMemory(i, 1));
+        }
+
         var source = new ReadOnlySequence<byte>(first, 0, last, 1);
         await Assert.That(CreateSerializer().Deserialize<StringValue>(source)).IsEqualTo(message);
     }
@@ -75,7 +83,9 @@ public class ProtobufSerializerTests
     [Test]
     public async Task Missing_duplicate_and_null_registrations_fail_actionably()
     {
-        var serializer = new ProtobufMessageSerializer(_ => { });
+        var serializer = new ProtobufMessageSerializer(_ =>
+        {
+        });
         await Assert.That(() => serializer.Deserialize<StringValue>(ReadOnlySequence<byte>.Empty)).Throws<InvalidOperationException>();
         await Assert.That(() => serializer.Serialize(new StringValue(), new ArrayBufferWriter<byte>())).Throws<InvalidOperationException>();
         await Assert.That(() => new ProtobufMessageSerializer(types => types.Add(StringValue.Parser).Add(StringValue.Parser))).Throws<InvalidOperationException>();
@@ -89,7 +99,11 @@ public class ProtobufSerializerTests
     public async Task Captures_immutable_registry_and_isolates_instances()
     {
         ProtobufSerializerBuilder captured = null!;
-        var first = new ProtobufMessageSerializer(types => { captured = types; types.Add(StringValue.Parser); });
+        var first = new ProtobufMessageSerializer(types =>
+        {
+            captured = types;
+            types.Add(StringValue.Parser);
+        });
         captured.Add(Int32Value.Parser);
         var second = new ProtobufMessageSerializer(types => types.Add(Int32Value.Parser));
         await Assert.That(() => first.Deserialize<Int32Value>(ReadOnlySequence<byte>.Empty)).Throws<InvalidOperationException>();
@@ -113,7 +127,11 @@ public class ProtobufSerializerTests
 
     private sealed class Segment : ReadOnlySequenceSegment<byte>
     {
-        public Segment(ReadOnlyMemory<byte> memory) => Memory = memory;
+        public Segment(ReadOnlyMemory<byte> memory)
+        {
+            Memory = memory;
+        }
+
         public Segment Append(ReadOnlyMemory<byte> memory)
         {
             var next = new Segment(memory) { RunningIndex = RunningIndex + Memory.Length };
@@ -125,9 +143,25 @@ public class ProtobufSerializerTests
     private sealed class SmallBuffer : IBufferWriter<byte>
     {
         private readonly byte[] _buffer = new byte[8];
-        public List<byte> Bytes { get; } = [];
-        public void Advance(int count) => Bytes.AddRange(_buffer.AsSpan(0, count));
-        public Memory<byte> GetMemory(int sizeHint = 0) => sizeHint <= _buffer.Length ? _buffer : throw new InvalidOperationException("Unexpected size hint.");
-        public Span<byte> GetSpan(int sizeHint = 0) => GetMemory(sizeHint).Span;
+
+        public List<byte> Bytes
+        {
+            get;
+        } = [];
+
+        public void Advance(int count)
+        {
+            Bytes.AddRange(_buffer.AsSpan(0, count));
+        }
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            return sizeHint <= _buffer.Length ? _buffer : throw new InvalidOperationException("Unexpected size hint.");
+        }
+
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            return GetMemory(sizeHint).Span;
+        }
     }
 }

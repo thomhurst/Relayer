@@ -1,9 +1,9 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
+using Relayer.Pipeline;
 using Relayer.Sagas.EntityFrameworkCore;
 using Relayer.Serialization;
 using Relayer.Transports;
@@ -46,26 +46,54 @@ public class SagaTests
         {
             switch (failure)
             {
-                case "handler": throw new InvalidOperationException("Transition failed after save.");
-                case "cancel": cancellation.Cancel(); break;
-                case "retry": context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.Zero); break;
-                case "deadletter": context.Features.GetRequired<ISettlementFeature>().DeadLetter("Rejected"); break;
+                case "handler":
+                    throw new InvalidOperationException("Transition failed after save.");
+                case "cancel":
+                    cancellation.Cancel();
+                    break;
+                case "retry":
+                    context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.Zero);
+                    break;
+                case "deadletter":
+                    context.Features.GetRequired<ISettlementFeature>().DeadLetter("Rejected");
+                    break;
             }
+
             return default;
         };
+
         if (failure == "outbox")
+        {
             await database.Execute("ALTER TABLE relayer_outbox ADD CONSTRAINT reject_rows CHECK (false)");
+        }
+
         var pipeline = Pipeline(provider).Build();
         var message = Message();
-        if (failure is "retry" or "deadletter") await Deliver(pipeline, message);
+
+        if (failure is "retry" or "deadletter")
+        {
+            await Deliver(pipeline, message);
+        }
         else if (failure == "cancel")
+        {
             await Assert.That(async () => await Deliver(pipeline, message, cancellation.Token)).Throws<OperationCanceledException>();
+        }
         else if (failure == "outbox")
+        {
             await Assert.That(async () => await Deliver(pipeline, message)).Throws<PostgresException>();
+        }
         else
+        {
             await Assert.That(async () => await Deliver(pipeline, message)).Throws<InvalidOperationException>();
+        }
+
         await AssertCounts(database, 0, 0, 0);
-        if (failure == "outbox") await database.Execute("ALTER TABLE relayer_outbox DROP CONSTRAINT reject_rows");
+
+        if (failure == "outbox")
+        {
+            await database.Execute("ALTER TABLE relayer_outbox DROP CONSTRAINT reject_rows");
+        }
+
         control.AfterSave = null;
         await Deliver(pipeline, message);
         await AssertCounts(database, 1, 1, 1);
@@ -80,7 +108,12 @@ public class SagaTests
     {
         await using var database = new TestDatabase();
         await database.Start();
-        if (existing) await database.Execute($"INSERT INTO processes (\"Id\", \"Count\", \"IsCompleted\") VALUES ('{TestDatabase.ProcessId}', 0, false)");
+
+        if (existing)
+        {
+            await database.Execute($"INSERT INTO processes (\"Id\", \"Count\", \"IsCompleted\") VALUES ('{TestDatabase.ProcessId}', 0, false)");
+        }
+
         await using var firstProvider = database.Services();
         await using var secondProvider = database.Services();
         var firstControl = firstProvider.GetRequiredService<Control>();
@@ -97,12 +130,17 @@ public class SagaTests
         };
         secondControl.AfterLoad = async () =>
         {
-            if (secondControl.Loads != 1) return;
+            if (secondControl.Loads != 1)
+            {
+                return;
+            }
+
             secondLoaded.TrySetResult();
             await firstCommitted.Task.WaitAsync(TimeSpan.FromSeconds(20));
         };
         var first = Deliver(Pipeline(firstProvider, retries: true).Build(), Message());
         Task? second = null;
+
         try
         {
             await firstLoaded.Task.WaitAsync(TimeSpan.FromSeconds(20));
@@ -119,18 +157,23 @@ public class SagaTests
             firstCommitted.TrySetResult();
             await Task.WhenAll(first, second ?? Task.CompletedTask);
         }
+
         await AssertCounts(database, sendOnly ? 0 : 2, 2, 2);
         await Assert.That(await database.Scalar("SELECT count(*) FROM processes")).IsEqualTo(1L);
         await Assert.That(secondControl.Loads).IsEqualTo(2);
         await Assert.That(secondControl.Contexts[0]).IsNotSameReferenceAs(secondControl.Contexts[1]);
         await Assert.That(secondControl.Errors.Count).IsEqualTo(1);
+
         if (existing)
+        {
             await Assert.That(secondControl.Errors[0]).IsTypeOf<DbUpdateConcurrencyException>();
+        }
         else
         {
             var error = secondControl.Errors[0] as DbUpdateException;
             await Assert.That(error?.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation }).IsTrue();
         }
+
         await Assert.That(firstProvider.GetRequiredService<Transport>().Sends + secondProvider.GetRequiredService<Transport>().Sends).IsEqualTo(0);
     }
 
@@ -198,7 +241,11 @@ public class SagaTests
         var control = provider.GetRequiredService<Control>();
         var builder = retries
             ? new ConsumePipelineBuilder(scopes, messages, new Serializer(),
-                new FailurePipeline(provider, "events", "source", "process", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 }),
+                new FailurePipeline(provider, "events", "source", "process", new()
+                {
+                    RetryDelays = new[] { TimeSpan.Zero },
+                    Jitter = 0
+                }),
                 new Classifier(control))
             : new ConsumePipelineBuilder(scopes, messages, new Serializer(), static (_, error, _) => ValueTask.FromException(error));
         var declaration = new ConsumerBuilder<object>(new ServiceCollection(), new HandlerRegistry(), "source");
@@ -208,11 +255,15 @@ public class SagaTests
             .ConfigureConsumer(provider, declaration.Build());
     }
 
-    private static ConsumeMessage Message() => new()
+    private static ConsumeMessage Message()
     {
-        MessageType = new("saga.probe", 1), MessageId = Guid.CreateVersion7().ToString("D"),
-        Body = new ReadOnlySequence<byte>(new byte[] { 1 })
-    };
+        return new()
+        {
+            MessageType = new("saga.probe", 1),
+            MessageId = Guid.CreateVersion7().ToString("D"),
+            Body = new ReadOnlySequence<byte>(new byte[] { 1 })
+        };
+    }
 
     private static async Task Deliver(ConsumePipeline pipeline, ConsumeMessage message, CancellationToken cancellation = default)
     {
@@ -227,9 +278,17 @@ public class SagaTests
         await Assert.That(await database.Scalar("SELECT count(*) FROM relayer_outbox")).IsEqualTo(outbox);
     }
 
-    public sealed class State : EntityFrameworkCoreSagaData { public int Count { get; set; } }
+    public sealed class State : EntityFrameworkCoreSagaData
+    {
+        public int Count
+        {
+            get; set;
+        }
+    }
+
     [Message("saga.probe")]
     public sealed record Probe;
+
     public sealed class Empty;
 
     public sealed class Control
@@ -240,8 +299,16 @@ public class SagaTests
         public string Model = "valid";
         public Func<ValueTask>? AfterLoad;
         public Func<MessageContext, ValueTask>? AfterSave;
-        public List<DbContext> Contexts { get; } = [];
-        public List<Exception> Errors { get; } = [];
+
+        public List<DbContext> Contexts
+        {
+            get;
+        } = [];
+
+        public List<Exception> Errors
+        {
+            get;
+        } = [];
     }
 
     public sealed class Process(Context database, ISender sender, Control control) : EntityFrameworkCoreSaga<Context, State, Probe>(database)
@@ -251,16 +318,39 @@ public class SagaTests
             control.Loads++;
             control.Contexts.Add(Database);
             var query = Database.Set<State>().AsQueryable();
-            if (control.NoTracking) query = query.AsNoTracking();
+
+            if (control.NoTracking)
+            {
+                query = query.AsNoTracking();
+            }
+
             var state = await query.SingleOrDefaultAsync(s => s.Id == TestDatabase.ProcessId, cancellationToken);
-            if (control.AfterLoad is { } after) await after();
+
+            if (control.AfterLoad is { } after)
+            {
+                await after();
+            }
+
             return state;
         }
-        protected override State Create(Probe message) => control.CanStart ? new() { Id = TestDatabase.ProcessId } : base.Create(message);
+
+        protected override State Create(Probe message)
+        {
+            return control.CanStart ? new()
+            {
+                Id = TestDatabase.ProcessId
+            } : base.Create(message);
+        }
+
         protected override async ValueTask TransitionAsync(State state, Probe message, MessageContext context, CancellationToken cancellationToken)
         {
             control.Transitions++;
-            if (!control.SendOnly) state.Count++;
+
+            if (!control.SendOnly)
+            {
+                state.Count++;
+            }
+
             state.IsCompleted = control.Complete;
             await sender.SendAsync(message, cancellationToken);
         }
@@ -272,18 +362,32 @@ public class SagaTests
         {
             var state = modelBuilder.Entity<State>().ToTable("processes");
             state.HasKey(s => s.Id);
-            if (control.Model != "key") state.Property(s => s.Id).ValueGeneratedNever();
-            if (control.Model != "version") state.Property(s => s.Version).IsRowVersion();
+
+            if (control.Model != "key")
+            {
+                state.Property(s => s.Id).ValueGeneratedNever();
+            }
+
+            if (control.Model != "version")
+            {
+                state.Property(s => s.Version).IsRowVersion();
+            }
         }
     }
+
     private sealed class AfterSave(Control control) : IConsumeMiddleware
     {
         public async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
         {
             await next(context);
-            if (control.AfterSave is { } after) await after(context);
+
+            if (control.AfterSave is { } after)
+            {
+                await after(context);
+            }
         }
     }
+
     private sealed class Classifier(Control control) : IFailureClassifier
     {
         public FailureAction Classify(Exception exception, MessageContext context)
@@ -292,35 +396,81 @@ public class SagaTests
             return FailureAction.Retry;
         }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
-        { destination.GetSpan(1)[0] = 1; destination.Advance(1); }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)new Probe();
+        {
+            destination.GetSpan(1)[0] = 1;
+            destination.Advance(1);
+        }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)new Probe();
+        }
     }
+
     private sealed class Transport : ITransport
     {
         public int Sends;
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { DeadLetter = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Interlocked.Increment(ref Sends); return default; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                DeadLetter = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Sends);
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
+
     private sealed class TestDatabase : IAsyncDisposable
     {
         internal static Guid ProcessId => new("018f0000-0000-7000-8000-000000000001");
         private readonly PostgreSqlFixture _fixture = new();
+
         internal async Task Start()
         {
             await _fixture.StartAsync();
             await Execute(PostgreSqlOutboxSchema.CreateScript() +
                 "CREATE TABLE processes (\"Id\" uuid PRIMARY KEY, \"Count\" integer NOT NULL, \"IsCompleted\" boolean NOT NULL)");
         }
+
         internal ServiceProvider Services(bool outbox = true, string model = "valid")
         {
             var services = new ServiceCollection();
@@ -334,7 +484,11 @@ public class SagaTests
                 o.UseNpgsql(string.IsNullOrEmpty(_fixture.ConnectionString) ? "Host=unused" : _fixture.ConnectionString);
                 // Each invalid model has a distinct service provider/model cache.
                 o.EnableServiceProviderCaching(false);
-                if (outbox) o.AddRelayerOutbox(sp);
+
+                if (outbox)
+                {
+                    o.AddRelayerOutbox(sp);
+                }
             });
             services.AddRelayer(r =>
             {
@@ -344,6 +498,7 @@ public class SagaTests
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }
+
         internal async Task<long> Scalar(string sql)
         {
             await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
@@ -351,6 +506,7 @@ public class SagaTests
             await using var command = new NpgsqlCommand(sql, connection);
             return (long)(await command.ExecuteScalarAsync())!;
         }
+
         internal async Task Execute(string sql)
         {
             await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
@@ -358,6 +514,10 @@ public class SagaTests
             await using var command = new NpgsqlCommand(sql, connection);
             await command.ExecuteNonQueryAsync();
         }
-        public ValueTask DisposeAsync() => _fixture.DisposeAsync();
+
+        public ValueTask DisposeAsync()
+        {
+            return _fixture.DisposeAsync();
+        }
     }
 }

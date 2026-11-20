@@ -63,7 +63,9 @@ public class ConfigurationTests
         consumers.AddRelayer(builder => builder.RabbitMQStreams("streams", streams => streams.Consume("orders", consumer => consumer.Handler<SampleHandler>())));
         await using var consumerProvider = consumers.BuildServiceProvider();
         await Assert.That(() => consumerProvider.GetRequiredService<ITransport>()).Throws<NotSupportedException>();
-        await using var native = Provider(_ => { });
+        await using var native = Provider(_ =>
+        {
+        });
         var transport = native.GetRequiredService<ITransport>();
         await Assert.That(async () => await transport.SendAsync(new("orders", default), default)).Throws<NotSupportedException>();
         await Assert.That(async () => await transport.SendBatchAsync(ReadOnlyMemory<OutgoingMessage>.Empty, default)).Throws<NotSupportedException>();
@@ -81,11 +83,25 @@ public class ConfigurationTests
         {
             switch (scenario)
             {
-                case 0: options.Configuration = null!; break;
-                case 1: options.Streams.Add(new("")); break;
-                case 2: options.Streams.Add(new(" ")); break;
-                case 3: options.Streams.Add(new("orders")); options.Streams.Add(new("orders")); break;
-                case 4: options.Streams.Add(new("orders") { Configuration = new("different") }); break;
+                case 0:
+                    options.Configuration = null!;
+                    break;
+                case 1:
+                    options.Streams.Add(new(""));
+                    break;
+                case 2:
+                    options.Streams.Add(new(" "));
+                    break;
+                case 3:
+                    options.Streams.Add(new("orders"));
+                    options.Streams.Add(new("orders"));
+                    break;
+                case 4:
+                    options.Streams.Add(new("orders")
+                    {
+                        Configuration = new("different")
+                    });
+                    break;
             }
         });
         await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
@@ -100,8 +116,12 @@ public class ConfigurationTests
 
     [Message("streams.configuration.sample")]
     public sealed record Sample;
+
     public sealed class SampleHandler : IHandler<Sample>
     {
-        public ValueTask HandleAsync(Sample message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask HandleAsync(Sample message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

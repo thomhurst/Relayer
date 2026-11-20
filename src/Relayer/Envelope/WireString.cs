@@ -17,7 +17,10 @@ public readonly struct WireString
     }
 
     /// <summary>Wraps native UTF-8 memory without copying or decoding it.</summary>
-    public WireString(ReadOnlyMemory<byte> utf8) => _utf8 = utf8;
+    public WireString(ReadOnlyMemory<byte> utf8)
+    {
+        _utf8 = utf8;
+    }
 
     /// <summary>Whether the value contains no characters.</summary>
     public bool IsEmpty => _text is null ? _utf8.IsEmpty : _text.Length == 0;
@@ -47,5 +50,8 @@ public readonly struct WireString
     }
 
     /// <summary>Returns native text, decoding and allocating only for a nonempty UTF-8 value.</summary>
-    public override string ToString() => _text ?? Encoding.UTF8.GetString(_utf8.Span);
+    public override string ToString()
+    {
+        return _text ?? Encoding.UTF8.GetString(_utf8.Span);
+    }
 }

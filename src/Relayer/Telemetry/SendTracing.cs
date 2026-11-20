@@ -45,15 +45,21 @@ public sealed class SendTracing
         _names = headerNames ?? new();
         _telemetry = tracing.Instrumentation?.CreateEndpoint(new()
         {
-            System = endpoint.System, Destination = endpoint.Destination, OperationName = "send",
-            ServerAddress = endpoint.ServerAddress, ServerPort = endpoint.ServerPort,
+            System = endpoint.System,
+            Destination = endpoint.Destination,
+            OperationName = "send",
+            ServerAddress = endpoint.ServerAddress,
+            ServerPort = endpoint.ServerPort,
         });
         _states.Items[0] = new(this);
     }
 
     /// <summary>Starts timing an actual native send call, independently of tracing and logical batch composition.</summary>
     /// <remarks>Complete once after native acknowledgement or failure. Do not time outbox enqueue or message preparation.</remarks>
-    public NativeSendOperation StartNativeSend() => new(_telemetry);
+    public NativeSendOperation StartNativeSend()
+    {
+        return new(_telemetry);
+    }
 
     /// <summary>An allocation-free timer for one native send, including asynchronous completion.</summary>
     public readonly struct NativeSendOperation
@@ -73,19 +79,30 @@ public sealed class SendTracing
         /// <summary>Records one duration, with bounded error.type on failure. A default timer records nothing.</summary>
         public void Complete(bool failed = false)
         {
-            if (_started != 0) _telemetry!.RecordDuration(Stopwatch.GetElapsedTime(_started), failed);
+            if (_started != 0)
+            {
+                _telemetry!.RecordDuration(Stopwatch.GetElapsedTime(_started), failed);
+            }
         }
     }
 
-    internal Activity? Start(ActivityContext creationContext, bool deferred) =>
-        (deferred ? _create : _send).Start(new() { CreationContext = creationContext });
+    internal Activity? Start(ActivityContext creationContext, bool deferred)
+    {
+        return (deferred ? _create : _send).Start(new()
+        {
+            CreationContext = creationContext
+        });
+    }
 
     internal bool IncludeBodySize => _tracing.Options.IncludeBodySize;
 
     /// <summary>Counts messages immediately before the adapter invokes a native send, including calls that fail.</summary>
     /// <remarks>Call after validation and preparation, once per native call with its actual message count.
     /// SendAsync and SendBatchAsync compose tracing only; they do not count native attempts.</remarks>
-    public void RecordNativeSend(long count = 1) => _telemetry?.RecordSent(count);
+    public void RecordNativeSend(long count = 1)
+    {
+        _telemetry?.RecordSent(count);
+    }
 
     internal void Fail(Activity? activity, Exception exception)
     {
@@ -116,25 +133,39 @@ public sealed class SendTracing
     {
         State? state = null;
         Exception? error = null;
+
         try
         {
             if (_tracing.Source.HasListeners())
             {
                 state = Rent();
                 state.Ensure(batch ? messages.Length : 1);
-                if (batch) messages = PrepareBatch(state, messages, cancellationToken);
-                else message = PrepareSingle(state, message);
+
+                if (batch)
+                {
+                    messages = PrepareBatch(state, messages, cancellationToken);
+                }
+                else
+                {
+                    message = PrepareSingle(state, message);
+                }
             }
+
             var pending = (batch ? _sendBatchNative(messages, cancellationToken) : _sendNative(message, cancellationToken))
                 .ConfigureAwait(false).GetAwaiter();
+
             if (!pending.IsCompleted)
             {
                 state ??= Rent();
                 return state.Suspend(pending);
             }
+
             pending.GetResult();
         }
-        catch (Exception exception) { error = exception; }
+        catch (Exception exception)
+        {
+            error = exception;
+        }
         // An untraced synchronous success needs neither borrowed preparation storage nor a continuation slot.
         return state is null && error is null ? default : (state ?? Rent()).FinishSynchronous(error);
     }
@@ -143,8 +174,15 @@ public sealed class SendTracing
         bool batch, CancellationToken cancellationToken) : IAsyncStateMachine
     {
         internal ValueTask Result;
-        public void MoveNext() => Result = owner.StartCore(message, messages, batch, cancellationToken);
-        public void SetStateMachine(IAsyncStateMachine stateMachine) { }
+
+        public void MoveNext()
+        {
+            Result = owner.StartCore(message, messages, batch, cancellationToken);
+        }
+
+        public void SetStateMachine(IAsyncStateMachine stateMachine)
+        {
+        }
     }
 
     private OutgoingMessage PrepareSingle(State state, OutgoingMessage message)
@@ -159,7 +197,11 @@ public sealed class SendTracing
     /// <remarks>Supply a batch for this endpoint. Input order and native partial-failure behavior are unchanged.</remarks>
     public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken = default)
     {
-        if (messages.IsEmpty) return _sendBatchNative(messages, cancellationToken);
+        if (messages.IsEmpty)
+        {
+            return _sendBatchNative(messages, cancellationToken);
+        }
+
         return Start(default, messages, true, cancellationToken);
     }
 
@@ -167,55 +209,96 @@ public sealed class SendTracing
         CancellationToken cancellationToken)
     {
         var linkCount = 0;
+
         for (var i = 0; i < messages.Length; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var message = messages.Span[i];
             var data = Data(message);
             var context = data.CreationContext;
+
             if (!message.IsOutboxDispatch && _tracing.Options.CreateSpansForBatches && !HasCreationHeader(message))
             {
                 using var create = _create.Start(data);
                 EnrichMessage(create, message);
                 context = create?.Context ?? Activity.Current?.Context ?? default;
             }
+
             state.Contexts[i] = context;
-            if (context != default) state.Links[linkCount++] = new(context);
+
+            if (context != default)
+            {
+                state.Links[linkCount++] = new(context);
+            }
         }
-        state.Activity = _send.Start(new() { BatchCount = messages.Length, Links = state.Links.AsMemory(0, linkCount) },
+
+        state.Activity = _send.Start(new()
+        {
+            BatchCount = messages.Length,
+            Links = state.Links.AsMemory(0, linkCount)
+        },
             enrich: true, client: messages.Span[0].IsOutboxDispatch);
         var fallback = state.Activity?.Context ?? Activity.Current?.Context ?? default;
+
         for (var i = 0; i < messages.Length; i++)
+        {
             state.Messages[i] = messages.Span[i].IsOutboxDispatch ? messages.Span[i] :
                 Prepare(state, i, messages.Span[i], state.Contexts[i] != default ? state.Contexts[i] : fallback);
+        }
+
         return state.Messages.AsMemory(0, messages.Length);
     }
 
-    private bool HasCreationHeader(OutgoingMessage message) => OutgoingHeaders.TryGetHeader(message, _names.TraceParent, out _);
-
-    private MessageTraceData Data(OutgoingMessage message) => new()
+    private bool HasCreationHeader(OutgoingMessage message)
     {
-        CreationContext = MessageCreationContext.Read<OutgoingMessage, OutgoingHeaders>(message, _names),
-    };
+        return OutgoingHeaders.TryGetHeader(message, _names.TraceParent, out _);
+    }
+
+    private MessageTraceData Data(OutgoingMessage message)
+    {
+        return new()
+        {
+            CreationContext = MessageCreationContext.Read<OutgoingMessage, OutgoingHeaders>(message, _names),
+        };
+    }
 
     private void EnrichMessage(Activity? activity, OutgoingMessage message)
     {
-        if (activity is not { IsAllDataRequested: true }) return;
+        if (activity is not { IsAllDataRequested: true })
+        {
+            return;
+        }
+
         activity.SetTag("messaging.message.id", Read(message, _names.Id));
         activity.SetTag("cloudevents.event_type", Read(message, _names.Type));
         activity.SetTag("cloudevents.event_source", Read(message, _names.Source));
         activity.SetTag("messaging.message.conversation_id", Read(message, _names.CorrelationId));
-        if (_tracing.Options.IncludeBodySize) activity.SetTag("messaging.message.body.size", message.Body.Length);
+
+        if (_tracing.Options.IncludeBodySize)
+        {
+            activity.SetTag("messaging.message.body.size", message.Body.Length);
+        }
     }
 
-    private static string? Read(OutgoingMessage message, string name) =>
-        OutgoingHeaders.TryGetHeader(message, name, out var value) ? value.ToString() : null;
+    private static string? Read(OutgoingMessage message, string name)
+    {
+        return OutgoingHeaders.TryGetHeader(message, name, out var value) ? value.ToString() : null;
+    }
 
     private OutgoingMessage Prepare(State state, int index, OutgoingMessage message, ActivityContext context)
     {
-        if (HasCreationHeader(message) || context == default) return message.WithTracingStarted();
+        if (HasCreationHeader(message) || context == default)
+        {
+            return message.WithTracingStarted();
+        }
+
         var headers = state.Headers[index];
-        foreach (var header in message.Headers.Span) headers.Add(header.Key, header.Value);
+
+        foreach (var header in message.Headers.Span)
+        {
+            headers.Add(header.Key, header.Value);
+        }
+
         MessageCreationContext.WriteIfAbsent<SendHeaders, SendHeaders>(headers, _names, context);
         return message.Forward(message.Destination, headers.Written, message.DeliverAt).WithTracingStarted();
     }
@@ -223,27 +306,40 @@ public sealed class SendTracing
     private State Rent()
     {
         var segment = _states;
+
         while (true)
         {
             for (var i = 0; i < segment.Items.Length; i++)
             {
                 var state = Volatile.Read(ref segment.Items[i]);
+
                 if (state is null)
                 {
                     var added = new State(this);
                     state = Interlocked.CompareExchange(ref segment.Items[i], added, null) ?? added;
                 }
-                if (Volatile.Read(ref state.InUse) != 0) continue;
-                if (Interlocked.CompareExchange(ref state.InUse, 1, 0) != 0) continue;
+
+                if (Volatile.Read(ref state.InUse) != 0)
+                {
+                    continue;
+                }
+
+                if (Interlocked.CompareExchange(ref state.InUse, 1, 0) != 0)
+                {
+                    continue;
+                }
+
                 return state;
             }
             // Retain the observed concurrency high-water mark instead of dropping overflow states each burst.
             var next = Volatile.Read(ref segment.Next);
+
             if (next is null)
             {
                 var added = new PoolSegment();
                 next = Interlocked.CompareExchange(ref segment.Next, added, null) ?? added;
             }
+
             segment = next;
         }
     }
@@ -287,6 +383,7 @@ public sealed class SendTracing
         internal ValueTask FinishSynchronous(Exception? error)
         {
             error = Finish(error);
+
             if (error is null)
             {
                 Return(this);
@@ -302,8 +399,11 @@ public sealed class SendTracing
         {
             var context = _executionContext;
             _executionContext = null;
+
             if (context is not null)
+            {
                 ExecutionContext.Run(context, static state => ((State)state!).Complete(), this);
+            }
             else
             {
                 var runner = new CompletionRunner(this);
@@ -315,12 +415,26 @@ public sealed class SendTracing
         private void Complete()
         {
             Exception? error = null;
-            try { _pending.GetResult(); }
-            catch (Exception exception) { error = exception; }
+
+            try
+            {
+                _pending.GetResult();
+            }
+            catch (Exception exception)
+            {
+                error = exception;
+            }
+
             error = Finish(error);
             // Clear borrowed references before an inline caller continuation can consume and reuse this slot.
-            if (error is null) _completion.SetResult(true);
-            else _completion.SetException(error);
+            if (error is null)
+            {
+                _completion.SetResult(true);
+            }
+            else
+            {
+                _completion.SetException(error);
+            }
         }
 
         private Exception? Finish(Exception? error)
@@ -329,11 +443,20 @@ public sealed class SendTracing
             {
                 try
                 {
-                    if (error is not null) _owner.Fail(Activity, error);
+                    if (error is not null)
+                    {
+                        _owner.Fail(Activity, error);
+                    }
                 }
-                finally { Activity?.Dispose(); }
+                finally
+                {
+                    Activity?.Dispose();
+                }
             }
-            catch (Exception exception) { error = exception; }
+            catch (Exception exception)
+            {
+                error = exception;
+            }
             finally
             {
                 Activity = null;
@@ -341,13 +464,17 @@ public sealed class SendTracing
                 _executionContext = null;
                 Clear();
             }
+
             return error;
         }
 
         public void GetResult(short token)
         {
             // Completion alone does not release the slot: its version belongs to the awaiting caller.
-            try { _completion.GetResult(token); }
+            try
+            {
+                _completion.GetResult(token);
+            }
             finally
             {
                 // Drop the caller continuation and ExecutionContext before this retained slot becomes idle.
@@ -356,14 +483,26 @@ public sealed class SendTracing
             }
         }
 
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
             _completion.OnCompleted(continuation, state, token, flags);
+        }
 
         private readonly struct CompletionRunner(State state) : IAsyncStateMachine
         {
-            public void MoveNext() => state.Complete();
-            public void SetStateMachine(IAsyncStateMachine stateMachine) { }
+            public void MoveNext()
+            {
+                state.Complete();
+            }
+
+            public void SetStateMachine(IAsyncStateMachine stateMachine)
+            {
+            }
         }
 
         internal int InUse;
@@ -382,8 +521,13 @@ public sealed class SendTracing
                 Array.Resize(ref Links, count);
                 var previous = Headers.Length;
                 Array.Resize(ref Headers, count);
-                for (var i = previous; i < count; i++) Headers[i] = new();
+
+                for (var i = previous; i < count; i++)
+                {
+                    Headers[i] = new();
+                }
             }
+
             _count = count;
         }
 
@@ -392,7 +536,12 @@ public sealed class SendTracing
             Array.Clear(Messages, 0, _count);
             Array.Clear(Contexts, 0, _count);
             Array.Clear(Links, 0, _count);
-            for (var i = 0; i < _count; i++) Headers[i].Clear();
+
+            for (var i = 0; i < _count; i++)
+            {
+                Headers[i].Clear();
+            }
+
             _count = 0;
         }
     }
@@ -402,7 +551,14 @@ public sealed class SendTracing
         public static bool TryGetHeader(OutgoingMessage message, string name, out WireString value)
         {
             foreach (var header in message.Headers.Span)
-                if (header.Key == name) { value = header.Value; return true; }
+            {
+                if (header.Key == name)
+                {
+                    value = header.Value;
+                    return true;
+                }
+            }
+
             value = default;
             return false;
         }

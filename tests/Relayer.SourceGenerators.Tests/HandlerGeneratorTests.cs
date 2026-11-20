@@ -1,7 +1,7 @@
-using Relayer.Pipeline;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
+using Relayer.Pipeline;
 using Relayer.SourceGenerators;
 
 namespace Relayer.SourceGenerators.Tests;
@@ -11,7 +11,7 @@ public class HandlerGeneratorTests
     [Test]
     public async Task Inherited_saga_registers_one_typed_execution_pool_per_registration()
     {
-        const string source = """
+        const string Source = """
             namespace Relayer.Sagas
             {
                 public abstract class Saga<TState,TMessage> : global::Relayer.IHandler<TMessage>
@@ -28,7 +28,7 @@ public class HandlerGeneratorTests
                 public sealed class Process : Intermediate<int> { }
             }
             """;
-        var driver = Run(CreateCompilation(source), out var output);
+        var driver = Run(CreateCompilation(Source), out var output);
         await Assert.That(Generated(driver)).Contains("TryAddSingleton<global::Relayer.Sagas.SagaExecution<global::Example.State, int>>");
         await Assert.That(output.GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error)).IsFalse();
     }
@@ -319,14 +319,18 @@ public class HandlerGeneratorTests
             driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
         driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out output, out var diagnostics);
         var errors = diagnostics.Concat(output.GetDiagnostics()).Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
+
         if (errors.Length != 0)
         {
             throw new InvalidOperationException(string.Join(Environment.NewLine, errors.Select(static d => d.ToString())));
         }
+
         return driver;
     }
 
     private static string Generated(GeneratorDriver driver)
-        => string.Join("\n", driver.GetRunResult().Results.Single().GeneratedSources
-            .Where(static s => s.HintName != "Microsoft.CodeAnalysis.EmbeddedAttribute.cs").Select(s => s.SourceText.ToString()));
+    {
+        return string.Join("\n", driver.GetRunResult().Results.Single().GeneratedSources
+                    .Where(static s => s.HintName != "Microsoft.CodeAnalysis.EmbeddedAttribute.cs").Select(s => s.SourceText.ToString()));
+    }
 }

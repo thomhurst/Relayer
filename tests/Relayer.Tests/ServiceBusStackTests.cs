@@ -10,12 +10,17 @@ public sealed class ServiceBusStackTests
     public async Task Startup_failure_survives_cleanup(bool provisioningExpired, bool cleanupFails)
     {
         using var provisioning = new CancellationTokenSource();
-        if (provisioningExpired) await provisioning.CancelAsync();
+
+        if (provisioningExpired)
+        {
+            await provisioning.CancelAsync();
+        }
+
         Exception original = provisioningExpired
             ? new OperationCanceledException(provisioning.Token)
             : new InvalidOperationException("startup failed");
-        const string report = "original startup diagnostics";
-        original.Data[ServiceBusStartupDiagnostics.EvidenceKey] = report;
+        const string Report = "original startup diagnostics";
+        original.Data[ServiceBusStartupDiagnostics.EvidenceKey] = Report;
         var cleanupError = new InvalidOperationException("cleanup failed");
         var cleanupAttempted = false;
         Exception? reportedError = null;
@@ -26,10 +31,14 @@ public sealed class ServiceBusStackTests
             await ServiceBusStack.StartWithCleanupAsync(FailStartupAsync, CleanupAsync,
                 provisioning.Token, error => reportedError = error);
         }
-        catch (Exception error) { failure = error; }
+        catch (Exception error)
+        {
+            failure = error;
+        }
 
         await Assert.That(cleanupAttempted).IsTrue();
         await Assert.That(ReferenceEquals(reportedError, cleanupFails ? cleanupError : null)).IsTrue();
+
         if (provisioningExpired)
         {
             await Assert.That(failure).IsTypeOf<TimeoutException>();
@@ -40,10 +49,15 @@ public sealed class ServiceBusStackTests
         {
             await Assert.That(ReferenceEquals(failure, original)).IsTrue();
         }
-        await Assert.That(original.StackTrace!).Contains(nameof(FailStartupAsync));
-        await Assert.That((string)original.Data[ServiceBusStartupDiagnostics.EvidenceKey]!).IsEqualTo(report);
 
-        Task FailStartupAsync() => throw original;
+        await Assert.That(original.StackTrace!).Contains(nameof(FailStartupAsync));
+        await Assert.That((string)original.Data[ServiceBusStartupDiagnostics.EvidenceKey]!).IsEqualTo(Report);
+
+        Task FailStartupAsync()
+        {
+            throw original;
+        }
+
         ValueTask CleanupAsync()
         {
             cleanupAttempted = true;
@@ -56,13 +70,18 @@ public sealed class ServiceBusStackTests
     {
         var original = new InvalidOperationException("startup failed");
         Exception? failure = null;
+
         try
         {
             await ServiceBusStack.StartWithCleanupAsync(() => Task.FromException(original),
                 () => ValueTask.FromException(new InvalidOperationException("cleanup failed")),
                 CancellationToken.None, _ => throw new IOException("output unavailable"));
         }
-        catch (Exception error) { failure = error; }
+        catch (Exception error)
+        {
+            failure = error;
+        }
+
         await Assert.That(ReferenceEquals(failure, original)).IsTrue();
     }
 

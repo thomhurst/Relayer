@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using System.Text;
 using Amazon.SQS.Model;
 using BenchmarkDotNet.Attributes;
 using Relayer.AmazonSqs;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -20,13 +20,24 @@ public class SqsBindingBenchmarks
     private readonly byte[] _group = "customer-123"u8.ToArray();
 
     [Params(false, true)]
-    public bool Fifo { get; set; }
+    public bool Fifo
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         var message = Next();
-        foreach (var header in message.Headers.Span) _raw.MessageAttributes.Add(header.Key, new() { DataType = "String" });
+
+        foreach (var header in message.Headers.Span)
+        {
+            _raw.MessageAttributes.Add(header.Key, new()
+            {
+                DataType = "String"
+            });
+        }
+
         _relayer.Prepare(message, "https://sqs.us-east-1.amazonaws.com/123456789012/orders", Fifo);
         _relayer.Clear();
         RawBinding();
@@ -39,12 +50,18 @@ public class SqsBindingBenchmarks
         _raw.MessageBody = Encoding.UTF8.GetString(message.Body.Span);
         _raw.MessageGroupId = message.OrderingKey?.ToString();
         _raw.MessageDeduplicationId = null;
+
         foreach (var header in message.Headers.Span)
         {
             var value = header.Value.ToString();
             _raw.MessageAttributes[header.Key].StringValue = value;
-            if (Fifo && header.Key == "ce_id") _raw.MessageDeduplicationId = value;
+
+            if (Fifo && header.Key == "ce_id")
+            {
+                _raw.MessageDeduplicationId = value;
+            }
         }
+
         return _raw.MessageBody.Length + _raw.MessageAttributes.Count;
     }
 
@@ -66,20 +83,31 @@ public class SqsBindingBenchmarks
     {
         internal readonly KeyValuePair<string, WireString>[] Entries = new KeyValuePair<string, WireString>[6];
         private readonly byte[][] _values = [new byte[128], new byte[128], new byte[128], new byte[128], new byte[128]];
-        internal HeaderBuffer() => Entries[5] = new("content-type", new("application/json"));
+
+        internal HeaderBuffer()
+        {
+            Entries[5] = new("content-type", new("application/json"));
+        }
 
         public static void SetHeader(HeaderBuffer message, string name, ReadOnlySpan<char> value)
         {
             for (var i = 0; i < message._values.Length; i++)
             {
-                if (message.Entries[i].Key is not null && message.Entries[i].Key != name) continue;
+                if (message.Entries[i].Key is not null && message.Entries[i].Key != name)
+                {
+                    continue;
+                }
+
                 var length = Encoding.UTF8.GetBytes(value, message._values[i]);
                 message.Entries[i] = new(name, new WireString(message._values[i].AsMemory(0, length)));
                 return;
             }
+
             throw new InvalidOperationException("Unexpected envelope header.");
         }
 
-        public static void RemoveHeader(HeaderBuffer message, string name) { }
+        public static void RemoveHeader(HeaderBuffer message, string name)
+        {
+        }
     }
 }

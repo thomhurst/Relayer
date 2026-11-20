@@ -202,7 +202,9 @@ public class HandlerDispatchTests
     private static void RegisterFromHelper<TMessage,
         [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(
         IConsumerBuilder consumer) where THandler : class, IHandler<TMessage>
-        => consumer.Handler<THandler, TMessage>();
+    {
+        consumer.Handler<THandler, TMessage>();
+    }
 
     [Test]
     public async Task Unsupported_handler_registration_fails_during_configuration()
@@ -217,23 +219,51 @@ public class HandlerDispatchTests
 
     public sealed class TwoContractHandler : IHandler<int>, IHandler<string>
     {
-        public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask HandleAsync(string message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask HandleAsync(string message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     public sealed class TombstoneHandler : IHandler<Tombstone<string>>
     {
         public ValueTask HandleAsync(Tombstone<string> message, MessageContext context, CancellationToken cancellationToken)
-            => ValueTask.CompletedTask;
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     public sealed class SingleHandler(ScopedDependency? dependency = null) : IHandler<int>
     {
-        public ScopedDependency? Dependency { get; } = dependency;
-        public int Message { get; private set; }
-        public MessageContext? Context { get; private set; }
-        public CancellationToken Cancellation { get; private set; }
-        public ValueTask Pending { get; set; }
+        public ScopedDependency? Dependency
+        {
+            get;
+        } = dependency;
+
+        public int Message
+        {
+            get; private set;
+        }
+
+        public MessageContext? Context
+        {
+            get; private set;
+        }
+
+        public CancellationToken Cancellation
+        {
+            get; private set;
+        }
+
+        public ValueTask Pending
+        {
+            get; set;
+        }
 
         public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken)
         {
@@ -246,30 +276,62 @@ public class HandlerDispatchTests
 
     public abstract class AbstractHandler : IHandler<int>
     {
-        public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
 
     public sealed class DerivedHandler : AbstractHandler;
+
     public sealed class OtherHandler : AbstractHandler;
+
     public sealed class GenericHandler<T> : IHandler<T>
     {
-        public ValueTask HandleAsync(T message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(T message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
 
     public sealed class MarkerOnly : IHandlerMarker;
 
     public sealed class MultipleHandler : IHandler<int>, IHandler<string>, IBatchHandler<int>
     {
-        public string? Text { get; private set; }
-        public Batch<int>? Batch { get; private set; }
-        public CancellationToken Cancellation { get; private set; }
-        public Exception Error { get; } = new InvalidOperationException("handler failed");
-        public BatchResult Result { get; }
+        public string? Text
+        {
+            get; private set;
+        }
 
-        public MultipleHandler() => Result = BatchResult.Failure(Error);
+        public Batch<int>? Batch
+        {
+            get; private set;
+        }
+
+        public CancellationToken Cancellation
+        {
+            get; private set;
+        }
+
+        public Exception Error
+        {
+            get;
+        } = new InvalidOperationException("handler failed");
+
+        public BatchResult Result
+        {
+            get;
+        }
+
+        public MultipleHandler()
+        {
+            Result = BatchResult.Failure(Error);
+        }
 
         ValueTask IHandler<int>.HandleAsync(int message, MessageContext context, CancellationToken cancellationToken)
-            => ValueTask.FromException(Error);
+        {
+            return ValueTask.FromException(Error);
+        }
 
         ValueTask IHandler<string>.HandleAsync(string message, MessageContext context, CancellationToken cancellationToken)
         {
@@ -288,11 +350,23 @@ public class HandlerDispatchTests
     private sealed class TestContext(IServiceProvider services) : MessageContext
     {
         public override string MessageId => "test";
+
         public override MessageType MessageType => new("test", 1);
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
-        public override IServiceProvider Services { get; } = services;
-        public override MessageFeatures Features { get; } = new();
+
+        public override IServiceProvider Services
+        {
+            get;
+        } = services;
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

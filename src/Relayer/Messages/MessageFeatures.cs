@@ -13,6 +13,7 @@ public sealed class MessageFeatures
     public TFeature? Get<TFeature>() where TFeature : class
     {
         var items = _items;
+
         for (var i = 0; i < _count; i++)
         {
             if (items[i].Type == typeof(TFeature))
@@ -26,9 +27,11 @@ public sealed class MessageFeatures
 
     /// <summary>Gets the feature of type <typeparamref name="TFeature"/>, or throws if absent.</summary>
     /// <exception cref="InvalidOperationException">The feature is not available on this message.</exception>
-    public TFeature GetRequired<TFeature>() where TFeature : class =>
-        Get<TFeature>() ?? throw new InvalidOperationException(
-            $"Feature {typeof(TFeature).Name} is not available. The message may come from a different transport.");
+    public TFeature GetRequired<TFeature>() where TFeature : class
+    {
+        return Get<TFeature>() ?? throw new InvalidOperationException(
+                    $"Feature {typeof(TFeature).Name} is not available. The message may come from a different transport.");
+    }
 
     /// <summary>Sets or replaces the feature of type <typeparamref name="TFeature"/>.</summary>
     public void Set<TFeature>(TFeature instance) where TFeature : class

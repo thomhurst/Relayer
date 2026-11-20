@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using MySqlConnector;
 using Relayer.Outbox.MySql;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -21,9 +21,16 @@ public class MySqlStoreParameterBenchmarks
     {
         _expires = _now.AddMinutes(1);
         _buffered = new("SELECT @id, @token, @now, @expires, @lane, @after, @limit");
-        _native = new() { CommandText = _buffered.Command.CommandText };
+        _native = new()
+        {
+            CommandText = _buffered.Command.CommandText
+        };
+
         foreach (var name in new[] { "id", "token", "now", "expires", "lane", "after", "limit" })
+        {
             _native.Parameters.AddWithValue(name, DBNull.Value);
+        }
+
         ReusableBuffers();
     }
 

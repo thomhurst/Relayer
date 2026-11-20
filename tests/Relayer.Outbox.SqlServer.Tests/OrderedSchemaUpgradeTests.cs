@@ -23,6 +23,7 @@ public sealed class OrderedSchemaUpgradeTests(SqlServerFixture database)
         await using var connection = new SqlConnection(database.ConnectionString);
         await connection.OpenAsync();
         var owner = Guid.NewGuid();
+
         await using (var existing = new SqlCommand($"""
             CREATE TABLE {SqlServerOutboxSchema.LeaseTable(data.Options)} (
                 name varchar(16) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
@@ -33,15 +34,21 @@ public sealed class OrderedSchemaUpgradeTests(SqlServerFixture database)
             existing.Parameters.AddWithValue("owner", owner);
             await existing.ExecuteNonQueryAsync();
         }
+
         await data.Create();
         var coordinator = new SqlServerLaneCoordinator(database.ConnectionString, new()
-        { TablePrefix = data.Options.TablePrefix, Lanes = 1 });
+        {
+            TablePrefix = data.Options.TablePrefix,
+            Lanes = 1
+        });
         await coordinator.RebalanceAsync(default);
+
         await using (var transaction = (SqlTransaction)await connection.BeginTransactionAsync())
         {
             await Assert.That(await coordinator.AcquireAsync(connection, transaction, 0, default)).IsTrue();
             await transaction.CommitAsync();
         }
+
         await coordinator.ReleaseAsync(default);
         await using var read = new SqlCommand($"SELECT owner FROM {SqlServerOutboxSchema.LeaseTable(data.Options)} WHERE name = 'sweeper'", connection);
         await Assert.That((Guid)(await read.ExecuteScalarAsync())!).IsEqualTo(owner);
@@ -55,31 +62,45 @@ public sealed class OrderedSchemaUpgradeTests(SqlServerFixture database)
         var table = SqlServerOutboxSchema.Table(options);
         await using var connection = new SqlConnection(database.ConnectionString);
         await connection.OpenAsync();
+
         await using (var old = new SqlCommand($"""
             CREATE TABLE {table} (id binary(16) NOT NULL PRIMARY KEY, lane int NULL,
                 deliver_at datetimeoffset(7) NULL, claim_expires_at datetimeoffset(7) NULL,
                 status varchar(7) NOT NULL DEFAULT 'pending');
             INSERT INTO {table} (id, lane) VALUES (0x01900000000070008000000000000002, 0), (0x01900000000070008000000000000001, 0);
             """, connection))
+        {
             await old.ExecuteNonQueryAsync();
+        }
+
         await using (var unguarded = new SqlCommand(SqlServerOutboxSchema.UpgradeOrderedDispatchScript(options), connection))
+        {
             await Assert.That(async () => await unguarded.ExecuteNonQueryAsync()).Throws<SqlException>();
+        }
+
         await using (var transaction = (SqlTransaction)await connection.BeginTransactionAsync())
         {
             await using var upgrade = new SqlCommand(SqlServerOutboxSchema.UpgradeOrderedDispatchScript(options), connection, transaction);
             await upgrade.ExecuteNonQueryAsync();
             await transaction.CommitAsync();
         }
+
         await AssertParkedIndex(connection, options);
+
         await using (var next = new SqlCommand($"INSERT INTO {table} (id, lane) VALUES (0x01900000000070008000000000000000, 0)", connection))
+        {
             await next.ExecuteNonQueryAsync();
+        }
+
         await using var read = new SqlCommand($"SELECT id, seq FROM {table} ORDER BY seq", connection);
         await using var reader = await read.ExecuteReaderAsync();
+
         foreach (var expected in new[] { 1, 2, 0 })
         {
             await Assert.That(await reader.ReadAsync()).IsTrue();
             await Assert.That(((byte[])reader.GetValue(0))[15]).IsEqualTo((byte)expected);
         }
+
         await Assert.That(reader.GetInt64(1)).IsEqualTo(3L);
         await Assert.That(await reader.ReadAsync()).IsFalse();
     }
@@ -97,12 +118,14 @@ public sealed class OrderedSchemaUpgradeTests(SqlServerFixture database)
         command.Parameters.AddWithValue("table", SqlServerOutboxSchema.Table(options));
         command.Parameters.AddWithValue("index", options.TablePrefix + "outbox_parked_idx");
         await using var reader = await command.ExecuteReaderAsync();
+
         foreach (var key in new[] { "lane", "seq" })
         {
             await Assert.That(await reader.ReadAsync()).IsTrue();
             await Assert.That(reader.GetString(0)).IsEqualTo(key);
             await Assert.That(reader.GetString(1)).IsEqualTo("([status]='parked')");
         }
+
         await Assert.That(await reader.ReadAsync()).IsFalse();
     }
 }

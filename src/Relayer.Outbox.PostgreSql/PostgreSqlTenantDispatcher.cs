@@ -32,8 +32,12 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         _options = options;
         options.Validate();
         _transports = transports.ToArray();
+
         if (_transports.Length == 0)
+        {
             throw new InvalidOperationException("Tenant outbox dispatch requires at least one named ITransport adapter.");
+        }
+
         _logs = logs;
         _instrumentation = instrumentation;
         _orderedTimeProvider = orderedTimeProvider;
@@ -41,30 +45,45 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         _logger = logs.CreateLogger<PostgreSqlTenantDispatcher>();
     }
 
-    internal PostgreSqlDirectDispatcher GetDispatcher(string tenantId) => GetDispatcher(tenantId, out _);
+    internal PostgreSqlDirectDispatcher GetDispatcher(string tenantId)
+    {
+        return GetDispatcher(tenantId, out _);
+    }
 
     internal PostgreSqlDirectDispatcher GetDispatcher(string tenantId, out PostgreSqlSchedulingRegistration[] scheduling)
     {
         var snapshot = ValidateSnapshot();
+
         lock (_gate)
         {
-            if (_stopped) throw new InvalidOperationException("The tenant dispatcher has stopped.");
+            if (_stopped)
+            {
+                throw new InvalidOperationException("The tenant dispatcher has stopped.");
+            }
+
             foreach (var tenant in snapshot)
+            {
                 if (tenant.TenantId == tenantId)
                 {
                     if (_stores.TryGetValue(tenantId, out var current))
                     {
                         if (!SameStore(current.Entry, tenant))
+                        {
                             throw new InvalidOperationException("The tenant store changed. Wait for the next catalog pass before creating a new scope.");
+                        }
+
                         scheduling = current.Scheduling;
                         return current.Direct;
                     }
+
                     var store = Create(tenant);
                     _stores.Add(tenantId, store);
                     scheduling = store.Scheduling;
                     return store.Direct;
                 }
+            }
         }
+
         throw new InvalidOperationException($"Tenant dispatch store '{tenantId}' is not in the authorized catalog.");
     }
 
@@ -76,6 +95,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
             await PostgreSqlSentSchema.ValidateAsync(entry.DataSource, entry.Options.RetainSentMessages,
                 entry.Options.Schema, entry.Options.TablePrefix, cancellationToken).ConfigureAwait(false);
         }
+
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -85,14 +105,29 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                try { await PassAsync(stoppingToken).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception error) { Failed(_logger, "catalog", error); }
+                try
+                {
+                    await PassAsync(stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception error)
+                {
+                    Failed(_logger, "catalog", error);
+                }
+
                 await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-        finally { await ReleaseAllAsync().ConfigureAwait(false); }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            await ReleaseAllAsync().ConfigureAwait(false);
+        }
     }
 
     // Invoked serially by the one hosted loop. Catalog refresh is finite, never a per-tenant task loop.
@@ -102,49 +137,78 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         List<Store> active = [];
         List<Store> removed = [];
         var indexed = new Dictionary<string, PostgreSqlTenantStore>(StringComparer.Ordinal);
-        foreach (var entry in entries) indexed.Add(entry.TenantId, entry);
+
+        foreach (var entry in entries)
+        {
+            indexed.Add(entry.TenantId, entry);
+        }
+
         lock (_gate)
         {
             foreach (var existing in _stores.Values)
             {
                 if (!indexed.TryGetValue(existing.Entry.TenantId, out var entry) || !SameStore(entry, existing.Entry))
-                { existing.Retired = true; removed.Add(existing); }
+                {
+                    existing.Retired = true;
+                    removed.Add(existing);
+                }
             }
-            foreach (var old in removed) _stores.Remove(old.Entry.TenantId);
+
+            foreach (var old in removed)
+            {
+                _stores.Remove(old.Entry.TenantId);
+            }
+
             foreach (var entry in entries)
             {
                 try
                 {
                     if (!_stores.TryGetValue(entry.TenantId, out var store))
+                    {
                         _stores.Add(entry.TenantId, store = Create(entry));
+                    }
+
                     active.Add(store);
                 }
-                catch (Exception error) { Failed(_logger, entry.TenantId, error); }
+                catch (Exception error)
+                {
+                    Failed(_logger, entry.TenantId, error);
+                }
             }
         }
         // Retirements use the very same budget as normal work, including their lease-release connections.
         active.AddRange(removed);
+
         try
         {
             await Parallel.ForEachAsync(active, new ParallelOptions
             {
-                MaxDegreeOfParallelism = _options.MaxConnections, CancellationToken = cancellationToken
+                MaxDegreeOfParallelism = _options.MaxConnections,
+                CancellationToken = cancellationToken
             }, async (store, token) =>
             {
-                if (store.Retired) { await ReleaseAsync(store).ConfigureAwait(false); return; }
+                if (store.Retired)
+                {
+                    await ReleaseAsync(store).ConfigureAwait(false);
+                    return;
+                }
+
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
                 var turnStarted = Stopwatch.GetTimestamp();
                 deadline.CancelAfter(_options.TurnTimeout);
+
                 try
                 {
                     // Catalog entries can be added after startup; successful validation is cached.
                     await store.Direct.ValidateSchemaAsync(deadline.Token).ConfigureAwait(false);
+
                     for (var visited = 0; visited < 4; visited++)
                     {
                         deadline.Token.ThrowIfCancellationRequested();
                         var phase = store.NextPhase;
                         // Persist progress before awaiting so even an exhausted turn rotates fairly.
                         store.NextPhase = (phase + 1) % 4;
+
                         try
                         {
                             switch (phase)
@@ -164,32 +228,51 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
                                     break;
                             }
                         }
-                        catch (OperationCanceledException) when (deadline.IsCancellationRequested) { throw; }
-                        catch (Exception error) { Failed(_logger, store.Entry.TenantId, error); }
+                        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch (Exception error)
+                        {
+                            Failed(_logger, store.Entry.TenantId, error);
+                        }
                     }
                 }
-                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-                catch (OperationCanceledException) when (deadline.IsCancellationRequested) { }
-                catch (Exception error) { Failed(_logger, store.Entry.TenantId, error); }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+                {
+                }
+                catch (Exception error)
+                {
+                    Failed(_logger, store.Entry.TenantId, error);
+                }
             }).ConfigureAwait(false);
         }
         finally
         {
             // Cancellation can stop admission before removed entries execute. Dispose their queues;
             // their un-released native leases remain fenced and expire normally.
-            foreach (var store in removed) store.Dispose();
+            foreach (var store in removed)
+            {
+                store.Dispose();
+            }
         }
     }
 
     internal async Task ReleaseAllAsync()
     {
         Store[] stores;
+
         lock (_gate)
         {
             _stopped = true;
             stores = _stores.Values.ToArray();
             _stores.Clear();
         }
+
         using var shutdown = new CancellationTokenSource(_options.TurnTimeout);
         await Parallel.ForEachAsync(stores, new ParallelOptions { MaxDegreeOfParallelism = _options.MaxConnections },
             async (store, _) => await ReleaseAsync(store, shutdown.Token).ConfigureAwait(false)).ConfigureAwait(false);
@@ -200,13 +283,20 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         store.Direct.Retire();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_options.TurnTimeout);
+
         try
         {
             await store.Maintenance.ReleaseAsync(deadline.Token).ConfigureAwait(false);
             await store.Ordered.ReleaseAsync(deadline.Token).ConfigureAwait(false);
         }
-        catch (Exception error) { Failed(_logger, store.Entry.TenantId, error); }
-        finally { store.Dispose(); }
+        catch (Exception error)
+        {
+            Failed(_logger, store.Entry.TenantId, error);
+        }
+        finally
+        {
+            store.Dispose();
+        }
     }
 
     private IReadOnlyList<PostgreSqlTenantStore> ValidateSnapshot()
@@ -214,23 +304,35 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         var entries = _catalog.GetTenants() ?? throw new InvalidOperationException("ITenantSource returned a null snapshot.");
         var ids = new HashSet<string>(StringComparer.Ordinal);
         var physical = new HashSet<(NpgsqlDataSource, string, string)>();
+
         foreach (var entry in entries)
         {
             ArgumentNullException.ThrowIfNull(entry);
             ArgumentException.ThrowIfNullOrWhiteSpace(entry.TenantId);
             ArgumentNullException.ThrowIfNull(entry.DataSource);
             ArgumentNullException.ThrowIfNull(entry.Options);
-            if (!ids.Add(entry.TenantId)) throw new InvalidOperationException("Tenant catalog IDs must be unique.");
+
+            if (!ids.Add(entry.TenantId))
+            {
+                throw new InvalidOperationException("Tenant catalog IDs must be unique.");
+            }
+
             if (!physical.Add((entry.DataSource, entry.Options.Schema ?? "public", entry.Options.TablePrefix)))
+            {
                 throw new InvalidOperationException("Tenant catalog stores must have isolated tables and leases.");
+            }
         }
+
         return entries;
     }
 
     private void ValidateEntry(PostgreSqlTenantStore entry)
     {
         if (new NpgsqlConnectionStringBuilder(entry.DataSource.ConnectionString).Pooling)
+        {
             throw new InvalidOperationException("Tenant dispatch requires native Pooling=false data sources to bound physical connections across stores. Use separate pooled sources for business transactions.");
+        }
+
         _ = OrderedOptions(entry.Options).Validate();
         _ = _options.Maintenance(entry.Options).Validate();
     }
@@ -239,43 +341,96 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
     {
         ValidateEntry(entry);
         return new(entry,
-        new(entry.DataSource, entry.Options, new() { QueueCapacity = _options.QueueCapacity, BatchSize = _options.BatchSize,
-            ClaimDuration = entry.Options.LeaseDuration }, _transports, _logs.CreateLogger<PostgreSqlDirectDispatcher>(), instrumentation: _instrumentation, scopes: _scopes),
+        new(entry.DataSource, entry.Options, new()
+        {
+            QueueCapacity = _options.QueueCapacity,
+            BatchSize = _options.BatchSize,
+            ClaimDuration = entry.Options.LeaseDuration
+        }, _transports, _logs.CreateLogger<PostgreSqlDirectDispatcher>(), instrumentation: _instrumentation, scopes: _scopes),
         new(entry.DataSource, _options.Maintenance(entry.Options), _transports, _logs.CreateLogger<PostgreSqlMaintenanceWorker>(),
             _logs.CreateLogger<PostgreSqlDirectDispatcher>(), _instrumentation, _recoveryTimeProvider, _scopes),
         new(entry.DataSource, OrderedOptions(entry.Options), _transports, _logs.CreateLogger<PostgreSqlOrderedDispatcher>(), _orderedTimeProvider, _instrumentation, _scopes));
     }
 
-    private PostgreSqlOrderedDispatchOptions OrderedOptions(PostgreSqlOutboxOptions store) => new()
+    private PostgreSqlOrderedDispatchOptions OrderedOptions(PostgreSqlOutboxOptions store)
     {
-        Schema = store.Schema, TablePrefix = store.TablePrefix, Lanes = store.Lanes,
-        LeaseDuration = store.LeaseDuration, MaxDispatchAttempts = store.MaxDispatchAttempts, RetainSentMessages = store.RetainSentMessages,
-        BatchSize = _options.BatchSize, PollInterval = store.LeaseDuration / 4
-    };
+        return new()
+        {
+            Schema = store.Schema,
+            TablePrefix = store.TablePrefix,
+            Lanes = store.Lanes,
+            LeaseDuration = store.LeaseDuration,
+            MaxDispatchAttempts = store.MaxDispatchAttempts,
+            RetainSentMessages = store.RetainSentMessages,
+            BatchSize = _options.BatchSize,
+            PollInterval = store.LeaseDuration / 4
+        };
+    }
 
-    private static bool SameStore(PostgreSqlTenantStore left, PostgreSqlTenantStore right) =>
-        ReferenceEquals(left.DataSource, right.DataSource) && (left.Options.Schema ?? "public") == (right.Options.Schema ?? "public") &&
-        left.Options.TablePrefix == right.Options.TablePrefix && left.Options.Lanes == right.Options.Lanes &&
-        left.Options.LeaseDuration == right.Options.LeaseDuration && left.Options.MaxDispatchAttempts == right.Options.MaxDispatchAttempts && left.Options.RetainSentMessages == right.Options.RetainSentMessages;
+    private static bool SameStore(PostgreSqlTenantStore left, PostgreSqlTenantStore right)
+    {
+        return ReferenceEquals(left.DataSource, right.DataSource) && (left.Options.Schema ?? "public") == (right.Options.Schema ?? "public") &&
+                left.Options.TablePrefix == right.Options.TablePrefix && left.Options.Lanes == right.Options.Lanes &&
+                left.Options.LeaseDuration == right.Options.LeaseDuration && left.Options.MaxDispatchAttempts == right.Options.MaxDispatchAttempts && left.Options.RetainSentMessages == right.Options.RetainSentMessages;
+    }
 
     private sealed class Store(PostgreSqlTenantStore entry, PostgreSqlDirectDispatcher direct,
         PostgreSqlMaintenanceWorker maintenance, PostgreSqlOrderedDispatcher ordered) : IDisposable
     {
-        internal PostgreSqlTenantStore Entry { get; } = entry;
-        internal PostgreSqlSchedulingRegistration[] Scheduling { get; } =
+        internal PostgreSqlTenantStore Entry
+        {
+            get;
+        } = entry;
+
+        internal PostgreSqlSchedulingRegistration[] Scheduling
+        {
+            get;
+        } =
             [new(entry.Options.Schema, entry.Options.TablePrefix), new(entry.Options.Schema, entry.Options.TablePrefix, entry.Options.Lanes)];
-        internal PostgreSqlDirectDispatcher Direct { get; } = direct;
-        internal PostgreSqlMaintenanceWorker Maintenance { get; } = maintenance;
-        internal PostgreSqlOrderedDispatcher Ordered { get; } = ordered;
-        internal DateTimeOffset NextCleanup { get; set; }
-        internal int NextPhase { get; set; }
-        internal bool Retired { get; set; }
+
+        internal PostgreSqlDirectDispatcher Direct
+        {
+            get;
+        } = direct;
+
+        internal PostgreSqlMaintenanceWorker Maintenance
+        {
+            get;
+        } = maintenance;
+
+        internal PostgreSqlOrderedDispatcher Ordered
+        {
+            get;
+        } = ordered;
+
+        internal DateTimeOffset NextCleanup
+        {
+            get; set;
+        }
+
+        internal int NextPhase
+        {
+            get; set;
+        }
+
+        internal bool Retired
+        {
+            get; set;
+        }
         private bool _disposed;
+
         public void Dispose()
         {
-            if (_disposed) return;
+            if (_disposed)
+            {
+                return;
+            }
+
             _disposed = true;
-            Direct.Retire(); Direct.Dispose(); Maintenance.Dispose(); Ordered.Dispose();
+            Direct.Retire();
+            Direct.Dispose();
+            Maintenance.Dispose();
+            Ordered.Dispose();
         }
     }
 

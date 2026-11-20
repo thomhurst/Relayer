@@ -33,6 +33,7 @@ public class KafkaConsumerControlTests(KafkaHeaderSnapshotBroker broker)
         var control = host.Services.GetRequiredKeyedService<IConsumerControl>("events");
         var consumers = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers;
         await host.StartAsync(token);
+
         try
         {
             // Sending works while the composed consumer stays stopped.
@@ -56,7 +57,11 @@ public class KafkaConsumerControlTests(KafkaHeaderSnapshotBroker broker)
             await control.StartAsync(token);
             await Assert.That(await state.Handled.Reader.ReadAsync(token)).IsEqualTo(1L);
         }
-        finally { await host.StopAsync(token); }
+        finally
+        {
+            await host.StopAsync(token);
+        }
+
         await Assert.That(consumers[0].Completion.IsCompletedSuccessfully).IsTrue();
         await Assert.That(await CommittedAsync(topic, token)).IsEqualTo(2L);
         await Assert.That(async () => await control.StartAsync(token)).Throws<InvalidOperationException>()
@@ -79,8 +84,15 @@ public class KafkaConsumerControlTests(KafkaHeaderSnapshotBroker broker)
 
         using var expired = new CancellationTokenSource();
         await expired.CancelAsync();
-        try { await host.StopAsync(expired.Token); }
-        catch (Exception error) when (error is OperationCanceledException or AggregateException) { /* The wait expired; the drain continues. */ }
+
+        try
+        {
+            await host.StopAsync(expired.Token);
+        }
+        catch (Exception error) when (error is OperationCanceledException or AggregateException)
+        { /* The wait expired; the drain continues. */
+        }
+
         await consumers[0].Completion.WaitAsync(token);
         await Assert.That(consumers[0].Completion.IsCompletedSuccessfully).IsTrue();
     }
@@ -104,10 +116,12 @@ public class KafkaConsumerControlTests(KafkaHeaderSnapshotBroker broker)
         return offset is null or < 0 ? null : offset;
     }
 
-    private static ValueTask SendAsync(IHost host, string topic, int number, CancellationToken token) =>
-        host.Services.GetServices<ITransport>().Single(transport => transport.Name == "events").SendAsync(new(topic,
-            Encoding.UTF8.GetBytes($"{{\"Number\":{number}}}"),
-            new KeyValuePair<string, WireString>[] { new("ce_id", new("record-" + number)), new("ce_type", new("tests.kafka.receive;v=1")) }), token);
+    private static ValueTask SendAsync(IHost host, string topic, int number, CancellationToken token)
+    {
+        return host.Services.GetServices<ITransport>().Single(transport => transport.Name == "events").SendAsync(new(topic,
+                    Encoding.UTF8.GetBytes($"{{\"Number\":{number}}}"),
+                    new KeyValuePair<string, WireString>[] { new("ce_id", new("record-" + number)), new("ce_type", new("tests.kafka.receive;v=1")) }), token);
+    }
 
     private IHost BuildHost(string topic, KafkaReplayState state, bool autoStart)
     {

@@ -32,9 +32,15 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(connectionFactory);
         ArgumentNullException.ThrowIfNull(options);
         _ = options.Validate();
+
         foreach (var descriptor in services)
+        {
             if (descriptor.ServiceType == typeof(PostgreSqlChangeCaptureWorker) && Equals(descriptor.ServiceKey, name))
+            {
                 throw new InvalidOperationException($"PostgreSQL CDC worker '{name}' is already registered.");
+            }
+        }
+
         services.AddOptions<PostgreSqlChangeCaptureOptions>(name);
         services.AddSingleton(new ChangeCaptureRegistration(name, options));
         services.TryAddSingleton<IOptionsFactory<PostgreSqlChangeCaptureOptions>>(provider => new ChangeCaptureOptionsFactory(
@@ -59,7 +65,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         var defaults = new PostgreSqlChangeCaptureOptions { Slot = slot, Replication = replication };
         return services.AddRelayerPostgreSqlChangeCapture(name, dataSource, connectionFactory, new PostgreSqlChangeCaptureOptions
         {
-            Slot = slot, Replication = replication,
+            Slot = slot,
+            Replication = replication,
             Schema = configuration[nameof(defaults.Schema)],
             TablePrefix = configuration[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
             RetainSentMessages = ReadValue(nameof(defaults.RetainSentMessages), defaults.RetainSentMessages),
@@ -72,8 +79,17 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         T ReadValue<T>(string key, T fallback) where T : IParsable<T>
         {
             var value = configuration[key];
-            if (value is null) return fallback;
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var result)) return result;
+
+            if (value is null)
+            {
+                return fallback;
+            }
+
+            if (T.TryParse(value, CultureInfo.InvariantCulture, out var result))
+            {
+                return result;
+            }
+
             throw new ArgumentException($"CDC {key}: '{value}' is invalid.", nameof(configuration));
         }
     }
@@ -89,7 +105,13 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         protected override PostgreSqlChangeCaptureOptions CreateInstance(string name)
         {
             foreach (var registration in registrations)
-                if (registration.Name == name) return registration.Options;
+            {
+                if (registration.Name == name)
+                {
+                    return registration.Options;
+                }
+            }
+
             throw new InvalidOperationException($"PostgreSQL CDC worker '{name}' is not registered.");
         }
     }

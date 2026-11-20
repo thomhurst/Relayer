@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using Relayer.TestFixtures;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer.Tests;
 
@@ -16,9 +16,20 @@ public sealed class SharedStoreContractTests(SqlServerFixture database) : Outbox
 
     private sealed class Fixture(StoreData data) : StoreFixture
     {
-        public override IOutboxStore Store() => data.Store();
+        public override IOutboxStore Store()
+        {
+            return data.Store();
+        }
+
         public override Task Insert(Guid id, DateTimeOffset now, int? lane = null, DateTimeOffset? deliverAt = null,
-            string status = "pending", DateTimeOffset? expires = null) => data.Insert(id, now, lane, deliverAt, status, expires);
-        public override ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            string status = "pending", DateTimeOffset? expires = null)
+        {
+            return data.Insert(id, now, lane, deliverAt, status, expires);
+        }
+
+        public override ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

@@ -70,6 +70,7 @@ public sealed class OutageConformanceTests
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
             (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new OutageFixture(tracing, "success", hook)));
         var run = suite.RunAsync(scenario, caller.Token);
+
         try
         {
             await hook.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -84,19 +85,45 @@ public sealed class OutageConformanceTests
         finally
         {
             hook.Completion.TrySetCanceled();
-            try { await run.WaitAsync(TimeSpan.FromSeconds(5)); }
-            catch (InvalidOperationException) { }
+
+            try
+            {
+                await run.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (InvalidOperationException)
+            {
+            }
         }
     }
 
     private sealed class PendingHook(string phase)
     {
-        public string Phase { get; } = phase;
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public string Phase
+        {
+            get;
+        } = phase;
+
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Completion
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public bool IsPending => Entered.Task.IsCompleted && !Completion.Task.IsCompleted;
-        public bool StoppedWhilePending { get; set; }
-        public bool DisposedWhilePending { get; set; }
+
+        public bool StoppedWhilePending
+        {
+            get; set;
+        }
+
+        public bool DisposedWhilePending
+        {
+            get; set;
+        }
 
         public Task WaitAsync()
         {
@@ -105,9 +132,11 @@ public sealed class OutageConformanceTests
         }
     }
 
-    private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(string mode) =>
-        new((tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new OutageFixture(tracing, mode)),
-            TimeSpan.FromSeconds(2));
+    private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(string mode)
+    {
+        return new((tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new OutageFixture(tracing, mode)),
+                    TimeSpan.FromSeconds(2));
+    }
 
     // A controlled fixture tests the contract's assertions, not a broker's reconnect implementation.
     private sealed class OutageFixture(MessageTracing tracing, string mode, PendingHook? hook = null) : ITransportConformanceFixture<InMemoryDelivery>, ITransport
@@ -120,16 +149,36 @@ public sealed class OutageConformanceTests
         private int _outageSends;
         private int _warmupSettlements;
         private readonly TaskCompletionSource _warmupRedelivered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public ITransport Transport => this;
+
         public string Name => _inner.Transport.Name;
+
         public string Destination => _inner.Destination;
+
         public string MessagingSystem => _inner.MessagingSystem;
+
         public string SettlementOperation => _inner.SettlementOperation;
+
         public HeaderNames HeaderNames => _inner.HeaderNames;
+
         public TimeSpan? OutageSendTimeout => TimeSpan.FromMilliseconds(25);
-        public bool IsExpectedOutageFailure(Exception error) => error is IOException;
-        public TransportCapabilities GetCapabilities(string endpoint) => _inner.Transport.GetCapabilities(endpoint);
-        public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive) => _inner.RegisterConsumer(receive);
+
+        public bool IsExpectedOutageFailure(Exception error)
+        {
+            return error is IOException;
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return _inner.Transport.GetCapabilities(endpoint);
+        }
+
+        public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive)
+        {
+            _inner.RegisterConsumer(receive);
+        }
+
         public ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken token)
         {
             // Requeue exactly the post-restart warm-up. Handler observation precedes
@@ -137,66 +186,123 @@ public sealed class OutageConformanceTests
             if (mode == "warmup-redelivery" && incoming.Message.Body.Span.SequenceEqual("{\"Value\":0}"u8))
             {
                 var settlement = Interlocked.Increment(ref _warmupSettlements);
+
                 if (settlement == 2)
                 {
                     incoming.Redeliver(TimeSpan.Zero);
                     return default;
                 }
-                if (settlement == 3) _warmupRedelivered.TrySetResult();
+
+                if (settlement == 3)
+                {
+                    _warmupRedelivered.TrySetResult();
+                }
             }
+
             return _inner.SettleAsync(incoming, disposition, token);
         }
-        public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token) => _inner.ReadDeadLetterAsync(token);
+
+        public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token)
+        {
+            return _inner.ReadDeadLetterAsync(token);
+        }
+
         public Task StartAsync(CancellationToken token)
         {
-            if (_shutdownIncomplete) throw new InvalidOperationException("Interrupted shutdown must finish before restart.");
-            if (_shutdownFailed && !_recovered) throw new InvalidOperationException("Faulted application was not recovered.");
+            if (_shutdownIncomplete)
+            {
+                throw new InvalidOperationException("Interrupted shutdown must finish before restart.");
+            }
+
+            if (_shutdownFailed && !_recovered)
+            {
+                throw new InvalidOperationException("Faulted application was not recovered.");
+            }
+
             return _inner.Transport.StartAsync(token);
         }
+
         public async Task StopAsync(CancellationToken token)
         {
-            if (hook is { IsPending: true }) hook.StoppedWhilePending = true;
+            if (hook is { IsPending: true })
+            {
+                hook.StoppedWhilePending = true;
+            }
+
             if (_offline && mode == "interrupted-shutdown")
             {
                 _shutdownIncomplete = true;
                 // Model a disconnected native drain that outlives the caller's stop budget.
                 throw new IOException("Disconnected drain is still pending.");
             }
+
             await _inner.Transport.StopAsync(token);
             _shutdownIncomplete = false;
-            if (_offline && mode == "unexpected-shutdown") throw new InvalidOperationException("Unexpected shutdown defect.");
+
+            if (_offline && mode == "unexpected-shutdown")
+            {
+                throw new InvalidOperationException("Unexpected shutdown defect.");
+            }
+
             if (_offline && mode == "shutdown-failure")
             {
                 _shutdownFailed = true;
                 throw new IOException("Expected disconnected native shutdown.");
             }
         }
+
         public async Task DisconnectAsync(CancellationToken token)
         {
-            if (hook is { Phase: "broker disconnect" }) await hook.WaitAsync();
+            if (hook is { Phase: "broker disconnect" })
+            {
+                await hook.WaitAsync();
+            }
+
             await _inner.DisconnectAsync(token);
             _offline = true;
         }
 
         public Task ReconnectAsync(CancellationToken token)
         {
-            if (hook is { Phase: "broker reconnect" }) return hook.WaitAsync();
+            if (hook is { Phase: "broker reconnect" })
+            {
+                return hook.WaitAsync();
+            }
+
             token.ThrowIfCancellationRequested();
             _offline = false;
             _recovered = true;
             return Task.CompletedTask;
         }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
         {
             if (_offline)
             {
                 var attempt = Interlocked.Increment(ref _outageSends);
-                if (mode == "unexpected") throw new InvalidOperationException("Unexpected native bug.");
-                if (mode == "lost") return;
+
+                if (mode == "unexpected")
+                {
+                    throw new InvalidOperationException("Unexpected native bug.");
+                }
+
+                if (mode == "lost")
+                {
+                    return;
+                }
+
                 if (mode == "cancel")
                 {
-                    if (attempt == 1) { await Task.Delay(Timeout.InfiniteTimeSpan, token); return; }
-                    if (attempt == 2) throw new IOException("Expected disconnected native operation.");
+                    if (attempt == 1)
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                        return;
+                    }
+
+                    if (attempt == 2)
+                    {
+                        throw new IOException("Expected disconnected native operation.");
+                    }
                     // Cancellation does not prove a message was not accepted by the broker.
                     await _inner.Transport.SendAsync(message, token);
                     await Task.Delay(Timeout.InfiniteTimeSpan, token);
@@ -206,14 +312,30 @@ public sealed class OutageConformanceTests
             // Queue the redelivered warm-up before the recovery marker, regardless
             // of the in-memory endpoint's partition scheduling.
             if (mode == "warmup-redelivery" && !_offline && Volatile.Read(ref _outageSends) != 0)
+            {
                 await _warmupRedelivered.Task.WaitAsync(token);
+            }
+
             await _inner.Transport.SendAsync(message, token);
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => _inner.Transport.SendBatchAsync(messages, token);
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => _inner.Transport.ApplyTopologyAsync(mode, token);
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
+        {
+            return _inner.Transport.SendBatchAsync(messages, token);
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token)
+        {
+            return _inner.Transport.ApplyTopologyAsync(mode, token);
+        }
+
         public ValueTask DisposeAsync()
         {
-            if (hook is { IsPending: true }) hook.DisposedWhilePending = true;
+            if (hook is { IsPending: true })
+            {
+                hook.DisposedWhilePending = true;
+            }
+
             return _inner.DisposeAsync();
         }
     }

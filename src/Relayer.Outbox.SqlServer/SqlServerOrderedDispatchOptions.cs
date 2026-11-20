@@ -4,36 +4,80 @@ namespace Relayer.Outbox.SqlServer;
 public sealed class SqlServerOrderedDispatchOptions
 {
     /// <summary>Database schema. Null selects dbo.</summary>
-    public string? Schema { get; init; }
+    public string? Schema
+    {
+        get; init;
+    }
+
     /// <summary>Table prefix, identical to the transactional writer's prefix.</summary>
-    public string TablePrefix { get; init; } = "relayer_";
+    public string TablePrefix
+    {
+        get; init;
+    } = "relayer_";
+
     /// <summary>Lane count, identical on every writer and dispatcher. Drain before changing it.</summary>
-    public int Lanes { get; init; } = 32;
+    public int Lanes
+    {
+        get; init;
+    } = 32;
+
     /// <summary>Membership and lane lease duration. Must be between one second and one hour.</summary>
-    public TimeSpan LeaseDuration { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan LeaseDuration
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(30);
+
     /// <summary>Delay between scans, less than one third of the lease duration.</summary>
-    public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(1);
+    public TimeSpan PollInterval
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(1);
+
     /// <summary>Unclassified send or preparation failures before the original row is parked. Explicitly retryable sends retry durably. Must match other dispatchers for this store.</summary>
-    public int MaxDispatchAttempts { get; init; } = 10;
+    public int MaxDispatchAttempts
+    {
+        get; init;
+    } = 10;
 
     /// <summary>Returns true for send failures that should retry indefinitely with durable backoff.
     /// Null preserves bounded poison handling for all send failures. Use native exception classification
     /// and configure the same policy on every dispatcher for this store.</summary>
-    public Func<Exception, bool>? RetrySendFailure { get; init; }
+    public Func<Exception, bool>? RetrySendFailure
+    {
+        get; init;
+    }
 
     /// <summary>Maximum sequential sends in one bounded lane transaction.</summary>
-    public int BatchSize { get; init; } = 100;
+    public int BatchSize
+    {
+        get; init;
+    } = 100;
 
     internal SqlServerOutboxOptions Validate()
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxDispatchAttempts);
         ArgumentNullException.ThrowIfNull(TablePrefix);
-        if (Lanes is < 1 or > 65536) throw new ArgumentOutOfRangeException(nameof(Lanes));
-        if (BatchSize is < 1 or > 10000) throw new ArgumentOutOfRangeException(nameof(BatchSize));
+
+        if (Lanes is < 1 or > 65536)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Lanes));
+        }
+
+        if (BatchSize is < 1 or > 10000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(BatchSize));
+        }
+
         if (LeaseDuration < TimeSpan.FromSeconds(1) || LeaseDuration > TimeSpan.FromHours(1))
+        {
             throw new ArgumentOutOfRangeException(nameof(LeaseDuration));
+        }
+
         if (PollInterval <= TimeSpan.Zero || PollInterval >= LeaseDuration / 3)
+        {
             throw new ArgumentOutOfRangeException(nameof(PollInterval), "PollInterval must be positive and less than LeaseDuration / 3.");
+        }
+
         var store = new SqlServerOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, Lanes = Lanes };
         _ = SqlServerOutboxSchema.CreateScript(store);
         return store;

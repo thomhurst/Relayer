@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using System.Text;
 using Azure.Messaging.ServiceBus;
 using BenchmarkDotNet.Attributes;
 using Relayer.AzureServiceBus;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -11,32 +11,41 @@ namespace Relayer.Benchmarks;
 [MemoryDiagnoser]
 public class ServiceBusHeaderBenchmarks
 {
-    private static readonly string[] SubjectHeaders = ["cloudEvents:type"];
-    private static readonly MessageType OrderType = new("benchmark.order", 1);
+    private static readonly string[] s_subjectHeaders = ["cloudEvents:type"];
+    private static readonly MessageType s_orderType = new("benchmark.order", 1);
     // Two route callbacks on the destination: one matches the first envelope, none matches the second.
-    private static readonly ServiceBusRouteCallback[] Callbacks =
+    private static readonly ServiceBusRouteCallback[] s_callbacks =
     [
         new("cloudEvents:type", new MessageType("benchmark.unrouted", 1).ToString(), static (_, message) => message.ReplyTo = "replies"),
-        new("cloudEvents:type", OrderType.ToString(), static (_, message) => message.ReplyTo = "replies"),
+        new("cloudEvents:type", s_orderType.ToString(), static (_, message) => message.ReplyTo = "replies"),
     ];
     private readonly ServiceBusSendState _relayer = new();
     private readonly ServiceBusMessage _raw = new();
     private readonly HeaderBuffer _headers = new();
-    private readonly MessageEnvelope _first = new(OrderType, "/orders", new("cloudEvents:"));
+    private readonly MessageEnvelope _first = new(s_orderType, "/orders", new("cloudEvents:"));
     private readonly MessageEnvelope _second = new(new("benchmark.other", 1), "/other", new("cloudEvents:"));
     private readonly DateTimeOffset _time = DateTimeOffset.UtcNow;
     private long _sequence;
     private ActivityContext _creation;
 
     [Params(false, true)]
-    public bool AlternatingRoutes { get; set; }
+    public bool AlternatingRoutes
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Tracing { get; set; }
+    public bool Tracing
+    {
+        get; set;
+    }
 
     /// <summary>Route-level native callbacks on the destination (#808); with alternating routes, half the sends match none.</summary>
     [Params(false, true)]
-    public bool RouteCallbacks { get; set; }
+    public bool RouteCallbacks
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -53,8 +62,12 @@ public class ServiceBusHeaderBenchmarks
     public int RawHeaders()
     {
         var outgoing = Next();
+
         foreach (var header in outgoing.Headers.Span)
+        {
             _raw.ApplicationProperties[header.Key] = header.Value.ToString();
+        }
+
         var count = _raw.ApplicationProperties.Count;
         _raw.ApplicationProperties.Clear();
         return count;
@@ -63,7 +76,7 @@ public class ServiceBusHeaderBenchmarks
     [Benchmark]
     public int RelayerHeaders()
     {
-        _relayer.Prepare(Next(), SubjectHeaders, routeCallbacks: RouteCallbacks ? Callbacks : null);
+        _relayer.Prepare(Next(), s_subjectHeaders, routeCallbacks: RouteCallbacks ? s_callbacks : null);
         var count = _relayer.Message.ApplicationProperties.Count;
         _relayer.Clear();
         return count;
@@ -87,14 +100,21 @@ public class ServiceBusHeaderBenchmarks
         {
             for (var i = 0; i < message.Entries.Length; i++)
             {
-                if (message.Entries[i].Key is not null && message.Entries[i].Key != name) continue;
+                if (message.Entries[i].Key is not null && message.Entries[i].Key != name)
+                {
+                    continue;
+                }
+
                 var length = Encoding.UTF8.GetBytes(value, message._values[i]);
                 message.Entries[i] = new(name, new WireString(message._values[i].AsMemory(0, length)));
                 return;
             }
+
             throw new InvalidOperationException("Unexpected envelope header.");
         }
 
-        public static void RemoveHeader(HeaderBuffer message, string name) { }
+        public static void RemoveHeader(HeaderBuffer message, string name)
+        {
+        }
     }
 }

@@ -11,7 +11,10 @@ namespace Relayer.Benchmarks;
 public class TransportPoolRetentionBenchmarks
 {
     [Params(1, 256, 512)]
-    public int Concurrency { get; set; }
+    public int Concurrency
+    {
+        get; set;
+    }
 
     private readonly KafkaSendPool _kafka = new();
     private KafkaSendOperation[] _kafkaItems = null!;
@@ -42,7 +45,11 @@ public class TransportPoolRetentionBenchmarks
     [Benchmark]
     public void Kafka()
     {
-        for (var i = 0; i < Concurrency; i++) _kafkaItems[i] = _kafka.Rent(1);
+        for (var i = 0; i < Concurrency; i++)
+        {
+            _kafkaItems[i] = _kafka.Rent(1);
+        }
+
         for (var i = 0; i < Concurrency; i++)
         {
             _kafka.Return(_kafkaItems[i]);
@@ -53,7 +60,11 @@ public class TransportPoolRetentionBenchmarks
     [Benchmark]
     public void ServiceBus()
     {
-        for (var i = 0; i < Concurrency; i++) _serviceBusItems[i] = _serviceBus.Rent();
+        for (var i = 0; i < Concurrency; i++)
+        {
+            _serviceBusItems[i] = _serviceBus.Rent();
+        }
+
         for (var i = 0; i < Concurrency; i++)
         {
             _serviceBus.Return(_serviceBusItems[i]);
@@ -64,7 +75,11 @@ public class TransportPoolRetentionBenchmarks
     [Benchmark]
     public void RabbitMq()
     {
-        for (var i = 0; i < Concurrency; i++) _rabbitMqItems[i] = _rabbitMq.Rent();
+        for (var i = 0; i < Concurrency; i++)
+        {
+            _rabbitMqItems[i] = _rabbitMq.Rent();
+        }
+
         for (var i = 0; i < Concurrency; i++)
         {
             _rabbitMq.Return(_rabbitMqItems[i]);
@@ -75,7 +90,11 @@ public class TransportPoolRetentionBenchmarks
     [Benchmark]
     public void Sqs()
     {
-        for (var i = 0; i < Concurrency; i++) _sqsItems[i] = _sqs.Rent();
+        for (var i = 0; i < Concurrency; i++)
+        {
+            _sqsItems[i] = _sqs.Rent();
+        }
+
         for (var i = 0; i < Concurrency; i++)
         {
             _sqs.Return(_sqsItems[i]);
@@ -86,7 +105,11 @@ public class TransportPoolRetentionBenchmarks
     [Benchmark]
     public void Sns()
     {
-        for (var i = 0; i < Concurrency; i++) _snsItems[i] = _sns.Rent();
+        for (var i = 0; i < Concurrency; i++)
+        {
+            _snsItems[i] = _sns.Rent();
+        }
+
         for (var i = 0; i < Concurrency; i++)
         {
             _sns.Return(_snsItems[i]);

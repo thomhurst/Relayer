@@ -8,6 +8,7 @@ public class ConcurrentReceiveAllocationTests
     public async Task Pending_cross_thread_receives_allocate_only_native_scopes_after_warmup()
     {
         using var fixture = new ConcurrentReceiveFixture();
+
         for (var i = 0; i < 1000; i++)
         {
             fixture.Run(ConcurrentReceiveFixture.Mode.Scoped);
@@ -17,6 +18,7 @@ public class ConcurrentReceiveAllocationTests
         // Allocate storage before measuring; formatting/output happens only after every window.
         var windows = new (Window Scoped, Window Consumer, Window Receive)[1000];
         long scoped = 0, consumer = 0, receive = 0;
+
         for (var i = 0; i < 1000; i++)
         {
             var native = Capture(fixture, ConcurrentReceiveFixture.Mode.Scoped);
@@ -27,12 +29,15 @@ public class ConcurrentReceiveAllocationTests
             consumer += consume.Bytes;
             receive += fullReceive.Bytes;
         }
+
         Console.WriteLine($"Allocation windows: runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}; arch={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}; scoped={scoped}; consumer={consumer}; receive={receive}");
+
         for (var i = 0; i < windows.Length; i++)
         {
             var window = windows[i];
             Console.WriteLine($"window={i}; scoped={window.Scoped}; consumer={window.Consumer}; receive={window.Receive}");
         }
+
         await Assert.That(scoped).IsGreaterThan(0);
         await Assert.That(consumer).IsEqualTo(scoped);
         await Assert.That(receive).IsEqualTo(scoped);

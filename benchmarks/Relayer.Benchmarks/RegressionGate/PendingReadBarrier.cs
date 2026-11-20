@@ -12,14 +12,27 @@ internal readonly struct PendingReadBarrier : ICriticalNotifyCompletion
     public PendingReadBarrier(ValueTask<byte> read, ChannelWriter<byte> entered)
     {
         _read = read.GetAwaiter();
-        if (_read.IsCompleted) throw new InvalidOperationException("Expected an asynchronous delivery.");
+
+        if (_read.IsCompleted)
+        {
+            throw new InvalidOperationException("Expected an asynchronous delivery.");
+        }
+
         _entered = entered;
     }
 
-    public PendingReadBarrier GetAwaiter() => this;
+    public PendingReadBarrier GetAwaiter()
+    {
+        return this;
+    }
+
     // The driver releases reads only after entry; taking a synchronous path would skip entry.
     public bool IsCompleted => false;
-    public byte GetResult() => _read.GetResult();
+
+    public byte GetResult()
+    {
+        return _read.GetResult();
+    }
 
     public void OnCompleted(Action continuation)
     {
@@ -35,6 +48,9 @@ internal readonly struct PendingReadBarrier : ICriticalNotifyCompletion
 
     private void SignalEntered()
     {
-        if (!_entered.TryWrite(0)) throw new InvalidOperationException("Entry channel is full.");
+        if (!_entered.TryWrite(0))
+        {
+            throw new InvalidOperationException("Entry channel is full.");
+        }
     }
 }

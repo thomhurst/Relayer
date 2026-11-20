@@ -1,5 +1,5 @@
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using Relayer.Transports;
 
@@ -19,19 +19,25 @@ public class DispatchBackoffTests
         var options = new PostgreSqlOutboxOptions { Lanes = 1, MaxDispatchAttempts = 1 };
         var id = Guid.CreateVersion7();
         await PostgreSqlOutboxStoreTests.Insert(source, options, id, DateTimeOffset.UtcNow, lane: ordered ? 0 : null);
+
         if (!ordered)
         {
             await using var unordered = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL");
             await unordered.ExecuteNonQueryAsync();
         }
+
         var transport = new OutageTransport();
         var rows = new OutboxRecord[1];
+
         for (var attempt = 0; attempt < 12; attempt++)
         {
             // Advance database eligibility rather than sleeping. Each attempt uses a fresh worker,
             // proving that retries and ordered head barriers survive worker/process replacement.
             await using (var ready = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = clock_timestamp(); UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second'"))
+            {
                 await ready.ExecuteNonQueryAsync();
+            }
+
             await using var clock = source.CreateCommand("SELECT clock_timestamp()");
             var before = (DateTime)(await clock.ExecuteScalarAsync())!;
             await Dispatch();
@@ -49,13 +55,21 @@ public class DispatchBackoffTests
             await reader.DisposeAsync();
             // Test due-time fencing independently of test-runner scheduling pauses.
             await using (var future = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = clock_timestamp() + interval '1 day'"))
+            {
                 await future.ExecuteNonQueryAsync();
+            }
+
             await Dispatch();
             await Assert.That(transport.Attempts).IsEqualTo(attempt + 1);
         }
+
         transport.Failing = false;
+
         await using (var ready = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = clock_timestamp(); UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second'"))
+        {
             await ready.ExecuteNonQueryAsync();
+        }
+
         await Dispatch();
         await using var remaining = source.CreateCommand("SELECT count(*) FROM relayer_outbox");
         await Assert.That((long)(await remaining.ExecuteScalarAsync())!).IsEqualTo(0L);
@@ -65,7 +79,11 @@ public class DispatchBackoffTests
         {
             if (ordered)
             {
-                using var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
+                using var worker = new PostgreSqlOrderedDispatcher(source, new()
+                {
+                    Lanes = 1,
+                    MaxDispatchAttempts = 1
+                }, [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
                 await worker.DispatchLaneAsync(0, default);
             }
             else
@@ -88,14 +106,19 @@ public class DispatchBackoffTests
         var options = new PostgreSqlOutboxOptions { MaxDispatchAttempts = 1 };
         var id = Guid.CreateVersion7();
         await PostgreSqlOutboxStoreTests.Insert(source, options, id, DateTimeOffset.UtcNow);
+
         await using (var seed = source.CreateCommand("UPDATE relayer_outbox SET attempts = 30"))
+        {
             await seed.ExecuteNonQueryAsync();
+        }
+
         var store = new PostgreSqlOutboxStore(source, options);
         var claim = new OutboxClaim(id, Guid.NewGuid());
         var now = DateTimeOffset.UtcNow;
         await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsTrue();
         await Assert.That(await store.RecordDispatchFailureAsync(new(id, Guid.NewGuid()), "stale", now, default, retryable: true)).IsEqualTo(0);
         await Assert.That(await store.RecordDispatchFailureAsync(claim, "expired", now.AddMinutes(2), default, retryable: true)).IsEqualTo(0);
+
         await using (var connection = await source.OpenConnectionAsync())
         await using (var transaction = await connection.BeginTransactionAsync())
         {
@@ -104,6 +127,7 @@ public class DispatchBackoffTests
             await transaction.RollbackAsync();
             store.UseDispatchTransaction(null, null);
         }
+
         await Assert.That(await store.RecordDispatchFailureAsync(claim, "retry", now, default, retryable: true)).IsEqualTo(1);
         await Assert.That(await store.RecordDispatchFailureAsync(claim, "replay", now, default, retryable: true)).IsEqualTo(0);
         var rows = new OutboxRecord[1];
@@ -129,15 +153,28 @@ public class DispatchBackoffTests
         var options = new PostgreSqlOutboxOptions { Lanes = 1, MaxDispatchAttempts = 1 };
         var id = Guid.CreateVersion7();
         await PostgreSqlOutboxStoreTests.Insert(source, options, id, DateTimeOffset.UtcNow, lane: ordered ? 0 : null);
+
         await using (var setup = source.CreateCommand("UPDATE relayer_outbox SET message_type = 'orders;v=3', ordering_key = CASE WHEN lane IS NULL THEN NULL ELSE ordering_key END"))
+        {
             await setup.ExecuteNonQueryAsync();
+        }
+
         var observation = new ClassificationObservation();
         var transport = new OutageTransport();
         var services = new ServiceCollection().AddLogging().AddSingleton<ITransport>(transport)
             .AddScoped<IFailureClassifier>(scope => new DispatchClassifier(observation, action, scope));
-        if (ordered) services.AddRelayerPostgreSqlOrderedDispatch("classified", source, new PostgreSqlOrderedDispatchOptions { Lanes = 1, MaxDispatchAttempts = 1 });
-        else services.AddRelayerPostgreSqlDirectDispatch("classified", source, options);
+
+        if (ordered)
+        {
+            services.AddRelayerPostgreSqlOrderedDispatch("classified", source, new PostgreSqlOrderedDispatchOptions { Lanes = 1, MaxDispatchAttempts = 1 });
+        }
+        else
+        {
+            services.AddRelayerPostgreSqlDirectDispatch("classified", source, options);
+        }
+
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
         if (ordered)
         {
             var worker = provider.GetRequiredKeyedService<PostgreSqlOrderedDispatcher>("classified");
@@ -151,6 +188,7 @@ public class DispatchBackoffTests
             var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("classified");
             await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
         }
+
         await Assert.That(observation.Id).IsEqualTo(id.ToString());
         await Assert.That(observation.Type).IsEqualTo(new MessageType("orders", 3));
         await Assert.That(observation.Attempt).IsEqualTo(1);
@@ -161,8 +199,11 @@ public class DispatchBackoffTests
         await reader.ReadAsync();
         await Assert.That(reader.GetInt64(0)).IsEqualTo(action == FailureAction.Retry || (ordered && action == FailureAction.DeadLetter) ? 1L : 0L);
         await Assert.That(reader.GetInt64(1)).IsEqualTo(action == FailureAction.DeadLetter ? 1L : 0L);
+
         if (action == FailureAction.Retry || (ordered && action == FailureAction.DeadLetter))
+        {
             await Assert.That(reader.GetString(2)).IsEqualTo(action == FailureAction.Retry ? "pending" : "parked");
+        }
     }
 
     [Test]
@@ -178,18 +219,23 @@ public class DispatchBackoffTests
         var healthy = Guid.CreateVersion7();
         await PostgreSqlOutboxStoreTests.Insert(source, new(), rejected, DateTimeOffset.UtcNow);
         await PostgreSqlOutboxStoreTests.Insert(source, new(), healthy, DateTimeOffset.UtcNow);
+
         await using (var setup = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL, body = CASE WHEN id = @bad THEN decode('00', 'hex') ELSE decode('01', 'hex') END"))
         {
             setup.Parameters.AddWithValue("bad", rejected);
             await setup.ExecuteNonQueryAsync();
         }
+
         await using var provider = new ServiceCollection().AddSingleton<IFailureClassifier>(new FailureClassifierBuilder()
             .On<RejectedSendException>(FailureAction.DeadLetter).Build()).BuildServiceProvider();
         var transport = new MixedBatchTransport(partiallySent);
         var store = new PostgreSqlOutboxStore(source);
         var rows = new OutboxRecord[2];
         var count = await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
-        using var worker = new PostgreSqlDirectDispatcher(source, new(), new() { BatchSize = 2 }, [transport],
+        using var worker = new PostgreSqlDirectDispatcher(source, new(), new()
+        {
+            BatchSize = 2
+        }, [transport],
             NullLogger<PostgreSqlDirectDispatcher>.Instance, scopes: provider.GetRequiredService<IServiceScopeFactory>());
         await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
         await Assert.That(transport.Batches).IsEqualTo(1);
@@ -209,16 +255,26 @@ public class DispatchBackoffTests
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
+
         for (var i = 0; i < 4; i++)
+        {
             await PostgreSqlOutboxStoreTests.Insert(source, new(), Guid.CreateVersion7(), DateTimeOffset.UtcNow);
+        }
+
         await using (var setup = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL"))
+        {
             await setup.ExecuteNonQueryAsync();
+        }
+
         var transport = new OutageTransport();
         var store = new PostgreSqlOutboxStore(source);
         var rows = new OutboxRecord[4];
         var count = await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
         await Assert.That(count).IsEqualTo(4);
-        using var worker = new PostgreSqlDirectDispatcher(source, new(), new() { BatchSize = 4 }, [transport],
+        using var worker = new PostgreSqlDirectDispatcher(source, new(), new()
+        {
+            BatchSize = 4
+        }, [transport],
             NullLogger<PostgreSqlDirectDispatcher>.Instance);
         var before = DateTimeOffset.UtcNow;
         await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
@@ -252,7 +308,11 @@ public class DispatchBackoffTests
             observation.ScopeMatches = ReferenceEquals(context.Services, services);
             return action;
         }
-        public void Dispose() => observation.Disposed = true;
+
+        public void Dispose()
+        {
+            observation.Disposed = true;
+        }
     }
 
     private sealed class RejectedSendException : Exception;
@@ -262,43 +322,121 @@ public class DispatchBackoffTests
         internal int Batches;
         internal int Singles;
         internal int HealthySends;
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = 2 };
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = 2
+            };
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Singles++;
-            if (message.Body.Span[0] == 0) throw new RejectedSendException();
+
+            if (message.Body.Span[0] == 0)
+            {
+                throw new RejectedSendException();
+            }
+
             HealthySends++;
             return ValueTask.CompletedTask;
         }
+
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
         {
             Batches++;
-            if (partiallySent) HealthySends++;
+
+            if (partiallySent)
+            {
+                HealthySends++;
+            }
+
             throw new RejectedSendException();
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class OutageTransport : ITransport
     {
-        public bool Failing { get; set; } = true;
-        public int Attempts { get; private set; }
+        public bool Failing
+        {
+            get; set;
+        } = true;
+
+        public int Attempts
+        {
+            get; private set;
+        }
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true, MaxBatchSize = 4 };
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true,
+                MaxBatchSize = 4
+            };
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Attempts++;
-            if (Failing) throw new IOException("broker unavailable");
+
+            if (Failing)
+            {
+                throw new IOException("broker unavailable");
+            }
+
             return ValueTask.CompletedTask;
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => SendAsync(messages.Span[0], cancellationToken);
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return SendAsync(messages.Span[0], cancellationToken);
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

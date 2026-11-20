@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Data;
 using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
@@ -19,9 +19,12 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
     // AddRelayerOutbox, so composition cannot rule one out.
     public bool Inbox => inbox || scopedValidation;
 
-    internal EntityFrameworkCoreConsumerSettings Resolve(DbContext db) => scopedValidation
-        ? OutboxConfiguration.ValidateConsumer(db, inbox, configuration, explicitOptions, requireOutbox)
-        : new(inbox, outbox, configuration);
+    internal EntityFrameworkCoreConsumerSettings Resolve(DbContext db)
+    {
+        return scopedValidation
+                ? OutboxConfiguration.ValidateConsumer(db, inbox, configuration, explicitOptions, requireOutbox)
+                : new(inbox, outbox, configuration);
+    }
 
     public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
     {
@@ -35,9 +38,14 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
     {
         var cancellation = context.CancellationToken;
         var messageId = settings.Inbox ? ParseMessageId(context.MessageId) : default;
+
         if (db.Database.CurrentTransaction is not null || System.Transactions.Transaction.Current is not null)
+        {
             throw new InvalidOperationException("The EF Core consumer must own its transaction. Do not nest database consumer middleware or use an ambient transaction.");
+        }
+
         var transaction = await db.Database.BeginTransactionAsync(_isolationLevel, cancellation).ConfigureAwait(false);
+
         try
         {
             if (settings.Inbox)
@@ -55,12 +63,20 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
                     return;
                 }
             }
+
             await next(context).ConfigureAwait(false);
+
             if (!ReferenceEquals(db.Database.CurrentTransaction, transaction))
+            {
                 throw new InvalidOperationException("The handler ended or replaced the consumer transaction. Save changes in the handler and let Relayer commit.");
+            }
+
             var disposition = context.Features.Get<ISettlementFeature>()?.RequestedDisposition;
+
             if (disposition is { Kind: not DispositionKind.Complete })
+            {
                 await transaction.RollbackAsync(cancellation).ConfigureAwait(false);
+            }
             else
             {
                 RequestCompletion(context);
@@ -78,13 +94,18 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
     {
         // Fix the outcome before commit. Scope disposers cannot reject work that is already durable.
         if (context.Features.Get<ISettlementFeature>() is { RequestedDisposition: null } settlement)
+        {
             settlement.Complete();
+        }
     }
 
     internal static Guid ParseMessageId(string messageId)
     {
         if (!Guid.TryParse(messageId, out var id) || id == Guid.Empty || id.Version != 7)
+        {
             throw new MessageEnvelopeException("Inbox processing requires the original non-empty UUIDv7 message ID.");
+        }
+
         return id;
     }
 }

@@ -1,10 +1,10 @@
-using Relayer.Pipeline;
 using System.Threading.Channels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Relayer.InMemory;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -59,6 +59,7 @@ public class ConsumerFailurePolicyTests
         });
         await using var provider = services.BuildServiceProvider();
         var declarations = provider.GetRequiredService<RelayerConfiguration>().Transports;
+
         foreach (var declaration in declarations)
         {
             var consumer = declaration.Consumers[0];
@@ -114,8 +115,17 @@ public class ConsumerFailurePolicyTests
             return new(Disposition.Complete);
         });
         var hosted = provider.GetServices<IHostedService>().ToArray();
-        foreach (var lifecycle in hosted.OfType<IHostedLifecycleService>()) await lifecycle.StartingAsync(default);
-        foreach (var service in hosted) await service.StartAsync(default);
+
+        foreach (var lifecycle in hosted.OfType<IHostedLifecycleService>())
+        {
+            await lifecycle.StartingAsync(default);
+        }
+
+        foreach (var service in hosted)
+        {
+            await service.StartAsync(default);
+        }
+
         try
         {
             await using var scope = provider.CreateAsyncScope();
@@ -127,7 +137,10 @@ public class ConsumerFailurePolicyTests
         }
         finally
         {
-            foreach (var service in hosted.Reverse()) await service.StopAsync(default);
+            foreach (var service in hosted.Reverse())
+            {
+                await service.StopAsync(default);
+            }
         }
     }
 
@@ -145,10 +158,17 @@ public class ConsumerFailurePolicyTests
                 transport.Options.Configure(options => options.Endpoints.Add("source", new()
                 {
                     Capacity = 1,
-                    Capabilities = new() { ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue },
+                    Capabilities = new()
+                    {
+                        ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue
+                    },
                 }));
                 transport.Consume("source", consumer => consumer
-                    .Failures(new() { RetryDelays = [], DeadLetterEndpoint = "source" })
+                    .Failures(new()
+                    {
+                        RetryDelays = [],
+                        DeadLetterEndpoint = "source"
+                    })
                     .Handler<PolicyHandler>());
             });
         });
@@ -183,7 +203,11 @@ public class ConsumerFailurePolicyTests
                     },
                 }));
                 transport.Consume("source", consumer => consumer
-                    .Failures(new() { RetryDelays = [], RedeliveryDelays = [TimeSpan.FromSeconds(1)] })
+                    .Failures(new()
+                    {
+                        RetryDelays = [],
+                        RedeliveryDelays = [TimeSpan.FromSeconds(1)]
+                    })
                     .Handler<PolicyHandler>());
             });
         });
@@ -228,8 +252,10 @@ public class ConsumerFailurePolicyTests
                     Capabilities = new()
                     {
                         ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue,
-                        OrderedByKey = log, DeadLetter = true,
-                        MaxRedeliveryDelay = TimeSpan.MaxValue, MaxDeliveryDelay = TimeSpan.MaxValue,
+                        OrderedByKey = log,
+                        DeadLetter = true,
+                        MaxRedeliveryDelay = TimeSpan.MaxValue,
+                        MaxDeliveryDelay = TimeSpan.MaxValue,
                     },
                 }));
                 transport.Send<PolicyMessage>("source");
@@ -238,36 +264,59 @@ public class ConsumerFailurePolicyTests
                     consumer.Options.Group = log ? "first" : null;
                     consumer.Failures(policy).Classify(new DefaultFailureClassifier()).Handler<PolicyHandler>();
                 });
-                if (log) transport.Consume("source", consumer =>
+
+                if (log)
+                {
+                    transport.Consume("source", consumer =>
                 {
                     consumer.Options.Group = "second";
                     consumer.Failures(policy).Classify(new DefaultFailureClassifier()).Handler<PolicyHandler>();
                 });
+                }
             });
         });
         await using var provider = services.BuildServiceProvider();
         var hosted = provider.GetServices<IHostedService>().ToArray();
-        foreach (var lifecycle in hosted.OfType<IHostedLifecycleService>()) await lifecycle.StartingAsync(default);
-        foreach (var service in hosted) await service.StartAsync(default);
+
+        foreach (var lifecycle in hosted.OfType<IHostedLifecycleService>())
+        {
+            await lifecycle.StartingAsync(default);
+        }
+
+        foreach (var service in hosted)
+        {
+            await service.StartAsync(default);
+        }
+
         try
         {
             await using var scope = provider.CreateAsyncScope();
             await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new PolicyMessage());
             var transport = (InMemoryTransport)provider.GetRequiredService<ITransport>();
+
             for (var i = 0; i < (log ? 2 : 1); i++)
             {
                 var dead = await transport.DeadLetters("source").ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
                 await Assert.That(dead.Error.Headers.ToArray().Single(pair => pair.Key == FailureHeaders.Attempts).Value.ToString()).IsEqualTo("9");
                 await Assert.That(dead.Error.Headers.ToArray().Single(pair => pair.Key == FailureHeaders.Redeliveries).Value.ToString()).IsEqualTo("2");
             }
+
             var attempts = provider.GetRequiredService<Channel<int>>();
             var count = 0;
-            while (attempts.Reader.TryRead(out _)) count++;
+
+            while (attempts.Reader.TryRead(out _))
+            {
+                count++;
+            }
+
             await Assert.That(count).IsEqualTo(log ? 18 : 9);
         }
         finally
         {
-            foreach (var service in hosted.Reverse()) await service.StopAsync(default);
+            foreach (var service in hosted.Reverse())
+            {
+                await service.StopAsync(default);
+            }
         }
     }
 

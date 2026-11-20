@@ -36,13 +36,19 @@ public static class DeadLetterEndpointRouteBuilderExtensions
         var cancellationToken = context.RequestAborted;
         cancellationToken.ThrowIfCancellationRequested();
         var manager = context.RequestServices.GetRequiredKeyedService<IDeadLetterManager>(name);
+
         try
         {
             if (operation == Operation.List)
             {
                 var sources = manager.List();
                 var snapshot = new DeadLetterSource[sources.Count];
-                for (var i = 0; i < snapshot.Length; i++) snapshot[i] = sources[i];
+
+                for (var i = 0; i < snapshot.Length; i++)
+                {
+                    snapshot[i] = sources[i];
+                }
+
                 await context.Response.WriteAsJsonAsync(snapshot, DeadLetterJsonContext.Default.DeadLetterSourceArray,
                     cancellationToken: cancellationToken).ConfigureAwait(false);
                 return;
@@ -51,6 +57,7 @@ public static class DeadLetterEndpointRouteBuilderExtensions
             string? source;
             int maxMessages;
             MaintenanceRequest? request = null;
+
             if (operation == Operation.Peek)
             {
                 source = SingleQuery(context, "source");
@@ -67,34 +74,52 @@ public static class DeadLetterEndpointRouteBuilderExtensions
                     await WriteErrorAsync(context, "Send an application/json request body.").ConfigureAwait(false);
                     return;
                 }
+
                 request = await context.Request.ReadFromJsonAsync(DeadLetterJsonContext.Default.MaintenanceRequest,
                     cancellationToken).ConfigureAwait(false)
                     ?? throw new ArgumentException("A JSON request body is required.");
                 source = request.Source;
                 maxMessages = request.MaxMessages;
             }
-            if (string.IsNullOrWhiteSpace(source)) throw new ArgumentException("source is required; use GET on the group root to list configured sources.");
-            if (maxMessages is < 1 or > 100) throw new ArgumentException("maxMessages must be between 1 and 100.");
+
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                throw new ArgumentException("source is required; use GET on the group root to list configured sources.");
+            }
+
+            if (maxMessages is < 1 or > 100)
+            {
+                throw new ArgumentException("maxMessages must be between 1 and 100.");
+            }
+
             if (request?.MessageIds is { } ids && (operation != Operation.Redrive || ids.Length is < 1 or > 100 || Array.Exists(ids, string.IsNullOrWhiteSpace)))
+            {
                 throw new ArgumentException("messageIds is supported only for redrive and must contain 1 to 100 non-empty identifiers; omit it to redrive all scanned messages.");
+            }
 
             if (operation == Operation.Peek)
             {
                 var page = await manager.PeekAsync(source, maxMessages, SingleQuery(context, "cursor"), cancellationToken).ConfigureAwait(false);
                 var messages = new MessageSnapshot[page.Messages.Count];
+
                 for (var i = 0; i < messages.Length; i++)
+                {
                     messages[i] = new(page.Messages[i].MessageId, page.Messages[i].Body);
+                }
+
                 await context.Response.WriteAsJsonAsync(new PageSnapshot(messages, page.NextCursor),
                     DeadLetterJsonContext.Default.PageSnapshot, cancellationToken: cancellationToken).ConfigureAwait(false);
                 return;
             }
 
             Func<DeadLetterMessage, bool>? filter = null;
+
             if (request!.MessageIds is { } selected)
             {
                 var set = new HashSet<string>(selected, StringComparer.Ordinal);
                 filter = message => message.MessageId is { } id && set.Contains(id);
             }
+
             var affected = operation == Operation.Redrive
                 ? await manager.RedriveAsync(source, filter, maxMessages, cancellationToken).ConfigureAwait(false)
                 : await manager.PurgeAsync(source, maxMessages, cancellationToken).ConfigureAwait(false);
@@ -116,13 +141,26 @@ public static class DeadLetterEndpointRouteBuilderExtensions
     private static string? SingleQuery(HttpContext context, string name)
     {
         var values = context.Request.Query[name];
-        if (values.Count > 1) throw new ArgumentException($"Specify {name} once.");
+
+        if (values.Count > 1)
+        {
+            throw new ArgumentException($"Specify {name} once.");
+        }
+
         return values.Count == 0 ? null : values[0];
     }
 
-    private static Task WriteErrorAsync(HttpContext context, string message) =>
-        context.Response.WriteAsJsonAsync(new ErrorResponse(message), DeadLetterJsonContext.Default.ErrorResponse,
-            cancellationToken: context.RequestAborted);
+    private static Task WriteErrorAsync(HttpContext context, string message)
+    {
+        return context.Response.WriteAsJsonAsync(new ErrorResponse(message), DeadLetterJsonContext.Default.ErrorResponse,
+                    cancellationToken: context.RequestAborted);
+    }
 
-    private enum Operation { List, Peek, Redrive, Purge }
+    private enum Operation
+    {
+        List,
+        Peek,
+        Redrive,
+        Purge
+    }
 }

@@ -15,8 +15,16 @@ public class PubSubShutdownInterceptorTests
         var observer = new PubSubShutdownInterceptor();
         observer.ReceiverClosed();
         var forwarded = 0;
-        if (renewal) await Call(new ModifyAckDeadlineRequest());
-        else await Call(new AcknowledgeRequest());
+
+        if (renewal)
+        {
+            await Call(new ModifyAckDeadlineRequest());
+        }
+        else
+        {
+            await Call(new AcknowledgeRequest());
+        }
+
         await Assert.That(forwarded).IsEqualTo(1);
         var failure = await Assert.That(() => observer.AssertClean()).Throws<InvalidOperationException>();
         await Assert.That(failure!.Message).Contains("after native subscriber closure");
@@ -60,11 +68,19 @@ public class PubSubShutdownInterceptorTests
         observer.AssertPublisherClosed();
     }
 
-    private static ClientInterceptorContext<T, Empty> Context<T>() where T : class => new(
-        new Method<T, Empty>(MethodType.Unary, "probe", "probe",
-            Marshallers.Create<T>(static _ => [], static _ => throw new NotSupportedException()),
-            Marshallers.Create<Empty>(static _ => [], static _ => new())), "unused", default);
+    private static ClientInterceptorContext<T, Empty> Context<T>() where T : class
+    {
+        return new(
+                new Method<T, Empty>(MethodType.Unary, "probe", "probe",
+                    Marshallers.Create<T>(static _ => [], static _ => throw new NotSupportedException()),
+                    Marshallers.Create<Empty>(static _ => [], static _ => new())), "unused", default);
+    }
 
-    private static AsyncUnaryCall<Empty> Response(Task<Empty> response) => new(response,
-        Task.FromResult(new Metadata()), static () => Status.DefaultSuccess, static () => new Metadata(), static () => { });
+    private static AsyncUnaryCall<Empty> Response(Task<Empty> response)
+    {
+        return new(response,
+                Task.FromResult(new Metadata()), static () => Status.DefaultSuccess, static () => new Metadata(), static () =>
+                {
+                });
+    }
 }

@@ -1,10 +1,10 @@
-using Relayer.Transports;
 using System.Data;
 using System.Runtime.CompilerServices;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
 using MySqlConnector;
 using Relayer.Outbox.MySql;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -23,7 +23,10 @@ public class MySqlInboxBenchmarks
     private readonly byte[] _identity = "benchmark"u8.ToArray();
 
     [Params(false, true)]
-    public bool Duplicate { get; set; }
+    public bool Duplicate
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -36,12 +39,19 @@ public class MySqlInboxBenchmarks
         services.AddSingleton<RelayerInstrumentation>();
         services.AddRelayerMySqlOutbox(options);
         _provider = services.BuildServiceProvider();
+
         await using (var create = _source.CreateCommand(MySqlOutboxSchema.CreateScript(options)))
+        {
             await create.ExecuteNonQueryAsync();
+        }
+
         _insert = $"INSERT IGNORE INTO {MySqlOutboxSchema.InboxTable(options)} (consumer, message_id) VALUES (@consumer, @id)";
         _consumer = new(_source, "benchmark", _identity, true, IsolationLevel.Unspecified,
             _provider.GetRequiredService<RelayerInstrumentation>());
-        _context = new() { Id = _duplicate };
+        _context = new()
+        {
+            Id = _duplicate
+        };
         var duplicate = Duplicate;
         Duplicate = true;
         await RelayerInbox();
@@ -56,8 +66,14 @@ public class MySqlInboxBenchmarks
         await using var connection = await _source.OpenConnectionAsync().ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync().ConfigureAwait(false);
         await using var command = new MySqlCommand(_insert, connection, transaction);
-        command.Parameters.Add(new("consumer", MySqlDbType.VarBinary) { Value = _identity });
-        command.Parameters.Add(new("id", MySqlDbType.Binary) { Value = _id });
+        command.Parameters.Add(new("consumer", MySqlDbType.VarBinary)
+        {
+            Value = _identity
+        });
+        command.Parameters.Add(new("id", MySqlDbType.Binary)
+        {
+            Value = _id
+        });
         await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         await transaction.CommitAsync().ConfigureAwait(false);
     }
@@ -69,29 +85,56 @@ public class MySqlInboxBenchmarks
         await using var scope = _provider.CreateAsyncScope();
         _context.ServiceProvider = scope.ServiceProvider;
         _context.Id = Duplicate ? _duplicate : Guid.CreateVersion7().ToString("D");
-        try { await _consumer.InvokeAsync(_context, static _ => default).ConfigureAwait(false); }
-        finally { _context.ServiceProvider = null!; }
+
+        try
+        {
+            await _consumer.InvokeAsync(_context, static _ => default).ConfigureAwait(false);
+        }
+        finally
+        {
+            _context.ServiceProvider = null!;
+        }
     }
 
     [GlobalCleanup]
     public async Task Cleanup()
     {
         await using (var drop = _source.CreateCommand($"DROP TABLE `{_prefix}inbox`, `{_prefix}outbox`"))
+        {
             await drop.ExecuteNonQueryAsync();
+        }
+
         await _provider.DisposeAsync();
         await _source.DisposeAsync();
     }
 
     private sealed class Context : MessageContext
     {
-        internal IServiceProvider ServiceProvider { get; set; } = null!;
-        internal string Id { get; set; } = "";
+        internal IServiceProvider ServiceProvider
+        {
+            get; set;
+        } = null!;
+
+        internal string Id
+        {
+            get; set;
+        } = "";
+
         public override string MessageId => Id;
+
         public override MessageType MessageType => new("benchmark", 1);
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
+
         public override IServiceProvider Services => ServiceProvider;
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

@@ -23,8 +23,12 @@ public static class AmazonSqsBuilderExtensions
             var declaration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
             var options = provider.GetRequiredService<IOptionsMonitor<AmazonSqsTransportOptions>>().Get(name);
             SqsSendTransport.ValidateDeclarations(name, options, declaration.Routes.Select(route => route.Destination));
+
             foreach (var consumer in declaration.Consumers)
+            {
                 SqsConsumer.ValidateDeclaration(name, options, (ConsumerDefinition<AmazonSqsConsumerOptions>)consumer);
+            }
+
             var identityHeaders = SqsSendTransport.ResolveIdentityHeaders(declaration.Routes);
             var client = options.SqsClient ?? new AmazonSQSClient(options.Sqs);
             return new SqsSendTransport(name, client, options.SqsClient is null, options,
@@ -38,23 +42,40 @@ public static class AmazonSqsBuilderExtensions
     }
 
     /// <summary>Customizes the native request immediately before single or batch sending.</summary>
-    public static SendOptions AmazonSqs(this SendOptions options, Action<SendMessageRequest> configure) =>
-        options.ConfigureNative(configure);
+    public static SendOptions AmazonSqs(this SendOptions options, Action<SendMessageRequest> configure)
+    {
+        return options.ConfigureNative(configure);
+    }
 }
 
 /// <summary>Native long-poll request settings and durable failure handling.</summary>
 public sealed class AmazonSqsConsumerOptions
 {
     /// <summary>CloudEvents header binding used by this queue. Match the sending route's HeaderNames.</summary>
-    public HeaderNames HeaderNames { get; set; } = new();
+    public HeaderNames HeaderNames
+    {
+        get; set;
+    } = new();
+
     /// <summary>Configures each worker's native ReceiveMessageRequest once before polling. QueueUrl and all attributes are required. Standard queues allow 1–10 messages; FIFO requires 1.</summary>
-    public Action<ReceiveMessageRequest>? ConfigureReceive { get; set; }
+    public Action<ReceiveMessageRequest>? ConfigureReceive
+    {
+        get; set;
+    }
 }
 
 // SNS uses the same simple send-only lifecycle.
 internal sealed class SqsSendHostedService(IServiceProvider provider, string name) : IHostedService
 {
     private ITransport Transport => provider.GetServices<ITransport>().Single(transport => transport.Name == name);
-    public Task StartAsync(CancellationToken token) => Transport.StartAsync(token);
-    public Task StopAsync(CancellationToken token) => Transport.StopAsync(token);
+
+    public Task StartAsync(CancellationToken token)
+    {
+        return Transport.StartAsync(token);
+    }
+
+    public Task StopAsync(CancellationToken token)
+    {
+        return Transport.StopAsync(token);
+    }
 }

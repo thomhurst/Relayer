@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Relayer.Transports;
 
 namespace Relayer.HealthChecks;
 

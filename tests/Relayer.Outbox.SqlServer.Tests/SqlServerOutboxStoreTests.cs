@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using System.Data;
 using System.Transactions;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer.Tests;
 
@@ -12,7 +12,11 @@ public sealed class SqlServerOutboxStoreTests(SqlServerFixture database)
     [Test]
     public async Task Binary_ids_use_uuid_order_instead_of_uniqueidentifier_order_and_preserve_payloads()
     {
-        var data = new StoreData(database, new() { Schema = "O'];--{{schema}}", TablePrefix = "a']_" });
+        var data = new StoreData(database, new()
+        {
+            Schema = "O'];--{{schema}}",
+            TablePrefix = "a']_"
+        });
         await data.Create();
         await data.Create(); // Idempotent, including escaped SQL literal and identifier contexts.
         var now = new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.FromHours(5)).AddTicks(1);
@@ -99,18 +103,23 @@ public sealed class SqlServerOutboxStoreTests(SqlServerFixture database)
         await using var connection = new SqlConnection(database.ConnectionString);
         await connection.OpenAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+
         using (var blocker = new SqlCommand($"SELECT id FROM {data.Table} WITH (UPDLOCK, HOLDLOCK) WHERE id = @id", connection, transaction))
         {
             blocker.Parameters.Add("@id", SqlDbType.Binary, 16).Value = claim.MessageId.ToByteArray(bigEndian: true);
             await blocker.ExecuteScalarAsync();
         }
+
         var store = data.Store();
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var pending = store.TryClaimAsync(claim, now, now.AddMinutes(1), cancellation.Token).AsTask();
         using var monitor = new SqlCommand("SELECT COUNT(*) FROM sys.dm_exec_requests WHERE blocking_session_id = @@SPID", connection, transaction);
         // Observe the native lock wait, rather than assuming a delay was long enough to reach the server.
         while ((int)(await monitor.ExecuteScalarAsync(cancellation.Token))! == 0)
+        {
             await Task.Delay(10, cancellation.Token);
+        }
+
         await cancellation.CancelAsync();
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await pending);
         await transaction.RollbackAsync();

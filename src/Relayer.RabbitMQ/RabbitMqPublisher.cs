@@ -1,26 +1,37 @@
-using Relayer.Transports;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using RabbitMQ.Client;
+using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
 
 internal sealed class RabbitMqPublisher(IChannel channel)
 {
-    internal IChannel Channel { get; set; } = channel;
+    internal IChannel Channel
+    {
+        get; set;
+    } = channel;
     internal readonly BasicProperties Properties = new();
     private readonly List<RabbitMqBatchSlot> _batchSlots = [];
     private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter[] _batchSends = [];
 
     internal ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter[] BatchSends(int count)
     {
-        if (_batchSends.Length < count) Array.Resize(ref _batchSends, count);
+        if (_batchSends.Length < count)
+        {
+            Array.Resize(ref _batchSends, count);
+        }
+
         return _batchSends;
     }
 
     internal RabbitMqBatchSlot BatchSlot(int index)
     {
-        if (index == _batchSlots.Count) _batchSlots.Add(new(Channel));
+        if (index == _batchSlots.Count)
+        {
+            _batchSlots.Add(new(Channel));
+        }
+
         var slot = _batchSlots[index];
         slot.Publisher.Channel = Channel;
         return slot;
@@ -42,56 +53,114 @@ internal sealed class RabbitMqPublisher(IChannel channel)
         Properties.Persistent = true;
         Properties.Headers = _headers;
         message.ApplyNative(Properties);
+
         if (Properties.Headers is { } nativeHeaders && !ReferenceEquals(nativeHeaders, _headers))
-            foreach (var header in nativeHeaders) _headers[header.Key] = header.Value;
+        {
+            foreach (var header in nativeHeaders)
+            {
+                _headers[header.Key] = header.Value;
+            }
+        }
+
         Properties.Headers = _headers;
         var index = 0;
+
         foreach (var header in message.Headers.Span)
         {
-            if (header.Key == "content-type") Properties.ContentType = ContentType(header.Value);
-            else _headers[header.Key] = HeaderValue(header.Value, index++);
+            if (header.Key == "content-type")
+            {
+                Properties.ContentType = ContentType(header.Value);
+            }
+            else
+            {
+                _headers[header.Key] = HeaderValue(header.Value, index++);
+            }
         }
         // Portable scheduling and durability cannot be disabled by native message configuration.
         Properties.Persistent = true;
+
         if (delay > 0)
         {
             Unsafe.Unbox<long>(_delay) = delay;
             _headers["x-delay"] = _delay;
         }
-        else _headers.Remove("x-delay");
+        else
+        {
+            _headers.Remove("x-delay");
+        }
+
         _headers.PreserveContext = _headers.ContainsKey("traceparent");
     }
 
     private object HeaderValue(WireString value, int index)
     {
-        if (value.Text is { } text) return text;
+        if (value.Text is { } text)
+        {
+            return text;
+        }
+
         if (MemoryMarshal.TryGetArray(value.Utf8, out var array) && array.Offset == 0 && array.Count == array.Array!.Length)
+        {
             return array.Array;
+        }
         // RabbitMQ.Client 7.2.2 accepts byte[] and string, not UTF-8 slices (upstream #2144).
         // One bounded FIFO across all header positions; hits do not update recency (D35/D52).
         var key = (index, value.Utf8.Length);
+
         if (!_buffers.TryGetValue(key, out var buffer))
         {
             buffer = new byte[value.Utf8.Length];
-            if (_buffers.Count == CacheCapacity) _buffers.Remove(_bufferOrder[_nextBuffer]);
+
+            if (_buffers.Count == CacheCapacity)
+            {
+                _buffers.Remove(_bufferOrder[_nextBuffer]);
+            }
+
             _buffers.Add(key, buffer);
-            if (_bufferOrder.Count < CacheCapacity) _bufferOrder.Add(key);
-            else _bufferOrder[_nextBuffer] = key;
+
+            if (_bufferOrder.Count < CacheCapacity)
+            {
+                _bufferOrder.Add(key);
+            }
+            else
+            {
+                _bufferOrder[_nextBuffer] = key;
+            }
+
             _nextBuffer = (_nextBuffer + 1) % CacheCapacity;
         }
+
         value.Utf8.Span.CopyTo(buffer);
         return buffer;
     }
 
     private string ContentType(WireString value)
     {
-        if (value.Text is { } text) return text;
+        if (value.Text is { } text)
+        {
+            return text;
+        }
+
         foreach (var cached in _contentTypes)
-            if (value.Utf8.Span.SequenceEqual(cached.Utf8)) return cached.Text;
+        {
+            if (value.Utf8.Span.SequenceEqual(cached.Utf8))
+            {
+                return cached.Text;
+            }
+        }
+
         var decoded = value.ToString();
         var entry = (value.Utf8.ToArray(), decoded);
-        if (_contentTypes.Count < CacheCapacity) _contentTypes.Add(entry);
-        else _contentTypes[_nextContentType] = entry;
+
+        if (_contentTypes.Count < CacheCapacity)
+        {
+            _contentTypes.Add(entry);
+        }
+        else
+        {
+            _contentTypes[_nextContentType] = entry;
+        }
+
         _nextContentType = (_nextContentType + 1) % CacheCapacity;
         return decoded;
     }
@@ -122,12 +191,20 @@ internal sealed class RabbitMqPublisher(IChannel channel)
 internal sealed class RabbitMqHeaders : Dictionary<string, object?>, IDictionary<string, object?>
 {
     internal bool PreserveContext;
+
     object? IDictionary<string, object?>.this[string key]
     {
-        get => this[key];
+        get
+        {
+            return this[key];
+        }
         set
         {
-            if (PreserveContext && key is "traceparent" or "tracestate") return;
+            if (PreserveContext && key is "traceparent" or "tracestate")
+            {
+                return;
+            }
+
             this[key] = value;
         }
     }
@@ -148,15 +225,23 @@ internal sealed class RabbitMqBatchSlot(IChannel channel)
     {
         _transport = transport;
         _endpoint = endpoint;
-        if (!trace || !endpoint.TraceEnabled) return Publish(message, token);
+
+        if (!trace || !endpoint.TraceEnabled)
+        {
+            return Publish(message, token);
+        }
+
         if (!_tracing.TryGetValue(endpoint, out var tracing))
         {
             tracing = endpoint.CreateTracing(Publish);
             _tracing.Add(endpoint, tracing);
         }
+
         return tracing.SendAsync(message, token);
     }
 
-    private ValueTask Publish(OutgoingMessage message, CancellationToken token) =>
-        _operation.StartBorrowed(_transport, _endpoint, Publisher, message, token);
+    private ValueTask Publish(OutgoingMessage message, CancellationToken token)
+    {
+        return _operation.StartBorrowed(_transport, _endpoint, Publisher, message, token);
+    }
 }

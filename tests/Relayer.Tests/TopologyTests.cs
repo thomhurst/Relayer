@@ -22,6 +22,7 @@ public class TopologyTests
         using var host = CreateConcurrentHost(adapter, receiver, mode);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var startup = host.StartAsync(timeout.Token);
+
         try
         {
             await entered.Task.WaitAsync(timeout.Token);
@@ -33,11 +34,17 @@ public class TopologyTests
             release.TrySetResult();
             // Observe startup and stop the host even when a regression assertion fails.
             if (mode == TopologyMode.Validate)
+            {
                 await Assert.That(async () => await startup).Throws<OptionsValidationException>();
+            }
             else
+            {
                 await startup;
+            }
+
             await host.StopAsync(timeout.Token);
         }
+
         await Assert.That(receiver.Started).IsEqualTo(mode == TopologyMode.Provision);
         await Assert.That(adapter.Entities.Contains("orders")).IsEqualTo(mode == TopologyMode.Provision);
     }
@@ -160,8 +167,16 @@ public class TopologyTests
         var adapter = new InMemoryTransport("events") { Cancel = cancellation };
         await using var provider = Create(adapter);
         var cancelled = false;
-        try { await Start(provider, cancellation.Token); }
-        catch (OperationCanceledException error) { cancelled = error.CancellationToken == cancellation.Token; }
+
+        try
+        {
+            await Start(provider, cancellation.Token);
+        }
+        catch (OperationCanceledException error)
+        {
+            cancelled = error.CancellationToken == cancellation.Token;
+        }
+
         await Assert.That(cancelled).IsTrue();
     }
 
@@ -236,12 +251,26 @@ public class TopologyTests
         Action<IRelayerBuilder>? extra = null, InMemoryTransport? second = null)
     {
         var services = new ServiceCollection();
-        if (adapter is not null) services.AddSingleton<ITransport>(adapter);
-        if (second is not null) services.AddSingleton<ITransport>(second);
+
+        if (adapter is not null)
+        {
+            services.AddSingleton<ITransport>(adapter);
+        }
+
+        if (second is not null)
+        {
+            services.AddSingleton<ITransport>(second);
+        }
+
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            if (mode.HasValue) builder.TopologyMode = mode.Value;
+
+            if (mode.HasValue)
+            {
+                builder.TopologyMode = mode.Value;
+            }
+
             builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events", transport =>
             {
                 transport.Send<OrderPlaced>("orders");
@@ -250,8 +279,12 @@ public class TopologyTests
             extra?.Invoke(builder);
         });
         var provider = services.BuildServiceProvider();
+
         foreach (var transport in provider.GetServices<ITransport>().Cast<InMemoryTransport>())
+        {
             transport.Declaration = provider.GetRequiredService<ITopology>().Transports.SingleOrDefault(item => item.Name == transport.Name);
+        }
+
         return provider;
     }
 
@@ -260,56 +293,158 @@ public class TopologyTests
         try
         {
             foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+            {
                 await service.StartingAsync(cancellationToken);
-            foreach (var service in provider.GetServices<IHostedService>()) await service.StartAsync(cancellationToken);
+            }
+
+            foreach (var service in provider.GetServices<IHostedService>())
+            {
+                await service.StartAsync(cancellationToken);
+            }
+
             return null;
         }
-        catch (OptionsValidationException error) { return error; }
+        catch (OptionsValidationException error)
+        {
+            return error;
+        }
     }
 
     private sealed class Receiver : IHostedService
     {
-        public bool Started { get; private set; }
-        public Task StartAsync(CancellationToken cancellationToken) { Started = true; return Task.CompletedTask; }
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public bool Started
+        {
+            get; private set;
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            Started = true;
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class InMemoryTransport(string name) : ITransport
     {
         public string Name => name;
-        public TransportDefinition? Declaration { get; set; }
-        public HashSet<string> Entities { get; } = new(StringComparer.Ordinal);
-        public List<TopologyMode> Calls { get; } = [];
-        public int Writes { get; private set; }
-        public Exception? Error { get; init; }
-        public CancellationTokenSource? Cancel { get; init; }
-        public TaskCompletionSource? TopologyEntered { get; init; }
-        public Task? TopologyRelease { get; init; }
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
+
+        public TransportDefinition? Declaration
+        {
+            get; set;
+        }
+
+        public HashSet<string> Entities
+        {
+            get;
+        } = new(StringComparer.Ordinal);
+
+        public List<TopologyMode> Calls
+        {
+            get;
+        } = [];
+
+        public int Writes
+        {
+            get; private set;
+        }
+
+        public Exception? Error
+        {
+            get; init;
+        }
+
+        public CancellationTokenSource? Cancel
+        {
+            get; init;
+        }
+
+        public TaskCompletionSource? TopologyEntered
+        {
+            get; init;
+        }
+
+        public Task? TopologyRelease
+        {
+            get; init;
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
         public async ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
         {
             Calls.Add(mode);
             TopologyEntered?.TrySetResult();
-            if (TopologyRelease is not null) await TopologyRelease.WaitAsync(cancellationToken);
+
+            if (TopologyRelease is not null)
+            {
+                await TopologyRelease.WaitAsync(cancellationToken);
+            }
+
             await Task.Yield(); // Exercise genuinely asynchronous startup.
             Cancel?.Cancel();
             cancellationToken.ThrowIfCancellationRequested();
-            if (Error is not null) throw Error;
+
+            if (Error is not null)
+            {
+                throw Error;
+            }
+
             var endpoints = Declaration!.Routes.Select(route => route.Destination)
                 .Concat(Declaration.Consumers.Select(consumer => consumer.Source)).Distinct(StringComparer.Ordinal);
             var differences = new List<string>();
+
             foreach (var endpoint in endpoints)
             {
-                if (Entities.Contains(endpoint)) continue;
-                if (mode == TopologyMode.Provision) { Entities.Add(endpoint); Writes++; }
-                else differences.Add($"Missing entity '{endpoint}'");
+                if (Entities.Contains(endpoint))
+                {
+                    continue;
+                }
+
+                if (mode == TopologyMode.Provision)
+                {
+                    Entities.Add(endpoint);
+                    Writes++;
+                }
+                else
+                {
+                    differences.Add($"Missing entity '{endpoint}'");
+                }
             }
+
             return new TopologyReport(differences);
         }
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

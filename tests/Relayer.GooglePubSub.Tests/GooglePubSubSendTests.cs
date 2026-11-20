@@ -22,7 +22,10 @@ public class GooglePubSubSendTests
         await cancellation.CancelAsync();
         await Assert.That(operation.IsCompleted).IsFalse();
         await Assert.That(request.Messages[0].Data.Memory.Span.SequenceEqual(body)).IsTrue();
-        native.Release.TrySetResult(new() { MessageIds = { "1" } });
+        native.Release.TrySetResult(new()
+        {
+            MessageIds = { "1" }
+        });
         await Assert.That(async () => await operation).Throws<OperationCanceledException>();
     }
 
@@ -37,7 +40,10 @@ public class GooglePubSubSendTests
         var request = await native.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(operation.IsCompleted).IsFalse();
         await Assert.That(request.Messages[0].Data.Memory.Span[0]).IsEqualTo((byte)1);
-        native.Release.TrySetResult(new() { MessageIds = { "1" } });
+        native.Release.TrySetResult(new()
+        {
+            MessageIds = { "1" }
+        });
         await Assert.That(async () => await operation).Throws<InvalidOperationException>().WithMessageContaining("callback failed");
     }
 
@@ -76,15 +82,42 @@ public class GooglePubSubSendTests
         var native = new GatedPublisher();
         await using var provider = Provider(native, transport => transport.Consume("projects/test/subscriptions/orders", consumer =>
         {
-            if (invalid == "concurrency") consumer.Concurrency(2);
-            if (invalid == "retry") consumer.Failures(new() { DeadLetterEndpoint = Topic, RedeliveryDelays = new[] { TimeSpan.Zero } });
-            else if (invalid != "dead-letter") consumer.Failures(new() { DeadLetterEndpoint = Topic });
-            if (invalid == "batch") consumer.Batch(2, TimeSpan.FromSeconds(1));
+            if (invalid == "concurrency")
+            {
+                consumer.Concurrency(2);
+            }
+
+            if (invalid == "retry")
+            {
+                consumer.Failures(new()
+                {
+                    DeadLetterEndpoint = Topic,
+                    RedeliveryDelays = new[] { TimeSpan.Zero }
+                });
+            }
+            else if (invalid != "dead-letter")
+            {
+                consumer.Failures(new()
+                {
+                    DeadLetterEndpoint = Topic
+                });
+            }
+
+            if (invalid == "batch")
+            {
+                consumer.Batch(2, TimeSpan.FromSeconds(1));
+            }
         }));
+
         if (invalid is "retry" or "batch")
+        {
             await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<NotSupportedException>();
+        }
         else
+        {
             await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<InvalidOperationException>();
+        }
+
         await Assert.That(native.Started.Task.IsCompleted).IsFalse();
     }
 
@@ -99,15 +132,24 @@ public class GooglePubSubSendTests
             transport.Options.Configure(options => options.PublisherSettings.EnableMessageOrdering = enabled);
             transport.Consume("projects/test/subscriptions/orders", consumer =>
             {
-                consumer.Failures(new() { DeadLetterEndpoint = Topic });
+                consumer.Failures(new()
+                {
+                    DeadLetterEndpoint = Topic
+                });
                 consumer.Handler<PubSubHandler>();
             });
         });
+
         if (enabled)
+        {
             await Assert.That(provider.GetRequiredService<ITransport>()).IsNotNull();
+        }
         else
+        {
             await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<InvalidOperationException>()
                 .WithMessageContaining("PublisherSettings.EnableMessageOrdering = true");
+        }
+
         await Assert.That(native.Started.Task.IsCompleted).IsFalse();
     }
 
@@ -132,7 +174,12 @@ public class GooglePubSubSendTests
     {
         var pool = new GooglePubSubPool<object>(static () => new());
         var first = Enumerable.Range(0, 130).Select(_ => pool.Rent()).ToHashSet();
-        foreach (var item in first) pool.Return(item);
+
+        foreach (var item in first)
+        {
+            pool.Return(item);
+        }
+
         var second = Enumerable.Range(0, 130).Select(_ => pool.Rent()).ToHashSet();
         await Assert.That(second.SetEquals(first)).IsTrue();
     }
@@ -141,11 +188,25 @@ public class GooglePubSubSendTests
     public async Task Pool_discards_overflow_and_allocates_on_miss()
     {
         var created = 0;
-        var pool = new GooglePubSubPool<object>(() => { created++; return new(); });
+        var pool = new GooglePubSubPool<object>(() =>
+        {
+            created++;
+            return new();
+        });
         var burst = Enumerable.Range(0, GooglePubSubPool<object>.Capacity + 1).Select(_ => pool.Rent()).ToArray();
-        foreach (var item in burst) pool.Return(item);
+
+        foreach (var item in burst)
+        {
+            pool.Return(item);
+        }
+
         var retained = new HashSet<object>();
-        for (var i = 0; i < GooglePubSubPool<object>.Capacity; i++) retained.Add(pool.Rent());
+
+        for (var i = 0; i < GooglePubSubPool<object>.Capacity; i++)
+        {
+            retained.Add(pool.Rent());
+        }
+
         await Assert.That(retained.Count).IsEqualTo(GooglePubSubPool<object>.Capacity);
         await Assert.That(retained.SetEquals(burst.Take(GooglePubSubPool<object>.Capacity))).IsTrue();
         var beforeMiss = created;
@@ -167,9 +228,16 @@ public class GooglePubSubSendTests
             {
                 options.Publisher = publisher;
                 options.Subscriber = new UnusedSubscriber();
-                options.PublisherSettings = new() { BatchingSettings = new(1, null, null) };
+                options.PublisherSettings = new()
+                {
+                    BatchingSettings = new(1, null, null)
+                };
                 options.Topics.Add(TopicName.Parse(Topic));
-                options.Subscriptions.Add(new() { Name = "projects/test/subscriptions/orders", Topic = Topic });
+                options.Subscriptions.Add(new()
+                {
+                    Name = "projects/test/subscriptions/orders",
+                    Topic = Topic
+                });
             });
             configure?.Invoke(transport);
         }));
@@ -178,13 +246,22 @@ public class GooglePubSubSendTests
 
     private sealed class GatedPublisher : PublisherServiceApiClient
     {
-        internal TaskCompletionSource<PublishRequest> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource<PublishResponse> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource<PublishRequest> Started
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource<PublishResponse> Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public override Task<PublishResponse> PublishAsync(PublishRequest request, CallSettings? callSettings = null)
         {
             Started.TrySetResult(request);
             return Release.Task;
         }
     }
+
     private sealed class UnusedSubscriber : SubscriberServiceApiClient;
 }

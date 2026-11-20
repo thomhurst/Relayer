@@ -15,10 +15,14 @@ namespace Relayer.Tests;
 
 public class ConsumeTracingTests
 {
-    private static readonly MessagingEndpoint Endpoint = new()
+    private static readonly MessagingEndpoint s_endpoint = new()
     {
-        System = "kafka", Destination = "orders", ConsumerGroup = "billing", ClientId = "consumer",
-        ServerAddress = "broker", ServerPort = 9092,
+        System = "kafka",
+        Destination = "orders",
+        ConsumerGroup = "billing",
+        ClientId = "consumer",
+        ServerAddress = "broker",
+        ServerPort = 9092,
     };
 
     [Test]
@@ -27,11 +31,15 @@ public class ConsumeTracingTests
     [Arguments(true, true)]
     public async Task Native_delivery_links_creation_and_obeys_parent_policy(bool ambient, bool creationAsParent)
     {
-        using var capture = new Capture(new() { CreationContextAsParent = creationAsParent, IncludeBodySize = true });
+        using var capture = new Capture(new()
+        {
+            CreationContextAsParent = creationAsParent,
+            IncludeBodySize = true
+        });
         await using var provider = Provider();
         using var parent = ambient ? new Activity("request").Start() : null;
         var incoming = new Incoming();
-        var pipeline = Builder(provider).Tracing(capture.Tracing, Endpoint).Build(1);
+        var pipeline = Builder(provider).Tracing(capture.Tracing, s_endpoint).Build(1);
         var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new HeaderNames("cloudEvents:"), 1);
         await receive.ProcessAsync(incoming);
         var process = capture.Stopped.Single();
@@ -68,30 +76,40 @@ public class ConsumeTracingTests
         };
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var complete = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "complete")
+        var complete = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Settle, "complete")
             .WrapSettlement(async _ =>
             {
                 entered.SetResult();
                 await finished.Task;
             });
-        var pipeline = Builder(provider).Tracing(capture.Tracing, Endpoint).Settle(complete).Build(1);
+        var pipeline = Builder(provider).Tracing(capture.Tracing, s_endpoint).Settle(complete).Build(1);
         using var context = pipeline.RentContext(Message());
         var pending = pipeline.ProcessAsync(context).AsTask();
         await Task.WhenAny(gate.Entered.Task, pending);
+
         try
         {
             await Assert.That(gate.Entered.Task.IsCompleted).IsTrue();
             await Assert.That(gate.Activity).IsSameReferenceAs(handling);
             await Assert.That(capture.Stopped).IsEmpty();
         }
-        finally { gate.Finished.TrySetResult(); }
+        finally
+        {
+            gate.Finished.TrySetResult();
+        }
+
         await Task.WhenAny(entered.Task, pending);
+
         try
         {
             await Assert.That(entered.Task.IsCompleted).IsTrue();
             await Assert.That(capture.Stopped).IsEmpty();
         }
-        finally { finished.TrySetResult(); }
+        finally
+        {
+            finished.TrySetResult();
+        }
+
         await pending;
         var settle = capture.Stopped[0];
         var process = capture.Stopped[1];
@@ -110,24 +128,37 @@ public class ConsumeTracingTests
         using var capture = new Capture();
         await using var provider = Provider();
         var calls = 0;
-        var complete = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "ack")
-            .WrapSettlement(_ => { calls++; return fails ? ValueTask.FromException(new ApplicationException("native")) : default; });
+        var complete = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Settle, "ack")
+            .WrapSettlement(_ =>
+            {
+                calls++;
+                return fails ? ValueTask.FromException(new ApplicationException("native")) : default;
+            });
         provider.GetRequiredService<Control>().Handle = async context =>
         {
             await complete(context);
             context.Features.Set(new Settled());
         };
         var pipeline = Builder(provider, static (_, error, _) => ValueTask.FromException(error))
-            .Tracing(capture.Tracing, Endpoint)
+            .Tracing(capture.Tracing, s_endpoint)
             .Settle(context => context.Features.Get<Settled>() is null ? complete(context) : default).Build(1);
         using var context = pipeline.RentContext(Message());
-        if (fails) await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<ApplicationException>();
-        else await pipeline.ProcessAsync(context);
+
+        if (fails)
+        {
+            await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<ApplicationException>();
+        }
+        else
+        {
+            await pipeline.ProcessAsync(context);
+        }
+
         await Assert.That(calls).IsEqualTo(1);
         await Assert.That(capture.Stopped.Count).IsEqualTo(2);
         var settle = capture.Stopped[0];
         var process = capture.Stopped[1];
         await Assert.That(settle.ParentSpanId).IsEqualTo(process.SpanId);
+
         foreach (var activity in capture.Stopped)
         {
             await Assert.That(activity.Status).IsEqualTo(fails ? ActivityStatusCode.Error : ActivityStatusCode.Unset);
@@ -148,16 +179,28 @@ public class ConsumeTracingTests
         await using var provider = Provider(services => services.AddScoped(_ => new DisposalFailure(error)));
         provider.GetRequiredService<Control>().Handle = context =>
         {
-            if (stage == "scope") context.Services.GetRequiredService<DisposalFailure>();
+            if (stage == "scope")
+            {
+                context.Services.GetRequiredService<DisposalFailure>();
+            }
+
             return stage is "handler" or "failure" ? ValueTask.FromException(error) : default;
         };
-        var settle = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "complete")
+        var settle = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Settle, "complete")
             .WrapSettlement(_ => stage == "settlement" ? ValueTask.FromException(error) : default);
         var pipeline = Builder(provider, (_, _, _) => stage == "failure" ? ValueTask.FromException(error) : default)
-            .Tracing(capture.Tracing, Endpoint).Settle(settle).Build(1);
+            .Tracing(capture.Tracing, s_endpoint).Settle(settle).Build(1);
         using var context = pipeline.RentContext(Message());
-        if (stage != "handler") await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<ApplicationException>();
-        else await pipeline.ProcessAsync(context);
+
+        if (stage != "handler")
+        {
+            await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<ApplicationException>();
+        }
+        else
+        {
+            await pipeline.ProcessAsync(context);
+        }
+
         var process = capture.Stopped.Last();
         await Assert.That(process.Status).IsEqualTo(ActivityStatusCode.Error);
         await Assert.That(process.GetTagItem("error.type")).IsEqualTo("_OTHER");
@@ -170,9 +213,10 @@ public class ConsumeTracingTests
     {
         using var capture = new Capture();
         await using var provider = Provider();
-        var receive = new ReceivePipeline<Incoming, Binding>(Builder(provider).Tracing(capture.Tracing, Endpoint).Build(1), new("cloudEvents:"), 1);
+        var receive = new ReceivePipeline<Incoming, Binding>(Builder(provider).Tracing(capture.Tracing, s_endpoint).Build(1), new("cloudEvents:"), 1);
         await receive.ProcessBatchAsync(new Incoming[] { new(), new() }, new Disposition[2]);
         await Assert.That(capture.Stopped.Count).IsEqualTo(2);
+
         foreach (var activity in capture.Stopped)
         {
             await Assert.That(activity.OperationName).IsEqualTo("process orders");
@@ -189,7 +233,7 @@ public class ConsumeTracingTests
         using var capture = new Capture(sampling: drop ? ActivitySamplingResult.None : null);
         await using var provider = Provider();
         var incoming = new Incoming { FailRecordedReads = true, FailTracingReads = !drop };
-        var receive = new ReceivePipeline<Incoming, Binding>(Builder(provider).Tracing(capture.Tracing, Endpoint).Build(1), new("cloudEvents:"), 1);
+        var receive = new ReceivePipeline<Incoming, Binding>(Builder(provider).Tracing(capture.Tracing, s_endpoint).Build(1), new("cloudEvents:"), 1);
         await receive.ProcessAsync(incoming);
         await Assert.That(capture.Stopped).IsEmpty();
         await Assert.That(incoming.Enrichments).IsEqualTo(0);
@@ -214,11 +258,15 @@ public class ConsumeTracingTests
             activities.Add(Activity.Current);
             return ++attempts == 1 || !recover ? ValueTask.FromException(new ApplicationException("attempt")) : default;
         };
-        var failures = new FailurePipeline(provider, "test", "orders", "billing", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+        var failures = new FailurePipeline(provider, "test", "orders", "billing", new()
+        {
+            RetryDelays = new[] { TimeSpan.Zero },
+            Jitter = 0
+        });
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), failures)
             .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<int, Handler>())
-            .Tracing(capture.Tracing, Endpoint).Build(1);
+            .Tracing(capture.Tracing, s_endpoint).Build(1);
         var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new("cloudEvents:"), 1);
         var disposition = await receive.ProcessAsync(new());
         await Assert.That(disposition.Kind).IsEqualTo(recover ? DispositionKind.Complete : DispositionKind.DeadLetter);
@@ -238,20 +286,42 @@ public class ConsumeTracingTests
         using var capture = new Capture(logger: logger);
         await using var provider = Provider();
         var error = new ApplicationException("native");
-        var settle = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "ack")
+        var settle = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Settle, "ack")
             .WrapSettlement(_ => ValueTask.FromException(error));
+
         if (caught)
+        {
             provider.GetRequiredService<Control>().Handle = async context =>
             {
-                try { await settle(context); }
-                catch (ApplicationException) { }
+                try
+                {
+                    await settle(context);
+                }
+                catch (ApplicationException)
+                {
+                }
             };
-        var builder = Builder(provider).Tracing(capture.Tracing, Endpoint);
-        if (!caught) builder.Settle(settle);
+        }
+
+        var builder = Builder(provider).Tracing(capture.Tracing, s_endpoint);
+
+        if (!caught)
+        {
+            builder.Settle(settle);
+        }
+
         var pipeline = builder.Build(1);
         using var context = pipeline.RentContext(Message());
-        if (caught) await pipeline.ProcessAsync(context);
-        else await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<ApplicationException>();
+
+        if (caught)
+        {
+            await pipeline.ProcessAsync(context);
+        }
+        else
+        {
+            await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<ApplicationException>();
+        }
+
         var entry = logger.Entries.Single();
         var settlement = capture.Stopped[0];
         await Assert.That(entry.Error).IsSameReferenceAs(error);
@@ -272,7 +342,7 @@ public class ConsumeTracingTests
             cancellation.Cancel();
             return ValueTask.FromCanceled(context.CancellationToken);
         };
-        var pipeline = Builder(provider).Tracing(capture.Tracing, Endpoint).Build(1);
+        var pipeline = Builder(provider).Tracing(capture.Tracing, s_endpoint).Build(1);
         using var context = pipeline.RentContext(Message(), cancellation.Token);
         await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<OperationCanceledException>();
         await Assert.That(capture.Stopped.Single().Status).IsEqualTo(ActivityStatusCode.Unset);
@@ -285,15 +355,31 @@ public class ConsumeTracingTests
         using var capture = new Capture(sampling: null);
         await using var provider = Provider();
         var baseline = new ReceivePipeline<Incoming, Binding>(Builder(provider).Settle(static _ => default).Build(1), new("cloudEvents:"), 1);
-        var complete = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "complete").WrapSettlement(static _ => default);
-        var traced = new ReceivePipeline<Incoming, Binding>(Builder(provider).Tracing(capture.Tracing, Endpoint).Settle(complete).Build(1), new("cloudEvents:"), 1);
+        var complete = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Settle, "complete").WrapSettlement(static _ => default);
+        var traced = new ReceivePipeline<Incoming, Binding>(Builder(provider).Tracing(capture.Tracing, s_endpoint).Settle(complete).Build(1), new("cloudEvents:"), 1);
         var incoming = new Incoming { FailRecordedReads = true, FailTracingReads = true };
-        for (var i = 0; i < 1000; i++) { await baseline.ProcessAsync(incoming); await traced.ProcessAsync(incoming); }
+
+        for (var i = 0; i < 1000; i++)
+        {
+            await baseline.ProcessAsync(incoming);
+            await traced.ProcessAsync(incoming);
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) await baseline.ProcessAsync(incoming);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            await baseline.ProcessAsync(incoming);
+        }
+
         var baselineBytes = GC.GetAllocatedBytesForCurrentThread() - before;
         before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) await traced.ProcessAsync(incoming);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            await traced.ProcessAsync(incoming);
+        }
+
         var tracedBytes = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(tracedBytes).IsEqualTo(baselineBytes);
     }
@@ -302,7 +388,7 @@ public class ConsumeTracingTests
     public async Task Only_native_settlement_operations_can_wrap_callbacks()
     {
         using var capture = new Capture();
-        var process = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Process);
+        var process = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Process);
         await Assert.That(() => process.WrapSettlement(static _ => default)).Throws<InvalidOperationException>();
     }
 
@@ -314,14 +400,16 @@ public class ConsumeTracingTests
         var enricher = new Enricher();
         using var capture = new Capture(sampling: sampling, enricher: enricher);
         await using var provider = Provider();
-        var receive = new ReceivePipeline<Incoming, Binding>(Builder(provider).Tracing(capture.Tracing, Endpoint).Build(1), new("cloudEvents:"), 1);
+        var receive = new ReceivePipeline<Incoming, Binding>(Builder(provider).Tracing(capture.Tracing, s_endpoint).Build(1), new("cloudEvents:"), 1);
         await receive.ProcessAsync(new());
         await Assert.That(enricher.Calls).IsEqualTo(expected);
+
         if (expected != 0)
         {
             await Assert.That(enricher.MessageId).IsEqualTo("native");
             await Assert.That(enricher.Offset).IsEqualTo(42L);
         }
+
         await Assert.That(capture.Stopped.Single().GetTagItem("messaging.message.body.size")).IsNull();
     }
 
@@ -334,12 +422,18 @@ public class ConsumeTracingTests
         var pipeline = Builder(provider, (_, error, action) =>
         {
             if (error is not MessageEnvelopeException || action != FailureAction.DeadLetter)
+            {
                 throw new InvalidOperationException("Malformed message escaped permanent failure classification.");
+            }
+
             failures++;
             return default;
-        }).Tracing(capture.Tracing, Endpoint).Build(1);
+        }).Tracing(capture.Tracing, s_endpoint).Build(1);
         var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new("cloudEvents:"), 1);
-        await receive.ProcessAsync(new() { MissingType = true });
+        await receive.ProcessAsync(new()
+        {
+            MissingType = true
+        });
         await Assert.That(failures).IsEqualTo(1);
         await Assert.That(capture.Stopped.Single().Status).IsEqualTo(ActivityStatusCode.Error);
     }
@@ -354,7 +448,7 @@ public class ConsumeTracingTests
         using var capture = new Capture();
         await using var provider = BatchProvider();
         using var parent = ambient ? new Activity("request").Start() : null;
-        var pipeline = BatchBuilder(provider).Tracing(capture.Tracing, Endpoint).BuildBatch(
+        var pipeline = BatchBuilder(provider).Tracing(capture.Tracing, s_endpoint).BuildBatch(
             provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<int, BatchHandler>(), BatchDefinition(provider));
         var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new("cloudEvents:"), 4);
         await receive.ProcessBatchAsync(Enumerable.Range(0, size).Select(_ => new Incoming()).ToArray(), new Disposition[size]);
@@ -376,34 +470,56 @@ public class ConsumeTracingTests
     {
         using var capture = new Capture();
         await using var provider = BatchProvider();
-        if (poison) provider.GetRequiredService<BatchControl>().Handle = static _ => throw new ApplicationException("batch");
-        var failures = new FailurePipeline(provider, "test", "orders", "billing", new() { RetryDelays = [] });
+
+        if (poison)
+        {
+            provider.GetRequiredService<BatchControl>().Handle = static _ => throw new ApplicationException("batch");
+        }
+
+        var failures = new FailurePipeline(provider, "test", "orders", "billing", new()
+        {
+            RetryDelays = []
+        });
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var settled = 0;
-        var complete = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "complete")
+        var complete = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Settle, "complete")
             .WrapSettlement(async context =>
             {
                 var native = context.Features.GetRequired<NativeMessage<Incoming>>();
+
                 if (native.Disposition.Kind != (poison ? DispositionKind.DeadLetter : DispositionKind.Complete))
+                {
                     throw new InvalidOperationException("Durable disposition missing before settlement.");
-                if (++settled == 1) { entered.SetResult(); await finished.Task; }
+                }
+
+                if (++settled == 1)
+                {
+                    entered.SetResult();
+                    await finished.Task;
+                }
+
                 native.Disposition = Disposition.SettledByHandler;
             });
         var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), failures);
-        var pipeline = builder.Tracing(capture.Tracing, Endpoint).Settle(complete).BuildBatch(
+        var pipeline = builder.Tracing(capture.Tracing, s_endpoint).Settle(complete).BuildBatch(
             provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<int, BatchHandler>(), BatchDefinition(provider));
         var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new("cloudEvents:"), 4);
         var output = new Disposition[2];
         var pending = receive.ProcessBatchAsync(new Incoming[] { new(), new() }, output).AsTask();
         await Task.WhenAny(entered.Task, pending);
+
         try
         {
             await Assert.That(entered.Task.IsCompleted).IsTrue();
             await Assert.That(capture.Stopped).IsEmpty();
         }
-        finally { finished.TrySetResult(); }
+        finally
+        {
+            finished.TrySetResult();
+        }
+
         await pending;
         await Assert.That(output.All(d => d.Kind == DispositionKind.SettledByHandler)).IsTrue();
         var process = capture.Stopped.Last();
@@ -424,19 +540,39 @@ public class ConsumeTracingTests
         var attempts = 0;
         provider.GetRequiredService<BatchControl>().Handle = _ =>
         {
-            if (++attempts == 1) throw new ApplicationException("retry");
-            if (cancel) { cancellation.Cancel(); return ValueTask.FromCanceled<BatchResult>(cancellation.Token); }
+            if (++attempts == 1)
+            {
+                throw new ApplicationException("retry");
+            }
+
+            if (cancel)
+            {
+                cancellation.Cancel();
+                return ValueTask.FromCanceled<BatchResult>(cancellation.Token);
+            }
+
             return new(BatchResult.Success);
         };
-        var failures = new FailurePipeline(provider, "test", "orders", "billing", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+        var failures = new FailurePipeline(provider, "test", "orders", "billing", new()
+        {
+            RetryDelays = new[] { TimeSpan.Zero },
+            Jitter = 0
+        });
         var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), failures);
-        var pipeline = builder.Tracing(capture.Tracing, Endpoint).BuildBatch(
+        var pipeline = builder.Tracing(capture.Tracing, s_endpoint).BuildBatch(
             provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<int, BatchHandler>(), BatchDefinition(provider));
         var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new("cloudEvents:"), 4);
+
         if (cancel)
+        {
             await Assert.That(async () => await receive.ProcessBatchAsync(new Incoming[] { new() }, new Disposition[1], cancellation.Token)).Throws<OperationCanceledException>();
-        else await receive.ProcessBatchAsync(new Incoming[] { new() }, new Disposition[1]);
+        }
+        else
+        {
+            await receive.ProcessBatchAsync(new Incoming[] { new() }, new Disposition[1]);
+        }
+
         await Assert.That(attempts).IsEqualTo(2);
         await Assert.That(capture.Stopped.Single().Status).IsEqualTo(cancel ? ActivityStatusCode.Error : ActivityStatusCode.Unset);
     }
@@ -467,14 +603,23 @@ public class ConsumeTracingTests
         await using var provider = HostedProvider();
         provider.GetRequiredService<Control>().Handle = context =>
         {
-            if (mode == 2) throw new ApplicationException("poison");
-            if (mode == 3) context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
+            if (mode == 2)
+            {
+                throw new ApplicationException("poison");
+            }
+
+            if (mode == 3)
+            {
+                context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
+            }
+
             if (mode == 1)
             {
                 var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
                 native.Message.Complete();
                 native.Disposition = Disposition.SettledByHandler;
             }
+
             return default;
         };
         var tracing = provider.GetRequiredService<MessageTracing>();
@@ -487,22 +632,35 @@ public class ConsumeTracingTests
             ActivityStopped = activity =>
             {
                 stopped.Enqueue(activity);
-                if (activity.OperationName == "process orders") processed.TrySetResult();
+
+                if (activity.OperationName == "process orders")
+                {
+                    processed.TrySetResult();
+                }
             },
         };
         ActivitySource.AddActivityListener(listener);
         var hosted = provider.GetServices<IHostedService>().ToArray();
+
         try
         {
-            foreach (var service in hosted) await service.StartAsync(default);
+            foreach (var service in hosted)
+            {
+                await service.StartAsync(default);
+            }
+
             await using var scope = provider.CreateAsyncScope();
             await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(1);
             await processed.Task.WaitAsync(TimeSpan.FromSeconds(10));
         }
         finally
         {
-            for (var i = hosted.Length - 1; i >= 0; i--) await hosted[i].StopAsync(default);
+            for (var i = hosted.Length - 1; i >= 0; i--)
+            {
+                await hosted[i].StopAsync(default);
+            }
         }
+
         var send = stopped.Single(a => a.OperationName == "send orders");
         var process = stopped.Single(a => a.OperationName == "process orders");
         var settlement = stopped.Single(a => a.GetTagItem("messaging.operation.type") as string == "settle");
@@ -520,11 +678,20 @@ public class ConsumeTracingTests
     public async Task Native_settlement_failure_logs_once_per_delivery_even_when_caught(bool caught)
     {
         var logger = new Logger();
-        await using var provider = HostedProvider(new LoggerFactory(logger), new() { RetryDelays = [] });
+        await using var provider = HostedProvider(new LoggerFactory(logger), new()
+        {
+            RetryDelays = []
+        });
         provider.GetRequiredService<Control>().Handle = context =>
         {
-            try { context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message.Redeliver(TimeSpan.MaxValue); }
-            catch (InvalidOperationException) when (caught) { }
+            try
+            {
+                context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message.Redeliver(TimeSpan.MaxValue);
+            }
+            catch (InvalidOperationException) when (caught)
+            {
+            }
+
             return default;
         };
         var stopped = new ConcurrentQueue<Activity>();
@@ -538,14 +705,23 @@ public class ConsumeTracingTests
             ActivityStopped = activity =>
             {
                 stopped.Enqueue(activity);
-                if (activity.OperationName == "process orders" && Interlocked.Increment(ref count) == 2) processed.TrySetResult();
+
+                if (activity.OperationName == "process orders" && Interlocked.Increment(ref count) == 2)
+                {
+                    processed.TrySetResult();
+                }
             },
         };
         ActivitySource.AddActivityListener(listener);
         var hosted = provider.GetServices<IHostedService>().ToArray();
+
         try
         {
-            foreach (var service in hosted) await service.StartAsync(default);
+            foreach (var service in hosted)
+            {
+                await service.StartAsync(default);
+            }
+
             await using var scope = provider.CreateAsyncScope();
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
             await sender.SendAsync(1);
@@ -554,8 +730,12 @@ public class ConsumeTracingTests
         }
         finally
         {
-            for (var i = hosted.Length - 1; i >= 0; i--) await hosted[i].StopAsync(default);
+            for (var i = hosted.Length - 1; i >= 0; i--)
+            {
+                await hosted[i].StopAsync(default);
+            }
         }
+
         await Assert.That(logger.Entries.Count).IsEqualTo(2);
         var errors = stopped.Where(a => a.OperationName == "redeliver orders" && a.Status == ActivityStatusCode.Error).ToArray();
         await Assert.That(logger.Entries.Select(e => e.SpanId!)).IsEquivalentTo(errors.Select(a => a.SpanId.ToString()));
@@ -569,7 +749,12 @@ public class ConsumeTracingTests
         services.AddSingleton<Control>();
         services.AddSingleton<Handler>();
         services.AddSingleton<IMessageSerializer, Serializer>();
-        if (loggerFactory is not null) services.AddSingleton(loggerFactory);
+
+        if (loggerFactory is not null)
+        {
+            services.AddSingleton(loggerFactory);
+        }
+
         services.AddRelayer(r =>
         {
             r.Infrastructure().MessageTypes.Add<int>("number");
@@ -577,13 +762,22 @@ public class ConsumeTracingTests
             {
                 transport.Options.Configure(options => options.Endpoints["orders"] = new()
                 {
-                    Capabilities = new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.FromMinutes(1), MaxBatchSize = 100 },
+                    Capabilities = new()
+                    {
+                        DeadLetter = true,
+                        MaxRedeliveryDelay = TimeSpan.FromMinutes(1),
+                        MaxBatchSize = 100
+                    },
                 });
                 transport.Send<int>("orders");
                 transport.Consume("orders", consumer =>
                 {
                     consumer.Handler<Handler>();
-                    if (failures is not null) consumer.Failures(failures);
+
+                    if (failures is not null)
+                    {
+                        consumer.Failures(failures);
+                    }
                 });
             });
         });
@@ -600,19 +794,25 @@ public class ConsumeTracingTests
         await using var provider = Provider();
         using var ambient = new Activity("request").Start();
         var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var complete = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "complete")
+        var complete = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Settle, "complete")
             .WrapSettlement(_ => new(finished.Task));
-        var pipeline = Builder(provider).Tracing(capture.Tracing, Endpoint).Settle(complete).Build(1);
+        var pipeline = Builder(provider).Tracing(capture.Tracing, s_endpoint).Settle(complete).Build(1);
         using var context = pipeline.RentContext(Message());
         var pending = pipeline.ProcessAsync(context).AsTask();
         await Assert.That(pending.IsCompleted).IsFalse();
         await Assert.That(Activity.Current).IsSameReferenceAs(ambient);
+
         if (fail)
         {
             finished.SetException(new ApplicationException("native"));
             await Assert.That(async () => await pending).Throws<ApplicationException>();
         }
-        else { finished.SetResult(); await pending; }
+        else
+        {
+            finished.SetResult();
+            await pending;
+        }
+
         await Assert.That(Activity.Current).IsSameReferenceAs(ambient);
         await Assert.That(capture.Stopped).IsEmpty();
         await Assert.That(logger.Entries.Count).IsEqualTo(fail ? 1 : 0);
@@ -625,11 +825,15 @@ public class ConsumeTracingTests
         using var capture = new Capture(logger: logger);
         await using var provider = BatchProvider();
         var failureCalls = 0;
-        var complete = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "complete")
+        var complete = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Settle, "complete")
             .WrapSettlement(static _ => ValueTask.FromException(new ApplicationException("native")));
         var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
-            provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), (_, _, _) => { failureCalls++; return default; });
-        var pipeline = builder.Tracing(capture.Tracing, Endpoint).Settle(complete).BuildBatch(
+            provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), (_, _, _) =>
+            {
+                failureCalls++;
+                return default;
+            });
+        var pipeline = builder.Tracing(capture.Tracing, s_endpoint).Settle(complete).BuildBatch(
             provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<int, BatchHandler>(), BatchDefinition(provider));
         var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new("cloudEvents:"), 4);
         await Assert.That(async () => await receive.ProcessBatchAsync(new Incoming[] { new(), new() }, new Disposition[2])).Throws<ApplicationException>();
@@ -638,14 +842,34 @@ public class ConsumeTracingTests
         await Assert.That(capture.Stopped.Count).IsEqualTo(2);
         await Assert.That(capture.Stopped.All(a => a.Status == ActivityStatusCode.Error)).IsTrue();
     }
-    private static IConsumerDefinition BatchDefinition(ServiceProvider provider) => provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0];
-    private static ConsumePipelineBuilder BatchBuilder(ServiceProvider provider) => new(provider.GetRequiredService<IServiceScopeFactory>(),
-        provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error));
+
+    private static IConsumerDefinition BatchDefinition(ServiceProvider provider)
+    {
+        return provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0];
+    }
+
+    private static ConsumePipelineBuilder BatchBuilder(ServiceProvider provider)
+    {
+        return new(provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error));
+    }
+
     public sealed class BatchOptions;
-    public sealed class BatchControl { public Func<Batch<int>, ValueTask<BatchResult>>? Handle { get; set; } }
+
+    public sealed class BatchControl
+    {
+        public Func<Batch<int>, ValueTask<BatchResult>>? Handle
+        {
+            get; set;
+        }
+    }
+
     public sealed class BatchHandler(BatchControl control) : IBatchHandler<int>
     {
-        public ValueTask<BatchResult> HandleAsync(Batch<int> batch, CancellationToken cancellationToken) => control.Handle?.Invoke(batch) ?? new(BatchResult.Success);
+        public ValueTask<BatchResult> HandleAsync(Batch<int> batch, CancellationToken cancellationToken)
+        {
+            return control.Handle?.Invoke(batch) ?? new(BatchResult.Success);
+        }
     }
 
     private static ServiceProvider Provider(Action<ServiceCollection>? configure = null)
@@ -653,40 +877,96 @@ public class ConsumeTracingTests
         var services = new ServiceCollection();
         services.AddSingleton<Control>();
         services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<int>("number"); r.AddTransport<BatchOptions, BatchOptions>("manual", t => t.Consume("source", c => c.Handler<Handler>())); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<int>("number");
+            r.AddTransport<BatchOptions, BatchOptions>("manual", t => t.Consume("source", c => c.Handler<Handler>()));
+        });
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }
 
-    private static ConsumePipelineBuilder Builder(ServiceProvider provider, ConsumeFailureDelegate? failure = null) =>
-        new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(), provider.GetRequiredService<MessageTypeRegistry>(),
-                new Serializer(), failure ?? (static (_, _, _) => default))
-            .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<int, Handler>());
+    private static ConsumePipelineBuilder Builder(ServiceProvider provider, ConsumeFailureDelegate? failure = null)
+    {
+        return new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(), provider.GetRequiredService<MessageTypeRegistry>(),
+                        new Serializer(), failure ?? (static (_, _, _) => default))
+                    .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<int, Handler>());
+    }
 
-    private static ConsumeMessage Message() => new() { MessageId = "delivery", MessageType = new("number", 1), Body = default };
-    public sealed class Control { public ConsumeDelegate? Handle { get; set; } }
+    private static ConsumeMessage Message()
+    {
+        return new()
+        {
+            MessageId = "delivery",
+            MessageType = new("number", 1),
+            Body = default
+        };
+    }
+
+    public sealed class Control
+    {
+        public ConsumeDelegate? Handle
+        {
+            get; set;
+        }
+    }
+
     public sealed class Handler(Control control) : IHandler<int>
     {
-        public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken) => control.Handle?.Invoke(context) ?? default;
+        public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return control.Handle?.Invoke(context) ?? default;
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "test/cached";
-        public T Deserialize<T>(ReadOnlySequence<byte> source) => (T)(object)1;
-        public void Serialize<T>(T message, IBufferWriter<byte> destination) { destination.GetSpan(1)[0] = 1; destination.Advance(1); }
+
+        public T Deserialize<T>(ReadOnlySequence<byte> source)
+        {
+            return (T)(object)1;
+        }
+
+        public void Serialize<T>(T message, IBufferWriter<byte> destination)
+        {
+            destination.GetSpan(1)[0] = 1;
+            destination.Advance(1);
+        }
     }
+
     private sealed class Settled;
+
     private sealed class DisposalGate : IAsyncDisposable
     {
         internal Activity? Activity;
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource Finished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public ValueTask DisposeAsync() { Activity = System.Diagnostics.Activity.Current; Entered.SetResult(); return new(Finished.Task); }
+
+        internal TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Finished
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask DisposeAsync()
+        {
+            Activity = System.Diagnostics.Activity.Current;
+            Entered.SetResult();
+            return new(Finished.Task);
+        }
     }
+
     private sealed class DisposalFailure(Exception error) : IAsyncDisposable
     {
-        public ValueTask DisposeAsync() => ValueTask.FromException(error);
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.FromException(error);
+        }
     }
+
     private sealed class Incoming
     {
         internal bool MissingType;
@@ -694,60 +974,132 @@ public class ConsumeTracingTests
         internal bool FailTracingReads;
         internal int Enrichments;
     }
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => default;
-        public static int? GetDeliveryCount(Incoming message) => 1;
-        public static string? GetPartitionId(Incoming message) => message.FailTracingReads ? throw new InvalidOperationException("Tracing read") : "3";
-        public static void EnrichActivity(Activity activity, Incoming message) { message.Enrichments++; activity.SetTag("messaging.kafka.offset", 42L); }
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return default;
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
+        public static string? GetPartitionId(Incoming message)
+        {
+            return message.FailTracingReads ? throw new InvalidOperationException("Tracing read") : "3";
+        }
+
+        public static void EnrichActivity(Activity activity, Incoming message)
+        {
+            message.Enrichments++;
+            activity.SetTag("messaging.kafka.offset", 42L);
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
-            if (name == "cloudEvents:type" && message.MissingType) { value = default; return false; }
-            if (name == "traceparent" && message.FailTracingReads) throw new InvalidOperationException("Tracing read");
-            if (name is "cloudEvents:source" or "cloudEvents:correlationid" && message.FailRecordedReads) throw new InvalidOperationException("Recorded read");
+            if (name == "cloudEvents:type" && message.MissingType)
+            {
+                value = default;
+                return false;
+            }
+
+            if (name == "traceparent" && message.FailTracingReads)
+            {
+                throw new InvalidOperationException("Tracing read");
+            }
+
+            if (name is "cloudEvents:source" or "cloudEvents:correlationid" && message.FailRecordedReads)
+            {
+                throw new InvalidOperationException("Recorded read");
+            }
+
             value = name switch
             {
-                "cloudEvents:id" => new("native"), "cloudEvents:type" => new("number;v=1"),
-                "cloudEvents:source" => new("/shop"), "cloudEvents:correlationid" => new("conversation"),
+                "cloudEvents:id" => new("native"),
+                "cloudEvents:type" => new("number;v=1"),
+                "cloudEvents:source" => new("/shop"),
+                "cloudEvents:correlationid" => new("conversation"),
                 "traceparent" => new("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"),
                 _ => default,
             };
             return !value.IsEmpty;
         }
     }
+
     private sealed class Capture : IDisposable
     {
-        internal MessageTracing Tracing { get; }
-        internal List<Activity> Stopped { get; } = [];
-        internal Dictionary<string, object?> SamplingTags { get; } = [];
-        internal List<ActivityLink> SamplingLinks { get; } = [];
+        internal MessageTracing Tracing
+        {
+            get;
+        }
+
+        internal List<Activity> Stopped
+        {
+            get;
+        } = [];
+
+        internal Dictionary<string, object?> SamplingTags
+        {
+            get;
+        } = [];
+
+        internal List<ActivityLink> SamplingLinks
+        {
+            get;
+        } = [];
         private readonly ActivityListener? _listener;
+
         internal Capture(TracingOptions? options = null, ActivitySamplingResult? sampling = ActivitySamplingResult.AllDataAndRecorded, Logger? logger = null, IActivityEnricher? enricher = null)
         {
             Tracing = new(Options.Create(options ?? new()), enricher is null ? [] : [enricher], logger is null ? null : new LoggerFactory(logger));
-            if (sampling is null) return;
+
+            if (sampling is null)
+            {
+                return;
+            }
+
             _listener = new()
             {
                 ShouldListenTo = source => ReferenceEquals(source, Tracing.Source),
                 Sample = (ref ActivityCreationOptions<ActivityContext> creation) =>
                 {
                     SamplingTags.Clear();
-                    foreach (var tag in creation.Tags!) SamplingTags[tag.Key] = tag.Value;
+
+                    foreach (var tag in creation.Tags!)
+                    {
+                        SamplingTags[tag.Key] = tag.Value;
+                    }
+
                     SamplingLinks.Clear();
-                    if (creation.Links is not null) SamplingLinks.AddRange(creation.Links);
+
+                    if (creation.Links is not null)
+                    {
+                        SamplingLinks.AddRange(creation.Links);
+                    }
+
                     return sampling.Value;
                 },
                 ActivityStopped = activity => Stopped.Add(activity),
             };
             ActivitySource.AddActivityListener(_listener);
         }
-        public void Dispose() { _listener?.Dispose(); Tracing.Dispose(); }
+
+        public void Dispose()
+        {
+            _listener?.Dispose();
+            Tracing.Dispose();
+        }
     }
+
     private sealed class Enricher : IActivityEnricher
     {
         internal int Calls;
         internal object? MessageId;
         internal object? Offset;
+
         public void Enrich(Activity activity)
         {
             Calls++;
@@ -755,21 +1107,45 @@ public class ConsumeTracingTests
             Offset = activity.GetTagItem("messaging.kafka.offset");
         }
     }
+
     private sealed class Logger : ILogger
     {
-        internal List<(Exception? Error, string? TraceId, string? SpanId)> Entries { get; } = [];
-        public bool IsEnabled(LogLevel logLevel) => true;
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        internal List<(Exception? Error, string? TraceId, string? SpanId)> Entries
+        {
+            get;
+        } = [];
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
         public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter)
         {
             var values = ((IEnumerable<KeyValuePair<string, object?>>)(object)state!).ToDictionary();
             Entries.Add((error, (string?)values["TraceId"], (string?)values["SpanId"]));
         }
     }
+
     private sealed class LoggerFactory(Logger logger) : ILoggerFactory
     {
-        public ILogger CreateLogger(string categoryName) => logger;
-        public void AddProvider(ILoggerProvider provider) => throw new NotSupportedException();
-        public void Dispose() { }
+        public ILogger CreateLogger(string categoryName)
+        {
+            return logger;
+        }
+
+        public void AddProvider(ILoggerProvider provider)
+        {
+            throw new NotSupportedException();
+        }
+
+        public void Dispose()
+        {
+        }
     }
 }

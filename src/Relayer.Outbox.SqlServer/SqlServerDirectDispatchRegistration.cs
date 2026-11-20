@@ -1,5 +1,5 @@
-using System.Globalization;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -29,11 +29,19 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(storeName);
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         _ = SqlServerDirectDispatcher.ValidateConnectionString(connectionString);
+
         if (services.Any(descriptor => descriptor.ServiceType == typeof(SqlServerDirectDispatcher) && Equals(descriptor.ServiceKey, storeName)))
+        {
             throw new InvalidOperationException($"Direct outbox dispatch store '{storeName}' is already registered.");
+        }
+
         dispatchOptions ??= new();
+
         if (dispatchOptions.QueueCapacity is <= 0 or int.MaxValue || dispatchOptions.BatchSize <= 0 || dispatchOptions.ClaimDuration <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(dispatchOptions), "QueueCapacity and BatchSize must be positive, QueueCapacity must be below Int32.MaxValue, and ClaimDuration must be positive.");
+        }
+
         storeOptions ??= new();
         var snapshot = new SqlServerOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix, Lanes = storeOptions.Lanes, MaxDispatchAttempts = storeOptions.MaxDispatchAttempts, RetrySendFailure = storeOptions.RetrySendFailure };
         _ = SqlServerOutboxSchema.CreateScript(snapshot);
@@ -71,8 +79,17 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
     private static T Read<T>(IConfiguration configuration, string key, T fallback) where T : IParsable<T>
     {
         var value = configuration[key];
-        if (value is null) return fallback;
-        if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+
+        if (value is null)
+        {
+            return fallback;
+        }
+
+        if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed;
+        }
+
         throw new OptionsValidationException(Options.DefaultName, typeof(SqlServerDirectDispatchOptions), [$"{key}: '{value}' is invalid."]);
     }
 
@@ -87,9 +104,14 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
         protected override SqlServerDirectDispatchOptions CreateInstance(string name)
         {
             foreach (var setting in settings)
-                if (setting.Name == name) return setting.Options;
+            {
+                if (setting.Name == name)
+                {
+                    return setting.Options;
+                }
+            }
+
             return new();
         }
     }
-
 }

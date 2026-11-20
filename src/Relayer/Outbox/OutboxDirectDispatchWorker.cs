@@ -52,23 +52,40 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     }
 
     protected abstract TBatch CreateBatch();
+
     protected abstract int Count(TBatch batch);
+
     protected abstract void Append(TBatch batch, TBatch source);
+
     protected abstract void Sort(TBatch batch);
+
     protected abstract void Clear(TBatch batch);
+
     protected abstract (string Transport, string Destination) Endpoint(TBatch batch, int offset);
+
     // Preserve partial progress if projecting a row throws: the caller clears every populated slot.
     protected abstract void PrepareGroup(TBatch batch, ref int offset, int limit, ref int count);
+
     protected abstract void LogFailure(Exception error);
+
     protected abstract ValueTask<int> SkipInvalidGroupAsync(TBatch batch, int offset, Exception error,
         bool recovery, CancellationToken cancellationToken);
+
     // Native operations are forwarded unchanged, without another async state machine on the success path.
     protected abstract ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken);
+
     protected abstract ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken);
+
     protected abstract ValueTask<bool> RecordSendFailureAsync(TBatch batch, int index, Exception error,
         CancellationToken cancellationToken, bool propagateDatabaseFailures, bool retryable = true);
-    protected virtual void Completed(long count, bool recovery, bool single = false) => _instrumentation?.AddOutboxPending(-count);
+
+    protected virtual void Completed(long count, bool recovery, bool single = false)
+    {
+        _instrumentation?.AddOutboxPending(-count);
+    }
+
     protected virtual bool HonorConfirmedSingle => false;
+
     protected virtual bool CheckCancellationBeforeRetry => true;
 
     protected virtual object? EnterGroup(TBatch batch, int offset, ITransport transport, out bool admitted)
@@ -77,19 +94,42 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         return null;
     }
 
-    protected virtual ValueTask SendLocalAsync(TBatch batch, int offset, ITransport transport, CancellationToken cancellationToken) =>
+    protected virtual ValueTask SendLocalAsync(TBatch batch, int offset, ITransport transport, CancellationToken cancellationToken)
+    {
         throw new InvalidOperationException("This dispatcher has no transactional local transport.");
+    }
+
     // A provider that takes ownership of a claimed local row also owns its admission and settlement.
     protected virtual bool TryDispatchLocalInBackground(TBatch batch, int offset, ITransport transport,
-        object admission, CancellationToken cancellationToken) => false;
-    protected virtual Task DrainLocalDispatchAsync() => Task.CompletedTask;
-    protected virtual void ExitGroup(object? admission) { }
-    protected virtual bool CanDispatch(long started, TimeSpan? budget, TimeProvider? timeProvider) => true;
+        object admission, CancellationToken cancellationToken)
+    {
+        return false;
+    }
+
+    protected virtual Task DrainLocalDispatchAsync()
+    {
+        return Task.CompletedTask;
+    }
+
+    protected virtual void ExitGroup(object? admission)
+    {
+    }
+
+    protected virtual bool CanDispatch(long started, TimeSpan? budget, TimeProvider? timeProvider)
+    {
+        return true;
+    }
 
     protected TBatch RentBatch()
     {
         for (var i = 0; i < _pool.Length; i++)
-            if (Interlocked.Exchange(ref _pool[i], null) is { } batch) return batch;
+        {
+            if (Interlocked.Exchange(ref _pool[i], null) is { } batch)
+            {
+                return batch;
+            }
+        }
+
         return CreateBatch();
     }
 
@@ -97,11 +137,17 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     protected void Enqueue(TBatch batch)
     {
         var count = Count(batch);
+
         if (count != 0)
         {
-            if (_queue.Writer.TryWrite(batch)) return;
+            if (_queue.Writer.TryWrite(batch))
+            {
+                return;
+            }
+
             OutboxDirectDispatchLog.NotQueued(_logger, count);
         }
+
         Return(batch);
     }
 
@@ -111,6 +157,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         try
         {
             while (await _queue.Reader.WaitToReadAsync(stoppingToken).ConfigureAwait(false))
+            {
                 while (_queue.Reader.TryRead(out var batch))
                 {
                     try
@@ -118,12 +165,24 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                         Coalesce(batch, _queueCapacity - 1);
                         await DispatchAsync(batch, stoppingToken, background: true).ConfigureAwait(false);
                     }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
-                    catch (Exception error) { LogFailure(error); }
-                    finally { Return(batch); }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception error)
+                    {
+                        LogFailure(error);
+                    }
+                    finally
+                    {
+                        Return(batch);
+                    }
                 }
+            }
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
         finally
         {
             Retire();
@@ -143,7 +202,10 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                 i += Coalesce(batch, _queueCapacity - i - 1);
                 await DispatchAsync(batch, cancellationToken).ConfigureAwait(false);
             }
-            finally { Return(batch); }
+            finally
+            {
+                Return(batch);
+            }
         }
     }
 
@@ -152,31 +214,51 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     internal int Coalesce(TBatch batch, int notificationLimit)
     {
         var drained = 0;
+
         while (drained < notificationLimit && Count(batch) < _batchSize &&
             _queue.Reader.TryPeek(out var next) && Count(next) <= _batchSize - Count(batch) &&
             _queue.Reader.TryRead(out next))
         {
-            try { Append(batch, next); }
-            finally { Return(next); }
+            try
+            {
+                Append(batch, next);
+            }
+            finally
+            {
+                Return(next);
+            }
+
             drained++;
         }
+
         return drained;
     }
 
     internal void Retire()
     {
         _queue.Writer.TryComplete();
-        while (_queue.Reader.TryRead(out var batch)) Return(batch);
+
+        while (_queue.Reader.TryRead(out var batch))
+        {
+            Return(batch);
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _queue.Writer.TryComplete();
+
         try
         {
-            if (ExecuteTask is { } task) await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (ExecuteTask is { } task)
+            {
+                await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
-        finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
+        finally
+        {
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -188,32 +270,47 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         var started = admissionBudget.HasValue ? (admissionTimeProvider ?? TimeProvider.System).GetTimestamp() : 0;
         Sort(batch);
         var offset = 0;
+
         while (offset < Count(batch) && CanDispatch(started, admissionBudget, admissionTimeProvider))
         {
             var endpoint = Endpoint(batch, offset);
             ITransport transport;
             int limit;
+
             try
             {
                 if (!_transports.TryGetValue(endpoint.Transport, out transport!))
+                {
                     throw new InvalidOperationException($"Outbox row references unregistered transport '{endpoint.Transport}'. Register its named ITransport.");
+                }
+
                 limit = Math.Min(_batchSize, _capabilities.Get(transport, endpoint.Destination).MaxBatchSize);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception error)
             {
                 LogFailure(error);
                 offset = await SkipInvalidGroupAsync(batch, offset, error, recovery, cancellationToken).ConfigureAwait(false);
                 continue;
             }
+
             var count = 0;
             object? admission = null;
+
             try
             {
                 var first = offset;
                 PrepareGroup(batch, ref offset, limit, ref count);
                 admission = EnterGroup(batch, first, transport, out var admitted);
-                if (!admitted) continue;
+
+                if (!admitted)
+                {
+                    continue;
+                }
+
                 var now = DateTimeOffset.UtcNow;
                 var expires = now + _claimDuration;
                 // PostgreSQL leases use database time; measure age from before the round trip.
@@ -221,19 +318,30 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                 await ClaimAsync(count, now, expires, cancellationToken).ConfigureAwait(false);
                 var live = CompactClaims(_messages.AsSpan(0, count), _claims.AsSpan(0, count), _claimed.AsSpan(0, count),
                     _created.AsSpan(0, count));
-                if (live == 0) continue;
+
+                if (live == 0)
+                {
+                    continue;
+                }
+
                 if (_leaseTime is null ? expires <= DateTimeOffset.UtcNow : _leaseTime.GetElapsedTime(claimStarted) >= _claimDuration)
                 {
                     OutboxDirectDispatchLog.ClaimExpired(_logger, live);
                     continue;
                 }
+
                 try
                 {
                     if (_instrumentation is not null)
                     {
                         var dispatchTime = _leaseTime?.GetUtcNow() ?? DateTimeOffset.UtcNow;
-                        for (var i = 0; i < live; i++) _instrumentation.RecordOutboxDispatchLag(dispatchTime - _created[i]);
+
+                        for (var i = 0; i < live; i++)
+                        {
+                            _instrumentation.RecordOutboxDispatchLag(dispatchTime - _created[i]);
+                        }
                     }
+
                     if (admission is not null)
                     {
                         if (background && TryDispatchLocalInBackground(batch, first, transport, admission, cancellationToken))
@@ -241,18 +349,33 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                             admission = null;
                             continue;
                         }
+
                         await SendLocalAsync(batch, first, transport, cancellationToken).ConfigureAwait(false);
                         Completed(1, recovery);
                         continue;
                     }
-                    if (live == 1) await transport.SendAsync(_messages[0], cancellationToken).ConfigureAwait(false);
-                    else await transport.SendBatchAsync(_messages.AsMemory(0, live), cancellationToken).ConfigureAwait(false);
+
+                    if (live == 1)
+                    {
+                        await transport.SendAsync(_messages[0], cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await transport.SendBatchAsync(_messages.AsMemory(0, live), cancellationToken).ConfigureAwait(false);
+                    }
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
                 catch (Exception error)
                 {
                     // The consume pipeline already logged a handler failure it handed back for retry or poison.
-                    if (error is not ConsumeFailureHandoff) LogFailure(error);
+                    if (error is not ConsumeFailureHandoff)
+                    {
+                        LogFailure(error);
+                    }
+
                     for (var i = 0; i < live; i++)
                     {
                         try
@@ -262,28 +385,59 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                                 Completed(await CompleteAsync(i, 1, cancellationToken).ConfigureAwait(false), recovery, single: true);
                                 continue;
                             }
+
                             if (live > 1 && admission is null)
                             {
-                                if (CheckCancellationBeforeRetry) cancellationToken.ThrowIfCancellationRequested();
-                                if (_leaseTime is null ? expires <= DateTimeOffset.UtcNow : _leaseTime.GetElapsedTime(claimStarted) >= _claimDuration) continue;
+                                if (CheckCancellationBeforeRetry)
+                                {
+                                    cancellationToken.ThrowIfCancellationRequested();
+                                }
+
+                                if (_leaseTime is null ? expires <= DateTimeOffset.UtcNow : _leaseTime.GetElapsedTime(claimStarted) >= _claimDuration)
+                                {
+                                    continue;
+                                }
+
                                 Exception? singleError = null;
-                                try { await transport.SendAsync(_messages[i], cancellationToken).ConfigureAwait(false); }
-                                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                                catch (Exception failure) { singleError = failure; }
+
+                                try
+                                {
+                                    await transport.SendAsync(_messages[i], cancellationToken).ConfigureAwait(false);
+                                }
+                                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                                {
+                                    throw;
+                                }
+                                catch (Exception failure)
+                                {
+                                    singleError = failure;
+                                }
+
                                 if (singleError is null)
                                 {
                                     // Completion failures must never be classified as failed sends.
                                     Completed(await CompleteAsync(i, 1, cancellationToken).ConfigureAwait(false), recovery, single: true);
                                     continue;
                                 }
+
                                 await RecordSendFailureAsync(batch, i, singleError, cancellationToken, propagateDatabaseFailures).ConfigureAwait(false);
                             }
-                            else await RecordSendFailureAsync(batch, i, error, cancellationToken, propagateDatabaseFailures,
+                            else
+                            {
+                                await RecordSendFailureAsync(batch, i, error, cancellationToken, propagateDatabaseFailures,
                                 retryable: admission is null).ConfigureAwait(false);
+                            }
                         }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                        catch (Exception failure) when (!propagateDatabaseFailures) { LogFailure(failure); }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch (Exception failure) when (!propagateDatabaseFailures)
+                        {
+                            LogFailure(failure);
+                        }
                     }
+
                     continue;
                 }
                 // Successful broker sends never consume attempts or release claims when completion fails.
@@ -291,13 +445,29 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                 {
                     var completed = await CompleteAsync(0, live, cancellationToken).ConfigureAwait(false);
                     Completed(completed, recovery);
-                    if (completed != live) OutboxDirectDispatchLog.Incomplete(_logger, completed, live);
+
+                    if (completed != live)
+                    {
+                        OutboxDirectDispatchLog.Incomplete(_logger, completed, live);
+                    }
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception error) when (!propagateDatabaseFailures) { OutboxDirectDispatchLog.CompletionFailed(_logger, error); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception error) when (!propagateDatabaseFailures)
+                {
+                    OutboxDirectDispatchLog.CompletionFailed(_logger, error);
+                }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception error) when (!propagateDatabaseFailures) { LogFailure(error); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error) when (!propagateDatabaseFailures)
+            {
+                LogFailure(error);
+            }
             finally
             {
                 ExitGroup(admission);
@@ -311,21 +481,37 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         Span<DateTimeOffset> created = default)
     {
         var live = 0;
+
         for (var i = 0; i < claimed.Length; i++)
         {
-            if (!claimed[i]) continue;
-            if (!created.IsEmpty) created[live] = created[i];
+            if (!claimed[i])
+            {
+                continue;
+            }
+
+            if (!created.IsEmpty)
+            {
+                created[live] = created[i];
+            }
+
             claims[live] = claims[i];
             messages[live++] = messages[i];
         }
+
         return live;
     }
 
     private void Return(TBatch batch)
     {
         Clear(batch);
+
         for (var i = 0; i < _pool.Length; i++)
-            if (Interlocked.CompareExchange(ref _pool[i], batch, null) is null) return;
+        {
+            if (Interlocked.CompareExchange(ref _pool[i], batch, null) is null)
+            {
+                return;
+            }
+        }
     }
 }
 

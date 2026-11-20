@@ -17,7 +17,11 @@ internal sealed class SqlServerLaneCoordinator
     private readonly string[] _names;
     private readonly string[] _tokens;
     private readonly List<string> _live = [];
-    internal bool[] Assigned { get; }
+
+    internal bool[] Assigned
+    {
+        get;
+    }
 
     internal SqlServerLaneCoordinator(string connectionString, SqlServerOrderedDispatchOptions options)
     {
@@ -40,6 +44,7 @@ internal sealed class SqlServerLaneCoordinator
         _names = new string[options.Lanes];
         _tokens = new string[options.Lanes];
         Assigned = new bool[options.Lanes];
+
         for (var i = 0; i < _names.Length; i++)
         {
             _names[i] = "lane:" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -51,19 +56,31 @@ internal sealed class SqlServerLaneCoordinator
     {
         using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
         using (var heartbeat = new SqlCommand(_heartbeat, connection))
         {
             heartbeat.Parameters.Add("@member", SqlDbType.VarChar, 100).Value = _member;
             heartbeat.Parameters.Add("@duration", SqlDbType.Int).Value = _duration;
             await heartbeat.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+
         _live.Clear();
+
         using (var command = new SqlCommand(_members, connection))
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) _live.Add(reader.GetString(0));
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                _live.Add(reader.GetString(0));
+            }
+        }
+
         var rank = _live.IndexOf(_member);
+
         for (var lane = 0; lane < Assigned.Length; lane++)
+        {
             Assigned[lane] = rank >= 0 && lane % _live.Count == rank;
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]

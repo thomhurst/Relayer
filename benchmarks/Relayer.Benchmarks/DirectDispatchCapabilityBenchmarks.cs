@@ -17,12 +17,16 @@ public class DirectDispatchCapabilityBenchmarks
     private int _boundedIndex;
 
     [Params(1, 256, 512)]
-    public int DestinationCount { get; set; }
+    public int DestinationCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _destinations = new string[DestinationCount];
+
         for (var i = 0; i < DestinationCount; i++)
         {
             var destination = "tenant-" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -36,7 +40,12 @@ public class DirectDispatchCapabilityBenchmarks
     public TransportCapabilities Unbounded()
     {
         var destination = _destinations[_unboundedIndex];
-        if (++_unboundedIndex == DestinationCount) _unboundedIndex = 0;
+
+        if (++_unboundedIndex == DestinationCount)
+        {
+            _unboundedIndex = 0;
+        }
+
         return PreviousLookup(destination);
     }
 
@@ -44,12 +53,19 @@ public class DirectDispatchCapabilityBenchmarks
     private TransportCapabilities PreviousLookup(string destination)
     {
         var key = (_transport.Name, destination);
+
         if (!_unbounded.TryGetValue(key, out var capabilities))
         {
             capabilities = _transport.GetCapabilities(destination);
-            if (capabilities.MaxBatchSize <= 0) throw new InvalidOperationException();
+
+            if (capabilities.MaxBatchSize <= 0)
+            {
+                throw new InvalidOperationException();
+            }
+
             _unbounded.Add(key, capabilities);
         }
+
         return capabilities;
     }
 
@@ -57,7 +73,12 @@ public class DirectDispatchCapabilityBenchmarks
     public TransportCapabilities Bounded()
     {
         var destination = _destinations[_boundedIndex];
-        if (++_boundedIndex == DestinationCount) _boundedIndex = 0;
+
+        if (++_boundedIndex == DestinationCount)
+        {
+            _boundedIndex = 0;
+        }
+
         return _bounded.Get(_transport, destination);
     }
 
@@ -65,13 +86,42 @@ public class DirectDispatchCapabilityBenchmarks
     private sealed class Transport : ITransport
     {
         private readonly TransportCapabilities _capabilities = new() { MaxBatchSize = 100 };
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => _capabilities;
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return _capabilities;
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

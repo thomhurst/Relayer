@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using Npgsql;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
@@ -17,8 +17,12 @@ public class TransactionalCompletionTests(PostgreSqlLocalSessionFixture server)
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         var options = new PostgreSqlOutboxOptions { Schema = "local-work", TablePrefix = "custom_" };
         await PostgreSqlOutboxStoreTests.CreateSchema(source, options);
+
         await using (var create = source.CreateCommand("CREATE TABLE business_work (id integer PRIMARY KEY)"))
+        {
             await create.ExecuteNonQueryAsync();
+        }
+
         var store = new PostgreSqlOutboxStore(source, options);
         var now = DateTimeOffset.UtcNow;
         var claim = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
@@ -27,15 +31,27 @@ public class TransactionalCompletionTests(PostgreSqlLocalSessionFixture server)
 
         await using var connection = await source.OpenConnectionAsync();
         await using var transaction = await connection.BeginTransactionAsync();
+
         await using (var business = new NpgsqlCommand("INSERT INTO business_work VALUES (1)", connection, transaction))
+        {
             await business.ExecuteNonQueryAsync();
+        }
+
         await Assert.That(await store.CompleteAsync(claim, transaction, default)).IsTrue();
         // A separate connection sees neither uncommitted business work nor an uncommitted deletion.
         await Assert.That(await Count(source, "business_work")).IsEqualTo(0L);
         await Assert.That(await Count(source, "\"local-work\".custom_outbox")).IsEqualTo(1L);
         await Assert.That(ReferenceEquals(transaction.Connection, connection)).IsTrue();
-        if (commit) await transaction.CommitAsync();
-        else await transaction.RollbackAsync();
+
+        if (commit)
+        {
+            await transaction.CommitAsync();
+        }
+        else
+        {
+            await transaction.RollbackAsync();
+        }
+
         await Assert.That(await Count(source, "business_work")).IsEqualTo(commit ? 1L : 0L);
         await Assert.That(await Count(source, "\"local-work\".custom_outbox")).IsEqualTo(commit ? 0L : 1L);
         // Explicit transaction use must not stick to this scoped store.
@@ -55,11 +71,13 @@ public class TransactionalCompletionTests(PostgreSqlLocalSessionFixture server)
         var store = new PostgreSqlOutboxStore(source);
         var now = DateTimeOffset.UtcNow;
         var claim = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+
         if (kind != "missing")
         {
             var start = kind == "expired" ? now.AddHours(-2) : now;
             await PostgreSqlOutboxStoreTests.Insert(source, new(), claim.MessageId, start);
             await Assert.That(await store.TryClaimAsync(claim, start, start.AddHours(1), default)).IsTrue();
+
             if (kind == "stale")
             {
                 // A different, live owner has already taken over the row.
@@ -67,10 +85,15 @@ public class TransactionalCompletionTests(PostgreSqlLocalSessionFixture server)
                 await Assert.That(await store.TryClaimAsync(replacement, now.AddHours(2), now.AddHours(3), default)).IsTrue();
             }
         }
+
         await using var connection = await source.OpenConnectionAsync();
         await using var transaction = await connection.BeginTransactionAsync();
+
         await using (var business = new NpgsqlCommand("CREATE TABLE business_work (id integer)", connection, transaction))
+        {
             await business.ExecuteNonQueryAsync();
+        }
+
         await Assert.That(await store.CompleteAsync(claim, transaction, default)).IsFalse();
         await transaction.RollbackAsync();
         await using var check = source.CreateCommand("SELECT to_regclass('business_work') IS NULL");
@@ -123,6 +146,7 @@ public class TransactionalCompletionTests(PostgreSqlLocalSessionFixture server)
         await PostgreSqlOutboxStoreTests.Insert(source, new(), claim.MessageId, now);
         await Assert.That(await claims.TryClaimAsync(claim, now, now.AddHours(1), default)).IsTrue();
         await using var connection = await source.OpenConnectionAsync();
+
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             // Wall clock is later than transaction_timestamp(), without sleeps or client clock assumptions.
@@ -131,11 +155,13 @@ public class TransactionalCompletionTests(PostgreSqlLocalSessionFixture server)
             await Assert.That(await store.CompleteAsync(claim, transaction, default)).IsFalse();
             await transaction.RollbackAsync();
         }
+
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             await Assert.That(await store.CompleteAsync(claim, transaction, default)).IsTrue();
             // Disposal must restore the row without the store retaining the transaction.
         }
+
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(1L);
     }
 
@@ -153,17 +179,21 @@ public class TransactionalCompletionTests(PostgreSqlLocalSessionFixture server)
         await PostgreSqlOutboxStoreTests.Insert(source, options, claim.MessageId, now);
         await store.TryClaimAsync(claim, now, now.AddHours(1), default);
         await using var connection = await source.OpenConnectionAsync();
+
         await using (var rolledBack = await connection.BeginTransactionAsync())
         {
             await Assert.That(await store.CompleteAsync(claim, rolledBack, default)).IsTrue();
             await rolledBack.RollbackAsync();
         }
+
         await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(0L);
+
         await using (var committed = await connection.BeginTransactionAsync())
         {
             await Assert.That(await store.CompleteAsync(claim, committed, default)).IsTrue();
             await committed.CommitAsync();
         }
+
         await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(1L);
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
     }

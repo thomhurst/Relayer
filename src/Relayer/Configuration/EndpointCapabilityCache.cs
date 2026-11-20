@@ -13,7 +13,12 @@ internal sealed class EndpointCapabilityCache
         lock (_endpoints)
         {
             var key = (transport, endpoint);
-            if (_endpoints.TryGetValue(key, out var capabilities)) return capabilities;
+
+            if (_endpoints.TryGetValue(key, out var capabilities))
+            {
+                return capabilities;
+            }
+
             capabilities = transport.GetCapabilities(endpoint);
             _endpoints.Add(key, capabilities);
             return capabilities;

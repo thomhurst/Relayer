@@ -1,10 +1,10 @@
-using Relayer.Transports;
 using System.Text;
 using System.Text.Json;
 using Amazon.SimpleNotificationService.Model;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AmazonSqs;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -16,12 +16,12 @@ public class AmazonTerraformTests
     [Test]
     public async Task Exports_native_fifo_tags_policies_and_relationships_without_clients()
     {
-        const string policy = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"sns.amazonaws.com\"},\"Action\":\"sqs:SendMessage\",\"Resource\":\"" + QueueArn + "\",\"Condition\":{\"ArnEquals\":{\"aws:SourceArn\":\"" + TopicArn + "\"}}}]}";
+        const string Policy = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"sns.amazonaws.com\"},\"Action\":\"sqs:SendMessage\",\"Resource\":\"" + QueueArn + "\",\"Condition\":{\"ArnEquals\":{\"aws:SourceArn\":\"" + TopicArn + "\"}}}]}";
         using var provider = Create(options =>
         {
             options.QueueTopology.Queues.Add(new CreateQueueRequest("orders.fifo")
             {
-                Attributes = new() { ["FifoQueue"] = "true", ["VisibilityTimeout"] = "45", ["Policy"] = policy },
+                Attributes = new() { ["FifoQueue"] = "true", ["VisibilityTimeout"] = "45", ["Policy"] = Policy },
                 Tags = new() { ["purpose"] = "line\n\"quoted\"\\${var.secret}%{if true}" }
             });
             options.Topics.Add(new CreateTopicRequest("orders.fifo")
@@ -31,7 +31,10 @@ public class AmazonTerraformTests
             });
             options.Subscriptions.Add(new SubscribeRequest
             {
-                TopicArn = TopicArn, Endpoint = QueueArn, Protocol = "sqs", ReturnSubscriptionArn = true,
+                TopicArn = TopicArn,
+                Endpoint = QueueArn,
+                Protocol = "sqs",
+                ReturnSubscriptionArn = true,
                 Attributes = new() { ["RawMessageDelivery"] = "true", ["FilterPolicy"] = "{\"kind\":[\"order\"]}" }
             });
         });
@@ -45,7 +48,7 @@ public class AmazonTerraformTests
         await Assert.That(queue.Value.GetProperty("visibility_timeout_seconds").GetInt32()).IsEqualTo(45);
         await Assert.That(queue.Value.GetProperty("tags").GetProperty("purpose").GetString()).IsEqualTo("line\n\"quoted\"\\$${var.secret}%%{if true}");
         await Assert.That(topic.Value.GetProperty("fifo_topic").GetBoolean()).IsTrue();
-        await Assert.That(access.Value.GetProperty("policy").GetString()).IsEqualTo(policy);
+        await Assert.That(access.Value.GetProperty("policy").GetString()).IsEqualTo(Policy);
         await Assert.That(access.Value.GetProperty("queue_url").GetString()).IsEqualTo("${aws_sqs_queue." + queue.Name + ".id}");
         await Assert.That(subscription.GetProperty("topic_arn").GetString()).IsEqualTo("${aws_sns_topic." + topic.Name + ".arn}");
         await Assert.That(subscription.GetProperty("endpoint").GetString()).IsEqualTo("${aws_sqs_queue." + queue.Name + ".arn}");
@@ -62,8 +65,15 @@ public class AmazonTerraformTests
         using var provider = Create(options =>
         {
             var queue = new CreateQueueRequest("queue");
+
             if (maximumMessageSize is not null)
-                queue.Attributes = new() { ["MaximumMessageSize"] = maximumMessageSize };
+            {
+                queue.Attributes = new()
+                {
+                    ["MaximumMessageSize"] = maximumMessageSize
+                };
+            }
+
             options.QueueTopology.Queues.Add(queue);
         });
         using var document = JsonDocument.Parse(Export(provider));
@@ -81,15 +91,32 @@ public class AmazonTerraformTests
         using var provider = Create(options =>
         {
             var attributes = new Dictionary<string, string>();
-            if (kmsKey is not null) attributes.Add("KmsMasterKeyId", kmsKey);
-            if (managedSse is not null) attributes.Add("SqsManagedSseEnabled", managedSse);
+
+            if (kmsKey is not null)
+            {
+                attributes.Add("KmsMasterKeyId", kmsKey);
+            }
+
+            if (managedSse is not null)
+            {
+                attributes.Add("SqsManagedSseEnabled", managedSse);
+            }
+
             options.QueueTopology.Queues.Add(new CreateQueueRequest("queue") { Attributes = attributes });
         });
         using var document = JsonDocument.Parse(Export(provider));
         var queue = document.RootElement.GetProperty("resource").GetProperty("aws_sqs_queue").EnumerateObject().Single().Value;
         await Assert.That(queue.TryGetProperty("sqs_managed_sse_enabled", out var sse)).IsEqualTo(expectedSse);
-        if (expectedSse) await Assert.That(sse.GetBoolean()).IsEqualTo(managedSse == "true");
-        if (kmsKey is not null) await Assert.That(queue.GetProperty("kms_master_key_id").GetString()).IsEqualTo(kmsKey);
+
+        if (expectedSse)
+        {
+            await Assert.That(sse.GetBoolean()).IsEqualTo(managedSse == "true");
+        }
+
+        if (kmsKey is not null)
+        {
+            await Assert.That(queue.GetProperty("kms_master_key_id").GetString()).IsEqualTo(kmsKey);
+        }
     }
 
     [Test]
@@ -97,18 +124,36 @@ public class AmazonTerraformTests
     {
         using var first = Create(options =>
         {
-            options.Topics.Add(new("z")); options.Topics.Add(new("a"));
-            options.QueueTopology.Queues.Add(new("queue") { Attributes = new() { ["DelaySeconds"] = "2", ["VisibilityTimeout"] = "3" } });
+            options.Topics.Add(new("z"));
+            options.Topics.Add(new("a"));
+            options.QueueTopology.Queues.Add(new("queue")
+            {
+                Attributes = new()
+                {
+                    ["DelaySeconds"] = "2",
+                    ["VisibilityTimeout"] = "3"
+                }
+            });
         });
         using var second = Create(options =>
         {
-            options.QueueTopology.Queues.Add(new("queue") { Attributes = new() { ["VisibilityTimeout"] = "3", ["DelaySeconds"] = "2" } });
-            options.Topics.Add(new("a")); options.Topics.Add(new("z"));
+            options.QueueTopology.Queues.Add(new("queue")
+            {
+                Attributes = new()
+                {
+                    ["VisibilityTimeout"] = "3",
+                    ["DelaySeconds"] = "2"
+                }
+            });
+            options.Topics.Add(new("a"));
+            options.Topics.Add(new("z"));
         });
         var topology = first.GetRequiredService<ITopology>();
-        using var before = new MemoryStream(); topology.ExportJson(before);
+        using var before = new MemoryStream();
+        topology.ExportJson(before);
         await Assert.That(Export(first)).IsEqualTo(Export(second));
-        using var after = new MemoryStream(); topology.ExportJson(after);
+        using var after = new MemoryStream();
+        topology.ExportJson(after);
         await Assert.That(Convert.ToHexString(before.ToArray())).IsEqualTo(Convert.ToHexString(after.ToArray()));
     }
 
@@ -120,7 +165,13 @@ public class AmazonTerraformTests
         {
             options.Sqs.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
             options.Queues.Add(new("dead"));
-            options.Queues.Add(new("live") { Attributes = new() { ["RedrivePolicy"] = "{\"deadLetterTargetArn\":\"arn:aws:sqs:eu-west-1:123456789012:dead\",\"maxReceiveCount\":5}" } });
+            options.Queues.Add(new("live")
+            {
+                Attributes = new()
+                {
+                    ["RedrivePolicy"] = "{\"deadLetterTargetArn\":\"arn:aws:sqs:eu-west-1:123456789012:dead\",\"maxReceiveCount\":5}"
+                }
+            });
         })));
         using var provider = services.BuildServiceProvider();
         using var document = JsonDocument.Parse(Export(provider));
@@ -140,9 +191,16 @@ public class AmazonTerraformTests
         using var provider = Create(options =>
         {
             options.QueueTopology.Queues.Add(new("valid"));
-            options.Topics.Add(new("invalid") { Attributes = new() { [key] = value } });
+            options.Topics.Add(new("invalid")
+            {
+                Attributes = new()
+                {
+                    [key] = value
+                }
+            });
         });
-        using var output = new MemoryStream(); output.WriteByte(42);
+        using var output = new MemoryStream();
+        output.WriteByte(42);
         await Assert.That(() => provider.GetRequiredService<ITopology>().ExportAmazonTerraform(provider, output, Options()))
             .Throws<InvalidOperationException>().WithMessageContaining(key);
         await Assert.That(output.Length).IsEqualTo(1);
@@ -154,7 +212,11 @@ public class AmazonTerraformTests
     {
         using var policy = Create(options => options.Topics.Add(new("topic") { DataProtectionPolicy = "{}" }));
         await Assert.That(() => Export(policy)).Throws<InvalidOperationException>().WithMessageContaining("DataProtectionPolicy");
-        using var duplicate = Create(options => { options.Topics.Add(new("same")); options.Topics.Add(new("same")); });
+        using var duplicate = Create(options =>
+        {
+            options.Topics.Add(new("same"));
+            options.Topics.Add(new("same"));
+        });
         await Assert.That(() => Export(duplicate)).Throws<InvalidOperationException>().WithMessageContaining("Duplicate topic");
     }
 
@@ -182,11 +244,16 @@ public class AmazonTerraformTests
     {
         using var unsupported = Create(options => options.QueueTopology.Queues.Add(new("queue")
         {
-            Attributes = new() { ["RedriveAllowPolicy"] = "{}" }
+            Attributes = new()
+            {
+                ["RedriveAllowPolicy"] = "{}"
+            }
         }));
         await Assert.That(() => Export(unsupported)).Throws<InvalidOperationException>().WithMessageContaining("RedriveAllowPolicy");
         var services = new ServiceCollection();
-        services.AddRelayer(builder => builder.AddTransport<OtherOptions, OtherOptions>("other", _ => { }));
+        services.AddRelayer(builder => builder.AddTransport<OtherOptions, OtherOptions>("other", _ =>
+        {
+        }));
         using var provider = services.BuildServiceProvider();
         using var output = new MemoryStream();
         await Assert.That(() => provider.GetRequiredService<ITopology>().ExportAmazonTerraform(provider, output, Options()))
@@ -196,7 +263,15 @@ public class AmazonTerraformTests
 
     private sealed class OtherOptions;
 
-    private static AmazonTerraformOptions Options() => new() { AccountId = "123456789012", Region = "eu-west-1" };
+    private static AmazonTerraformOptions Options()
+    {
+        return new()
+        {
+            AccountId = "123456789012",
+            Region = "eu-west-1"
+        };
+    }
+
     private static ServiceProvider Create(Action<AmazonSnsTransportOptions> configure)
     {
         var services = new ServiceCollection();
@@ -209,6 +284,7 @@ public class AmazonTerraformTests
         })));
         return services.BuildServiceProvider();
     }
+
     private static string Export(ServiceProvider provider)
     {
         using var stream = new MemoryStream();

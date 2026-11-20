@@ -23,16 +23,27 @@ public class SendPipelineBenchmarks
     private readonly RegionalSendOrder _regionalMessage = new(42, "orders-us");
 
     [Params(false, true)]
-    public bool Middleware { get; set; }
+    public bool Middleware
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Tenancy { get; set; }
+    public bool Tenancy
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         var services = new ServiceCollection();
-        if (Tenancy) services.AddRelayerTenancy();
+
+        if (Tenancy)
+        {
+            services.AddRelayerTenancy();
+        }
+
         services.AddSingleton<ITransport>(_transport);
         services.AddRelayer(builder =>
         {
@@ -42,11 +53,20 @@ public class SendPipelineBenchmarks
                     .Send<SendOrder>("orders", route => route.OrderingKey(static message => message.Id))
                     .Send<RegionalSendOrder>(["orders-eu", "orders-us"], static message => message.Region,
                         route => route.OrderingKey(static message => message.Id)));
-            if (Middleware) builder.UseSendMiddleware<PassThroughMiddleware>();
+
+            if (Middleware)
+            {
+                builder.UseSendMiddleware<PassThroughMiddleware>();
+            }
         });
         _provider = services.BuildServiceProvider();
         _scope = _provider.CreateScope();
-        if (Tenancy) _scope.ServiceProvider.GetRequiredService<TenantContext>().Id = new("tenant-1"u8.ToArray());
+
+        if (Tenancy)
+        {
+            _scope.ServiceProvider.GetRequiredService<TenantContext>().Id = new("tenant-1"u8.ToArray());
+        }
+
         _sender = _scope.ServiceProvider.GetRequiredService<ISender>();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();
     }
@@ -60,13 +80,22 @@ public class SendPipelineBenchmarks
     }
 
     [Benchmark]
-    public ValueTask TombstoneSend() => _sender.SendAsync(Tombstone.For<SendOrder>("customer-1"));
+    public ValueTask TombstoneSend()
+    {
+        return _sender.SendAsync(Tombstone.For<SendOrder>("customer-1"));
+    }
 
     [Benchmark]
-    public ValueTask DirectSend() => _sender.SendAsync(_message);
+    public ValueTask DirectSend()
+    {
+        return _sender.SendAsync(_message);
+    }
 
     [Benchmark]
-    public ValueTask SelectedDestinationSend() => _sender.SendAsync(_regionalMessage);
+    public ValueTask SelectedDestinationSend()
+    {
+        return _sender.SendAsync(_regionalMessage);
+    }
 
     [GlobalCleanup]
     public void Cleanup()
@@ -77,30 +106,67 @@ public class SendPipelineBenchmarks
 
     public sealed class PassThroughMiddleware : ISendMiddleware
     {
-        public ValueTask InvokeAsync(SendContext context, SendDelegate next) => next(context);
+        public ValueTask InvokeAsync(SendContext context, SendDelegate next)
+        {
+            return next(context);
+        }
     }
 
     private sealed class SinkTransport : ITransport
     {
         public string Name => "sink";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true, Tombstones = true };
-        public int Bytes { get; private set; }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true,
+                Tombstones = true
+            };
+        }
+
+        public int Bytes
+        {
+            get; private set;
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Bytes = message.Body.Length;
             return ValueTask.CompletedTask;
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }
 
 [Message("bench.send-order")]
 public sealed record SendOrder(int Id);
+
 [Message("bench.regional-send-order")]
 public sealed record RegionalSendOrder(int Id, string Region);
+
 public sealed class SendBenchmarkOptions;

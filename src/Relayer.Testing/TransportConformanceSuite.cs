@@ -1,4 +1,3 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -7,6 +6,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -19,7 +19,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 {
     private readonly Func<MessageTracing, CancellationToken, ValueTask<ITransportConformanceFixture<TIncoming>>> _create;
     private readonly TimeSpan _timeout;
-    private static readonly TimeSpan Delay = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan s_delay = TimeSpan.FromMilliseconds(200);
     private const string TraceParent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
     private const string TraceState = "relayer=conformance";
 
@@ -31,13 +31,21 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         ArgumentNullException.ThrowIfNull(create);
         _create = create;
         _timeout = timeout ?? TimeSpan.FromSeconds(30);
-        if (_timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+
+        if (_timeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
     }
 
     /// <summary>Runs one contract. Only absent native capabilities produce skips; failures propagate to the caller.</summary>
     public async Task<TransportConformanceResult> RunAsync(TransportConformanceCase scenario, CancellationToken cancellationToken = default)
     {
-        if (!Enum.IsDefined(scenario)) throw new ArgumentOutOfRangeException(nameof(scenario));
+        if (!Enum.IsDefined(scenario))
+        {
+            throw new ArgumentOutOfRangeException(nameof(scenario));
+        }
+
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_timeout);
         var token = deadline.Token;
@@ -52,6 +60,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         ActivitySource.AddActivityListener(listener);
         Task<ITransportConformanceFixture<TIncoming>>? creation = null;
         ITransportConformanceFixture<TIncoming> fixture;
+
         try
         {
             creation = _create(tracing, token).AsTask();
@@ -61,22 +70,35 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         {
             // If cancellation wins, cleanup owns the task even when creation completes
             // between WaitAsync throwing and this handoff. Consume each ValueTask only once.
-            if (creation is not null) _ = DisposeLateFixtureAsync(creation);
+            if (creation is not null)
+            {
+                _ = DisposeLateFixtureAsync(creation);
+            }
+
             throw new InvalidOperationException($"Transport conformance {scenario} failed during fixture creation.", error);
         }
+
         Exception? failure = null;
+
         try
         {
             return await RunFixtureAsync(scenario, fixture, tracing, spans, token).ConfigureAwait(false);
         }
-        catch (Exception error) { failure = error; throw; }
+        catch (Exception error)
+        {
+            failure = error;
+            throw;
+        }
         finally
         {
             try
             {
                 await DisposeFixtureAsync(scenario, fixture).ConfigureAwait(false);
+
                 if (scenario == TransportConformanceCase.CleanShutdown && fixture is ITransportShutdownConformanceFixture shutdown)
+                {
                     shutdown.Logs.AssertClean();
+                }
             }
             catch (Exception cleanup) when (failure is not null)
             {
@@ -90,6 +112,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         // Bound only the wait: IAsyncDisposable has no cancellation contract.
         using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var disposal = fixture.DisposeAsync().AsTask();
+
         try
         {
             await disposal.WaitAsync(cleanupDeadline.Token).ConfigureAwait(false);
@@ -103,7 +126,10 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
     private static async Task ObserveDisposalAsync(Task disposal)
     {
-        try { await disposal.ConfigureAwait(false); }
+        try
+        {
+            await disposal.ConfigureAwait(false);
+        }
         catch
         {
             // RunAsync already reported the timeout. Observe late cleanup failures.
@@ -128,11 +154,18 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         ITransportConformanceFixture<TIncoming> fixture, MessageTracing tracing, ConcurrentQueue<Activity> spans, CancellationToken token)
     {
         if (scenario == TransportConformanceCase.CleanShutdown && fixture is not ITransportShutdownConformanceFixture)
+        {
             throw new InvalidOperationException("CleanShutdown requires ITransportShutdownConformanceFixture with native lifecycle evidence and fixture-local logging.");
+        }
+
         var capabilities = fixture.Transport.GetCapabilities(fixture.Destination);
         var skip = scenario == TransportConformanceCase.SendDuringOutage && fixture.OutageSendTimeout is null
             ? "Fixture has no bounded broker-outage send contract." : SkipReason(scenario, capabilities);
-        if (skip is not null) return new(scenario, skip);
+
+        if (skip is not null)
+        {
+            return new(scenario, skip);
+        }
 
         var received = Channel.CreateUnbounded<Delivery>();
         var control = new ConformanceControl();
@@ -149,7 +182,11 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
             static (_, error, _) => ValueTask.FromException(error))
             .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<ConformanceMessage, ConformanceHandler>())
-            .Tracing(tracing, new() { System = fixture.MessagingSystem, Destination = fixture.ProcessDestinationName })
+            .Tracing(tracing, new()
+            {
+                System = fixture.MessagingSystem,
+                Destination = fixture.ProcessDestinationName
+            })
             .Settle(async context =>
             {
                 var native = context.Features.GetRequired<NativeMessage<TIncoming>>();
@@ -162,8 +199,12 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         fixture.RegisterConsumer(async (incoming, cancellation) =>
         {
             var disposition = await receive.ProcessAsync(incoming, cancellation).ConfigureAwait(false);
+
             if (Volatile.Read(ref shutdown.StopTask)?.IsCompleted == true)
+            {
                 Volatile.Write(ref shutdown.StopFinishedFirst, 1);
+            }
+
             Volatile.Write(ref shutdown.ConsumerFinished, 1);
             return disposition;
         });
@@ -177,23 +218,35 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             Require(TBinding.TryGetHeader(incoming, "conformance", out var header) && header.ToString() == "owned", "Application header changed.");
             var delivery = new Delivery(body, Read(incoming, "traceparent"), Read(incoming, "tracestate"), TBinding.GetDeliveryCount(incoming), DateTimeOffset.UtcNow);
             received.Writer.TryWrite(delivery);
+
             if (scenario == TransportConformanceCase.FailureHandlingFailure && Interlocked.Increment(ref attempts) == 1)
+            {
                 throw new InvalidOperationException("Conformance failure handler also fails.");
+            }
+
             if (scenario is TransportConformanceCase.Retry or TransportConformanceCase.RedeliveryDelay && Interlocked.Increment(ref attempts) == 1)
             {
                 var delay = scenario == TransportConformanceCase.Retry ? TimeSpan.Zero : NativeDelay(capabilities.MaxRedeliveryDelay!.Value);
                 redeliverAt = DateTimeOffset.UtcNow + delay;
                 return new(Disposition.Redeliver(delay));
             }
+
             if (scenario == TransportConformanceCase.DeadLetter && Encoding.UTF8.GetString(body) == "{\"Value\":1}")
+            {
                 return new(Disposition.DeadLettered(new("conformance_poison", "expected failure")));
+            }
+
             if (scenario == TransportConformanceCase.CleanShutdown)
+            {
                 return WaitForOrderAsync(orderRelease.Task, token);
+            }
+
             return new(Disposition.Complete);
         };
 
         var progress = new ScenarioProgress { Phase = "transport start" };
         Exception? failure = null;
+
         try
         {
             await fixture.Transport.StartAsync(token).WaitAsync(token).ConfigureAwait(false);
@@ -209,24 +262,32 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             orderRelease.TrySetResult();
             // Cleanup has its own bounded budget, even when the scenario deadline expired.
             using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            try { await fixture.Transport.StopAsync(cleanupDeadline.Token).WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false); }
+
+            try
+            {
+                await fixture.Transport.StopAsync(cleanupDeadline.Token).WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            }
             catch (Exception cleanup) when (failure is not null)
             {
                 throw new AggregateException("Transport conformance and transport shutdown both failed.", failure, cleanup);
             }
         }
+
         return new(scenario);
     }
 
-    private static string? SkipReason(TransportConformanceCase scenario, TransportCapabilities capabilities) => scenario switch
+    private static string? SkipReason(TransportConformanceCase scenario, TransportCapabilities capabilities)
     {
-        TransportConformanceCase.Retry when capabilities.MaxRedeliveryDelay is null => "No native redelivery.",
-        TransportConformanceCase.DeadLetter when !capabilities.DeadLetter => "No native dead-lettering.",
-        TransportConformanceCase.Delay when capabilities.MaxDeliveryDelay is null || capabilities.MaxDeliveryDelay <= TimeSpan.Zero => "No positive native delivery delay.",
-        TransportConformanceCase.RedeliveryDelay when capabilities.MaxRedeliveryDelay is null || capabilities.MaxRedeliveryDelay <= TimeSpan.Zero => "No positive native redelivery delay.",
-        TransportConformanceCase.OrderingByKey when !capabilities.OrderedByKey => "No native ordering by key.",
-        _ => null,
-    };
+        return scenario switch
+        {
+            TransportConformanceCase.Retry when capabilities.MaxRedeliveryDelay is null => "No native redelivery.",
+            TransportConformanceCase.DeadLetter when !capabilities.DeadLetter => "No native dead-lettering.",
+            TransportConformanceCase.Delay when capabilities.MaxDeliveryDelay is null || capabilities.MaxDeliveryDelay <= TimeSpan.Zero => "No positive native delivery delay.",
+            TransportConformanceCase.RedeliveryDelay when capabilities.MaxRedeliveryDelay is null || capabilities.MaxRedeliveryDelay <= TimeSpan.Zero => "No positive native redelivery delay.",
+            TransportConformanceCase.OrderingByKey when !capabilities.OrderedByKey => "No native ordering by key.",
+            _ => null,
+        };
+    }
 
     private static async Task RunScenarioAsync(TransportConformanceCase scenario, ITransportConformanceFixture<TIncoming> fixture,
         ChannelReader<Delivery> received, ConcurrentQueue<Activity> spans, Func<DateTimeOffset> redeliverAt,
@@ -237,12 +298,14 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             progress.Phase = phase;
             return await received.ReadAsync(token).ConfigureAwait(false);
         }
+
         async Task Send(int value, bool creation = false, WireString? key = null, DateTimeOffset? at = null)
         {
             progress.Phase = $"send {value}";
             var body = Encoding.UTF8.GetBytes($"{{\"Value\":{value}}}");
             var headers = Headers(fixture.HeaderNames, creation);
             var send = fixture.Transport.SendAsync(new(fixture.Destination, body, headers, key, at), token).AsTask();
+
             try
             {
                 await send.WaitAsync(token).ConfigureAwait(false);
@@ -251,7 +314,10 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             {
                 // The wait can end while the adapter still borrows the arrays. Leave them intact
                 // and observe any late fault from the send after the scenario exits.
-                _ = send.ContinueWith(static task => { _ = task.Exception; }, CancellationToken.None,
+                _ = send.ContinueWith(static task =>
+                {
+                    _ = task.Exception;
+                }, CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 throw;
             }
@@ -259,22 +325,32 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             Array.Clear(body);
             Array.Clear(headers);
         }
+
         async Task<bool> OutageSend(int value, CancellationToken outageToken)
         {
             var body = Encoding.UTF8.GetBytes($"{{\"Value\":{value}}}");
+
             try
             {
                 await fixture.Transport.SendAsync(new(fixture.Destination, body, Headers(fixture.HeaderNames, false)), outageToken).ConfigureAwait(false);
                 return true;
             }
-            catch (OperationCanceledException) when (outageToken.IsCancellationRequested && !token.IsCancellationRequested) { return false; }
-            catch (Exception error) when (!token.IsCancellationRequested && fixture.IsExpectedOutageFailure(error)) { return false; }
+            catch (OperationCanceledException) when (outageToken.IsCancellationRequested && !token.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception error) when (!token.IsCancellationRequested && fixture.IsExpectedOutageFailure(error))
+            {
+                return false;
+            }
         }
+
         Task Stop()
         {
             progress.Phase = "transport drain";
             return fixture.Transport.StopAsync(token).WaitAsync(token);
         }
+
         Task Start()
         {
             progress.Phase = "transport restart";
@@ -334,7 +410,10 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 Require(first.Attempt is null || retry.Attempt > first.Attempt, "Native delivery count did not advance.");
                 var retryDue = redeliverAt();
                 if (retry.ReceivedAt < retryDue)
+                {
                     Require(false, $"Native redelivery ran before its due time. Due: {retryDue:O}; received: {retry.ReceivedAt:O}; early by: {retryDue - retry.ReceivedAt}.");
+                }
+
                 break;
             case TransportConformanceCase.DeadLetter:
                 await Send(1, creation: true).ConfigureAwait(false);
@@ -356,9 +435,16 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 Require(delayed.ReceivedAt >= due, "Scheduled delivery ran before its due time.");
                 break;
             case TransportConformanceCase.OrderingByKey:
-                for (var i = 0; i < 32; i++) await Send(i, key: new WireString("one-key")).ConfigureAwait(false);
+                for (var i = 0; i < 32; i++)
+                {
+                    await Send(i, key: new WireString("one-key")).ConfigureAwait(false);
+                }
                 // Settle as messages arrive: native send admission may depend on prior completion.
-                for (var i = 0; i < 32; i++) CheckBody(await Next().ConfigureAwait(false), i);
+                for (var i = 0; i < 32; i++)
+                {
+                    CheckBody(await Next().ConfigureAwait(false), i);
+                }
+
                 break;
             case TransportConformanceCase.TracePropagation:
                 await Send(1).ConfigureAwait(false);
@@ -378,6 +464,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     CheckBody(copy, i);
                     CheckCreation(copy);
                 }
+
                 await Stop().ConfigureAwait(false);
                 progress.Phase = "creation trace validation";
                 var sends = spans.Where(span => Equals(span.GetTagItem("messaging.operation.type"), "send")).ToArray();
@@ -387,6 +474,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     Require(send.Kind == ActivityKind.Client, "A stored creation context must not create a producer span.");
                     Require(send.Links.Any(link => MatchesCreation(link.Context)), "Copy send span lost its creation link.");
                 }
+
                 break;
             case TransportConformanceCase.SendDuringOutage:
                 await Send(0).ConfigureAwait(false);
@@ -409,15 +497,21 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     var acknowledged = await Task.WhenAll(pending).WaitAsync(budget + TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
                     progress.Phase = "offline shutdown";
                     using var offlineShutdown = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
                     try
                     {
                         await fixture.Transport.StopAsync(offlineShutdown.Token).WaitAsync(TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
                     }
-                    catch (OperationCanceledException) when (offlineShutdown.IsCancellationRequested && !token.IsCancellationRequested) { }
+                    catch (OperationCanceledException) when (offlineShutdown.IsCancellationRequested && !token.IsCancellationRequested)
+                    {
+                    }
                     // Some native clients fault permanently on a disconnected stream's initial write.
                     // The fixture must observe that exact native failure and recreate its application
                     // on reconnect; acknowledged-message checks below still apply to the same endpoint.
-                    catch (Exception error) when (!token.IsCancellationRequested && fixture.IsExpectedOutageFailure(error)) { }
+                    catch (Exception error) when (!token.IsCancellationRequested && fixture.IsExpectedOutageFailure(error))
+                    {
+                    }
+
                     progress.Phase = "broker reconnect";
                     await fixture.ReconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
                     // An offline stop can exhaust its budget while native drain is still
@@ -429,8 +523,15 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     // A failed/cancelled native send or unsettled warm-up may still arrive. Duplicates are legal;
                     // every successfully acknowledged send and the recovery marker must arrive.
                     var required = new HashSet<int> { 4 };
+
                     for (var i = 0; i < acknowledged.Length; i++)
-                        if (acknowledged[i]) required.Add(i + 1);
+                    {
+                        if (acknowledged[i])
+                        {
+                            required.Add(i + 1);
+                        }
+                    }
+
                     while (required.Count != 0)
                     {
                         var message = await Next($"outage recovery receive; outstanding values: {string.Join(", ", required)}").ConfigureAwait(false);
@@ -441,6 +542,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                         required.Remove(value);
                     }
                 }
+
                 break;
             case TransportConformanceCase.Reconnect:
                 await Send(1).ConfigureAwait(false);
@@ -455,7 +557,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Send(2).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 2);
                 break;
-            default: throw new ArgumentOutOfRangeException(nameof(scenario));
+            default:
+                throw new ArgumentOutOfRangeException(nameof(scenario));
         }
     }
 
@@ -472,15 +575,22 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         Require(ActivityContext.TryParse(delivery.TraceParent, delivery.TraceState, out var creation) && creation.TraceId == send.TraceId && creation.SpanId == send.SpanId,
             "Native instrumentation overwrote the producer creation context.");
         Require(process.Links.Any(link => link.Context.TraceId == send.TraceId && link.Context.SpanId == send.SpanId), "Process span lost its creation link.");
+
         foreach (var settle in settlements)
         {
             Require(settle.Kind == ActivityKind.Client && settle.OperationName == $"{fixture.SettlementOperation} {fixture.ProcessDestinationName}", "Native settlement span name or kind changed.");
+
             if (fixture.Transport.GetCapabilities(fixture.Destination).ConsumptionModel == ConsumptionModel.Queue)
+            {
                 Require(settle.ParentSpanId == process.SpanId && settle.TraceId == process.TraceId, "Native queue settlement must run inside the process span.");
+            }
             // Log commits may be amortized outside the process span (D13).
         }
+
         foreach (var span in all)
+        {
             Require(Equals(span.GetTagItem("messaging.system"), fixture.MessagingSystem), "Unexpected messaging.system.");
+        }
 
         Activity Single(string operation)
         {
@@ -500,37 +610,69 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             new(names.SpecVersion, new WireString("1.0")),
             new("conformance", new WireString("owned")),
         ];
+
         if (creation)
         {
             headers.Add(new(names.TraceParent, new WireString(TraceParent)));
             headers.Add(new(names.TraceState, new WireString(TraceState)));
         }
+
         return headers.ToArray();
     }
 
-    private static string? Read(TIncoming incoming, string name) => TBinding.TryGetHeader(incoming, name, out var value) ? value.ToString() : null;
-    private static TimeSpan NativeDelay(TimeSpan maximum) => maximum < Delay ? maximum : Delay;
+    private static string? Read(TIncoming incoming, string name)
+    {
+        return TBinding.TryGetHeader(incoming, name, out var value) ? value.ToString() : null;
+    }
+
+    private static TimeSpan NativeDelay(TimeSpan maximum)
+    {
+        return maximum < s_delay ? maximum : s_delay;
+    }
+
     private static async ValueTask<Disposition> WaitForOrderAsync(Task release, CancellationToken token)
     {
         await release.WaitAsync(token).ConfigureAwait(false);
         return Disposition.Complete;
     }
-    private static bool MatchesCreation(ActivityContext context) => context.TraceId.ToString() == "0123456789abcdef0123456789abcdef" && context.SpanId.ToString() == "0123456789abcdef";
-    private static void CheckCreation(Delivery delivery) => Require(delivery.TraceParent == TraceParent && delivery.TraceState == TraceState, "Stored creation context changed.");
-    private static void CheckBody(Delivery delivery, int value) => Require(Encoding.UTF8.GetString(delivery.Body) == $"{{\"Value\":{value}}}", "Native body or delivery order changed.");
+
+    private static bool MatchesCreation(ActivityContext context)
+    {
+        return context.TraceId.ToString() == "0123456789abcdef0123456789abcdef" && context.SpanId.ToString() == "0123456789abcdef";
+    }
+
+    private static void CheckCreation(Delivery delivery)
+    {
+        Require(delivery.TraceParent == TraceParent && delivery.TraceState == TraceState, "Stored creation context changed.");
+    }
+
+    private static void CheckBody(Delivery delivery, int value)
+    {
+        Require(Encoding.UTF8.GetString(delivery.Body) == $"{{\"Value\":{value}}}", "Native body or delivery order changed.");
+    }
+
     private static void Require(bool condition, string message)
     {
-        if (!condition) throw new InvalidOperationException($"Transport conformance: {message}");
+        if (!condition)
+        {
+            throw new InvalidOperationException($"Transport conformance: {message}");
+        }
     }
+
     private sealed record Delivery(byte[] Body, string? TraceParent, string? TraceState, int? Attempt, DateTimeOffset ReceivedAt);
+
     private sealed class ShutdownProgress
     {
         internal int ConsumerFinished;
         internal int StopFinishedFirst;
         internal Task? StopTask;
     }
+
     private sealed class ScenarioProgress
     {
-        internal string Phase { get; set; } = "scenario setup";
+        internal string Phase
+        {
+            get; set;
+        } = "scenario setup";
     }
 }

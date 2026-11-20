@@ -1,7 +1,7 @@
-using Relayer.Pipeline;
 using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Relayer.Pipeline;
 
 namespace Relayer.Transports;
 
@@ -11,25 +11,81 @@ public sealed class RelayerInstrumentation : IDisposable
 {
     private readonly Meter _meter;
     private readonly ILogger _logger;
-    internal Histogram<double> OperationDuration { get; }
-    internal Histogram<double> ProcessDuration { get; }
-    internal Counter<long> Sent { get; }
-    internal Counter<long> Consumed { get; }
-    internal Histogram<double> CriticalTime { get; }
-    internal Counter<long> Retries { get; }
-    internal Counter<long> DeadLettered { get; }
-    internal UpDownCounter<long> OutboxPending { get; }
-    internal Histogram<double> DispatchLag { get; }
-    internal Counter<long> OutboxPoison { get; }
-    internal Counter<long> Duplicates { get; }
-    internal Gauge<long> ConsumerLag { get; }
-    internal Gauge<int> CircuitState { get; }
+
+    internal Histogram<double> OperationDuration
+    {
+        get;
+    }
+
+    internal Histogram<double> ProcessDuration
+    {
+        get;
+    }
+
+    internal Counter<long> Sent
+    {
+        get;
+    }
+
+    internal Counter<long> Consumed
+    {
+        get;
+    }
+
+    internal Histogram<double> CriticalTime
+    {
+        get;
+    }
+
+    internal Counter<long> Retries
+    {
+        get;
+    }
+
+    internal Counter<long> DeadLettered
+    {
+        get;
+    }
+
+    internal UpDownCounter<long> OutboxPending
+    {
+        get;
+    }
+
+    internal Histogram<double> DispatchLag
+    {
+        get;
+    }
+
+    internal Counter<long> OutboxPoison
+    {
+        get;
+    }
+
+    internal Counter<long> Duplicates
+    {
+        get;
+    }
+
+    internal Gauge<long> ConsumerLag
+    {
+        get;
+    }
+
+    internal Gauge<int> CircuitState
+    {
+        get;
+    }
     private readonly ObservableGauge<long> _outboxDead;
     private readonly ObservableGauge<long> _outboxParked;
     private readonly Lock _depthLock = new();
     private OutboxDepth[] _depths = [];
+
     // Test harness only: committed outbox rows are outstanding work until dispatch settles them.
-    internal IRelayerObserver? Observer { get; set; }
+    internal IRelayerObserver? Observer
+    {
+        get; set;
+    }
 
     /// <summary>Creates instrumentation with an optional application logger factory.</summary>
     public RelayerInstrumentation(ILoggerFactory? loggerFactory = null)
@@ -70,14 +126,25 @@ public sealed class RelayerInstrumentation : IDisposable
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.System);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.OperationName);
-        if (options.ServerPort is { } port) ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
-        if (options.ServerPort > 65535) throw new ArgumentOutOfRangeException(nameof(options), "ServerPort must not exceed 65535.");
+
+        if (options.ServerPort is { } port)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(port);
+        }
+
+        if (options.ServerPort > 65535)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "ServerPort must not exceed 65535.");
+        }
+
         return new(this, options, _logger);
     }
 
     /// <summary>Counts a suppressed duplicate for a stable, application-declared consumer identity.</summary>
     public void RecordInboxDuplicate(string consumer)
-        => Duplicates.Add(1, new KeyValuePair<string, object?>("relayer.consumer", consumer));
+    {
+        Duplicates.Add(1, new KeyValuePair<string, object?>("relayer.consumer", consumer));
+    }
 
     /// <summary>Records this instance's durable outbox row-count delta, across all stores and transports.</summary>
     public void AddOutboxPending(long delta)
@@ -87,10 +154,16 @@ public sealed class RelayerInstrumentation : IDisposable
     }
 
     /// <summary>Records an outbox send attempt's start time minus its durable enqueue time, in seconds.</summary>
-    public void RecordOutboxDispatchLag(TimeSpan elapsed) => DispatchLag.Record(elapsed.TotalSeconds);
+    public void RecordOutboxDispatchLag(TimeSpan elapsed)
+    {
+        DispatchLag.Record(elapsed.TotalSeconds);
+    }
 
     /// <summary>Alerts that an outbox row exhausted its dispatch attempts.</summary>
-    public void RecordOutboxPoison() => OutboxPoison.Add(1);
+    public void RecordOutboxPoison()
+    {
+        OutboxPoison.Add(1);
+    }
 
     internal bool OutboxDepthEnabled => _outboxDead.Enabled || _outboxParked.Enabled;
 
@@ -98,28 +171,49 @@ public sealed class RelayerInstrumentation : IDisposable
     internal OutboxDepth TrackOutboxDepth(string system, string store)
     {
         var depth = new OutboxDepth(this, system, store);
-        lock (_depthLock) _depths = [.. _depths, depth];
+
+        lock (_depthLock)
+        {
+            _depths = [.. _depths, depth];
+        }
+
         return depth;
     }
 
     internal void Untrack(OutboxDepth depth)
     {
-        lock (_depthLock) _depths = Array.FindAll(_depths, other => other != depth);
+        lock (_depthLock)
+        {
+            _depths = Array.FindAll(_depths, other => other != depth);
+        }
     }
 
-    private IEnumerable<Measurement<long>> ObserveDead() => Observe(dead: true);
-    private IEnumerable<Measurement<long>> ObserveParked() => Observe(dead: false);
+    private IEnumerable<Measurement<long>> ObserveDead()
+    {
+        return Observe(dead: true);
+    }
+
+    private IEnumerable<Measurement<long>> ObserveParked()
+    {
+        return Observe(dead: false);
+    }
 
     // A store reports nothing until its first refresh succeeds.
     private List<Measurement<long>> Observe(bool dead)
     {
         var depths = Volatile.Read(ref _depths);
         var measurements = new List<Measurement<long>>(depths.Length);
+
         foreach (var depth in depths)
         {
             var value = dead ? depth.Dead : depth.Parked;
-            if (value >= 0) measurements.Add(new(value, depth.Tags));
+
+            if (value >= 0)
+            {
+                measurements.Add(new(value, depth.Tags));
+            }
         }
+
         return measurements;
     }
 
@@ -131,11 +225,20 @@ public sealed class RelayerInstrumentation : IDisposable
     }
 
     // Redrive makes parked rows outstanding again; they never left the pending row count.
-    internal void RecordOutboxUnparked(long count) => Observer?.OutboxPending(count);
+    internal void RecordOutboxUnparked(long count)
+    {
+        Observer?.OutboxPending(count);
+    }
 
     // Purge deletes parked rows, which the harness already settled when they parked.
-    internal void RecordOutboxParkedPurged(long count) => OutboxPending.Add(-count);
+    internal void RecordOutboxParkedPurged(long count)
+    {
+        OutboxPending.Add(-count);
+    }
 
     /// <summary>Stops publishing every instrument owned by this instance.</summary>
-    public void Dispose() => _meter.Dispose();
+    public void Dispose()
+    {
+        _meter.Dispose();
+    }
 }

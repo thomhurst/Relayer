@@ -28,10 +28,25 @@ public class ServiceBusSendDurationTests
         var pending = batch ? transport.SendBatchAsync(new[] { message, message }, default) : transport.SendAsync(message, default);
         await Assert.That(pending.IsCompleted).IsFalse();
         await Assert.That(capture.Values.Count).IsEqualTo(0);
-        if (fail) sender.Pending.SetException(new ServiceBusException("sensitive detail", ServiceBusFailureReason.ServiceBusy));
-        else sender.Pending.SetResult();
-        if (fail) await Assert.That(async () => await pending).Throws<ServiceBusException>();
-        else await pending;
+
+        if (fail)
+        {
+            sender.Pending.SetException(new ServiceBusException("sensitive detail", ServiceBusFailureReason.ServiceBusy));
+        }
+        else
+        {
+            sender.Pending.SetResult();
+        }
+
+        if (fail)
+        {
+            await Assert.That(async () => await pending).Throws<ServiceBusException>();
+        }
+        else
+        {
+            await pending;
+        }
+
         var duration = capture.Values.Single();
         await Assert.That(duration.Seconds > 0).IsTrue();
         await Assert.That(duration.Tags["messaging.system"]).IsEqualTo("servicebus");
@@ -39,7 +54,11 @@ public class ServiceBusSendDurationTests
         await Assert.That(duration.Tags["messaging.destination.name"]).IsEqualTo("orders");
         await Assert.That(duration.Tags["server.address"]).IsEqualTo(client.FullyQualifiedNamespace);
         await Assert.That(duration.Tags.ContainsKey("error.type")).IsEqualTo(fail);
-        if (fail) await Assert.That(duration.Tags["error.type"]).IsEqualTo("_OTHER");
+
+        if (fail)
+        {
+            await Assert.That(duration.Tags["error.type"]).IsEqualTo("_OTHER");
+        }
     }
 
     [Test]
@@ -79,8 +98,15 @@ public class ServiceBusSendDurationTests
         OutgoingMessage[] messages = [new("orders", new byte[] { 1 }, options: sessionA),
             new("orders", new byte[] { 2 }, options: sessionA), new("orders", new byte[] { 3 }, options: sessionA),
             new("orders", new byte[] { 4 }, options: sessionB), new("events", new byte[] { 5 })];
+
         if (outbox)
-            for (var i = 0; i < messages.Length; i++) messages[i] = messages[i].ForOutboxDispatch();
+        {
+            for (var i = 0; i < messages.Length; i++)
+            {
+                messages[i] = messages[i].ForOutboxDispatch();
+            }
+        }
+
         await transport.SendBatchAsync(messages, default);
         await Assert.That(capture.Values.Count).IsEqualTo(4);
         await Assert.That(capture.Values.Count(value => Equals(value.Tags["messaging.destination.name"], "orders"))).IsEqualTo(3);
@@ -102,8 +128,15 @@ public class ServiceBusSendDurationTests
         await using var transport = Transport(client, tracing);
         client.Senders[0].Failure = new ServiceBusException("sensitive detail", ServiceBusFailureReason.ServiceBusy);
         OutgoingMessage[] messages = [new("orders", new byte[] { 1 }), new("events", new byte[] { 2 })];
+
         if (outbox)
-            for (var i = 0; i < messages.Length; i++) messages[i] = messages[i].ForOutboxDispatch();
+        {
+            for (var i = 0; i < messages.Length; i++)
+            {
+                messages[i] = messages[i].ForOutboxDispatch();
+            }
+        }
+
         await Assert.That(async () => await transport.SendBatchAsync(messages, default)).Throws<ServiceBusException>();
         var duration = capture.Values.Single();
         await Assert.That(duration.Tags["messaging.destination.name"]).IsEqualTo("orders");
@@ -142,7 +175,11 @@ public class ServiceBusSendDurationTests
             builder.AddMessageTypesFromThisAssembly();
             builder.ServiceBus("bus", bus =>
             {
-                bus.Options.Configure(options => { options.Client = client; options.Queues.Add(new("orders")); });
+                bus.Options.Configure(options =>
+                {
+                    options.Client = client;
+                    options.Queues.Add(new("orders"));
+                });
                 bus.Send<ServiceBusSendTests.First>("orders");
             });
         });
@@ -178,17 +215,37 @@ public class ServiceBusSendDurationTests
         {
             InstrumentPublished = (instrument, observer) =>
             {
-                if (listen && ReferenceEquals(instrument.Meter.Scope, instrumentation)) observer.EnableMeasurementEvents(instrument);
+                if (listen && ReferenceEquals(instrument.Meter.Scope, instrumentation))
+                {
+                    observer.EnableMeasurementEvents(instrument);
+                }
             },
         };
-        listener.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
+        listener.SetMeasurementEventCallback<double>(static (_, _, _, _) =>
+        {
+        });
         listener.Start();
-        var send = new SendTracing(tracing, new() { System = "servicebus", Destination = "orders", ServerAddress = "example.servicebus.windows.net" },
+        var send = new SendTracing(tracing, new()
+        {
+            System = "servicebus",
+            Destination = "orders",
+            ServerAddress = "example.servicebus.windows.net"
+        },
             static (_, _) => default, static (_, _) => default);
         await Assert.That(send.StartNativeSend().IsEnabled).IsEqualTo(listen);
-        for (var i = 0; i < 1000; i++) send.StartNativeSend().Complete(failed: (i & 1) == 0);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            send.StartNativeSend().Complete(failed: (i & 1) == 0);
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) send.StartNativeSend().Complete(failed: (i & 1) == 0);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            send.StartNativeSend().Complete(failed: (i & 1) == 0);
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
     }
@@ -197,11 +254,17 @@ public class ServiceBusSendDurationTests
     {
         public bool IsActive => true;
         internal OutgoingMessage Message;
+
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
             // Own the borrowed payload before the send pipeline returns its buffers.
             var headers = record.Message.Headers.ToArray();
-            for (var i = 0; i < headers.Length; i++) headers[i] = new(headers[i].Key, new WireString(headers[i].Value.ToString()));
+
+            for (var i = 0; i < headers.Length; i++)
+            {
+                headers[i] = new(headers[i].Key, new WireString(headers[i].Value.ToString()));
+            }
+
             Message = new(record.Message.Destination, record.Message.Body.ToArray(), headers);
             return default;
         }

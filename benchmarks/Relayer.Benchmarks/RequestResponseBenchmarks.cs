@@ -1,9 +1,9 @@
-using Relayer.Pipeline;
-using BenchmarkDotNet.Attributes;
 using System.Buffers;
+using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
-using Relayer.Transports;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -42,45 +42,107 @@ public class RequestResponseBenchmarks
     }
 
     [Benchmark(Baseline = true)]
-    public ValueTask DirectSend() => _sender.SendAsync(_request);
+    public ValueTask DirectSend()
+    {
+        return _sender.SendAsync(_request);
+    }
 
     [Benchmark]
-    public ValueTask<BenchmarkResponse> RequestReply() => _client.RequestAsync(_request, TimeSpan.FromSeconds(30));
+    public ValueTask<BenchmarkResponse> RequestReply()
+    {
+        return _client.RequestAsync(_request, TimeSpan.FromSeconds(30));
+    }
 
     [GlobalCleanup]
-    public async ValueTask Cleanup() { _scope.Dispose(); await _provider.DisposeAsync(); }
+    public async ValueTask Cleanup()
+    {
+        _scope.Dispose();
+        await _provider.DisposeAsync();
+    }
 
     private sealed class ReplyTransport : ITransport
     {
-        internal Func<OutgoingMessage, ValueTask<Disposition>> Reply { get; set; } = null!;
+        internal Func<OutgoingMessage, ValueTask<Disposition>> Reply
+        {
+            get; set;
+        } = null!;
+
         public string Name => "rpc";
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             foreach (var header in message.Headers.Span)
+            {
                 if (header.Key == "ce_correlationid")
                 {
                     await Reply(message).ConfigureAwait(false);
                     return;
                 }
+            }
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 
     private readonly struct ReplyBinding : IMessageBinding<OutgoingMessage>
     {
-        private static readonly byte[] Body = "{\"Value\":42}"u8.ToArray();
-        public static ReadOnlySequence<byte> GetBody(OutgoingMessage message) => new(Body);
-        public static int? GetDeliveryCount(OutgoingMessage message) => 1;
+        private static readonly byte[] s_body = "{\"Value\":42}"u8.ToArray();
+
+        public static ReadOnlySequence<byte> GetBody(OutgoingMessage message)
+        {
+            return new(s_body);
+        }
+
+        public static int? GetDeliveryCount(OutgoingMessage message)
+        {
+            return 1;
+        }
+
         public static bool TryGetHeader(OutgoingMessage message, string name, out WireString value)
         {
-            if (name == "ce_type") { value = new("benchmark.response;v=1"); return true; }
+            if (name == "ce_type")
+            {
+                value = new("benchmark.response;v=1");
+                return true;
+            }
+
             foreach (var header in message.Headers.Span)
-                if (header.Key == name) { value = header.Value; return true; }
+            {
+                if (header.Key == name)
+                {
+                    value = header.Value;
+                    return true;
+                }
+            }
+
             value = default;
             return false;
         }
@@ -89,5 +151,6 @@ public class RequestResponseBenchmarks
 
 [Message("benchmark.request")]
 public sealed record BenchmarkRequest(int Value);
+
 [Message("benchmark.response")]
 public sealed record BenchmarkResponse(int Value);

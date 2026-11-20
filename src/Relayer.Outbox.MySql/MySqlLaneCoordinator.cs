@@ -15,7 +15,11 @@ internal sealed class MySqlLaneCoordinator : IDisposable
     private readonly MySqlCommand _members;
     private readonly MySqlCommand _acquire;
     private readonly MySqlCommand _release;
-    internal bool[] Assigned { get; }
+
+    internal bool[] Assigned
+    {
+        get;
+    }
 
     internal MySqlLaneCoordinator(MySqlDataSource source, MySqlOrderedDispatchOptions options)
     {
@@ -37,6 +41,7 @@ internal sealed class MySqlLaneCoordinator : IDisposable
         _names = new string[options.Lanes];
         _tokens = new string[options.Lanes];
         Assigned = new bool[options.Lanes];
+
         for (var lane = 0; lane < options.Lanes; lane++)
         {
             _names[lane] = "lane:" + lane.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -51,17 +56,30 @@ internal sealed class MySqlLaneCoordinator : IDisposable
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         _heartbeat.Connection = connection;
         _members.Connection = connection;
+
         try
         {
             await _heartbeat.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             _live.Clear();
             await using var reader = await _members.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) _live.Add(reader.GetString(0));
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                _live.Add(reader.GetString(0));
+            }
+
             var rank = _live.IndexOf(_member);
+
             for (var lane = 0; lane < Assigned.Length; lane++)
+            {
                 Assigned[lane] = rank >= 0 && lane % _live.Count == rank;
+            }
         }
-        finally { _heartbeat.Connection = null; _members.Connection = null; }
+        finally
+        {
+            _heartbeat.Connection = null;
+            _members.Connection = null;
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -75,8 +93,16 @@ internal sealed class MySqlLaneCoordinator : IDisposable
         _acquire.Transaction = transaction;
         _acquire.Parameters["lane"].Value = _names[lane];
         _acquire.Parameters["token"].Value = _tokens[lane];
-        try { return Convert.ToInt32(await _acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) == 1; }
-        finally { _acquire.Transaction = null; _acquire.Connection = null; }
+
+        try
+        {
+            return Convert.ToInt32(await _acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) == 1;
+        }
+        finally
+        {
+            _acquire.Transaction = null;
+            _acquire.Connection = null;
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -85,12 +111,22 @@ internal sealed class MySqlLaneCoordinator : IDisposable
     {
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         _release.Connection = connection;
-        try { await _release.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
-        finally { _release.Connection = null; }
+
+        try
+        {
+            await _release.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _release.Connection = null;
+        }
     }
 
     public void Dispose()
     {
-        _heartbeat.Dispose(); _members.Dispose(); _acquire.Dispose(); _release.Dispose();
+        _heartbeat.Dispose();
+        _members.Dispose();
+        _acquire.Dispose();
+        _release.Dispose();
     }
 }

@@ -20,16 +20,20 @@ internal sealed class ScalarOperation<T>(Func<object?, T> convert) : IValueTaskS
             command.Dispose();
             throw new InvalidOperationException("A PostgreSQL outbox store operation is already active. Await each operation before starting the next.");
         }
+
         _command = command;
+
         try
         {
             _pending = command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false).GetAwaiter();
+
             if (_pending.IsCompleted)
             {
                 var result = convert(_pending.GetResult());
                 Cleanup();
                 return new(result);
             }
+
             _source.Reset();
             var version = _source.Version;
             _pending.UnsafeOnCompleted(_continuation ??= Complete);
@@ -45,6 +49,7 @@ internal sealed class ScalarOperation<T>(Func<object?, T> convert) : IValueTaskS
     private void Complete()
     {
         T result;
+
         try
         {
             result = convert(_pending.GetResult());
@@ -59,6 +64,7 @@ internal sealed class ScalarOperation<T>(Func<object?, T> convert) : IValueTaskS
             _source.SetException(error);
             return;
         }
+
         _source.SetResult(result);
     }
 
@@ -71,10 +77,23 @@ internal sealed class ScalarOperation<T>(Func<object?, T> convert) : IValueTaskS
 
     public T GetResult(short token)
     {
-        try { return _source.GetResult(token); }
-        finally { _command = null; }
+        try
+        {
+            return _source.GetResult(token);
+        }
+        finally
+        {
+            _command = null;
+        }
     }
-    public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
-    public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+
+    public ValueTaskSourceStatus GetStatus(short token)
+    {
+        return _source.GetStatus(token);
+    }
+
+    public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+    {
         _source.OnCompleted(continuation, state, token, flags);
+    }
 }

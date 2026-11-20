@@ -16,7 +16,10 @@ public interface IConsumeTransactionMiddleware : IConsumeMiddleware;
 // A transaction boundary that records an inbox row. Its commit makes a replay of the delivery skip the handler.
 internal interface IConsumeInbox
 {
-    bool Inbox { get; }
+    bool Inbox
+    {
+        get;
+    }
 }
 
 /// <summary>A step in the send pipeline.</summary>
@@ -33,17 +36,32 @@ public interface ISendMiddleware
 public abstract class SendContext
 {
     /// <summary>The outgoing message.</summary>
-    public abstract object Message { get; }
+    public abstract object Message
+    {
+        get;
+    }
 
     /// <summary>The wire identity of the message.</summary>
-    public abstract MessageType MessageType { get; }
+    public abstract MessageType MessageType
+    {
+        get;
+    }
 
     /// <summary>The stable message ID (UUIDv7).</summary>
-    public abstract string MessageId { get; }
+    public abstract string MessageId
+    {
+        get;
+    }
 
     /// <summary>The send options.</summary>
-    public abstract SendOptions Options { get; }
+    public abstract SendOptions Options
+    {
+        get;
+    }
 
     /// <summary>Cancellation for the send.</summary>
-    public abstract CancellationToken CancellationToken { get; }
+    public abstract CancellationToken CancellationToken
+    {
+        get;
+    }
 }

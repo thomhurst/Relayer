@@ -1,7 +1,7 @@
 using System.Diagnostics.Metrics;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer.Tests;
@@ -17,7 +17,10 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
     {
         var data = new StoreData(database, new()
         {
-            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("backoff") + "_", Lanes = 1, MaxDispatchAttempts = 2, RetrySendFailure = static error => error is IOException
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("backoff") + "_",
+            Lanes = 1,
+            MaxDispatchAttempts = 2,
+            RetrySendFailure = static error => error is IOException
         });
         await data.Create();
         var id = Guid.CreateVersion7();
@@ -25,6 +28,7 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
         var transport = new Transport();
         using var ordered = Ordered(data, transport);
         int[] delays = [1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300];
+
         for (var index = 0; index < delays.Length; index++)
         {
             // Unordered fenced mutations use the caller's clock; ordered transactions use SQL's clock.
@@ -49,12 +53,17 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
                 await Assert.That(transport.Calls).IsEqualTo(calls);
                 await Assert.That(await Read(data)).IsEqualTo(row);
             }
+
             await data.Execute($"UPDATE {data.Table} SET deliver_at = DATEADD(second, -1, SYSUTCDATETIME())");
         }
+
         transport.Offline = false;
         // Replacement loses every in-memory buffer and counter. Only the persisted row survives.
         if (mode == "ordered")
+        {
             await data.Execute($"UPDATE {SqlServerOutboxSchema.OrderedLeaseTable(data.Options)} SET expires_at = DATEADD(second, -1, SYSUTCDATETIME())");
+        }
+
         using var replacement = Ordered(data, transport);
         await Dispatch(mode, data, transport, replacement);
         await Assert.That(await Count(data.Table)).IsEqualTo(0L);
@@ -76,7 +85,8 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
         var data = new StoreData(database, new()
         {
             TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("rejected") + "_",
-            Lanes = 1, MaxDispatchAttempts = 2,
+            Lanes = 1,
+            MaxDispatchAttempts = 2,
             RetrySendFailure = throwingClassifier ? static _ => throw new InvalidOperationException("classifier failed") : null
         });
         await data.Create();
@@ -86,8 +96,11 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
         await Dispatch(mode, data, transport, ordered);
         await Assert.That((await Read(data)).Error).IsEqualTo("System.IO.IOException: broker offline");
         await Dispatch(mode, data, transport, ordered);
+
         if (mode == "ordered")
+        {
             await Assert.That((await Read(data)).Status).IsEqualTo("parked");
+        }
         else
         {
             await Assert.That(await Count(data.Table)).IsEqualTo(0L);
@@ -101,7 +114,10 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
     public async Task Poisoned_unordered_row_is_subtracted_from_pending_and_counted_once(string mode)
     {
         var data = new StoreData(database, new()
-        { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("poison") + "_", MaxDispatchAttempts = 1 });
+        {
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("poison") + "_",
+            MaxDispatchAttempts = 1
+        });
         await data.Create();
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
         using var instrumentation = new RelayerInstrumentation();
@@ -110,19 +126,34 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
             if (instrument == instrumentation.OutboxPending || instrument == instrumentation.OutboxPoison)
+            {
                 meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((instrument, value, _, _) =>
             Interlocked.Add(ref instrument == instrumentation.OutboxPending ? ref pending : ref poisoned, value));
         listener.Start();
         var transport = new Transport();
+
         if (mode == "maintenance")
         {
             using var worker = new SqlServerMaintenanceWorker(ConnectionString,
-                new() { TablePrefix = data.Options.TablePrefix, RecoveryDelay = TimeSpan.Zero, MaxDispatchAttempts = 1 },
+                new()
+                {
+                    TablePrefix = data.Options.TablePrefix,
+                    RecoveryDelay = TimeSpan.Zero,
+                    MaxDispatchAttempts = 1
+                },
                 [transport], NullLogger<SqlServerMaintenanceWorker>.Instance, instrumentation: instrumentation);
-            try { await worker.SweepAsync(); }
-            finally { await worker.ReleaseAsync(); }
+
+            try
+            {
+                await worker.SweepAsync();
+            }
+            finally
+            {
+                await worker.ReleaseAsync();
+            }
         }
         else
         {
@@ -139,6 +170,7 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await direct.StopAsync(timeout.Token);
         }
+
         await Assert.That(transport.Calls).IsEqualTo(1);
         await Assert.That(await Count(data.Table)).IsEqualTo(0L);
         await Assert.That(await Count(SqlServerOutboxSchema.DeadTable(data.Options))).IsEqualTo(1L);
@@ -151,7 +183,10 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
     public async Task Retry_mutation_fences_expired_and_replaced_tokens_and_saturates_without_poison()
     {
         var data = new StoreData(database, new()
-        { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("fence") + "_", MaxDispatchAttempts = 1 });
+        {
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("fence") + "_",
+            MaxDispatchAttempts = 1
+        });
         await data.Create();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow);
@@ -186,7 +221,9 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
     public async Task Ordered_retry_rollback_and_stale_claims_cannot_change_a_new_owner()
     {
         var data = new StoreData(database, new()
-        { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("rollback") + "_" });
+        {
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("rollback") + "_"
+        });
         await data.Create();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow, 0, orderedHeaders: true);
@@ -194,13 +231,16 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
         var stale = new OutboxClaim(id, Guid.NewGuid());
         await using var connection = new SqlConnection(ConnectionString);
         await connection.OpenAsync();
+
         await using (var transaction = (SqlTransaction)await connection.BeginTransactionAsync())
         {
             await Assert.That(await lane.ClaimAsync(connection, transaction, stale, default)).IsTrue();
             await Assert.That(await lane.RetryAsync(connection, transaction, stale, "rolled back", default)).IsTrue();
             await transaction.RollbackAsync();
         }
+
         await Assert.That((await Read(data)).Attempts).IsEqualTo(0);
+
         await using (var transaction = (SqlTransaction)await connection.BeginTransactionAsync())
         {
             var live = new OutboxClaim(id, Guid.NewGuid());
@@ -211,6 +251,7 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
             await Assert.That(await lane.RetryAsync(connection, transaction, live, "expired", default)).IsFalse();
             await transaction.CommitAsync();
         }
+
         await Assert.That((await Read(data)).Attempts).IsEqualTo(0);
         var transport = new Transport { Offline = false };
         using var worker = Ordered(data, transport);
@@ -220,20 +261,48 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
 
     private string ConnectionString => new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
 
-    private SqlServerOrderedDispatcher Ordered(StoreData data, Transport transport) => new(ConnectionString,
-        new() { TablePrefix = data.Options.TablePrefix, Lanes = 1, MaxDispatchAttempts = 2, RetrySendFailure = data.Options.RetrySendFailure },
-        [transport], NullLogger<SqlServerOrderedDispatcher>.Instance);
+    private SqlServerOrderedDispatcher Ordered(StoreData data, Transport transport)
+    {
+        return new(ConnectionString,
+                new()
+                {
+                    TablePrefix = data.Options.TablePrefix,
+                    Lanes = 1,
+                    MaxDispatchAttempts = 2,
+                    RetrySendFailure = data.Options.RetrySendFailure
+                },
+                [transport], NullLogger<SqlServerOrderedDispatcher>.Instance);
+    }
 
     private async Task Dispatch(string mode, StoreData data, Transport transport, SqlServerOrderedDispatcher ordered)
     {
-        if (mode == "ordered") { await ordered.DispatchLaneAsync(0, default); return; }
+        if (mode == "ordered")
+        {
+            await ordered.DispatchLaneAsync(0, default);
+            return;
+        }
+
         if (mode == "maintenance")
         {
             using var worker = new SqlServerMaintenanceWorker(ConnectionString,
-                new() { TablePrefix = data.Options.TablePrefix, RecoveryDelay = TimeSpan.Zero, MaxDispatchAttempts = 2, RetrySendFailure = data.Options.RetrySendFailure },
+                new()
+                {
+                    TablePrefix = data.Options.TablePrefix,
+                    RecoveryDelay = TimeSpan.Zero,
+                    MaxDispatchAttempts = 2,
+                    RetrySendFailure = data.Options.RetrySendFailure
+                },
                 [transport], NullLogger<SqlServerMaintenanceWorker>.Instance);
-            try { await worker.SweepAsync(); }
-            finally { await worker.ReleaseAsync(); }
+
+            try
+            {
+                await worker.SweepAsync();
+            }
+            finally
+            {
+                await worker.ReleaseAsync();
+            }
+
             return;
         }
         // Use the actual commit-notification queue and drain it before inspecting durable state.
@@ -241,16 +310,21 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
             .AddRelayerSqlServerDirectDispatch("retry", ConnectionString, data.Options).BuildServiceProvider();
         var direct = services.GetRequiredKeyedService<SqlServerDirectDispatcher>("retry");
         var records = new OutboxRecord[1];
+
         if (await data.Store().ReadPendingAsync(new(null, DateTimeOffset.MaxValue), records, default) == 1)
         {
             // Simulate replay of an old commit notification: its buffer has no retry deadline.
             // Only the database claim predicate can stop this stale buffer from sending too early.
             var record = records[0];
-            record = record with { Message = new(record.Message.Destination, record.Message.Body, record.Message.Headers) };
+            record = record with
+            {
+                Message = new(record.Message.Destination, record.Message.Body, record.Message.Headers)
+            };
             var buffer = new SqlServerBufferedMessage();
             buffer.Copy(record, 1, unordered: true);
             direct.Committed([buffer], 1);
         }
+
         await direct.StartAsync(default);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await direct.StopAsync(timeout.Token);
@@ -287,29 +361,83 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
 
     private sealed class Transport : ITransport
     {
-        internal bool Offline { get; set; } = true;
-        internal int Calls { get; private set; }
-        internal int Sent { get; private set; }
-        internal DateTimeOffset? LastDeliverAt { get; private set; }
-        internal byte[]? LastBody { get; private set; }
+        internal bool Offline
+        {
+            get; set;
+        } = true;
+
+        internal int Calls
+        {
+            get; private set;
+        }
+
+        internal int Sent
+        {
+            get; private set;
+        }
+
+        internal DateTimeOffset? LastDeliverAt
+        {
+            get; private set;
+        }
+
+        internal byte[]? LastBody
+        {
+            get; private set;
+        }
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true, MaxBatchSize = 10 };
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true,
+                MaxBatchSize = 10
+            };
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
         {
             Calls++;
-            if (Offline) return ValueTask.FromException(new IOException("broker offline"));
+
+            if (Offline)
+            {
+                return ValueTask.FromException(new IOException("broker offline"));
+            }
+
             Sent++;
             LastDeliverAt = message.DeliverAt;
             LastBody = message.Body.ToArray();
             return ValueTask.CompletedTask;
         }
+
         public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
         {
-            for (var i = 0; i < messages.Length; i++) await SendAsync(messages.Span[i], token);
+            for (var i = 0; i < messages.Length; i++)
+            {
+                await SendAsync(messages.Span[i], token);
+            }
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken token) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken token) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

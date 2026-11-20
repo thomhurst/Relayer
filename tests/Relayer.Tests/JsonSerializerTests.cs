@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -8,6 +7,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -39,6 +39,7 @@ public class JsonSerializerTests
         var last = first.Append("unt\":42,}"u8.ToArray());
         var source = new ReadOnlySequence<byte>(first, 0, last, last.Memory.Length);
         await Assert.That(read(source)).IsEqualTo(new JsonValue(42));
+
         foreach (var invalid in new[] { "null", "{} {}", "{", "" })
         {
             await Assert.That(() => read(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(invalid))))
@@ -152,6 +153,7 @@ public class JsonSerializerTests
     {
         using var provider = CreateProvider();
         var serializer = provider.GetRequiredService<IMessageSerializer>();
+
         foreach (var json in new[] { "", "{", "{} {}", "null" })
         {
             var source = new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(json));
@@ -197,19 +199,34 @@ public class JsonSerializerTests
     {
         var serializer = new CustomSerializer();
         var services = new ServiceCollection();
+
         if (registrationOrder == 0)
+        {
             services.AddSingleton<IMessageSerializer>(serializer);
+        }
+
         services.AddRelayer(builder =>
         {
             builder.Infrastructure().MessageTypes.Add<JsonValue>("manual");
+
             if (registrationOrder == 1)
+            {
                 builder.Services.AddSingleton<IMessageSerializer>(serializer);
+            }
         });
+
         if (registrationOrder == 2)
+        {
             services.AddSingleton<IMessageSerializer>(serializer);
+        }
+
         using var provider = services.BuildServiceProvider();
+
         foreach (var service in provider.GetServices<IHostedService>())
+        {
             await service.StartAsync(CancellationToken.None);
+        }
+
         await Assert.That(provider.GetRequiredService<IMessageSerializer>()).IsSameReferenceAs(serializer);
     }
 
@@ -242,7 +259,9 @@ public class JsonSerializerTests
         await Assert.That(async () =>
             {
                 foreach (var service in provider.GetServices<IHostedService>())
+                {
                     await service.StartAsync(CancellationToken.None);
+                }
             })
             .Throws<InvalidOperationException>().WithMessageContaining("UseJsonSerializer");
     }
@@ -252,12 +271,19 @@ public class JsonSerializerTests
     {
         using var provider = CreateProvider();
         var hostedServices = provider.GetServices<IHostedService>().ToArray();
+
         foreach (var service in hostedServices)
+        {
             await service.StartAsync(CancellationToken.None);
+        }
+
         var serializer = provider.GetRequiredService<IMessageSerializer>();
         await Assert.That(serializer.ContentType).IsEqualTo("application/json");
+
         foreach (var service in hostedServices.Reverse())
+        {
             await service.StopAsync(CancellationToken.None);
+        }
     }
 
     [Test]
@@ -305,6 +331,7 @@ public class JsonSerializerTests
         var serializer = provider.GetRequiredService<IMessageSerializer>();
         var message = new JsonOrder("<Ada>", 1, []);
         var buffer = new ArrayBufferWriter<byte>();
+
         for (var i = 0; i < 2; i++)
         {
             buffer.Clear();
@@ -326,15 +353,24 @@ public class JsonSerializerTests
             var provider = index % 2 == 0 ? first : second;
             var serializer = provider.GetRequiredService<IMessageSerializer>();
             var buffer = new ArrayBufferWriter<byte>();
+
             for (var count = 0; count < 100; count++)
             {
                 buffer.Clear();
                 serializer.Serialize(new JsonValue(count), buffer);
                 var expectedName = index % 2 == 0 ? "count" : "Count";
+
                 if (Encoding.UTF8.GetString(buffer.WrittenSpan) != $"{{\"{expectedName}\":{count}}}")
+                {
                     throw new InvalidOperationException("Serializer options leaked across providers.");
+                }
+
                 var result = serializer.Deserialize<JsonValue>(new ReadOnlySequence<byte>(buffer.WrittenMemory));
-                if (result.Count != count) throw new InvalidOperationException("Concurrent writer corruption.");
+
+                if (result.Count != count)
+                {
+                    throw new InvalidOperationException("Concurrent writer corruption.");
+                }
             }
         })));
     }
@@ -375,12 +411,17 @@ public class JsonSerializerTests
             .Throws<InvalidOperationException>().WithMessageContaining("UseJsonSerializer");
     }
 
-    private static ServiceProvider CreateProvider(JsonSerializerOptions? options = null) =>
-        new ServiceCollection().AddRelayer(builder => builder.AddMessageTypesFromThisAssembly(options)).BuildServiceProvider();
+    private static ServiceProvider CreateProvider(JsonSerializerOptions? options = null)
+    {
+        return new ServiceCollection().AddRelayer(builder => builder.AddMessageTypesFromThisAssembly(options)).BuildServiceProvider();
+    }
 
     private sealed class Segment : ReadOnlySequenceSegment<byte>
     {
-        public Segment(ReadOnlyMemory<byte> memory) => Memory = memory;
+        public Segment(ReadOnlyMemory<byte> memory)
+        {
+            Memory = memory;
+        }
 
         public Segment Append(ReadOnlyMemory<byte> memory)
         {
@@ -392,15 +433,34 @@ public class JsonSerializerTests
 
     private sealed class ThrowingBuffer : IBufferWriter<byte>
     {
-        public void Advance(int count) => throw new InvalidOperationException("Test write failure.");
-        public Memory<byte> GetMemory(int sizeHint = 0) => throw new InvalidOperationException("Test write failure.");
-        public Span<byte> GetSpan(int sizeHint = 0) => throw new InvalidOperationException("Test write failure.");
+        public void Advance(int count)
+        {
+            throw new InvalidOperationException("Test write failure.");
+        }
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            throw new InvalidOperationException("Test write failure.");
+        }
+
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            throw new InvalidOperationException("Test write failure.");
+        }
     }
 
     private sealed class CustomSerializer : IMessageSerializer
     {
         public string ContentType => "custom";
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

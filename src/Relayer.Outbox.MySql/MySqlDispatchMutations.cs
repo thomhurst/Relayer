@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using MySqlConnector;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
 
@@ -15,9 +15,14 @@ internal sealed class MySqlDispatchMutations(string sql) : IDisposable
     internal void Prepare(ReadOnlySpan<OutboxClaim> claims, DateTimeOffset now, DateTimeOffset expires)
     {
         _batch.BatchCommands.Clear();
+
         for (var i = 0; i < claims.Length; i++)
         {
-            if (i == _rows.Count) _rows.Add(new(sql));
+            if (i == _rows.Count)
+            {
+                _rows.Add(new(sql));
+            }
+
             var row = _rows[i];
             row.Set(claims[i], now, expires);
             _batch.BatchCommands.Add(row.Command);
@@ -30,26 +35,46 @@ internal sealed class MySqlDispatchMutations(string sql) : IDisposable
         CancellationToken cancellationToken)
     {
         _batch.Connection = connection;
+
         try
         {
             await using var reader = await _batch.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             long total = 0;
+
             for (var i = 0; i < _batch.BatchCommands.Count; i++)
             {
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
                     throw new InvalidOperationException("MySQL dispatch mutation did not return its affected-row count.");
+                }
+
                 var count = reader.GetInt64(0);
                 total += count;
-                if (!outcomes.IsEmpty) outcomes.Span[i] = count == 1;
+
+                if (!outcomes.IsEmpty)
+                {
+                    outcomes.Span[i] = count == 1;
+                }
+
                 if (i + 1 < _batch.BatchCommands.Count && !await reader.NextResultAsync(cancellationToken).ConfigureAwait(false))
+                {
                     throw new InvalidOperationException("MySQL dispatch mutation batch ended before all outcomes were returned.");
+                }
             }
+
             return total;
         }
-        finally { _batch.Connection = null; _batch.BatchCommands.Clear(); }
+        finally
+        {
+            _batch.Connection = null;
+            _batch.BatchCommands.Clear();
+        }
     }
 
-    public void Dispose() => _batch.Dispose();
+    public void Dispose()
+    {
+        _batch.Dispose();
+    }
 
     private sealed class Row
     {
@@ -57,15 +82,31 @@ internal sealed class MySqlDispatchMutations(string sql) : IDisposable
         private readonly byte[] _token = new byte[16];
         private readonly char[] _now = new char[26];
         private readonly char[] _expires = new char[26];
-        internal MySqlBatchCommand Command { get; }
+
+        internal MySqlBatchCommand Command
+        {
+            get;
+        }
 
         internal Row(string sql)
         {
             Command = new(sql + "; SELECT ROW_COUNT();");
-            Command.Parameters.Add(new("id", MySqlDbType.Binary) { Value = _id });
-            Command.Parameters.Add(new("token", MySqlDbType.Binary) { Value = _token });
-            Command.Parameters.Add(new("now", MySqlDbType.VarChar) { Value = (ReadOnlyMemory<char>)_now });
-            Command.Parameters.Add(new("expires", MySqlDbType.VarChar) { Value = (ReadOnlyMemory<char>)_expires });
+            Command.Parameters.Add(new("id", MySqlDbType.Binary)
+            {
+                Value = _id
+            });
+            Command.Parameters.Add(new("token", MySqlDbType.Binary)
+            {
+                Value = _token
+            });
+            Command.Parameters.Add(new("now", MySqlDbType.VarChar)
+            {
+                Value = (ReadOnlyMemory<char>)_now
+            });
+            Command.Parameters.Add(new("expires", MySqlDbType.VarChar)
+            {
+                Value = (ReadOnlyMemory<char>)_expires
+            });
         }
 
         internal void Set(OutboxClaim claim, DateTimeOffset now, DateTimeOffset expires)

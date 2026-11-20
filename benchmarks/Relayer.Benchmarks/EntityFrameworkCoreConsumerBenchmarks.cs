@@ -20,13 +20,22 @@ public class EntityFrameworkCoreConsumerBenchmarks
     private ConsumeMessage _message;
 
     [Params(false, true)]
-    public bool NativeRetries { get; set; }
+    public bool NativeRetries
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool ExplicitIsolation { get; set; }
+    public bool ExplicitIsolation
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Tenancy { get; set; }
+    public bool Tenancy
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -34,10 +43,18 @@ public class EntityFrameworkCoreConsumerBenchmarks
         var connection = Environment.GetEnvironmentVariable("RELAYER_BENCHMARK_POSTGRES")
             ?? throw new InvalidOperationException("Set RELAYER_BENCHMARK_POSTGRES to a disposable PostgreSQL benchmark database.");
         var services = new ServiceCollection();
-        if (Tenancy) services.AddRelayerTenancy();
+
+        if (Tenancy)
+        {
+            services.AddRelayerTenancy();
+        }
+
         services.AddDbContext<Context>(o => o.UseNpgsql(connection, n =>
         {
-            if (NativeRetries) n.EnableRetryOnFailure();
+            if (NativeRetries)
+            {
+                n.EnableRetryOnFailure();
+            }
         }));
         services.AddRelayer(r =>
         {
@@ -61,20 +78,37 @@ public class EntityFrameworkCoreConsumerBenchmarks
     }
 
     [GlobalCleanup]
-    public ValueTask Cleanup() => _provider.DisposeAsync();
+    public ValueTask Cleanup()
+    {
+        return _provider.DisposeAsync();
+    }
 
     public sealed class Context(DbContextOptions<Context> options) : DbContext(options);
+
     public sealed class Probe;
+
     public sealed class Handler(Context database) : IHandler<Probe>
     {
         public ValueTask HandleAsync(Probe message, MessageContext context, CancellationToken cancellationToken)
-            => new(database.Database.ExecuteSqlRawAsync("SELECT 1", cancellationToken));
+        {
+            return new(database.Database.ExecuteSqlRawAsync("SELECT 1", cancellationToken));
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Probe _probe = new();
+
         public string ContentType => "benchmark/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_probe;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_probe;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

@@ -19,38 +19,79 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     private readonly HashSet<string> _receiveSources;
     private readonly IReadOnlyList<IConsumerDefinition> _declarations;
     private readonly List<ServiceBusReceiver> _healthReceivers = [];
+
     internal ServiceBusClient Client => _client;
-    internal List<ServiceBusConsumer> Consumers { get; } = [];
-    internal bool HealthTracking { get; set; }
+
+    internal List<ServiceBusConsumer> Consumers
+    {
+        get;
+    } = [];
+
+    internal bool HealthTracking
+    {
+        get; set;
+    }
 
     internal static void ValidateDeclarations(string name, ServiceBusTransportOptions options, IEnumerable<string> destinations)
     {
         var entities = new HashSet<string>(StringComparer.Ordinal);
+
         foreach (var queue in options.Queues)
-            if (!entities.Add(queue.Name)) throw new InvalidOperationException($"Service Bus transport '{name}': duplicate entity '{queue.Name}'.");
+        {
+            if (!entities.Add(queue.Name))
+            {
+                throw new InvalidOperationException($"Service Bus transport '{name}': duplicate entity '{queue.Name}'.");
+            }
+        }
+
         foreach (var topic in options.Topics)
-            if (!entities.Add(topic.Name)) throw new InvalidOperationException($"Service Bus transport '{name}': duplicate entity '{topic.Name}'.");
+        {
+            if (!entities.Add(topic.Name))
+            {
+                throw new InvalidOperationException($"Service Bus transport '{name}': duplicate entity '{topic.Name}'.");
+            }
+        }
+
         foreach (var destination in destinations)
-            if (!entities.Contains(destination)) throw new InvalidOperationException($"Service Bus transport '{name}': destination '{destination}' needs a native queue or topic declaration.");
+        {
+            if (!entities.Contains(destination))
+            {
+                throw new InvalidOperationException($"Service Bus transport '{name}': destination '{destination}' needs a native queue or topic declaration.");
+            }
+        }
+
         foreach (var entity in options.TrustedSessionEntities)
         {
             if (options.Topics.Any(topic => topic.Name == entity))
             {
                 if (options.Subscriptions.FirstOrDefault(subscription => subscription.TopicName == entity && !subscription.RequiresSession) is { } plain)
+                {
                     throw new InvalidOperationException($"Service Bus transport '{name}': TrustedSessionEntities entry '{entity}' asserts that every subscription requires sessions, but subscription '{entity}/Subscriptions/{plain.SubscriptionName}' is declared with RequiresSession=false.");
+                }
+
                 continue;
             }
+
             if (!options.Queues.Any(queue => queue.Name == entity && queue.RequiresSession) &&
                 !options.Subscriptions.Any(subscription => subscription.TopicName + "/Subscriptions/" + subscription.SubscriptionName == entity && subscription.RequiresSession))
+            {
                 throw new InvalidOperationException($"Service Bus transport '{name}': TrustedSessionEntities entry '{entity}' needs a native topic declaration, or a native queue or subscription declaration with RequiresSession=true.");
+            }
         }
+
         var subscriptions = new HashSet<(string, string)>();
+
         foreach (var subscription in options.Subscriptions)
         {
             if (!options.Topics.Any(topic => topic.Name == subscription.TopicName))
+            {
                 throw new InvalidOperationException($"Service Bus transport '{name}': declare topic '{subscription.TopicName}' for subscription '{subscription.SubscriptionName}'.");
+            }
+
             if (!subscriptions.Add((subscription.TopicName, subscription.SubscriptionName)))
+            {
                 throw new InvalidOperationException($"Service Bus transport '{name}': duplicate subscription '{subscription.TopicName}/Subscriptions/{subscription.SubscriptionName}'.");
+            }
         }
     }
 
@@ -66,13 +107,21 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         _declarations = consumers ?? [];
         _receiveSources = consumers is null ? [] : consumers.Select(consumer => consumer.Source).ToHashSet(StringComparer.Ordinal);
         var endpoints = new Dictionary<string, Endpoint>(StringComparer.Ordinal);
+
         foreach (var destination in destinations)
         {
-            if (endpoints.ContainsKey(destination)) continue;
+            if (endpoints.ContainsKey(destination))
+            {
+                continue;
+            }
+
             var queue = options.Queues.SingleOrDefault(item => item.Name == destination);
             var topic = options.Topics.SingleOrDefault(item => item.Name == destination);
+
             if ((queue is null) == (topic is null))
+            {
                 throw new InvalidOperationException($"Service Bus transport '{name}': destination '{destination}' needs exactly one native queue or topic declaration.");
+            }
             // Link attachment cannot establish session requirements. Trust is explicit per native entity.
             var ordered = queue is not null
                 ? queue.RequiresSession && (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(queue.Name))
@@ -82,25 +131,43 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                       (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(item.TopicName + "/Subscriptions/" + item.SubscriptionName)));
             var endpoint = new Endpoint(client.CreateSender(destination), SubjectHeaders(options, destination, routes), IdHeaders(destination, routes),
                 RouteCallbacks(name, destination, routes, types), new()
-            {
-                OrderedByKey = ordered,
-                MaxBatchSize = int.MaxValue,
-                MaxDeliveryDelay = DateTimeOffset.MaxValue - DateTimeOffset.UtcNow,
-                // Receive features and namespace-dependent transaction/size limits are deliberately unresolved.
-            });
+                {
+                    OrderedByKey = ordered,
+                    MaxBatchSize = int.MaxValue,
+                    MaxDeliveryDelay = DateTimeOffset.MaxValue - DateTimeOffset.UtcNow,
+                    // Receive features and namespace-dependent transaction/size limits are deliberately unresolved.
+                });
+
             if (tracing is not null)
-                endpoint.Tracing = new(tracing, new() { System = "servicebus", Destination = destination, ServerAddress = client.FullyQualifiedNamespace },
+            {
+                endpoint.Tracing = new(tracing, new()
+                {
+                    System = "servicebus",
+                    Destination = destination,
+                    ServerAddress = client.FullyQualifiedNamespace
+                },
                     SendCoreAsync, SendBatchCoreAsync, logging?.CreateLogger<ServiceBusSendTransport>(), new("cloudEvents:"));
+            }
+
             endpoints.Add(destination, endpoint);
         }
+
         _endpoints = endpoints.ToFrozenDictionary(StringComparer.Ordinal);
     }
 
     // The CloudEvents type header names of the routes to a destination; their value becomes the native Subject.
     private static string[] SubjectHeaders(ServiceBusTransportOptions options, string destination, IReadOnlyList<IRouteDefinition>? routes)
     {
-        if (!options.SubjectFromMessageType) return [];
-        if (routes is null) return [new HeaderNames("cloudEvents:").Type];
+        if (!options.SubjectFromMessageType)
+        {
+            return [];
+        }
+
+        if (routes is null)
+        {
+            return [new HeaderNames("cloudEvents:").Type];
+        }
+
         return routes.Where(route => route.Destination == destination && route.SendOptions.EnvelopeMode == MessageEnvelopeMode.CloudEvents)
             .Select(route => route.SendOptions.HeaderNames.Type).Distinct(StringComparer.Ordinal).ToArray();
     }
@@ -110,7 +177,12 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     private static string[] IdHeaders(string destination, IReadOnlyList<IRouteDefinition>? routes)
     {
         var standard = new HeaderNames("cloudEvents:").Id;
-        if (routes is null) return [standard];
+
+        if (routes is null)
+        {
+            return [standard];
+        }
+
         return routes.Where(route => route.Destination == destination && route.SendOptions.EnvelopeMode == MessageEnvelopeMode.CloudEvents)
             .Select(route => route.SendOptions.HeaderNames.Id).Append(standard).Distinct(StringComparer.Ordinal).ToArray();
     }
@@ -119,38 +191,81 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     private static ServiceBusRouteCallback[] RouteCallbacks(string name, string destination,
         IReadOnlyList<IRouteDefinition>? routes, MessageTypeRegistry? types)
     {
-        if (routes is null) return [];
+        if (routes is null)
+        {
+            return [];
+        }
+
         List<ServiceBusRouteCallback>? callbacks = null;
+
         foreach (var route in routes)
         {
-            if (route.Destination != destination || route is not ISendRouteDefinition { NativeConfigurator: { } callback }) continue;
+            if (route.Destination != destination || route is not ISendRouteDefinition { NativeConfigurator: { } callback })
+            {
+                continue;
+            }
+
             var location = $"Service Bus transport '{name}': route for '{route.MessageType}' to '{destination}'";
+
             if (callback is not Action<OutgoingMessage, ServiceBusMessage> configure)
+            {
                 throw new InvalidOperationException($"{location}: the native callback is not a Service Bus route callback.");
+            }
+
             if (route.SendOptions.EnvelopeMode != MessageEnvelopeMode.CloudEvents)
+            {
                 throw new InvalidOperationException($"{location}: a native route callback needs the CloudEvents envelope, whose type header identifies the route when stored outbox rows are dispatched.");
+            }
+
             if (types is null || !types.TryGetMessageType(route.MessageType, out var type))
+            {
                 throw new InvalidOperationException($"{location}: register a stable message identity before declaring a native route callback.");
+            }
+
             (callbacks ??= []).Add(new(route.SendOptions.HeaderNames.Type, type.ToString(), configure));
         }
+
         return callbacks?.ToArray() ?? [];
     }
 
-    public string Name { get; }
-    private Endpoint GetEndpoint(string destination) => _endpoints.TryGetValue(destination, out var endpoint) ? endpoint
-        : throw new InvalidOperationException($"Service Bus transport '{Name}': undeclared send destination '{destination}'.");
+    public string Name
+    {
+        get;
+    }
+
+    private Endpoint GetEndpoint(string destination)
+    {
+        return _endpoints.TryGetValue(destination, out var endpoint) ? endpoint
+                : throw new InvalidOperationException($"Service Bus transport '{Name}': undeclared send destination '{destination}'.");
+    }
 
     public TransportCapabilities GetCapabilities(string endpoint)
     {
         if (_receiveSources.Contains(endpoint))
         {
             if (_endpoints.TryGetValue(endpoint, out var send))
-                return send.Capabilities with { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.Zero };
-            return new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.Zero };
+            {
+                return send.Capabilities with
+                {
+                    DeadLetter = true,
+                    MaxRedeliveryDelay = TimeSpan.Zero
+                };
+            }
+
+            return new()
+            {
+                DeadLetter = true,
+                MaxRedeliveryDelay = TimeSpan.Zero
+            };
         }
+
         return GetEndpoint(endpoint).Capabilities;
     }
-    public SendTracing? GetSendTracing(string destination) => GetEndpoint(destination).Tracing;
+
+    public SendTracing? GetSendTracing(string destination)
+    {
+        return GetEndpoint(destination).Tracing;
+    }
 
     public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
     {
@@ -158,8 +273,10 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         return _topology.ApplyAsync(mode, cancellationToken);
     }
 
-    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
-        GetEndpoint(message.Destination).Tracing is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
+    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    {
+        return GetEndpoint(message.Destination).Tracing is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
+    }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -168,28 +285,47 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         Validate(outgoing, cancellationToken);
         var endpoint = GetEndpoint(outgoing.Destination);
         var state = endpoint.Messages.Rent();
+
         try
         {
             state.Prepare(outgoing, endpoint.SubjectHeaders, endpoint.IdHeaders, endpoint.RouteCallbacks);
             endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
             var failed = true;
+
             try
             {
                 await endpoint.Sender.SendMessageAsync(state.Message, cancellationToken).ConfigureAwait(false);
                 failed = false;
             }
-            finally { duration.Complete(failed); }
+            finally
+            {
+                duration.Complete(failed);
+            }
         }
-        finally { endpoint.Return(state); }
+        finally
+        {
+            endpoint.Return(state);
+        }
     }
 
     public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
-        if (messages.IsEmpty) return SendBatchCoreAsync(messages, cancellationToken);
+        if (messages.IsEmpty)
+        {
+            return SendBatchCoreAsync(messages, cancellationToken);
+        }
+
         var destination = messages.Span[0].Destination;
+
         for (var i = 1; i < messages.Length; i++)
-            if (messages.Span[i].Destination != destination) return SendMixedBatchAsync(messages, cancellationToken);
+        {
+            if (messages.Span[i].Destination != destination)
+            {
+                return SendMixedBatchAsync(messages, cancellationToken);
+            }
+        }
+
         return GetEndpoint(destination).Tracing is { } tracing ? tracing.SendBatchAsync(messages, cancellationToken) : SendBatchCoreAsync(messages, cancellationToken);
     }
 
@@ -197,12 +333,22 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendMixedBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
-        for (var i = 0; i < messages.Length; i++) Validate(messages.Span[i], cancellationToken);
+        for (var i = 0; i < messages.Length; i++)
+        {
+            Validate(messages.Span[i], cancellationToken);
+        }
+
         var start = 0;
+
         while (start < messages.Length)
         {
             var end = start + 1;
-            while (end < messages.Length && messages.Span[end].Destination == messages.Span[start].Destination) end++;
+
+            while (end < messages.Length && messages.Span[end].Destination == messages.Span[start].Destination)
+            {
+                end++;
+            }
+
             await SendBatchAsync(messages.Slice(start, end - start), cancellationToken).ConfigureAwait(false);
             start = end;
         }
@@ -214,10 +360,16 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
-        for (var i = 0; i < messages.Length; i++) Validate(messages.Span[i], cancellationToken);
+
+        for (var i = 0; i < messages.Length; i++)
+        {
+            Validate(messages.Span[i], cancellationToken);
+        }
+
         var index = 0;
         ServiceBusSendState? pending = null;
         Endpoint? pendingEndpoint = null;
+
         try
         {
             while (index < messages.Length)
@@ -225,15 +377,18 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                 var destination = messages.Span[index].Destination;
                 var endpoint = GetEndpoint(destination);
                 var admitted = endpoint.Batches.Rent();
+
                 try
                 {
                     using var batch = await endpoint.Sender.CreateMessageBatchAsync(cancellationToken).ConfigureAwait(false);
                     string? session = null;
                     string? partition = null;
                     string? transactionPartition = null;
+
                     while (index < messages.Length && messages.Span[index].Destination == destination)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
+
                         if (pending is null)
                         {
                             pendingEndpoint = endpoint;
@@ -242,13 +397,21 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                         }
                         // Service Bus requires each native batch to share session and partition IDs.
                         if (admitted.Count != 0 && (pending.Message.SessionId != session || pending.Message.PartitionKey != partition ||
-                            pending.Message.TransactionPartitionKey != transactionPartition)) break;
+                            pending.Message.TransactionPartitionKey != transactionPartition))
+                        {
+                            break;
+                        }
+
                         if (!batch.TryAddMessage(pending.Message))
                         {
                             if (admitted.Count == 0)
+                            {
                                 throw new ServiceBusException($"Message for '{messages.Span[index].Destination}' exceeds the native batch byte limit ({batch.MaxSizeInBytes} bytes).", ServiceBusFailureReason.MessageSizeExceeded);
+                            }
+
                             break;
                         }
+
                         session = pending.Message.SessionId;
                         partition = pending.Message.PartitionKey;
                         transactionPartition = pending.Message.TransactionPartitionKey;
@@ -256,49 +419,80 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                         pending = null;
                         index++;
                     }
+
                     endpoint.Tracing?.RecordNativeSend(admitted.Count);
                     var duration = endpoint.Tracing?.StartNativeSend() ?? default;
                     var failed = true;
+
                     try
                     {
                         await endpoint.Sender.SendMessagesAsync(batch, cancellationToken).ConfigureAwait(false);
                         failed = false;
                     }
-                    finally { duration.Complete(failed); }
+                    finally
+                    {
+                        duration.Complete(failed);
+                    }
                 }
                 finally
                 {
                     // The SDK borrows body section arrays through batch disposal, not only TryAddMessage.
-                    foreach (var state in admitted) endpoint.Return(state);
+                    foreach (var state in admitted)
+                    {
+                        endpoint.Return(state);
+                    }
+
                     admitted.Clear();
                     endpoint.Batches.Return(admitted);
                 }
             }
         }
-        finally { if (pending is not null) pendingEndpoint!.Return(pending); }
+        finally
+        {
+            if (pending is not null)
+            {
+                pendingEndpoint!.Return(pending);
+            }
+        }
     }
 
     private void Validate(OutgoingMessage message, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
-        if (message.IsTombstone) throw new NotSupportedException("Service Bus does not support native tombstones.");
+
+        if (message.IsTombstone)
+        {
+            throw new NotSupportedException("Service Bus does not support native tombstones.");
+        }
+
         var endpoint = GetEndpoint(message.Destination);
+
         if (message.OrderingKey is not null && !endpoint.Capabilities.OrderedByKey)
+        {
             throw new InvalidOperationException($"Service Bus destination '{message.Destination}': session ordering is unresolved. Declare RequiresSession on the queue or every topic subscription and use Provision to verify it, or add each entity to TrustedSessionEntities to trust its declaration in Validate/None. For a topic whose subscriptions other applications own, add the topic name to TrustedSessionEntities.");
+        }
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
+
         try
         {
-            foreach (var consumer in Consumers) await consumer.StartAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var consumer in Consumers)
+            {
+                await consumer.StartAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
         catch
         {
-            foreach (var consumer in Consumers) await consumer.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            foreach (var consumer in Consumers)
+            {
+                await consumer.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
             throw;
         }
     }
@@ -311,21 +505,31 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
 
     internal void EnableHealthTracking()
     {
-        if (HealthTracking) return;
+        if (HealthTracking)
+        {
+            return;
+        }
+
         HealthTracking = true;
+
         foreach (var declaration in _declarations)
         {
             var consumer = (ConsumerDefinition<ServiceBusConsumerOptions>)declaration;
             _healthReceivers.Add(consumer.Options.Subscription is { } subscription
                 ? _client.CreateReceiver(consumer.Source, subscription) : _client.CreateReceiver(consumer.Source));
         }
-        foreach (var consumer in Consumers) consumer.TrackHealth = true;
+
+        foreach (var consumer in Consumers)
+        {
+            consumer.TrackHealth = true;
+        }
     }
 
     internal async ValueTask CheckConnectivityAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
+
         foreach (var endpoint in _endpoints)
         {
             // The SDK caches negotiated batch limits. A fresh link is required for each Send-only probe;
@@ -334,51 +538,133 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
             await using var lifetime = sender.ConfigureAwait(false);
             using var batch = await sender.CreateMessageBatchAsync(cancellationToken).ConfigureAwait(false);
         }
+
         foreach (var receiver in _healthReceivers)
+        {
             await receiver.PeekMessageAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
         if (_endpoints.Count == 0 && _healthReceivers.Count == 0)
+        {
             throw new InvalidOperationException($"Service Bus transport '{Name}': declare a send or receive endpoint for a native connectivity probe.");
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         List<Exception>? failures = null;
+
         foreach (var consumer in Consumers)
         {
-            try { await consumer.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception error) { (failures ??= []).Add(error); }
+            try
+            {
+                await consumer.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                (failures ??= []).Add(error);
+            }
         }
+
         foreach (var receiver in _healthReceivers)
         {
-            try { await receiver.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception error) { (failures ??= []).Add(error); }
+            try
+            {
+                await receiver.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                (failures ??= []).Add(error);
+            }
         }
+
         foreach (var endpoint in _endpoints.Values)
         {
-            try { await endpoint.Sender.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception error) { (failures ??= []).Add(error); }
+            try
+            {
+                await endpoint.Sender.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                (failures ??= []).Add(error);
+            }
         }
+
         if (_ownsClient)
         {
-            try { await _client.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception error) { (failures ??= []).Add(error); }
+            try
+            {
+                await _client.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                (failures ??= []).Add(error);
+            }
         }
-        if (failures is { Count: 1 }) ExceptionDispatchInfo.Capture(failures[0]).Throw();
-        if (failures is { Count: > 1 }) throw new AggregateException(failures);
+
+        if (failures is { Count: 1 })
+        {
+            ExceptionDispatchInfo.Capture(failures[0]).Throw();
+        }
+
+        if (failures is { Count: > 1 })
+        {
+            throw new AggregateException(failures);
+        }
     }
 
     private sealed class Endpoint(ServiceBusSender sender, string[] subjectHeaders, string[] idHeaders,
         ServiceBusRouteCallback[] routeCallbacks, TransportCapabilities capabilities)
     {
-        internal ServiceBusSender Sender { get; } = sender;
-        internal string[] SubjectHeaders { get; } = subjectHeaders;
-        internal string[] IdHeaders { get; } = idHeaders;
-        internal ServiceBusRouteCallback[] RouteCallbacks { get; } = routeCallbacks;
-        internal TransportCapabilities Capabilities { get; } = capabilities;
-        internal ServiceBusPool<ServiceBusSendState> Messages { get; } = new(static () => new());
-        internal ServiceBusPool<List<ServiceBusSendState>> Batches { get; } = new(static () => []);
-        internal SendTracing? Tracing { get; set; }
-        internal void Return(ServiceBusSendState state) { state.Clear(); Messages.Return(state); }
+        internal ServiceBusSender Sender
+        {
+            get;
+        } = sender;
+
+        internal string[] SubjectHeaders
+        {
+            get;
+        } = subjectHeaders;
+
+        internal string[] IdHeaders
+        {
+            get;
+        } = idHeaders;
+
+        internal ServiceBusRouteCallback[] RouteCallbacks
+        {
+            get;
+        } = routeCallbacks;
+
+        internal TransportCapabilities Capabilities
+        {
+            get;
+        } = capabilities;
+
+        internal ServiceBusPool<ServiceBusSendState> Messages
+        {
+            get;
+        } = new(static () => new());
+
+        internal ServiceBusPool<List<ServiceBusSendState>> Batches
+        {
+            get;
+        } = new(static () => []);
+
+        internal SendTracing? Tracing
+        {
+            get; set;
+        }
+
+        internal void Return(ServiceBusSendState state)
+        {
+            state.Clear();
+            Messages.Return(state);
+        }
     }
 }

@@ -28,9 +28,19 @@ public class KafkaBindingTests
         // The public native constructor uses caller-owned headers; live fetch batches
         // materialize native snapshots, covered by KafkaHeaderAllocationBenchmarks.
         var incoming = Record(false, false);
-        for (var i = 0; i < 1000; i++) Read(incoming);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            Read(incoming);
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) Read(incoming);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            Read(incoming);
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
         await Assert.That(KafkaMessageBinding.GetBody(incoming).First.Equals(incoming.Result.Value.AsMemory())).IsTrue();
@@ -40,13 +50,19 @@ public class KafkaBindingTests
     public async Task Copies_share_headers_but_replacing_the_record_refreshes_the_view()
     {
         var incoming = Record(false, false);
-        var copy = incoming with { PartitionId = "1" };
+        var copy = incoming with
+        {
+            PartitionId = "1"
+        };
         await Assert.That(ReferenceEquals(copy.Headers, incoming.Headers)).IsTrue();
         var replacement = new KafkaDelivery(incoming.Result, incoming.PartitionId);
         await Assert.That(replacement).IsEqualTo(incoming);
         await Assert.That(replacement.GetHashCode()).IsEqualTo(incoming.GetHashCode());
         var different = Record(true, true);
-        copy = incoming with { Result = different.Result };
+        copy = incoming with
+        {
+            Result = different.Result
+        };
         await Assert.That(ReferenceEquals(copy.Headers, different.Headers)).IsTrue();
         await Assert.That(KafkaMessageBinding.IsTombstone(copy)).IsTrue();
         var (record, partition) = incoming;
@@ -62,7 +78,10 @@ public class KafkaBindingTests
         _ = KafkaMessageBinding.TryGetHeader(incoming, "ce_id", out _);
     }
 
-    private static KafkaDelivery Record(bool nullKey, bool tombstone) => new(new ConsumeResult<byte[], byte[]>(
-        "orders", 0, 42, "customer"u8.ToArray(), nullKey, "{}"u8.ToArray(), tombstone,
-        new Headers().Add("ce_id", "id"), 0, TimestampType.CreateTime, null, Serializers.ByteArray, Serializers.ByteArray), "0");
+    private static KafkaDelivery Record(bool nullKey, bool tombstone)
+    {
+        return new(new ConsumeResult<byte[], byte[]>(
+                "orders", 0, 42, "customer"u8.ToArray(), nullKey, "{}"u8.ToArray(), tombstone,
+                new Headers().Add("ce_id", "id"), 0, TimestampType.CreateTime, null, Serializers.ByteArray, Serializers.ByteArray), "0");
+    }
 }

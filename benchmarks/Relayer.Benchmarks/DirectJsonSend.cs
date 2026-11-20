@@ -15,7 +15,12 @@ internal sealed class DirectJsonSend : IAsyncDisposable
     private readonly ArrayBufferWriter<byte> _buffer = new();
     private readonly MessageEnvelope _envelope;
     internal readonly DirectJsonOrder Order = new(42, "customer-1");
-    internal ISender Sender { get; }
+
+    internal ISender Sender
+    {
+        get;
+    }
+
     internal string ContentType => _serializer.ContentType;
 
     internal DirectJsonSend(RelayerInstrumentation instrumentation, Action<IRelayerBuilder> configure,
@@ -37,7 +42,10 @@ internal sealed class DirectJsonSend : IAsyncDisposable
 
     internal async Task StartAsync()
     {
-        foreach (var transport in _provider.GetServices<ITransport>()) await transport.StartAsync(default);
+        foreach (var transport in _provider.GetServices<ITransport>())
+        {
+            await transport.StartAsync(default);
+        }
     }
 
     internal ReadOnlyMemory<byte> Serialize()
@@ -47,13 +55,22 @@ internal sealed class DirectJsonSend : IAsyncDisposable
         return _buffer.WrittenMemory;
     }
 
-    internal void WriteEnvelope<T, TWriter>(T native) where TWriter : IMessageHeaderWriter<T> =>
+    internal void WriteEnvelope<T, TWriter>(T native) where TWriter : IMessageHeaderWriter<T>
+    {
         _envelope.Write<T, TWriter>(native, MessageEnvelopeMetadata.Create(Activity.Current?.Context ?? default));
+    }
 
     public async ValueTask DisposeAsync()
     {
-        if (_scope is IAsyncDisposable scope) await scope.DisposeAsync();
-        else _scope.Dispose();
+        if (_scope is IAsyncDisposable scope)
+        {
+            await scope.DisposeAsync();
+        }
+        else
+        {
+            _scope.Dispose();
+        }
+
         await _provider.DisposeAsync();
     }
 }

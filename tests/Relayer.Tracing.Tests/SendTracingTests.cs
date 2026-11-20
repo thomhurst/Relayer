@@ -15,7 +15,10 @@ public class SendTracingTests
     [Test]
     public async Task Direct_send_captures_producer_before_serialization_and_restores_ambient()
     {
-        using var fixture = new Fixture(new() { IncludeBodySize = true });
+        using var fixture = new Fixture(new()
+        {
+            IncludeBodySize = true
+        });
         using var ambient = new Activity("request").Start();
         await fixture.Sender.SendWithoutOutboxAsync(fixture.Message);
         var send = fixture.Stopped.Single();
@@ -72,8 +75,8 @@ public class SendTracingTests
     [Test]
     public async Task Raw_context_set_by_middleware_is_linked_before_serialization()
     {
-        const string parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
-        using var fixture = new Fixture(raw: true, middleware: options => options.Headers["traceparent"] = parent);
+        const string Parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        using var fixture = new Fixture(raw: true, middleware: options => options.Headers["traceparent"] = Parent);
         await fixture.Sender.SendWithoutOutboxAsync(fixture.Message);
         var send = fixture.Stopped.Single();
         await Assert.That(send.Kind).IsEqualTo(ActivityKind.Client);
@@ -87,8 +90,16 @@ public class SendTracingTests
     {
         using var fixture = new Fixture();
         using var ambient = new Activity("request").Start();
-        if (serialization) fixture.Serializer.Error = new InvalidOperationException("serialize failed");
-        else fixture.Sink.Error = new InvalidOperationException("native failed");
+
+        if (serialization)
+        {
+            fixture.Serializer.Error = new InvalidOperationException("serialize failed");
+        }
+        else
+        {
+            fixture.Sink.Error = new InvalidOperationException("native failed");
+        }
+
         await Assert.That(async () => await fixture.Sender.SendWithoutOutboxAsync(fixture.Message)).Throws<InvalidOperationException>();
         var send = fixture.Stopped.Single();
         await Assert.That(send.Status).IsEqualTo(ActivityStatusCode.Error);
@@ -120,6 +131,7 @@ public class SendTracingTests
         await Assert.That(send.ParentSpanId).IsEqualTo(ambient.SpanId);
         await Assert.That(send.Kind).IsEqualTo(createSpans ? ActivityKind.Client : ActivityKind.Producer);
         await Assert.That(stopped.Count).IsEqualTo(createSpans ? 3 : 1);
+
         if (createSpans)
         {
             await Assert.That(contexts.Select(context => context.SpanId)).IsEquivalentTo(send.Links.Select(link => link.Context.SpanId));
@@ -130,6 +142,7 @@ public class SendTracingTests
             await Assert.That(contexts.All(context => context.SpanId == send.SpanId)).IsTrue();
             await Assert.That(send.Links).IsEmpty();
         }
+
         await Assert.That(Activity.Current).IsSameReferenceAs(ambient);
     }
 
@@ -146,7 +159,10 @@ public class SendTracingTests
         var seen = new Dictionary<string, string>();
         var options = new SendOptions().ConfigureNative<InMemoryMessage>(native =>
         {
-            foreach (var header in native.Headers.Span) seen[header.Key] = header.Value.ToString();
+            foreach (var header in native.Headers.Span)
+            {
+                seen[header.Key] = header.Value.ToString();
+            }
         });
         await transport.SendAsync(new("orders", new byte[] { 1 }, headers, options: options), default);
         var send = stopped.Single();
@@ -166,8 +182,8 @@ public class SendTracingTests
         var stopped = new List<Activity>();
         using var listener = Listen(tracing, stopped);
         await using var transport = NativeTransport(tracing);
-        const string parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
-        var headers = new[] { new KeyValuePair<string, WireString>("traceparent", new(parent)) };
+        const string Parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        var headers = new[] { new KeyValuePair<string, WireString>("traceparent", new(Parent)) };
         var contexts = new List<ActivityContext>();
         var options = new SendOptions().ConfigureNative<InMemoryMessage>(native => contexts.Add(Read(native.Headers)));
         await transport.SendBatchAsync(new[] { new OutgoingMessage("orders", new byte[] { 1 }, headers, options: options), new("orders", new byte[] { 2 }, options: options) }, default);
@@ -189,7 +205,9 @@ public class SendTracingTests
         var stopped = new List<Activity>();
         using var listener = Listen(tracing, stopped);
         await using var transport = new InMemoryTransport("local", new Dictionary<string, InMemoryEndpointOptions>
-            { ["orders"] = new() { Capacity = 1 } }, tracing: tracing);
+        {
+            ["orders"] = new() { Capacity = 1 }
+        }, tracing: tracing);
         await transport.SendAsync(new("orders", new byte[] { 1 }), default);
         using var ambient = new Activity("request").Start();
         using var cancellation = new CancellationTokenSource();
@@ -224,9 +242,19 @@ public class SendTracingTests
     public async Task No_listener_direct_send_is_allocation_free_after_warmup()
     {
         using var fixture = new Fixture(listen: false);
-        for (var i = 0; i < 100; i++) fixture.Sender.SendWithoutOutboxAsync(fixture.Message).GetAwaiter().GetResult();
+
+        for (var i = 0; i < 100; i++)
+        {
+            fixture.Sender.SendWithoutOutboxAsync(fixture.Message).GetAwaiter().GetResult();
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) fixture.Sender.SendWithoutOutboxAsync(fixture.Message).GetAwaiter().GetResult();
+
+        for (var i = 0; i < 1000; i++)
+        {
+            fixture.Sender.SendWithoutOutboxAsync(fixture.Message).GetAwaiter().GetResult();
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0);
     }
@@ -271,12 +299,26 @@ public class SendTracingTests
     public async Task Native_no_listener_batch_is_allocation_free_after_warmup()
     {
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var send = new SendTracing(tracing, new() { System = "test.native", Destination = "orders" },
+        var send = new SendTracing(tracing, new()
+        {
+            System = "test.native",
+            Destination = "orders"
+        },
             static (_, _) => default, static (_, _) => default);
         var messages = new[] { new OutgoingMessage("orders", new byte[] { 1 }), new("orders", new byte[] { 2 }) };
-        for (var i = 0; i < 100; i++) send.SendBatchAsync(messages).GetAwaiter().GetResult();
+
+        for (var i = 0; i < 100; i++)
+        {
+            send.SendBatchAsync(messages).GetAwaiter().GetResult();
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) send.SendBatchAsync(messages).GetAwaiter().GetResult();
+
+        for (var i = 0; i < 1000; i++)
+        {
+            send.SendBatchAsync(messages).GetAwaiter().GetResult();
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0);
     }
@@ -289,8 +331,16 @@ public class SendTracingTests
         var outbox = new Outbox();
         using var fixture = new Fixture(outbox: outbox);
         using var request = new Activity("request").Start();
-        if (serialization) fixture.Serializer.Error = new InvalidOperationException("serialization failed");
-        else outbox.Error = new InvalidOperationException("enlistment failed");
+
+        if (serialization)
+        {
+            fixture.Serializer.Error = new InvalidOperationException("serialization failed");
+        }
+        else
+        {
+            outbox.Error = new InvalidOperationException("enlistment failed");
+        }
+
         await Assert.That(async () => await fixture.Sender.SendViaOutboxAsync(fixture.Message)).Throws<InvalidOperationException>();
         var create = fixture.Stopped.Single();
         await Assert.That(create.DisplayName).IsEqualTo("create orders");
@@ -306,10 +356,10 @@ public class SendTracingTests
     {
         var outbox = new Outbox();
         using var fixture = new Fixture(raw: true, outbox: outbox);
-        const string parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        const string Parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
         await fixture.Sender.SendViaOutboxAsync(fixture.Message, options =>
         {
-            options.Headers["traceparent"] = parent;
+            options.Headers["traceparent"] = Parent;
             options.Headers["tracestate"] = "vendor=value";
         });
         await Assert.That(fixture.Stopped).IsEmpty();
@@ -322,6 +372,7 @@ public class SendTracingTests
         public bool IsActive => true;
         internal Exception? Error;
         internal ActivityContext Context;
+
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
             Context = Read(record.Message.Headers);
@@ -329,18 +380,29 @@ public class SendTracingTests
         }
     }
 
-    private static InMemoryTransport NativeTransport(MessageTracing tracing, Logger? logger = null) =>
-        new("local", new Dictionary<string, InMemoryEndpointOptions> { ["orders"] = new() }, tracing: tracing,
-            loggerFactory: logger is null ? null : new LoggerFactory(logger));
+    private static InMemoryTransport NativeTransport(MessageTracing tracing, Logger? logger = null)
+    {
+        return new("local", new Dictionary<string, InMemoryEndpointOptions> { ["orders"] = new() }, tracing: tracing,
+                    loggerFactory: logger is null ? null : new LoggerFactory(logger));
+    }
 
     private static ActivityContext Read(ReadOnlyMemory<KeyValuePair<string, WireString>> headers)
     {
         string? parent = null, state = null;
+
         foreach (var header in headers.Span)
         {
-            if (header.Key == "traceparent") parent = header.Value.ToString();
-            if (header.Key == "tracestate") state = header.Value.ToString();
+            if (header.Key == "traceparent")
+            {
+                parent = header.Value.ToString();
+            }
+
+            if (header.Key == "tracestate")
+            {
+                state = header.Value.ToString();
+            }
         }
+
         ActivityContext.TryParse(parent, state, true, out var context);
         return context;
     }
@@ -362,21 +424,55 @@ public class SendTracingTests
         private readonly ServiceProvider _provider;
         private readonly IServiceScope _scope;
         private readonly ActivityListener? _listener;
-        internal List<Activity> Stopped { get; } = [];
-        internal ProbeSerializer Serializer { get; } = new();
-        internal Logger Logger { get; } = new();
-        internal Sink Sink { get; }
-        internal ISender Sender { get; }
-        internal Probe Message { get; } = new();
+
+        internal List<Activity> Stopped
+        {
+            get;
+        } = [];
+
+        internal ProbeSerializer Serializer
+        {
+            get;
+        } = new();
+
+        internal Logger Logger
+        {
+            get;
+        } = new();
+
+        internal Sink Sink
+        {
+            get;
+        }
+
+        internal ISender Sender
+        {
+            get;
+        }
+
+        internal Probe Message
+        {
+            get;
+        } = new();
 
         internal Fixture(TracingOptions? options = null, bool raw = false, bool listen = true, Action<SendOptions>? middleware = null, IOutboxEnlistment? outbox = null)
         {
             var services = new ServiceCollection();
             services.AddSingleton<IMessageSerializer>(Serializer);
-            if (outbox is not null) services.AddSingleton(outbox);
+
+            if (outbox is not null)
+            {
+                services.AddSingleton(outbox);
+            }
+
             services.AddSingleton(Options.Create(options ?? new()));
             services.AddSingleton<ITransport>(provider => new Sink(provider.GetRequiredService<MessageTracing>(), Logger, listen));
-            if (middleware is not null) services.AddSingleton<ISendMiddleware>(new ConfigureMiddleware(middleware));
+
+            if (middleware is not null)
+            {
+                services.AddSingleton<ISendMiddleware>(new ConfigureMiddleware(middleware));
+            }
+
             services.AddRelayer(builder =>
             {
                 builder.Infrastructure().MessageTypes.Add<Probe>("send.probe");
@@ -385,35 +481,63 @@ public class SendTracingTests
             });
             _provider = services.BuildServiceProvider();
             var tracing = _provider.GetRequiredService<MessageTracing>();
-            if (listen) _listener = Listen(tracing, Stopped);
+
+            if (listen)
+            {
+                _listener = Listen(tracing, Stopped);
+            }
+
             _scope = _provider.CreateScope();
             Sender = _scope.ServiceProvider.GetRequiredService<ISender>();
             Sink = (Sink)_provider.GetRequiredService<ITransport>();
         }
 
-        public void Dispose() { _scope.Dispose(); _listener?.Dispose(); _provider.Dispose(); }
+        public void Dispose()
+        {
+            _scope.Dispose();
+            _listener?.Dispose();
+            _provider.Dispose();
+        }
     }
 
     [Message("send.probe")]
     public sealed class Probe;
+
     private sealed class EmptyOptions;
+
     private sealed class ConfigureMiddleware(Action<SendOptions> configure) : ISendMiddleware
     {
-        public ValueTask InvokeAsync(SendContext context, SendDelegate next) { configure(context.Options); return next(context); }
+        public ValueTask InvokeAsync(SendContext context, SendDelegate next)
+        {
+            configure(context.Options);
+            return next(context);
+        }
     }
+
     private sealed class ProbeSerializer : IMessageSerializer
     {
         internal Activity? Current;
         internal Exception? Error;
+
         public string ContentType => "test/probe";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
         {
             Current = Activity.Current;
-            if (Error is not null) throw Error;
+
+            if (Error is not null)
+            {
+                throw Error;
+            }
+
             destination.GetSpan(1)[0] = 42;
             destination.Advance(1);
         }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private sealed class Sink : ITransport, ITransportSendTracing, IDisposable
@@ -421,36 +545,96 @@ public class SendTracingTests
         private readonly SendTracing _tracing;
         private readonly bool _capture;
         internal ActivityContext Context;
-        internal Dictionary<string, string> Headers { get; } = [];
+
+        internal Dictionary<string, string> Headers
+        {
+            get;
+        } = [];
         internal TaskCompletionSource? Completion;
         internal Exception? Error;
+
         internal Sink(MessageTracing tracing, ILogger logger, bool capture)
         {
             _capture = capture;
-            _tracing = new(tracing, new() { System = "test.native", Destination = "orders", ServerAddress = "broker" }, SendCore, BatchCore, logger);
+            _tracing = new(tracing, new()
+            {
+                System = "test.native",
+                Destination = "orders",
+                ServerAddress = "broker"
+            }, SendCore, BatchCore, logger);
         }
+
         public string Name => "sink";
-        public SendTracing GetSendTracing(string destination) => _tracing;
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => _tracing.SendAsync(message, cancellationToken);
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => _tracing.SendBatchAsync(messages, cancellationToken);
+
+        public SendTracing GetSendTracing(string destination)
+        {
+            return _tracing;
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return _tracing.SendAsync(message, cancellationToken);
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return _tracing.SendBatchAsync(messages, cancellationToken);
+        }
+
         private ValueTask SendCore(OutgoingMessage message, CancellationToken cancellationToken)
         {
             if (_capture)
             {
                 Context = Read(message.Headers);
                 Headers.Clear();
-                foreach (var header in message.Headers.Span) Headers[header.Key] = header.Value.ToString();
+
+                foreach (var header in message.Headers.Span)
+                {
+                    Headers[header.Key] = header.Value.ToString();
+                }
             }
-            if (Error is not null) throw Error;
+
+            if (Error is not null)
+            {
+                throw Error;
+            }
+
             return Completion is null ? default : new(Completion.Task);
         }
-        private ValueTask BatchCore(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => default;
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
-        public void Dispose() { }
+
+        private ValueTask BatchCore(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
+
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class Logger : ILogger
@@ -458,16 +642,39 @@ public class SendTracingTests
         internal Exception? Error;
         internal string Message = "";
         internal int Count;
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        { Error = exception; Message = formatter(state, exception); Count++; }
+        {
+            Error = exception;
+            Message = formatter(state, exception);
+            Count++;
+        }
     }
 
     private sealed class LoggerFactory(Logger logger) : ILoggerFactory
     {
-        public ILogger CreateLogger(string categoryName) => logger;
-        public void AddProvider(ILoggerProvider provider) => throw new NotSupportedException();
-        public void Dispose() { }
+        public ILogger CreateLogger(string categoryName)
+        {
+            return logger;
+        }
+
+        public void AddProvider(ILoggerProvider provider)
+        {
+            throw new NotSupportedException();
+        }
+
+        public void Dispose()
+        {
+        }
     }
 }

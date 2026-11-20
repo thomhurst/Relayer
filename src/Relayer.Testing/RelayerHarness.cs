@@ -1,9 +1,9 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Buffers;
-using Relayer.InMemory;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.InMemory;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Testing;
 
@@ -15,7 +15,9 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     private readonly MessageTypeRegistry? _messageTypes;
 
     /// <summary>Creates standalone work tracking. Typed reads require AddRelayerHarness registration.</summary>
-    public RelayerHarness() { }
+    public RelayerHarness()
+    {
+    }
 
     internal RelayerHarness(IServiceProvider services, MessageTypeRegistry messageTypes)
     {
@@ -38,24 +40,82 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     private long _outboxRows;
 
     /// <summary>Successful logical sends, including outbox enlistments and publish/subscribe routes.</summary>
-    public IReadOnlyList<HarnessMessage> Sent { get { lock (_gate) return _sent.ToArray(); } }
+    public IReadOnlyList<HarnessMessage> Sent
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _sent.ToArray();
+            }
+        }
+    }
+
     /// <summary>Successful native sends, including direct outbox dispatch through registered transports.</summary>
-    public IReadOnlyList<HarnessMessage> Dispatched { get { lock (_gate) return _dispatched.ToArray(); } }
+    public IReadOnlyList<HarnessMessage> Dispatched
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _dispatched.ToArray();
+            }
+        }
+    }
+
     /// <summary>Deliveries presented to the consume pipeline, including failed deliveries and redeliveries.</summary>
-    public IReadOnlyList<HarnessMessage> Consumed { get { lock (_gate) return _consumed.ToArray(); } }
+    public IReadOnlyList<HarnessMessage> Consumed
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _consumed.ToArray();
+            }
+        }
+    }
+
     /// <summary>Failed sends, dispatches and consume attempts.</summary>
-    public IReadOnlyList<HarnessFailure> Failed { get { lock (_gate) return _failed.ToArray(); } }
+    public IReadOnlyList<HarnessFailure> Failed
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _failed.ToArray();
+            }
+        }
+    }
+
     /// <summary>Successful native dead-letter operations.</summary>
-    public IReadOnlyList<HarnessDeadLetter> DeadLettered { get { lock (_gate) return _deadLettered.ToArray(); } }
+    public IReadOnlyList<HarnessDeadLetter> DeadLettered
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _deadLettered.ToArray();
+            }
+        }
+    }
 
     /// <summary>Reads successful logical sends of the registered message identity.</summary>
-    public IReadOnlyList<TMessage> GetSent<TMessage>() => ReadMessages<TMessage>(Sent);
+    public IReadOnlyList<TMessage> GetSent<TMessage>()
+    {
+        return ReadMessages<TMessage>(Sent);
+    }
 
     /// <summary>Reads successful native sends of the registered message identity.</summary>
-    public IReadOnlyList<TMessage> GetDispatched<TMessage>() => ReadMessages<TMessage>(Dispatched);
+    public IReadOnlyList<TMessage> GetDispatched<TMessage>()
+    {
+        return ReadMessages<TMessage>(Dispatched);
+    }
 
     /// <summary>Reads consume attempts of the registered message identity, including redeliveries.</summary>
-    public IReadOnlyList<TMessage> GetConsumed<TMessage>() => ReadMessages<TMessage>(Consumed);
+    public IReadOnlyList<TMessage> GetConsumed<TMessage>()
+    {
+        return ReadMessages<TMessage>(Consumed);
+    }
 
     /// <summary>Reads an observation using this provider's serializer for its named transport.</summary>
     /// <remarks>The observation must have the requested registered wire identity. Logical sends return their original object.</remarks>
@@ -63,17 +123,27 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     {
         ArgumentNullException.ThrowIfNull(observation);
         var identity = GetIdentity<TMessage>();
+
         if (!string.Equals(observation.WireType, identity, StringComparison.Ordinal))
+        {
             throw new InvalidOperationException($"The observation has wire type '{observation.WireType}', not '{identity}'.");
+        }
+
         return ReadCore<TMessage>(observation);
     }
 
     private string GetIdentity<TMessage>()
     {
         if (_messageTypes is null)
+        {
             throw new InvalidOperationException("Resolve RelayerHarness from services registered with AddRelayerHarness to use typed reads.");
+        }
+
         if (!_messageTypes.TryGetMessageType(typeof(TMessage), out var identity))
+        {
             throw new InvalidOperationException($"Register message type '{typeof(TMessage)}' with AddMessageTypesFromThisAssembly or MessageTypes.Add before reading observations.");
+        }
+
         return identity.ToString();
     }
 
@@ -81,18 +151,31 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     {
         var identity = GetIdentity<TMessage>();
         var messages = new List<TMessage>();
+
         foreach (var observation in observations)
+        {
             if (string.Equals(observation.WireType, identity, StringComparison.Ordinal)
                 && observation.Matches<TMessage>())
+            {
                 messages.Add(ReadCore<TMessage>(observation));
+            }
+        }
+
         return messages.ToArray();
     }
 
     private TMessage ReadCore<TMessage>(HarnessMessage observation)
     {
-        if (observation.Message is TMessage message) return message;
+        if (observation.Message is TMessage message)
+        {
+            return message;
+        }
+
         if (observation.Message is not null)
+        {
             throw new InvalidOperationException($"The logical observation contains '{observation.Message.GetType()}', not '{typeof(TMessage)}'.");
+        }
+
         var serializer = observation.TransportName is { } name
             ? _services!.GetMessageSerializer(name)
             : _services!.GetRequiredService<IMessageSerializer>();
@@ -104,7 +187,10 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     /// provider's dispatcher sends, discards or poisons it; a retried row stays outstanding. Use TrackWork across external producer gaps.</remarks>
     public Task WaitForIdleAsync(CancellationToken cancellationToken = default)
     {
-        lock (_gate) return _idle.Task.WaitAsync(cancellationToken);
+        lock (_gate)
+        {
+            return _idle.Task.WaitAsync(cancellationToken);
+        }
     }
 
     /// <summary>Waits for a delivery of the registered message identity that the consume pipeline handled successfully, without polling.</summary>
@@ -114,20 +200,31 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     {
         var waiter = new ConsumedWaiter<TMessage>(this, GetIdentity<TMessage>(), predicate);
         HarnessMessage[] handled;
+
         lock (_gate)
         {
             handled = _handled.ToArray();
             _waiters.Add(waiter);
         }
+
         try
         {
             foreach (var observation in handled)
-                if (waiter.TryComplete(observation)) break;
+            {
+                if (waiter.TryComplete(observation))
+                {
+                    break;
+                }
+            }
+
             return await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            lock (_gate) _waiters.Remove(waiter);
+            lock (_gate)
+            {
+                _waiters.Remove(waiter);
+            }
         }
     }
 
@@ -143,7 +240,11 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     {
         lock (_gate)
         {
-            if (_work != 0) throw new InvalidOperationException("Wait for harness idle before calling Reset.");
+            if (_work != 0)
+            {
+                throw new InvalidOperationException("Wait for harness idle before calling Reset.");
+            }
+
             _sent.Clear();
             _dispatched.Clear();
             _consumed.Clear();
@@ -157,17 +258,27 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     async ValueTask ISendMiddleware.InvokeAsync(SendContext context, SendDelegate next)
     {
         WorkStarted();
+
         try
         {
             var operation = (ISendOperation)context;
             var message = new HarnessMessage(context.MessageId, context.MessageType.ToString(), default,
                 operation.TransportName, operation.Destination, message: context.Message, usesOutbox: operation.UsesOutbox,
                 isTombstone: context.Message is ITombstone, tombstoneKey: (context.Message as ITombstone)?.Key);
-            lock (_gate) _identities[context.MessageId] = message;
+
+            lock (_gate)
+            {
+                _identities[context.MessageId] = message;
+            }
+
             try
             {
                 await next(context).ConfigureAwait(false);
-                lock (_gate) _sent.Add(message);
+
+                lock (_gate)
+                {
+                    _sent.Add(message);
+                }
             }
             catch (Exception error)
             {
@@ -175,46 +286,69 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
                 throw;
             }
         }
-        finally { WorkCompleted(); }
+        finally
+        {
+            WorkCompleted();
+        }
     }
 
     async ValueTask IRelayerObserver.ProcessAsync(DefaultMessageContext context, ConsumeDelegate next)
     {
         WorkStarted();
+
         try
         {
             var observation = Snapshot(context);
+
             lock (_gate)
             {
                 _consumed.Add(observation);
                 _failing.Remove(context);
             }
+
             var handled = false;
+
             try
             {
                 await next(context).ConfigureAwait(false);
                 handled = true;
             }
-            finally { Processed(context, observation, handled); }
+            finally
+            {
+                Processed(context, observation, handled);
+            }
         }
-        finally { WorkCompleted(); }
+        finally
+        {
+            WorkCompleted();
+        }
     }
 
     async ValueTask IRelayerObserver.ProcessBatchAsync(ConsumePipeline owner,
         ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken)
     {
         WorkStarted();
+
         try
         {
             var observations = new HarnessMessage[contexts.Length];
-            for (var i = 0; i < observations.Length; i++) observations[i] = Snapshot(contexts.Span[i]);
+
+            for (var i = 0; i < observations.Length; i++)
+            {
+                observations[i] = Snapshot(contexts.Span[i]);
+            }
+
             lock (_gate)
+            {
                 for (var i = 0; i < observations.Length; i++)
                 {
                     _consumed.Add(observations[i]);
                     _failing.Remove(contexts.Span[i]);
                 }
+            }
+
             var handled = false;
+
             try
             {
                 await owner.ProcessBatchCoreAsync(contexts, cancellationToken).ConfigureAwait(false);
@@ -222,25 +356,40 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
             }
             finally
             {
-                for (var i = 0; i < observations.Length; i++) Processed(contexts.Span[i], observations[i], handled);
+                for (var i = 0; i < observations.Length; i++)
+                {
+                    Processed(contexts.Span[i], observations[i], handled);
+                }
             }
         }
-        finally { WorkCompleted(); }
+        finally
+        {
+            WorkCompleted();
+        }
     }
 
-    ConsumeDelegate IRelayerObserver.WrapSettlement(ConsumeDelegate next) => async context =>
+    ConsumeDelegate IRelayerObserver.WrapSettlement(ConsumeDelegate next)
     {
-        var delivery = (DefaultMessageContext)context;
-        var disposition = delivery.ObservedDisposition;
-        await next(context).ConfigureAwait(false);
-        // The in-memory adapter observes actual settlement, including manual native settlement.
-        if (disposition.Kind == DispositionKind.DeadLetter && context.Features.Get<NativeMessage<InMemoryDelivery>>() is null)
-            RecordDeadLetter(Snapshot(delivery), disposition.DeadLetter);
-    };
+        return async context =>
+            {
+                var delivery = (DefaultMessageContext)context;
+                var disposition = delivery.ObservedDisposition;
+                await next(context).ConfigureAwait(false);
+                // The in-memory adapter observes actual settlement, including manual native settlement.
+                if (disposition.Kind == DispositionKind.DeadLetter && context.Features.Get<NativeMessage<InMemoryDelivery>>() is null)
+                {
+                    RecordDeadLetter(Snapshot(delivery), disposition.DeadLetter);
+                }
+            };
+    }
 
     void IRelayerObserver.Failed(DefaultMessageContext context, Exception error)
     {
-        lock (_gate) _failing[context] = context.Attempt;
+        lock (_gate)
+        {
+            _failing[context] = context.Attempt;
+        }
+
         RecordFailure(Snapshot(context), error, HarnessOperation.Consume);
     }
 
@@ -250,16 +399,31 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     private void Processed(DefaultMessageContext context, HarnessMessage observation, bool returned)
     {
         IConsumedWaiter[] waiters;
+
         lock (_gate)
         {
             var finalAttemptFailed = _failing.Remove(context, out var attempt) && attempt == context.Attempt;
+
             if (!returned || finalAttemptFailed || context.Settlement.Request is { Kind: not DispositionKind.Complete } ||
-                context.FailureDisposition is { Kind: not DispositionKind.Complete }) return;
+                context.FailureDisposition is { Kind: not DispositionKind.Complete })
+            {
+                return;
+            }
+
             _handled.Add(observation);
-            if (_waiters.Count == 0) return;
+
+            if (_waiters.Count == 0)
+            {
+                return;
+            }
+
             waiters = _waiters.ToArray();
         }
-        foreach (var waiter in waiters) waiter.TryComplete(observation);
+
+        foreach (var waiter in waiters)
+        {
+            waiter.TryComplete(observation);
+        }
     }
 
     void IRelayerObserver.DeadLettered(InMemoryDelivery delivery, DeadLetterInfo error)
@@ -271,9 +435,12 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
             delivery.Message.Body.ToArray(), delivery.Attempt), error);
     }
 
-    private HarnessMessage Snapshot(DefaultMessageContext context) => Correlate(context.GetLogMessageId(),
-        context.GetLogMessageType(), context.Body.ToArray(), context.Attempt,
-        isTombstone: context.IsTombstone, tombstoneKey: context.TombstoneKey);
+    private HarnessMessage Snapshot(DefaultMessageContext context)
+    {
+        return Correlate(context.GetLogMessageId(),
+                context.GetLogMessageType(), context.Body.ToArray(), context.Attempt,
+                isTombstone: context.IsTombstone, tombstoneKey: context.TombstoneKey);
+    }
 
     internal HarnessMessage Correlate(string? id, string? wireType, ReadOnlyMemory<byte> body, int attempt = 1,
         string? transportName = null, string? destination = null, bool isTombstone = false, WireString? tombstoneKey = null)
@@ -288,25 +455,44 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
 
     internal void RecordDispatch(HarnessMessage message)
     {
-        lock (_gate) _dispatched.Add(message);
+        lock (_gate)
+        {
+            _dispatched.Add(message);
+        }
     }
 
     internal void Remember(HarnessMessage message)
     {
         lock (_gate)
-            if (message.MessageId is { } id) _identities[id] = message;
+        {
+            if (message.MessageId is { } id)
+            {
+                _identities[id] = message;
+            }
+        }
     }
 
     internal void RecordFailure(HarnessMessage message, Exception error, HarnessOperation operation)
     {
-        lock (_gate) _failed.Add(new(message, error, operation));
+        lock (_gate)
+        {
+            _failed.Add(new(message, error, operation));
+        }
     }
 
     private void RecordDeadLetter(HarnessMessage message, DeadLetterInfo error)
     {
         var headers = new KeyValuePair<string, WireString>[error.Headers.Length];
-        for (var i = 0; i < headers.Length; i++) headers[i] = new(error.Headers.Span[i].Key, new WireString(error.Headers.Span[i].Value.ToString()));
-        lock (_gate) _deadLettered.Add(new(message, new(error.Reason, error.Description, headers)));
+
+        for (var i = 0; i < headers.Length; i++)
+        {
+            headers[i] = new(error.Headers.Span[i].Key, new WireString(error.Headers.Span[i].Value.ToString()));
+        }
+
+        lock (_gate)
+        {
+            _deadLettered.Add(new(message, new(error.Reason, error.Description, headers)));
+        }
     }
 
     // A dispatcher can settle a row before its producer reports the commit, so the count may briefly go negative.
@@ -316,24 +502,48 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         {
             var before = _outboxRows;
             _outboxRows += delta;
-            if (before <= 0 && _outboxRows > 0) WorkStarted();
-            else if (before > 0 && _outboxRows <= 0) WorkCompleted();
+
+            if (before <= 0 && _outboxRows > 0)
+            {
+                WorkStarted();
+            }
+            else if (before > 0 && _outboxRows <= 0)
+            {
+                WorkCompleted();
+            }
         }
     }
 
-    void IRelayerObserver.WorkStarted() => WorkStarted();
-    void IRelayerObserver.WorkCompleted() => WorkCompleted();
+    void IRelayerObserver.WorkStarted()
+    {
+        WorkStarted();
+    }
+
+    void IRelayerObserver.WorkCompleted()
+    {
+        WorkCompleted();
+    }
 
     internal void WorkStarted()
     {
         lock (_gate)
-            if (_work++ == 0) _idle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        {
+            if (_work++ == 0)
+            {
+                _idle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
     }
 
     internal void WorkCompleted()
     {
         lock (_gate)
-            if (--_work == 0) _idle.TrySetResult();
+        {
+            if (--_work == 0)
+            {
+                _idle.TrySetResult();
+            }
+        }
     }
 
     private static TaskCompletionSource CompletedSignal()
@@ -353,12 +563,25 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     {
         public bool TryComplete(HarnessMessage observation)
         {
-            if (Task.IsCompleted) return true;
-            if (!string.Equals(observation.WireType, identity, StringComparison.Ordinal) || !observation.Matches<TMessage>()) return false;
+            if (Task.IsCompleted)
+            {
+                return true;
+            }
+
+            if (!string.Equals(observation.WireType, identity, StringComparison.Ordinal) || !observation.Matches<TMessage>())
+            {
+                return false;
+            }
+
             try
             {
                 var message = owner.ReadCore<TMessage>(observation);
-                if (predicate is not null && !predicate(message)) return false;
+
+                if (predicate is not null && !predicate(message))
+                {
+                    return false;
+                }
+
                 TrySetResult(message);
                 return true;
             }
@@ -374,6 +597,10 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     private sealed class WorkLease(RelayerHarness owner) : IDisposable
     {
         private RelayerHarness? _owner = owner;
-        public void Dispose() => Interlocked.Exchange(ref _owner, null)?.WorkCompleted();
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _owner, null)?.WorkCompleted();
+        }
     }
 }

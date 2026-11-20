@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.AmazonSqs;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -25,9 +25,15 @@ public sealed class SqsFailureTests
         var state = new SqsSendState("0");
         state.Prepare(copy, "dead.fifo", true, deadHeader);
         await Assert.That(state.Request.MessageDeduplicationId).IsEqualTo(deadHeader == "ce_id" ? "id" : "native-id");
+
         if (needsFallback)
+        {
             await Assert.That(() => copy.ValidateForOutbox()).Throws<InvalidOperationException>();
-        else copy.ValidateForOutbox();
+        }
+        else
+        {
+            copy.ValidateForOutbox();
+        }
     }
 
     [Test]
@@ -40,8 +46,16 @@ public sealed class SqsFailureTests
         using var client = new SqsReceiveTests.ReceiveClient();
         using var delivery = new SqsDelivery(client, "url.fifo");
         var message = SqsReceiveTests.Message("body", 1);
-        message.MessageAttributes[sourceHeader] = new() { DataType = dataType, StringValue = "42" };
-        message.MessageAttributes[deadHeader] = new() { DataType = dataType, StringValue = "42" };
+        message.MessageAttributes[sourceHeader] = new()
+        {
+            DataType = dataType,
+            StringValue = "42"
+        };
+        message.MessageAttributes[deadHeader] = new()
+        {
+            DataType = dataType,
+            StringValue = "42"
+        };
         message.Attributes["MessageDeduplicationId"] = "native-id";
         message.Attributes["MessageGroupId"] = "group";
         delivery.Prepare(message, TimeProvider.System.GetTimestamp(), null);
@@ -68,7 +82,11 @@ public sealed class SqsFailureTests
         using var client = new SqsReceiveTests.ReceiveClient();
         using var delivery = new SqsDelivery(client, "url.fifo");
         var message = SqsReceiveTests.Message("body", 1);
-        message.MessageAttributes[identityHeader] = new() { DataType = "String", StringValue = identity };
+        message.MessageAttributes[identityHeader] = new()
+        {
+            DataType = "String",
+            StringValue = identity
+        };
         message.Attributes["MessageDeduplicationId"] = "native-id";
         message.Attributes["MessageGroupId"] = "group";
         delivery.Prepare(message, TimeProvider.System.GetTimestamp(), null);
@@ -126,11 +144,20 @@ public sealed class SqsFailureTests
     private sealed class CopyContext : MessageContext
     {
         public override string MessageId => "id";
+
         public override MessageType MessageType => default;
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
+
         public override IServiceProvider Services => throw new NotSupportedException();
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 
@@ -153,8 +180,16 @@ public sealed class SqsFailureTests
         using var host = Host(client);
         await host.StartAsync();
         var message = SqsReceiveTests.Message("{\"Value\":1}", 1);
+
         for (var index = 0; index < 6; index++)
-            message.MessageAttributes.Add("application-" + index, new() { DataType = "String", StringValue = "value" });
+        {
+            message.MessageAttributes.Add("application-" + index, new()
+            {
+                DataType = "String",
+                StringValue = "value"
+            });
+        }
+
         await client.Deliveries.Writer.WriteAsync(message);
         await client.NextPoll.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(client.Deletes).IsEqualTo(0);
@@ -202,24 +237,39 @@ public sealed class SqsFailureTests
     {
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(new SqsReceiveFlociTests.Control());
-        if (scheduler is not null) builder.Services.AddSingleton<IFailureScheduler>(scheduler);
+
+        if (scheduler is not null)
+        {
+            builder.Services.AddSingleton<IFailureScheduler>(scheduler);
+        }
+
         builder.Services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.AmazonSqs("sqs", sqs =>
             {
                 sqs.TopologyMode = TopologyMode.None;
-                sqs.Options.Configure(options => { options.SqsClient = client; options.Queues.Add(new("orders")); options.Queues.Add(new("dead")); });
+                sqs.Options.Configure(options =>
+                {
+                    options.SqsClient = client;
+                    options.Queues.Add(new("orders"));
+                    options.Queues.Add(new("dead"));
+                });
                 sqs.Consume("orders", consumer =>
                 {
                     consumer.Handler<SqsReceiveFlociTests.Handler>();
-                    consumer.Failures(new() { DeadLetterEndpoint = "dead", Jitter = 0,
-                        RedeliveryDelays = scheduler is null ? [] : new[] { TimeSpan.FromHours(13) } });
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = "dead",
+                        Jitter = 0,
+                        RedeliveryDelays = scheduler is null ? [] : new[] { TimeSpan.FromHours(13) }
+                    });
                 });
             });
         });
         return builder.Build();
     }
+
     private sealed class Scheduler : IFailureScheduler
     {
         internal readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -228,9 +278,12 @@ public sealed class SqsFailureTests
         internal string? Destination;
         internal string? Body;
         internal DateTimeOffset? Due;
+
         public async ValueTask ScheduleAsync(string transportName, OutgoingMessage message, CancellationToken token)
         {
-            Transport = transportName; Destination = message.Destination; Due = message.DeliverAt;
+            Transport = transportName;
+            Destination = message.Destination;
+            Due = message.DeliverAt;
             Body = System.Text.Encoding.UTF8.GetString(message.Body.Span);
             Started.SetResult();
             await Commit.Task.WaitAsync(token);

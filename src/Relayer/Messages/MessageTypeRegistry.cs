@@ -54,6 +54,7 @@ public sealed class MessageTypeRegistry
         {
             _jsonTypes.Add(static contexts => ResolveJsonType<TMessage>(contexts));
         }
+
         _byType[typeof(Tombstone<TMessage>)] = identity;
         _byType[typeof(TMessage)] = identity;
         _byName[identity] = typeof(TMessage);
@@ -70,10 +71,12 @@ public sealed class MessageTypeRegistry
     internal JsonMessageType[] CreateJsonTypes(JsonSerializerContext[] contexts)
     {
         var types = new JsonMessageType[_jsonTypes.Count];
+
         for (var i = 0; i < types.Length; i++)
         {
             types[i] = _jsonTypes[i](contexts);
         }
+
         return types;
     }
 
@@ -87,18 +90,23 @@ public sealed class MessageTypeRegistry
                 return new JsonMessageType(JsonMessageType<TMessage>.Key, typeInfo);
             }
         }
+
         throw new InvalidOperationException($"No source-generated JSON metadata exists for '{typeof(TMessage)}'. Call AddMessageTypesFromThisAssembly or UseJsonSerializer with a context covering that message type, or register an IMessageSerializer.");
     }
 
     /// <summary>Gets the identity of <paramref name="type"/>, if registered.</summary>
-    public bool TryGetMessageType(Type type, out MessageType messageType) =>
-        _frozenByType is { } frozen
-            ? frozen.TryGetValue(type, out messageType)
-            : _byType.TryGetValue(type, out messageType);
+    public bool TryGetMessageType(Type type, out MessageType messageType)
+    {
+        return _frozenByType is { } frozen
+                    ? frozen.TryGetValue(type, out messageType)
+                    : _byType.TryGetValue(type, out messageType);
+    }
 
     /// <summary>Gets the CLR type registered for <paramref name="messageType"/>, if any.</summary>
-    public bool TryGetClrType(MessageType messageType, [NotNullWhen(true)] out Type? type) =>
-        _frozenByName is { } frozen
-            ? frozen.TryGetValue(messageType, out type)
-            : _byName.TryGetValue(messageType, out type);
+    public bool TryGetClrType(MessageType messageType, [NotNullWhen(true)] out Type? type)
+    {
+        return _frozenByName is { } frozen
+                    ? frozen.TryGetValue(messageType, out type)
+                    : _byName.TryGetValue(messageType, out type);
+    }
 }

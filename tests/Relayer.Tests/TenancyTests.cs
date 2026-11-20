@@ -1,9 +1,9 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
-using Relayer.Serialization;
-using Relayer.InMemory;
 using Microsoft.Extensions.Hosting;
+using Relayer.InMemory;
+using Relayer.Pipeline;
+using Relayer.Serialization;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -18,7 +18,12 @@ public class TenancyTests
         provider.GetRequiredService<Control>().Invoke = context =>
         {
             var id = context.Services.GetRequiredService<TenantContext>().Id;
-            if (id.Text is not null) throw new InvalidOperationException("Tenant was decoded.");
+
+            if (id.Text is not null)
+            {
+                throw new InvalidOperationException("Tenant was decoded.");
+            }
+
             seen.Add(id.ToString());
             return default;
         };
@@ -41,7 +46,12 @@ public class TenancyTests
         {
             var tenant = context.Services.GetRequiredService<TenantContext>();
             var original = tenant.Id.ToString();
-            if (Interlocked.Increment(ref started) == 2) both.SetResult();
+
+            if (Interlocked.Increment(ref started) == 2)
+            {
+                both.SetResult();
+            }
+
             await both.Task;
             await Assert.That(tenant.Id.ToString()).IsEqualTo(original);
             await context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
@@ -60,9 +70,18 @@ public class TenancyTests
         {
             var tenant = context.Services.GetRequiredService<TenantContext>();
             attempts.Add(tenant.Id.ToString());
-            if (context.Attempt == 1) tenant.Id = new("changed");
+
+            if (context.Attempt == 1)
+            {
+                tenant.Id = new("changed");
+            }
+
             await context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
-            if (context.Attempt == 1) throw new InvalidOperationException("retry");
+
+            if (context.Attempt == 1)
+            {
+                throw new InvalidOperationException("retry");
+            }
         };
         await Receive(provider, retry: true).ProcessAsync(new(new("original")));
         await Assert.That(attempts).IsEquivalentTo(new[] { "original", "original" });
@@ -73,6 +92,7 @@ public class TenancyTests
     public async Task Direct_outbox_and_reply_sends_preserve_tenant_and_reject_overrides()
     {
         await using var provider = Provider(outbox: true);
+
         await using (var scope = provider.CreateAsyncScope())
         {
             scope.ServiceProvider.GetRequiredService<TenantContext>().Id = new("東京"u8.ToArray());
@@ -84,6 +104,7 @@ public class TenancyTests
                 .Throws<InvalidOperationException>().WithMessageContaining("scoped tenant");
             await sender.SendWithoutOutboxAsync(new Payload());
         }
+
         provider.GetRequiredService<Control>().Invoke = context => context.ReplyAsync(new Payload());
         await Receive(provider).ProcessAsync(new(new("reply-tenant")));
         await Assert.That(provider.GetRequiredService<Sink>().Tenants).IsEquivalentTo(new[] { "東京", "東京" });
@@ -139,6 +160,7 @@ public class TenancyTests
             });
         }).Build();
         await host.StartAsync();
+
         try
         {
             using var scope = host.Services.CreateScope();
@@ -147,14 +169,21 @@ public class TenancyTests
                 .RequestAsync(new(42), TimeSpan.FromSeconds(10));
             await Assert.That(response.Value).IsEqualTo(42);
         }
-        finally { await host.StopAsync(); }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 
     public sealed class TenantEchoHandler(TenantContext tenant) : IHandler<RpcRequest>
     {
         public ValueTask HandleAsync(RpcRequest message, MessageContext context, CancellationToken cancellationToken)
         {
-            if (tenant.Id.ToString() != "requester") throw new InvalidOperationException("Request tenant missing.");
+            if (tenant.Id.ToString() != "requester")
+            {
+                throw new InvalidOperationException("Request tenant missing.");
+            }
+
             return context.ReplyAsync(new RpcResponse(message.Value), cancellationToken);
         }
     }
@@ -183,6 +212,7 @@ public class TenancyTests
         provider.GetRequiredService<Control>().RecordConstructors = false;
         var receive = Receive(provider);
         var incoming = new Incoming(new("tenant"u8.ToArray()));
+
         static void NativeScope(ServiceProvider provider, Incoming incoming)
         {
             using var scope = provider.CreateScope();
@@ -190,16 +220,27 @@ public class TenancyTests
             _ = scope.ServiceProvider.GetRequiredService<Handler>();
             _ = provider.GetRequiredService<IMessageSerializer>().Deserialize<Payload>(ReadOnlySequence<byte>.Empty);
         }
+
         for (var i = 0; i < 1000; i++)
         {
             NativeScope(provider, incoming);
             await receive.ProcessAsync(incoming);
         }
+
         var start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) NativeScope(provider, incoming);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            NativeScope(provider, incoming);
+        }
+
         var nativeBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) await receive.ProcessAsync(incoming);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            await receive.ProcessAsync(incoming);
+        }
         // End the measured region before entering assertion infrastructure (including
         // first-use generic initialization), just as for the native control above.
         var receiveBytes = GC.GetAllocatedBytesForCurrentThread() - start;
@@ -213,12 +254,19 @@ public class TenancyTests
         services.AddSingleton<Sink>();
         services.AddSingleton<ITransport>(static p => p.GetRequiredService<Sink>());
         services.AddSingleton<IMessageSerializer, Serializer>();
-        if (tenancy) { services.AddRelayerTenancy(2); services.AddRelayerTenancy(2); }
+
+        if (tenancy)
+        {
+            services.AddRelayerTenancy(2);
+            services.AddRelayerTenancy(2);
+        }
+
         if (outbox)
         {
             services.AddSingleton<Outbox>();
             services.AddScoped<IOutboxEnlistment>(static p => p.GetRequiredService<Outbox>());
         }
+
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
@@ -229,108 +277,233 @@ public class TenancyTests
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
-    private static ConsumePipelineBuilder Builder(ServiceProvider p) => new(p.GetRequiredService<IServiceScopeFactory>(),
-        p.GetRequiredService<MessageTypeRegistry>(), p.GetRequiredService<IMessageSerializer>(), static (_, error, _) => ValueTask.FromException(error));
+    private static ConsumePipelineBuilder Builder(ServiceProvider p)
+    {
+        return new(p.GetRequiredService<IServiceScopeFactory>(),
+                p.GetRequiredService<MessageTypeRegistry>(), p.GetRequiredService<IMessageSerializer>(), static (_, error, _) => ValueTask.FromException(error));
+    }
 
     private static ReceivePipeline<Incoming, Binding> Receive(ServiceProvider p, bool retry = false, Boundary? boundary = null)
     {
         var builder = retry ? new ConsumePipelineBuilder(p.GetRequiredService<IServiceScopeFactory>(), p.GetRequiredService<MessageTypeRegistry>(),
-            p.GetRequiredService<IMessageSerializer>(), new FailurePipeline(p, "sink", "messages", "tenant-consumer", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 })) : Builder(p);
+            p.GetRequiredService<IMessageSerializer>(), new FailurePipeline(p, "sink", "messages", "tenant-consumer", new()
+            {
+                RetryDelays = new[] { TimeSpan.Zero },
+                Jitter = 0
+            })) : Builder(p);
         builder.Handler(p.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>());
-        if (boundary is not null) builder.Use(boundary);
+
+        if (boundary is not null)
+        {
+            builder.Use(boundary);
+        }
+
         return new(builder.Build(2), new(), 2);
     }
 
     [Message("tests.tenant")]
     public sealed class Payload;
+
     public sealed class Handler : IHandler<Payload>
     {
         private readonly Control _control;
+
         public Handler(Control control, TenantContext? tenant = null)
         {
             _control = control;
+
             if (control.RecordConstructors)
-                lock (control.ConstructorTenants) control.ConstructorTenants.Add(tenant?.Id.ToString() ?? "");
+            {
+                lock (control.ConstructorTenants)
+                {
+                    control.ConstructorTenants.Add(tenant?.Id.ToString() ?? "");
+                }
+            }
         }
-        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => _control.Invoke(context);
+
+        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return _control.Invoke(context);
+        }
     }
+
     public sealed class BatchHandler : IBatchHandler<Payload>
     {
-        public ValueTask<BatchResult> HandleAsync(Batch<Payload> message, CancellationToken cancellationToken) => ValueTask.FromResult(BatchResult.Success);
+        public ValueTask<BatchResult> HandleAsync(Batch<Payload> message, CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(BatchResult.Success);
+        }
     }
+
     public sealed class Control
     {
-        public bool RecordConstructors { get; set; } = true;
-        public List<string> ConstructorTenants { get; } = [];
-        public Func<MessageContext, ValueTask> Invoke { get; set; } = static _ => default;
+        public bool RecordConstructors
+        {
+            get; set;
+        } = true;
+
+        public List<string> ConstructorTenants
+        {
+            get;
+        } = [];
+
+        public Func<MessageContext, ValueTask> Invoke
+        {
+            get; set;
+        } = static _ => default;
     }
+
     private sealed class Boundary : IConsumeTransactionMiddleware
     {
-        internal List<string> Seen { get; } = [];
+        internal List<string> Seen
+        {
+            get;
+        } = [];
+
         public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
         {
             Seen.Add(context.Services.GetRequiredService<TenantContext>().Id.ToString());
             return next(context);
         }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _message = new();
+
         public string ContentType => "application/json";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_message;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => destination.Write("{}"u8);
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_message;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            destination.Write("{}"u8);
+        }
     }
+
     private sealed class Incoming(WireString tenant)
     {
-        internal WireString Tenant { get; } = tenant;
+        internal WireString Tenant
+        {
+            get;
+        } = tenant;
         internal int TenantReads;
     }
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => ReadOnlySequence<byte>.Empty;
-        public static int? GetDeliveryCount(Incoming message) => 1;
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return ReadOnlySequence<byte>.Empty;
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
-            if (name == TenantContext.HeaderName) message.TenantReads++;
+            if (name == TenantContext.HeaderName)
+            {
+                message.TenantReads++;
+            }
+
             value = name switch
             {
                 TenantContext.HeaderName => message.Tenant,
-                "ce_type" => new("tests.tenant;v=1"), "ce_id" => new("id"),
-                "ce_replyto" => new("messages"), "ce_correlationid" => new("correlation"), _ => default
+                "ce_type" => new("tests.tenant;v=1"),
+                "ce_id" => new("id"),
+                "ce_replyto" => new("messages"),
+                "ce_correlationid" => new("correlation"),
+                _ => default
             };
             return !value.IsEmpty;
         }
     }
+
     private static string ReadTenant(OutgoingMessage message)
     {
         foreach (var header in message.Headers.Span)
-            if (header.Key == TenantContext.HeaderName) return header.Value.ToString();
+        {
+            if (header.Key == TenantContext.HeaderName)
+            {
+                return header.Value.ToString();
+            }
+        }
+
         return "";
     }
+
     private sealed class Outbox : IOutboxEnlistment
     {
         public bool IsActive => true;
-        internal List<string> Tenants { get; } = [];
+
+        internal List<string> Tenants
+        {
+            get;
+        } = [];
+
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
             Tenants.Add(ReadTenant(record.Message));
             return default;
         }
     }
+
     private sealed class Sink : ITransport
     {
         public string Name => "sink";
-        internal List<string> Tenants { get; } = [];
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { DeadLetter = true };
+
+        internal List<string> Tenants
+        {
+            get;
+        } = [];
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                DeadLetter = true
+            };
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            lock (Tenants) Tenants.Add(ReadTenant(message));
+            lock (Tenants)
+            {
+                Tenants.Add(ReadTenant(message));
+            }
+
             return default;
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

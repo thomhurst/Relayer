@@ -1,10 +1,10 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.AzureServiceBus;
 
@@ -23,14 +23,20 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
         return Task.CompletedTask;
     }
 
-    protected override Task StartConsumersAsync(CancellationToken cancellationToken) => _transport!.StartAsync(cancellationToken);
+    protected override Task StartConsumersAsync(CancellationToken cancellationToken)
+    {
+        return _transport!.StartAsync(cancellationToken);
+    }
 
-    protected override Task StopConsumersAsync(CancellationToken cancellationToken) =>
-        _transport?.StopAsync(cancellationToken) ?? Task.CompletedTask;
+    protected override Task StopConsumersAsync(CancellationToken cancellationToken)
+    {
+        return _transport?.StopAsync(cancellationToken) ?? Task.CompletedTask;
+    }
 
     private void Compose()
     {
         _transport ??= provider.GetRequiredKeyedService<ServiceBusSendTransport>(name);
+
         if (!_composed)
         {
             var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
@@ -38,12 +44,15 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
             var handlers = provider.GetRequiredService<HandlerRegistry>();
             // Publish only a complete set, so a retried start cannot compose a consumer twice.
             var receivers = new List<ServiceBusConsumer>(definition.Consumers.Count);
+
             foreach (var declaration in definition.Consumers)
             {
                 var consumer = (ConsumerDefinition<ServiceBusConsumerOptions>)declaration;
                 var endpoint = new MessagingEndpoint
                 {
-                    System = "servicebus", Destination = consumer.Source, Subscription = consumer.Options.Subscription,
+                    System = "servicebus",
+                    Destination = consumer.Source,
+                    Subscription = consumer.Options.Subscription,
                     ServerAddress = _transport.Client.FullyQualifiedNamespace,
                 };
                 var settlement = new ServiceBusSettlement(tracing, endpoint);
@@ -55,17 +64,27 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                     consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>());
                 var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
                 {
-                    System = "servicebus", Destination = consumer.Source, Subscription = consumer.Options.Subscription,
+                    System = "servicebus",
+                    Destination = consumer.Source,
+                    Subscription = consumer.Options.Subscription,
                     ServerAddress = endpoint.ServerAddress,
                 });
                 pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(settlement.SettleAsync);
                 pipeline.ConfigureConsumer(provider, consumer).UseTransportMiddleware(settlement);
+
                 foreach (var handler in handlers.Descriptors)
-                    if (consumer.Selects(handler)) pipeline.Handler(handler);
+                {
+                    if (consumer.Selects(handler))
+                    {
+                        pipeline.Handler(handler);
+                    }
+                }
+
                 var composed = pipeline.Build(consumer.Concurrency);
                 var logger = provider.GetService<ILoggerFactory>()?.CreateLogger<ServiceBusConsumer>();
                 var time = provider.GetService<TimeProvider>();
                 ServiceBusConsumer receiver;
+
                 if (consumer.Options.SessionProcessorOptions is { } sessionOptions)
                 {
                     var receive = new ReceivePipeline<ProcessSessionMessageEventArgs, ServiceBusSessionMessageBinding>(composed,
@@ -84,10 +103,16 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                         : _transport.Client.CreateProcessor(consumer.Source, consumer.Options.ProcessorOptions);
                     receiver = new(consumer, native, receive.ProcessSettledAsync, time, logger);
                 }
-                if (consumer.Options.CircuitBreaker is { } circuit) receiver.ConfigureCircuit(circuit, composed, telemetry);
+
+                if (consumer.Options.CircuitBreaker is { } circuit)
+                {
+                    receiver.ConfigureCircuit(circuit, composed, telemetry);
+                }
+
                 receiver.TrackHealth = _transport.HealthTracking;
                 receivers.Add(receiver);
             }
+
             _transport.Consumers.AddRange(receivers);
             _composed = true;
         }

@@ -32,11 +32,16 @@ public class FailureConsumePipelineBenchmarks
     private readonly DirectContext _direct = new();
     private readonly ConsumeMessage _message = new()
     {
-        MessageId = "benchmark", MessageType = new("benchmark.failure-consume", 1), Body = ReadOnlySequence<byte>.Empty,
+        MessageId = "benchmark",
+        MessageType = new("benchmark.failure-consume", 1),
+        Body = ReadOnlySequence<byte>.Empty,
     };
 
     [Params(false, true)]
-    public bool SuspendHandler { get; set; }
+    public bool SuspendHandler
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -59,7 +64,9 @@ public class FailureConsumePipelineBenchmarks
         var endpoint = new MessagingEndpoint { System = "relayer.inmemory", Destination = "source", ConsumerGroup = "consumer" };
         var telemetry = _provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
         {
-            System = endpoint.System, Destination = endpoint.Destination, ConsumerGroup = endpoint.ConsumerGroup,
+            System = endpoint.System,
+            Destination = endpoint.Destination,
+            ConsumerGroup = endpoint.ConsumerGroup,
         });
         var failures = new FailurePipeline(_provider, "benchmark", "source", "consumer");
         _explicit = new ConsumePipelineBuilder(scopes, types, _serializer,
@@ -80,10 +87,16 @@ public class FailureConsumePipelineBenchmarks
     }
 
     [Benchmark]
-    public void ExplicitFailureDelegate() => Consume(_explicit);
+    public void ExplicitFailureDelegate()
+    {
+        Consume(_explicit);
+    }
 
     [Benchmark]
-    public void ProductionFailurePipeline() => Consume(_failures);
+    public void ProductionFailurePipeline()
+    {
+        Consume(_failures);
+    }
 
     private void Consume(ConsumePipeline pipeline)
     {
@@ -95,57 +108,118 @@ public class FailureConsumePipelineBenchmarks
     {
         if (SuspendHandler)
         {
-            if (pending.IsCompleted) throw new InvalidOperationException("Handler must suspend before completion.");
+            if (pending.IsCompleted)
+            {
+                throw new InvalidOperationException("Handler must suspend before completion.");
+            }
+
             _completion.Complete();
         }
-        if (!pending.IsCompleted) throw new InvalidOperationException("Dispatch must finish when its handler completes.");
+
+        if (!pending.IsCompleted)
+        {
+            throw new InvalidOperationException("Dispatch must finish when its handler completes.");
+        }
+
         pending.GetAwaiter().GetResult();
     }
 
     [GlobalCleanup]
-    public Task Cleanup() => _provider.DisposeAsync().AsTask();
+    public Task Cleanup()
+    {
+        return _provider.DisposeAsync().AsTask();
+    }
 
     public sealed class Payload;
 
     public sealed class Handler(Completion completion) : IHandler<Payload>
     {
-        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => completion.Wait();
+        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return completion.Wait();
+        }
     }
 
     public sealed class Completion : IValueTaskSource
     {
         private ManualResetValueTaskSourceCore<bool> _source;
-        internal bool Suspend { get; set; }
+
+        internal bool Suspend
+        {
+            get; set;
+        }
+
         internal ValueTask Wait()
         {
-            if (!Suspend) return default;
+            if (!Suspend)
+            {
+                return default;
+            }
+
             _source.Reset();
             return new(this, _source.Version);
         }
-        internal void Complete() => _source.SetResult(true);
-        public void GetResult(short token) => _source.GetResult(token);
-        public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
+
+        internal void Complete()
+        {
+            _source.SetResult(true);
+        }
+
+        public void GetResult(short token)
+        {
+            _source.GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _source.GetStatus(token);
+        }
+
         public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
-            => _source.OnCompleted(continuation, state, token, flags);
+        {
+            _source.OnCompleted(continuation, state, token, flags);
+        }
     }
 
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "benchmark/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private sealed class DirectContext : MessageContext
     {
-        internal IServiceProvider Provider { get; set; } = null!;
+        internal IServiceProvider Provider
+        {
+            get; set;
+        } = null!;
+
         public override string MessageId => "benchmark";
+
         public override MessageType MessageType => new("benchmark.failure-consume", 1);
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
+
         public override IServiceProvider Services => Provider;
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

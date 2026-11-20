@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Buffers;
 using System.Text;
 using Dekaf;
@@ -7,12 +6,16 @@ using Dekaf.Consumer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.Kafka.Tests;
 
 public class KafkaDeadLetterTests
 {
-    private static string Topic() => TestContext.Current!.Isolation.GetIsolatedName("deadletter").ToLowerInvariant();
+    private static string Topic()
+    {
+        return TestContext.Current!.Isolation.GetIsolatedName("deadletter").ToLowerInvariant();
+    }
 
     [Test]
     public async Task Named_registration_lists_only_configured_topics_and_validates_requests_before_IO()
@@ -33,8 +36,22 @@ public class KafkaDeadLetterTests
         var services = new ServiceCollection();
         services.AddRelayer(r => r.Kafka("events", kafka =>
         {
-            kafka.Consume("one", c => { c.Failures(new() { DeadLetterEndpoint = "shared" }); c.Handler<TombstoneValueHandler>(); });
-            kafka.Consume("two", c => { c.Failures(new() { DeadLetterEndpoint = "shared" }); c.Handler<TombstoneValueHandler>(); });
+            kafka.Consume("one", c =>
+            {
+                c.Failures(new()
+                {
+                    DeadLetterEndpoint = "shared"
+                });
+                c.Handler<TombstoneValueHandler>();
+            });
+            kafka.Consume("two", c =>
+            {
+                c.Failures(new()
+                {
+                    DeadLetterEndpoint = "shared"
+                });
+                c.Handler<TombstoneValueHandler>();
+            });
         }));
         await using var provider = services.BuildServiceProvider();
         await Assert.That(() => provider.GetRequiredKeyedService<IDeadLetterManager>("events"))
@@ -144,19 +161,30 @@ public class KafkaDeadLetterTests
         await admin.CreatePartitionsAsync(new Dictionary<string, int> { [source] = 3 }, token);
         await using var producer = new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).Build();
         await producer.InitializeAsync(token);
+
         for (var partition = 1; partition <= 2; partition++)
+        {
             await producer.ProduceAsync(new Dekaf.Producer.ProducerMessage<byte[], byte[]>
-            { Topic = source, Partition = partition, Key = [], Value = [(byte)partition] }, token);
+            {
+                Topic = source,
+                Partition = partition,
+                Key = [],
+                Value = [(byte)partition]
+            }, token);
+        }
+
         await using var provider = Provider(fixture.Bootstrap, fixture.Destination);
         var manager = provider.GetRequiredKeyedService<IDeadLetterManager>("events");
         string? cursor = null;
         var records = new List<DeadLetterMessage>();
+
         do
         {
             var page = await manager.PeekAsync(source, 1, cursor, token);
             records.AddRange(page.Messages);
             cursor = page.NextCursor;
         } while (cursor is not null);
+
         await Assert.That(records.Count).IsEqualTo(2);
         // EOF events must not consume the record limit and starve nonempty partitions.
         await Assert.That(await manager.RedriveAsync(source, maxMessages: 1, cancellationToken: token)).IsEqualTo(1);
@@ -221,11 +249,16 @@ public class KafkaDeadLetterTests
     private sealed class FailingSerializer : ISerializer<(ReadOnlyMemory<byte> Body, Headers Headers)?>
     {
         public void Serialize<TWriter>((ReadOnlyMemory<byte> Body, Headers Headers)? value, ref TWriter destination,
-            SerializationContext context) where TWriter : IBufferWriter<byte>, allows ref struct =>
+            SerializationContext context) where TWriter : IBufferWriter<byte>, allows ref struct
+        {
             throw new InvalidOperationException("send failed");
+        }
     }
 
-    private static string OrdinaryGroup(string destination) => destination + "-ordinary";
+    private static string OrdinaryGroup(string destination)
+    {
+        return destination + "-ordinary";
+    }
 
     private static ServiceProvider Provider(string bootstrap, string destination, bool failSend = false, bool slowFetch = false)
     {
@@ -239,11 +272,23 @@ public class KafkaDeadLetterTests
                 o.ConfigureConsumer = native =>
                 {
                     native.WithGroupId(group);
-                    if (slowFetch) native.WithFetchMinBytes(1_000_000).WithFetchMaxWait(TimeSpan.FromSeconds(3));
+
+                    if (slowFetch)
+                    {
+                        native.WithFetchMinBytes(1_000_000).WithFetchMaxWait(TimeSpan.FromSeconds(3));
+                    }
                 };
-                if (failSend) o.ConfigureProducer = native => native.WithValueSerializer(new FailingSerializer());
+
+                if (failSend)
+                {
+                    o.ConfigureProducer = native => native.WithValueSerializer(new FailingSerializer());
+                }
             });
-            kafka.Consume(destination, c => { c.Options.Group = group; c.Handler<TombstoneValueHandler>(); });
+            kafka.Consume(destination, c =>
+            {
+                c.Options.Group = group;
+                c.Handler<TombstoneValueHandler>();
+            });
         }));
         return services.BuildServiceProvider();
     }

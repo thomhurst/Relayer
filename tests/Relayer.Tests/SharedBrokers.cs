@@ -1,5 +1,5 @@
-using DotNet.Testcontainers.Builders;
 using Azure.Messaging.ServiceBus.Administration;
+using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Images;
 using DotNet.Testcontainers.Networks;
@@ -12,15 +12,34 @@ namespace Relayer.Tests;
 // run starts only what it needs, and tests isolate themselves inside it.
 public static class SharedBrokers
 {
-    internal static SessionResource<IContainer> RabbitMq { get; } = new(() => StartRabbitMqAsync(false));
-    internal static SessionResource<IContainer> RabbitMqWithDelayedPlugin { get; } = new(() => StartRabbitMqAsync(true));
+    internal static SessionResource<IContainer> RabbitMq
+    {
+        get;
+    } = new(() => StartRabbitMqAsync(false));
 
-    internal static SessionResource<IContainer> Floci { get; } = new(async () =>
+    internal static SessionResource<IContainer> RabbitMqWithDelayedPlugin
+    {
+        get;
+    } = new(() => StartRabbitMqAsync(true));
+
+    internal static SessionResource<IContainer> Floci
+    {
+        get;
+    } = new(async () =>
     {
         using var provisioning = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var container = CreateFlociContainer();
-        try { await container.StartAsync(provisioning.Token); return container; }
-        catch { await container.DisposeAsync(); throw; }
+
+        try
+        {
+            await container.StartAsync(provisioning.Token);
+            return container;
+        }
+        catch
+        {
+            await container.DisposeAsync();
+            throw;
+        }
     });
 
     internal static async Task<string> FlociUrlAsync(CancellationToken token)
@@ -32,7 +51,9 @@ public static class SharedBrokers
     private const int FlociPort = 4566;
 
     internal static string GetFlociUrl(IContainer container)
-        => $"http://{container.Hostname}:{container.GetMappedPublicPort(FlociPort)}";
+    {
+        return $"http://{container.Hostname}:{container.GetMappedPublicPort(FlociPort)}";
+    }
 
     internal static IContainer CreateFlociContainer()
     {
@@ -41,11 +62,19 @@ public static class SharedBrokers
             .WithPortBinding(FlociPort, true)
             .WithWaitStrategy(Wait.ForUnixContainer()
                 .UntilHttpRequestIsSucceeded(request => request.ForPort(FlociPort).ForPath("/health")));
-        if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", FlociPort.ToString());
+
+        if (OperatingSystem.IsLinux())
+        {
+            builder = builder.WithPortBinding("20000-29999", FlociPort.ToString());
+        }
+
         return builder.Build();
     }
 
-    internal static SessionResource<ServiceBusStack> ServiceBus { get; } = new(ServiceBusStack.StartAsync);
+    internal static SessionResource<ServiceBusStack> ServiceBus
+    {
+        get;
+    } = new(ServiceBusStack.StartAsync);
 
     private static async Task<IContainer> StartRabbitMqAsync(bool delayedPlugin)
     {
@@ -73,12 +102,24 @@ internal sealed class SessionResource<T>(Func<Task<T>> start) where T : IAsyncDi
     internal async Task ResetAsync()
     {
         var value = Interlocked.Exchange(ref _value, new(start));
-        if (!value.IsValueCreated) return;
+
+        if (!value.IsValueCreated)
+        {
+            return;
+        }
         // Wait for a startup still in flight (every test may have given up on it) so its containers are not left behind.
         T resource;
-        try { resource = await value.Value; }
+
+        try
+        {
+            resource = await value.Value;
+        }
         // A failed startup already cleaned up and failed the tests that needed it.
-        catch { return; }
+        catch
+        {
+            return;
+        }
+
         await resource.DisposeAsync();
     }
 }
@@ -98,6 +139,7 @@ internal sealed class ServiceBusStack(INetwork network, MsSqlContainer database,
             .WithNetwork(network).WithNetworkAliases(ServiceBusBuilder.DatabaseNetworkAlias);
         var emulatorBuilder = new ServiceBusBuilder("mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.0")
             .WithAcceptLicenseAgreement(true).WithConfig(Path.Combine(AppContext.BaseDirectory, "servicebus-config.json"));
+
         if (OperatingSystem.IsLinux())
         {
             // Keep every published dependency port outside Linux's outbound ephemeral range,
@@ -105,6 +147,7 @@ internal sealed class ServiceBusStack(INetwork network, MsSqlContainer database,
             databaseBuilder = databaseBuilder.WithPortBinding("20000-29999", "1433");
             emulatorBuilder = emulatorBuilder.WithPortBinding("20000-29999", "5672").WithPortBinding("20000-29999", "5300");
         }
+
         var database = databaseBuilder.Build();
         var stack = new ServiceBusStack(network, database,
             emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build());
@@ -117,44 +160,75 @@ internal sealed class ServiceBusStack(INetwork network, MsSqlContainer database,
     internal static async Task StartWithCleanupAsync(Func<Task> start, Func<ValueTask> cleanup,
         CancellationToken provisioning, Action<Exception> reportCleanupFailure)
     {
-        try { await start(); }
+        try
+        {
+            await start();
+        }
         catch (OperationCanceledException error) when (provisioning.IsCancellationRequested)
         {
             await CleanupFailedStartupAsync();
             throw new TimeoutException("Service Bus emulator provisioning exceeded 15 minutes (image pulls and container readiness).", error);
         }
-        catch { await CleanupFailedStartupAsync(); throw; }
+        catch
+        {
+            await CleanupFailedStartupAsync();
+            throw;
+        }
 
         async Task CleanupFailedStartupAsync()
         {
-            try { await cleanup(); }
+            try
+            {
+                await cleanup();
+            }
             catch (Exception cleanupError)
             {
-                try { reportCleanupFailure(cleanupError); }
-                catch (Exception) { /* Preserve the startup failure even if output is unavailable. */ }
+                try
+                {
+                    reportCleanupFailure(cleanupError);
+                }
+                catch (Exception)
+                { /* Preserve the startup failure even if output is unavailable. */
+                }
             }
         }
     }
 
-    private static void ReportCleanupFailure(Exception error) =>
+    private static void ReportCleanupFailure(Exception error)
+    {
         Console.Error.WriteLine($"Service Bus startup cleanup failed: {error}");
+    }
 
     // The properties of the emulator's configured queues, within its documented TTL and size quotas.
-    internal Task CreateQueueAsync(string name, bool requiresSession, CancellationToken token) =>
-        new ServiceBusAdministrationClient(emulator.GetHttpConnectionString()).CreateQueueAsync(new CreateQueueOptions(name)
+    internal Task CreateQueueAsync(string name, bool requiresSession, CancellationToken token)
+    {
+        return new ServiceBusAdministrationClient(emulator.GetHttpConnectionString()).CreateQueueAsync(new CreateQueueOptions(name)
         {
-            RequiresSession = requiresSession, LockDuration = TimeSpan.FromMinutes(1), MaxDeliveryCount = 10,
-            DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
+            RequiresSession = requiresSession,
+            LockDuration = TimeSpan.FromMinutes(1),
+            MaxDeliveryCount = 10,
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100,
             DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
         }, token);
+    }
 
     public async ValueTask DisposeAsync()
     {
-        try { await emulator.DisposeAsync(); }
+        try
+        {
+            await emulator.DisposeAsync();
+        }
         finally
         {
-            try { await database.DisposeAsync(); }
-            finally { await network.DisposeAsync(); }
+            try
+            {
+                await database.DisposeAsync();
+            }
+            finally
+            {
+                await network.DisposeAsync();
+            }
         }
     }
 }

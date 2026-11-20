@@ -71,8 +71,12 @@ public class MessageFeaturesTests
     }
 
     private sealed class FeatureA;
+
     private sealed class FeatureB;
+
     private sealed class FeatureC;
+
     private sealed class FeatureD;
+
     private sealed class FeatureE;
 }

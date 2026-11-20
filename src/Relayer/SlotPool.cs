@@ -21,8 +21,16 @@ internal sealed class SlotPool<T> where T : class
     internal T? TryRent()
     {
         for (Page? page = _first; page is not null; page = Volatile.Read(ref page.Next))
+        {
             for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.Exchange(ref page.Slots[i], null) is { } item) return Unsafe.As<T>(item);
+            {
+                if (Interlocked.Exchange(ref page.Slots[i], null) is { } item)
+                {
+                    return Unsafe.As<T>(item);
+                }
+            }
+        }
+
         return null;
     }
 
@@ -30,18 +38,32 @@ internal sealed class SlotPool<T> where T : class
     {
         var page = _first;
         var remaining = _capacity;
+
         while (true)
         {
             for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.CompareExchange(ref page.Slots[i], item, null) is null) return true;
+            {
+                if (Interlocked.CompareExchange(ref page.Slots[i], item, null) is null)
+                {
+                    return true;
+                }
+            }
+
             remaining -= page.Slots.Length;
-            if (remaining == 0) return false;
+
+            if (remaining == 0)
+            {
+                return false;
+            }
+
             var next = Volatile.Read(ref page.Next);
+
             if (next is null)
             {
                 var added = new Page(Math.Min(_pageSize, remaining));
                 next = Interlocked.CompareExchange(ref page.Next, added, null) ?? added;
             }
+
             page = next;
         }
     }
@@ -51,9 +73,16 @@ internal sealed class SlotPool<T> where T : class
     {
         System.Diagnostics.Debug.Assert(_pageSize == _capacity);
         var slots = _first.Slots;
+
         for (var i = 0; i < slots.Length; i++)
+        {
             if (Volatile.Read(ref slots[i]) is not null &&
-                Interlocked.Exchange(ref slots[i], null) is { } item) return Unsafe.As<T>(item);
+                Interlocked.Exchange(ref slots[i], null) is { } item)
+            {
+                return Unsafe.As<T>(item);
+            }
+        }
+
         return null;
     }
 
@@ -61,9 +90,16 @@ internal sealed class SlotPool<T> where T : class
     {
         System.Diagnostics.Debug.Assert(_pageSize == _capacity);
         var slots = _first.Slots;
+
         for (var i = 0; i < slots.Length; i++)
+        {
             if (Volatile.Read(ref slots[i]) is null &&
-                Interlocked.CompareExchange(ref slots[i], item, null) is null) return true;
+                Interlocked.CompareExchange(ref slots[i], item, null) is null)
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -74,14 +110,25 @@ internal sealed class SlotPool<T> where T : class
         System.Diagnostics.Debug.Assert(_pageSize == _capacity, "Indexed rentals require one fixed page.");
         var slots = _first.Slots;
         var start = Volatile.Read(ref cursor);
+
         for (var offset = 0; offset < slots.Length; offset++)
         {
             var index = start + offset;
-            if (index >= slots.Length) index -= slots.Length;
-            if (Interlocked.Exchange(ref slots[index], null) is not { } item) continue;
+
+            if (index >= slots.Length)
+            {
+                index -= slots.Length;
+            }
+
+            if (Interlocked.Exchange(ref slots[index], null) is not { } item)
+            {
+                continue;
+            }
+
             Volatile.Write(ref cursor, index + 1 == slots.Length ? 0 : index + 1);
             return Unsafe.As<T>(item);
         }
+
         return null;
     }
 

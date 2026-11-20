@@ -1,7 +1,7 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -24,7 +24,10 @@ public class FailurePipelineBenchmarks
     private ConsumeMessage _message;
 
     [Params(false, true)]
-    public bool SendMessage { get; set; }
+    public bool SendMessage
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -51,24 +54,34 @@ public class FailurePipelineBenchmarks
                 policy).Handler(_descriptor).Use(new CompleteMiddleware()).Build(1);
         var telemetry = _provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
         {
-            System = "relayer.inmemory", Destination = "source",
+            System = "relayer.inmemory",
+            Destination = "source",
         });
         _instrumentedFailures = new ConsumePipelineBuilder(_scopes, _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
                 policy).Handler(_descriptor).Telemetry(telemetry).Build(1);
-        _message = new() { MessageId = "benchmark", MessageType = new("benchmark.failure", 1), Body = default };
+        _message = new()
+        {
+            MessageId = "benchmark",
+            MessageType = new("benchmark.failure", 1),
+            Body = default
+        };
     }
 
     [Benchmark(Baseline = true)]
     public async ValueTask DirectScopedDispatch()
     {
         var scope = new AsyncServiceScope(_scopes.CreateScope());
+
         try
         {
             _direct.Provider = scope.ServiceProvider;
             var handler = _descriptor.Resolve(scope.ServiceProvider);
             await _descriptor.DispatchAsync(handler, _serializer.Deserialize<Payload>(default), _direct, default).ConfigureAwait(false);
         }
-        finally { await scope.DisposeAsync().ConfigureAwait(false); }
+        finally
+        {
+            await scope.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Benchmark]
@@ -109,48 +122,107 @@ public class FailurePipelineBenchmarks
     }
 
     [GlobalCleanup]
-    public async Task Cleanup() => await _provider.DisposeAsync();
+    public async Task Cleanup()
+    {
+        await _provider.DisposeAsync();
+    }
 
     [Message("benchmark.failure")]
     public sealed class Payload;
+
     public sealed class Handler(ISender sender, FailurePipelineBenchmarks settings) : IHandler<Payload>
     {
         public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
-            => settings.SendMessage ? sender.SendAsync(message, cancellationToken) : default;
+        {
+            return settings.SendMessage ? sender.SendAsync(message, cancellationToken) : default;
+        }
     }
+
     public sealed class Options;
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "benchmark/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
         {
             "{}"u8.CopyTo(destination.GetSpan(2));
             destination.Advance(2);
         }
     }
+
     private sealed class Transport : ITransport
     {
         public string Name => "benchmark";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { DeadLetter = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => default;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                DeadLetter = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
+
     private sealed class DirectContext : MessageContext
     {
-        internal IServiceProvider Provider { get; set; } = null!;
+        internal IServiceProvider Provider
+        {
+            get; set;
+        } = null!;
+
         public override string MessageId => "benchmark";
+
         public override MessageType MessageType => new("benchmark.failure", 1);
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
+
         public override IServiceProvider Services => Provider;
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

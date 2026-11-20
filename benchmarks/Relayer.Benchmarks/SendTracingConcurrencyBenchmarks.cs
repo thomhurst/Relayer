@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using System.Threading.Tasks.Sources;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -23,13 +23,22 @@ public class SendTracingConcurrencyBenchmarks
     private readonly OutgoingMessage[] _messages = [new("orders", new byte[] { 1 }), new("orders", new byte[] { 2 })];
 
     [Params(1, 64, 128)]
-    public int Concurrency { get; set; }
+    public int Concurrency
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool Batch { get; set; }
+    public bool Batch
+    {
+        get; set;
+    }
 
     [Params("Drop", "Record")]
-    public string Mode { get; set; } = "Drop";
+    public string Mode
+    {
+        get; set;
+    } = "Drop";
 
     [GlobalSetup]
     public void Setup()
@@ -45,17 +54,34 @@ public class SendTracingConcurrencyBenchmarks
         _ambient = new Activity("request").Start();
         _native = new PendingSend[Concurrency];
         _pending = new ValueTask[Concurrency];
-        for (var i = 0; i < _native.Length; i++) _native[i] = new();
-        _send = new(_tracing, new() { System = "test.native", Destination = "orders" }, SendNative, SendBatchNative);
-        for (var i = 0; i < 4; i++) TracedBurst();
+
+        for (var i = 0; i < _native.Length; i++)
+        {
+            _native[i] = new();
+        }
+
+        _send = new(_tracing, new()
+        {
+            System = "test.native",
+            Destination = "orders"
+        }, SendNative, SendBatchNative);
+
+        for (var i = 0; i < 4; i++)
+        {
+            TracedBurst();
+        }
     }
 
     [Benchmark(Baseline = true)]
     public void NativeBurst()
     {
         Reset();
+
         for (var i = 0; i < _pending.Length; i++)
+        {
             _pending[i] = Batch ? SendBatchNative(_messages, default) : SendNative(_messages[0], default);
+        }
+
         Complete();
     }
 
@@ -63,19 +89,34 @@ public class SendTracingConcurrencyBenchmarks
     public void TracedBurst()
     {
         Reset();
+
         for (var i = 0; i < _pending.Length; i++)
+        {
             _pending[i] = Batch ? _send.SendBatchAsync(_messages) : _send.SendAsync(_messages[0]);
+        }
+
         Complete();
     }
 
     private void Reset()
     {
         _next = 0;
-        foreach (var send in _native) send.Reset();
+
+        foreach (var send in _native)
+        {
+            send.Reset();
+        }
     }
 
-    private ValueTask SendNative(OutgoingMessage message, CancellationToken cancellationToken) => _native[_next++].Wait();
-    private ValueTask SendBatchNative(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => _native[_next++].Wait();
+    private ValueTask SendNative(OutgoingMessage message, CancellationToken cancellationToken)
+    {
+        return _native[_next++].Wait();
+    }
+
+    private ValueTask SendBatchNative(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+    {
+        return _native[_next++].Wait();
+    }
 
     private void Complete()
     {
@@ -98,12 +139,35 @@ public class SendTracingConcurrencyBenchmarks
     private sealed class PendingSend : IValueTaskSource
     {
         private ManualResetValueTaskSourceCore<bool> _completion;
-        internal void Reset() => _completion.Reset();
-        internal ValueTask Wait() => new(this, _completion.Version);
-        internal void Complete() => _completion.SetResult(true);
-        public void GetResult(short token) => _completion.GetResult(token);
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+
+        internal void Reset()
+        {
+            _completion.Reset();
+        }
+
+        internal ValueTask Wait()
+        {
+            return new(this, _completion.Version);
+        }
+
+        internal void Complete()
+        {
+            _completion.SetResult(true);
+        }
+
+        public void GetResult(short token)
+        {
+            _completion.GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
             _completion.OnCompleted(continuation, state, token, flags);
+        }
     }
 }

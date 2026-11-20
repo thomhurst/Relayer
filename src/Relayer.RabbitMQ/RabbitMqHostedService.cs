@@ -1,8 +1,8 @@
-using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
@@ -18,7 +18,10 @@ internal sealed class RabbitMqHostedService(RabbitMqConsumerControl consumers) :
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        try { await consumers.Faulted.WaitAsync(stoppingToken).ConfigureAwait(false); }
+        try
+        {
+            await consumers.Faulted.WaitAsync(stoppingToken).ConfigureAwait(false);
+        }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             // A stop can cancel the wait after a consumer already faulted; report that fault instead of a clean stop.
@@ -28,11 +31,20 @@ internal sealed class RabbitMqHostedService(RabbitMqConsumerControl consumers) :
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        try { await consumers.StopAsync(cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            await consumers.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
         finally
         {
-            try { await consumers.CloseAsync(cancellationToken).ConfigureAwait(false); }
-            finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
+            try
+            {
+                await consumers.CloseAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                await base.StopAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 }
@@ -53,10 +65,22 @@ internal sealed class RabbitMqConsumerControl(IServiceProvider provider, string 
     /// </summary>
     internal Task FaultOrCompleted()
     {
-        if (_faulted.Task.IsFaulted) return _faulted.Task;
+        if (_faulted.Task.IsFaulted)
+        {
+            return _faulted.Task;
+        }
+
         if (_transport is { } transport)
+        {
             foreach (var consumer in transport.Consumers)
-                if (consumer.Completion.IsFaulted) return consumer.Completion;
+            {
+                if (consumer.Completion.IsFaulted)
+                {
+                    return consumer.Completion;
+                }
+            }
+        }
+
         return Task.CompletedTask;
     }
 
@@ -66,9 +90,11 @@ internal sealed class RabbitMqConsumerControl(IServiceProvider provider, string 
     protected override async Task ComposeAsync(CancellationToken cancellationToken)
     {
         _transport ??= (RabbitMqNativeTransport)provider.GetServices<ITransport>().Single(item => item.Name == name);
+
         if (!_composed)
         {
             var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
+
             foreach (var declaration in definition.Consumers)
             {
                 var consumer = (ConsumerDefinition<RabbitMqConsumerOptions>)declaration;
@@ -76,8 +102,10 @@ internal sealed class RabbitMqConsumerControl(IServiceProvider provider, string 
                 _transport.Consumers.Add(new(consumer, consumer.Options, composer.ProcessAsync,
                     provider.GetRequiredService<MessageTracing>(), provider.GetService<TimeProvider>(), _transport.Options.ConnectionFactory, provider.GetService<ILogger<RabbitMqConsumer>>()));
             }
+
             _composed = true;
         }
+
         await _transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -86,18 +114,27 @@ internal sealed class RabbitMqConsumerControl(IServiceProvider provider, string 
         await _transport!.StartConsumersAsync(cancellationToken).ConfigureAwait(false);
         // Each start replaces the consumers' completions; a stop completes them successfully.
         foreach (var consumer in _transport.Consumers)
+        {
             _ = consumer.Completion.ContinueWith(static (completion, state) =>
             {
-                if (completion.Exception is { } error) ((TaskCompletionSource)state!).TrySetException(error.InnerExceptions);
+                if (completion.Exception is { } error)
+                {
+                    ((TaskCompletionSource)state!).TrySetException(error.InnerExceptions);
+                }
             }, _faulted, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
     }
 
-    protected override Task StopConsumersAsync(CancellationToken cancellationToken) =>
-        _transport?.StopConsumersAsync(cancellationToken) ?? Task.CompletedTask;
+    protected override Task StopConsumersAsync(CancellationToken cancellationToken)
+    {
+        return _transport?.StopConsumersAsync(cancellationToken) ?? Task.CompletedTask;
+    }
 
     /// <summary>Closes the publishers and the connection on host shutdown.</summary>
-    internal Task CloseAsync(CancellationToken cancellationToken) =>
-        _transport?.StopAsync(cancellationToken) ?? Task.CompletedTask;
+    internal Task CloseAsync(CancellationToken cancellationToken)
+    {
+        return _transport?.StopAsync(cancellationToken) ?? Task.CompletedTask;
+    }
 }
 
 // Compose the handler and failure pipeline once at startup. Native deliveries supply cached tracing
@@ -109,24 +146,37 @@ internal sealed class RabbitMqReceiveComposer
     private readonly string _name;
     private readonly ConsumerDefinition<RabbitMqConsumerOptions> _consumer;
     private readonly RabbitMqTransportOptions _options;
-    internal RabbitMqReceiveComposer(IServiceProvider provider, string name, ConsumerDefinition<RabbitMqConsumerOptions> consumer, RabbitMqTransportOptions options)
-    { _provider = provider; _name = name; _consumer = consumer; _options = options; _receive = Compose(); }
 
-    internal ValueTask<Disposition> ProcessAsync(RabbitMqDelivery delivery, CancellationToken token) =>
-        _receive.ProcessAsync(delivery, token);
+    internal RabbitMqReceiveComposer(IServiceProvider provider, string name, ConsumerDefinition<RabbitMqConsumerOptions> consumer, RabbitMqTransportOptions options)
+    {
+        _provider = provider;
+        _name = name;
+        _consumer = consumer;
+        _options = options;
+        _receive = Compose();
+    }
+
+    internal ValueTask<Disposition> ProcessAsync(RabbitMqDelivery delivery, CancellationToken token)
+    {
+        return _receive.ProcessAsync(delivery, token);
+    }
 
     private ReceivePipeline<RabbitMqDelivery, RabbitMqMessageBinding> Compose()
     {
         var endpoint = new MessagingEndpoint
         {
-            System = "rabbitmq", Destination = "::" + _consumer.Source,
-            ServerAddress = _options.ConnectionFactory.HostName, ServerPort = _options.ConnectionFactory.Port,
+            System = "rabbitmq",
+            Destination = "::" + _consumer.Source,
+            ServerAddress = _options.ConnectionFactory.HostName,
+            ServerPort = _options.ConnectionFactory.Port,
         };
         var policy = _consumer.Failure;
         var failures = new FailurePipeline(_provider, _name, _consumer.Source, _consumer.Source, new()
         {
-            RetryDelays = policy.RetryDelays, RedeliveryDelays = policy.RedeliveryDelays,
-            Jitter = policy.Jitter, CopyTimeout = policy.CopyTimeout,
+            RetryDelays = policy.RetryDelays,
+            RedeliveryDelays = policy.RedeliveryDelays,
+            Jitter = policy.Jitter,
+            CopyTimeout = policy.CopyTimeout,
             DeadLetterEndpoint = policy.DeadLetterEndpoint ?? ":" + _consumer.Source + ".dead-letter",
         }, Copy);
         var tracing = _provider.GetRequiredService<MessageTracing>();
@@ -135,11 +185,23 @@ internal sealed class RabbitMqReceiveComposer
             _provider.GetRequiredService<MessageTypeRegistry>(), _provider.GetMessageSerializer(_name), failures,
             _consumer.FailureClassifier ?? _provider.GetService<IFailureClassifier>());
         var telemetry = _provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
-        { System = "rabbitmq", Destination = _consumer.Source, ServerAddress = endpoint.ServerAddress, ServerPort = endpoint.ServerPort });
+        {
+            System = "rabbitmq",
+            Destination = _consumer.Source,
+            ServerAddress = endpoint.ServerAddress,
+            ServerPort = endpoint.ServerPort
+        });
         pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(settlement.SettleAsync);
         pipeline.ConfigureConsumer(_provider, _consumer);
+
         foreach (var handler in _provider.GetRequiredService<HandlerRegistry>().Descriptors)
-            if (_consumer.Selects(handler)) pipeline.Handler(handler);
+        {
+            if (_consumer.Selects(handler))
+            {
+                pipeline.Handler(handler);
+            }
+        }
+
         return new(pipeline.Build(_consumer.Concurrency), new("cloudEvents:"), _consumer.Concurrency, preserveSettledFailures: true);
     }
 
@@ -148,10 +210,22 @@ internal sealed class RabbitMqReceiveComposer
         var delivery = context.RabbitMQ();
         var properties = delivery.Message.BasicProperties;
         var headers = new List<KeyValuePair<string, WireString>>();
+
         if (properties.Headers is { } native)
+        {
             foreach (var header in native)
-                if (RabbitMqMessageBinding.TryGetHeader(delivery, header.Key, out var value)) headers.Add(new(header.Key, value));
-        if (properties.ContentType is { } contentType) headers.Add(new("content-type", new(contentType)));
+            {
+                if (RabbitMqMessageBinding.TryGetHeader(delivery, header.Key, out var value))
+                {
+                    headers.Add(new(header.Key, value));
+                }
+            }
+        }
+
+        if (properties.ContentType is { } contentType)
+        {
+            headers.Add(new("content-type", new(contentType)));
+        }
         // Native, non-text fields and basic properties survive confirmed error-path copies unchanged.
         var options = new SendOptions().RabbitMQ(target =>
         {

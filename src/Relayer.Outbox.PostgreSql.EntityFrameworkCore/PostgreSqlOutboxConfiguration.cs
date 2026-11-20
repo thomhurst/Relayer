@@ -11,28 +11,55 @@ namespace Relayer.Outbox.EntityFrameworkCore;
 
 internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
 {
-    private PostgreSqlDirectDispatcher? Dispatcher { get; }
-    internal string InboxInsertSql { get; }
-    internal string InboxExistsSql { get; }
+    private PostgreSqlDirectDispatcher? Dispatcher
+    {
+        get;
+    }
+
+    internal string InboxInsertSql
+    {
+        get;
+    }
+
+    internal string InboxExistsSql
+    {
+        get;
+    }
 
     internal PostgreSqlOutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null, IEnumerable<PostgreSqlSchedulingRegistration>? workers = null)
     {
         TenantBinding = options.TenantBinding;
         TenantBinding?.Validate();
         // Reuse the schema's validation, including generated identifier lengths, at registration time.
-        _ = PostgreSqlOutboxSchema.CreateScript(new() { Schema = options.Schema, TablePrefix = options.TablePrefix });
-        if (options.Lanes <= 0) throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
+        _ = PostgreSqlOutboxSchema.CreateScript(new()
+        {
+            Schema = options.Schema,
+            TablePrefix = options.TablePrefix
+        });
+
+        if (options.Lanes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
+        }
+
         Table = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox");
         Lanes = options.Lanes;
-        if (options.DispatchStoreName is not null) ArgumentException.ThrowIfNullOrWhiteSpace(options.DispatchStoreName);
+
+        if (options.DispatchStoreName is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(options.DispatchStoreName);
+        }
+
         dispatcher?.ValidateStore(options.Schema, options.TablePrefix);
         Dispatcher = dispatcher;
+
         if (workers is not null)
         {
             SupportsScheduling = PostgreSqlSchedulingRegistration.Supports(workers, options.Schema, options.TablePrefix);
             SupportsOrderedScheduling = PostgreSqlSchedulingRegistration.Supports(workers, options.Schema, options.TablePrefix, options.Lanes);
         }
+
         var inbox = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "inbox");
         InboxExistsSql = $"SELECT EXISTS (SELECT 1 FROM {inbox} WHERE consumer = @consumer AND message_id = @id)";
@@ -42,7 +69,10 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
 
     internal override bool HasTransactionEnded(DbTransaction transaction)
     {
-        if (transaction is not NpgsqlTransaction nativeTransaction) return false;
+        if (transaction is not NpgsqlTransaction nativeTransaction)
+        {
+            return false;
+        }
 
         // Npgsql checks whether the transaction has completed or been disposed when reading
         // IsolationLevel. Connection can still be non-null after PostgreSQL aborts COMMIT.
@@ -60,22 +90,41 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
     internal override void ValidateProvider(string? providerName)
     {
         if (providerName != "Npgsql.EntityFrameworkCore.PostgreSQL")
+        {
             throw new InvalidOperationException($"Relayer.Outbox.PostgreSql.EntityFrameworkCore requires the Npgsql.EntityFrameworkCore.PostgreSQL provider; configured provider: '{providerName ?? "none"}'. Configure UseNpgsql on this DbContext. SQL Server and MySQL EF Core integrations are planned; use their ADO.NET integrations instead.");
+        }
     }
 
     internal override void ValidateProvider(IDbContextOptions options)
     {
         // Native options identify the configured provider without reflection or creating a DbContext.
 #pragma warning disable EF1001 // Npgsql exposes its native provider options extension from its Infrastructure.Internal namespace.
-        if (options.FindExtension<NpgsqlOptionsExtension>() is null) ValidateProvider((string?)null);
+        if (options.FindExtension<NpgsqlOptionsExtension>() is null)
+        {
+            ValidateProvider((string?)null);
+        }
 #pragma warning restore EF1001
     }
 
-    internal override OutboxConfiguration? FindConfiguration(IDbContextOptions options) => options.FindExtension<PostgreSqlOutboxConfiguration>();
+    internal override OutboxConfiguration? FindConfiguration(IDbContextOptions options)
+    {
+        return options.FindExtension<PostgreSqlOutboxConfiguration>();
+    }
 
-    internal override IOutboxBatch CreateBatch() => new PostgreSqlOutboxBatch();
-    internal override IExecutionStrategy CreateConflictStrategy(DbContext context) => new PostgreSqlConflictExecutionStrategy(context);
-    internal override void Committed(List<BufferedOutboxMessage> rows, int count) => Dispatcher?.Committed(rows, count);
+    internal override IOutboxBatch CreateBatch()
+    {
+        return new PostgreSqlOutboxBatch();
+    }
+
+    internal override IExecutionStrategy CreateConflictStrategy(DbContext context)
+    {
+        return new PostgreSqlConflictExecutionStrategy(context);
+    }
+
+    internal override void Committed(List<BufferedOutboxMessage> rows, int count)
+    {
+        Dispatcher?.Committed(rows, count);
+    }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]

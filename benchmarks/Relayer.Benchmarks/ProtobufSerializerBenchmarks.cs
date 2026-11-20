@@ -20,7 +20,10 @@ public class ProtobufSerializerBenchmarks
     private ReadOnlySequence<byte> _source;
 
     [GlobalSetup]
-    public void Setup() => _source = new ReadOnlySequence<byte>(_message.ToByteArray());
+    public void Setup()
+    {
+        _source = new ReadOnlySequence<byte>(_message.ToByteArray());
+    }
 
     [Benchmark(Baseline = true), BenchmarkCategory("Write")]
     public int NativeWrite()
@@ -39,8 +42,14 @@ public class ProtobufSerializerBenchmarks
     }
 
     [Benchmark(Baseline = true), BenchmarkCategory("Read")]
-    public StringValue NativeRead() => StringValue.Parser.ParseFrom(_source);
+    public StringValue NativeRead()
+    {
+        return StringValue.Parser.ParseFrom(_source);
+    }
 
     [Benchmark, BenchmarkCategory("Read")]
-    public StringValue RelayerRead() => _serializer.Deserialize<StringValue>(_source);
+    public StringValue RelayerRead()
+    {
+        return _serializer.Deserialize<StringValue>(_source);
+    }
 }

@@ -19,14 +19,25 @@ public class FailureConsumerScopeBenchmarks
     private ConsumeMessage _message;
 
     [Params(false, true)]
-    public bool ScopedHandler { get; set; }
+    public bool ScopedHandler
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         var services = new ServiceCollection();
-        if (ScopedHandler) services.AddScoped<Handler>();
-        else services.AddSingleton<Handler>();
+
+        if (ScopedHandler)
+        {
+            services.AddScoped<Handler>();
+        }
+        else
+        {
+            services.AddSingleton<Handler>();
+        }
+
         services.AddRelayer(relayer =>
         {
             relayer.Infrastructure().MessageTypes.Add<Payload>("benchmark.failure-scope");
@@ -40,7 +51,9 @@ public class FailureConsumerScopeBenchmarks
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>()).Build(contextPoolCapacity: 1);
         _message = new ConsumeMessage
         {
-            MessageId = "benchmark", MessageType = new("benchmark.failure-scope", 1), Body = ReadOnlySequence<byte>.Empty,
+            MessageId = "benchmark",
+            MessageType = new("benchmark.failure-scope", 1),
+            Body = ReadOnlySequence<byte>.Empty,
         };
     }
 
@@ -52,20 +65,35 @@ public class FailureConsumerScopeBenchmarks
     }
 
     [GlobalCleanup]
-    public Task Cleanup() => _provider.DisposeAsync().AsTask();
+    public Task Cleanup()
+    {
+        return _provider.DisposeAsync().AsTask();
+    }
 
     public sealed class Payload;
 
     public sealed class Handler : IHandler<Payload>
     {
-        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
 
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "benchmark/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

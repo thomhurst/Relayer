@@ -21,8 +21,12 @@ public static class AmazonSnsBuilderExtensions
         builder.Services.AddSingleton<ITransport>(provider =>
         {
             var declaration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
+
             if (declaration.Consumers.Count != 0)
+            {
                 throw new NotSupportedException($"SNS transport '{name}': consume through a native SQS subscription instead.");
+            }
+
             var options = provider.GetRequiredService<IOptionsMonitor<AmazonSnsTransportOptions>>().Get(name);
             SnsSendTransport.ValidateDeclarations(name, options, declaration.Routes.Select(route => route.Destination));
             var headers = SqsSendTransport.ResolveIdentityHeaders(declaration.Routes, "SNS FIFO topic");
@@ -35,7 +39,10 @@ public static class AmazonSnsBuilderExtensions
     }
 
     /// <summary>Customizes the native Publish request, also copied into native batch entries.</summary>
-    public static SendOptions AmazonSns(this SendOptions options, Action<PublishRequest> configure) => options.ConfigureNative(configure);
+    public static SendOptions AmazonSns(this SendOptions options, Action<PublishRequest> configure)
+    {
+        return options.ConfigureNative(configure);
+    }
 }
 
 /// <summary>SNS consumption requires a native subscription, rather than an SNS receiver.</summary>

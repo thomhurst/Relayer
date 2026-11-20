@@ -1,7 +1,7 @@
-using System.Diagnostics.CodeAnalysis;
-using Relayer.Transports;
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using Npgsql;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
 
@@ -16,15 +16,29 @@ public readonly record struct PostgreSqlLocalDelivery(OutgoingMessage Message, O
     /// <exception cref="InvalidOperationException">The consumer uses at-least-once completion, so its handler runs without a delivery transaction.</exception>
     public NpgsqlTransaction Transaction
     {
-        get => _transaction ?? throw new InvalidOperationException(
-            "This PostgreSQL local consumer uses PostgreSqlLocalCompletion.AtLeastOnce, so its handler runs without a delivery transaction. " +
-            "Open your own connection for business writes, or use PostgreSqlLocalCompletion.Atomic to write through the delivery transaction.");
-        init => _transaction = value;
+        get
+        {
+            return _transaction ?? throw new InvalidOperationException(
+                        "This PostgreSQL local consumer uses PostgreSqlLocalCompletion.AtLeastOnce, so its handler runs without a delivery transaction. " +
+                        "Open your own connection for business writes, or use PostgreSqlLocalCompletion.Atomic to write through the delivery transaction.");
+        }
+        init
+        {
+            _transaction = value;
+        }
     }
 
     internal NpgsqlTransaction? OpenTransaction => _transaction;
-    internal PostgreSqlLocalTransport Owner { get; init; } = null!;
-    internal PostgreSqlOutboxStore CompletionStore { get; init; } = null!;
+
+    internal PostgreSqlLocalTransport Owner
+    {
+        get; init;
+    } = null!;
+
+    internal PostgreSqlOutboxStore CompletionStore
+    {
+        get; init;
+    } = null!;
 }
 
 /// <summary>Reads original outbox payloads and CloudEvents headers without copying.</summary>
@@ -32,14 +46,29 @@ public readonly record struct PostgreSqlLocalDelivery(OutgoingMessage Message, O
 public readonly struct PostgreSqlLocalMessageBinding : IMessageBinding<PostgreSqlLocalDelivery>
 {
     /// <inheritdoc />
-    public static ReadOnlySequence<byte> GetBody(PostgreSqlLocalDelivery message) => new(message.Message.Body);
+    public static ReadOnlySequence<byte> GetBody(PostgreSqlLocalDelivery message)
+    {
+        return new(message.Message.Body);
+    }
+
     /// <inheritdoc />
-    public static int? GetDeliveryCount(PostgreSqlLocalDelivery message) => message.Attempt;
+    public static int? GetDeliveryCount(PostgreSqlLocalDelivery message)
+    {
+        return message.Attempt;
+    }
+
     /// <inheritdoc />
     public static bool TryGetHeader(PostgreSqlLocalDelivery message, string name, out WireString value)
     {
         foreach (var header in message.Message.Headers.Span)
-            if (header.Key == name) { value = header.Value; return true; }
+        {
+            if (header.Key == name)
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
         value = default;
         return false;
     }

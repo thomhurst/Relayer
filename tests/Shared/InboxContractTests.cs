@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using System.Diagnostics.Metrics;
+using Relayer.Transports;
 
 namespace Relayer.TestFixtures;
 
@@ -11,20 +11,44 @@ public abstract class InboxContractTests
     protected abstract class InboxFixture : IAsyncDisposable
     {
         public abstract InboxConsumer Consumer(string name = "orders");
+
         public abstract Task<DurableState> ReadStateAsync();
+
         public abstract Task WaitForContentionAsync();
+
         public abstract ValueTask DisposeAsync();
     }
 
     protected abstract class InboxConsumer : IAsyncDisposable
     {
         // Runs after business writes and the outgoing send, inside the native transaction.
-        public Func<MessageContext, ValueTask>? AfterSave { get; set; }
-        public Func<ValueTask>? Settlement { get; set; }
-        public abstract RelayerInstrumentation Instrumentation { get; }
-        public abstract int Invocations { get; }
-        public abstract int DirectSends { get; }
+        public Func<MessageContext, ValueTask>? AfterSave
+        {
+            get; set;
+        }
+
+        public Func<ValueTask>? Settlement
+        {
+            get; set;
+        }
+
+        public abstract RelayerInstrumentation Instrumentation
+        {
+            get;
+        }
+
+        public abstract int Invocations
+        {
+            get;
+        }
+
+        public abstract int DirectSends
+        {
+            get;
+        }
+
         public abstract Task DeliverAsync(Guid messageId, CancellationToken cancellation = default);
+
         public abstract ValueTask DisposeAsync();
     }
 
@@ -45,12 +69,19 @@ public abstract class InboxContractTests
         listener.InstrumentPublished = (instrument, meter) =>
         {
             if (instrument.Name == "relayer.inbox.duplicates" && ReferenceEquals(instrument.Meter.Scope, consumer.Instrumentation))
+            {
                 meter.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((_, count, tags, _) =>
         {
             foreach (var tag in tags)
-                if (tag.Key == "relayer.consumer" && Equals(tag.Value, "orders")) Interlocked.Add(ref duplicates, count);
+            {
+                if (tag.Key == "relayer.consumer" && Equals(tag.Value, "orders"))
+                {
+                    Interlocked.Add(ref duplicates, count);
+                }
+            }
         });
         listener.Start();
         var settlements = 0;
@@ -99,11 +130,16 @@ public abstract class InboxContractTests
         {
             entered.SetResult();
             await release.Task.WaitAsync(deadline.Token);
-            if (rollback) throw new InvalidOperationException("Roll back first delivery.");
+
+            if (rollback)
+            {
+                throw new InvalidOperationException("Roll back first delivery.");
+            }
         };
         var id = Guid.CreateVersion7();
         var first = firstConsumer.DeliverAsync(id, deadline.Token);
         Task? second = null;
+
         try
         {
             await entered.Task.WaitAsync(deadline.Token);
@@ -115,14 +151,27 @@ public abstract class InboxContractTests
         {
             release.TrySetResult();
             // Drain both operations before their providers and database are disposed, even on assertion failure.
-            try { await first; }
-            catch (InvalidOperationException error) when (rollback && error.Message == "Roll back first delivery.") { }
+            try
+            {
+                await first;
+            }
+            catch (InvalidOperationException error) when (rollback && error.Message == "Roll back first delivery.")
+            {
+            }
             finally
             {
-                if (second is not null) await second;
+                if (second is not null)
+                {
+                    await second;
+                }
             }
         }
-        if (rollback) await Assert.That(async () => await first).Throws<InvalidOperationException>();
+
+        if (rollback)
+        {
+            await Assert.That(async () => await first).Throws<InvalidOperationException>();
+        }
+
         await Assert.That(secondConsumer.Invocations).IsEqualTo(rollback ? 1 : 0);
         await Assert.That(await fixture.ReadStateAsync()).IsEqualTo(new DurableState(1, 1, 1));
     }
@@ -141,20 +190,42 @@ public abstract class InboxContractTests
         {
             switch (failure)
             {
-                case "handler": throw new InvalidOperationException("Handler failed after save.");
-                case "cancel": cancellation.Cancel(); break;
-                case "retry": context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.Zero); break;
-                case "deadletter": context.Features.GetRequired<ISettlementFeature>().DeadLetter("Rejected"); break;
+                case "handler":
+                    throw new InvalidOperationException("Handler failed after save.");
+                case "cancel":
+                    cancellation.Cancel();
+                    break;
+                case "retry":
+                    context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.Zero);
+                    break;
+                case "deadletter":
+                    context.Features.GetRequired<ISettlementFeature>().DeadLetter("Rejected");
+                    break;
             }
+
             return default;
         };
         var settled = 0;
-        consumer.Settlement = () => { settled++; return default; };
+        consumer.Settlement = () =>
+        {
+            settled++;
+            return default;
+        };
         var id = Guid.CreateVersion7();
-        if (failure is "retry" or "deadletter") await consumer.DeliverAsync(id);
+
+        if (failure is "retry" or "deadletter")
+        {
+            await consumer.DeliverAsync(id);
+        }
         else if (failure == "cancel")
+        {
             await Assert.That(async () => await consumer.DeliverAsync(id, cancellation.Token)).Throws<OperationCanceledException>();
-        else await Assert.That(async () => await consumer.DeliverAsync(id)).Throws<InvalidOperationException>();
+        }
+        else
+        {
+            await Assert.That(async () => await consumer.DeliverAsync(id)).Throws<InvalidOperationException>();
+        }
+
         await Assert.That(settled).IsEqualTo(failure is "retry" or "deadletter" ? 1 : 0);
         await Assert.That(await fixture.ReadStateAsync()).IsEqualTo(new DurableState(0, 0, 0));
         consumer.AfterSave = null;

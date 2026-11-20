@@ -6,7 +6,10 @@ namespace Relayer.Serialization;
 public interface IMessageSerializer
 {
     /// <summary>The content type written to the native message, e.g. <c>application/json</c>.</summary>
-    string ContentType { get; }
+    string ContentType
+    {
+        get;
+    }
 
     /// <summary>Writes <paramref name="message"/> to <paramref name="destination"/>.</summary>
     void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination);
