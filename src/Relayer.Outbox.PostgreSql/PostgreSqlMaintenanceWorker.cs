@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -38,11 +39,12 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
 
     internal PostgreSqlMaintenanceWorker(NpgsqlDataSource source, PostgreSqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<PostgreSqlMaintenanceWorker> logger,
-        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null, IServiceScopeFactory? scopes = null, TimeProvider? idleTimeProvider = null, string? storeName = null)
+        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null, IServiceScopeFactory? scopes = null, TimeProvider? idleTimeProvider = null, string? storeName = null,
+        IHostApplicationLifetime? hostLifetime = null)
         : base(3, options.BatchSize, options.CleanupBatchLimit,
             (options.RetainSentMessages ? 1 : 0) | (options.DeadRetention is not null ? 2 : 0) | (options.InboxRetention is not null ? 4 : 0),
             options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider,
-            storeName is null ? null : instrumentation?.TrackOutboxDepth("postgresql", storeName))
+            storeName is null ? null : instrumentation?.TrackOutboxDepth("postgresql", storeName), hostLifetime)
     {
         _source = source;
         _admissionTimeProvider = admissionTimeProvider;

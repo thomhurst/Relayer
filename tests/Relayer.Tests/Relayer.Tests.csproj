@@ -37,6 +37,7 @@
     <ProjectReference Include="../../src/Relayer.AmazonSqs.HealthChecks/Relayer.AmazonSqs.HealthChecks.csproj" />
     <ProjectReference Include="..\..\src\Relayer.RabbitMQ\Relayer.RabbitMQ.csproj" />
     <ProjectReference Include="../../src/Relayer.RabbitMQ.HealthChecks/Relayer.RabbitMQ.HealthChecks.csproj" />
+    <ProjectReference Include="../../src/Relayer.Outbox.SqlServer/Relayer.Outbox.SqlServer.csproj" />
     <!-- In-repo consumers must reference the generator explicitly; the NuGet package bundles it. -->
     <ProjectReference Include="..\..\src\Relayer.SourceGenerators\Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false"
@@ -55,5 +56,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../Shared/BoundedTransportPoolAssertions.cs" Link="Fixtures/BoundedTransportPoolAssertions.cs" />
+    <Compile Include="../Shared/DockerCommand.cs" Link="Fixtures/DockerCommand.cs" />
+    <Compile Include="../Relayer.Outbox.SqlServer.Tests/SqlServerFixture.cs" Link="Fixtures/SqlServerFixture.cs" />
   </ItemGroup>
 </Project>

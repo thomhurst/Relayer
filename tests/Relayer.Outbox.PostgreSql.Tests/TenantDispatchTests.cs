@@ -326,8 +326,9 @@ public class TenantDispatchTests
                 await Task.Delay(Timeout.Infinite, token);
             }
         });
+
+        // A wall-clock budget each tenant gets in turn; leave room for a busy shared server.
         using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
-            // A wall-clock budget each tenant gets in turn; leave room for a busy shared server.
             new()
             {
                 MaxConnections = 1,

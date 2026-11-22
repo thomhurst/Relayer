@@ -353,6 +353,9 @@ Nonempty recovery passes continue immediately, releasing named-lock admission be
 the fixed scan, losing admission, or a pass error. Failed rows are attempted at most once per scan;
 locked, scheduled and otherwise ineligible rows do not cause a retry loop. Cleanup is checked between batches.
 
+Hosted maintenance waits for the application to finish starting before claiming rows.
+By then, hosted transports have finished starting, regardless of registration order.
+
 Each bounded recovery pass selects due, old-enough **unordered** pending rows without live claims.
 A fixed upper UUID boundary ensures failed, scheduled and previously claimed rows are revisited
 while new rows keep arriving. Ordered lanes and parked barriers stay untouched. The existing

@@ -242,6 +242,9 @@ Use `"infinite"` for either retention in configuration, or `null` in code, to di
 Keep the inbox retention window longer than the application's replay horizon: deleting a key permits
 that message to run again.
 
+Hosted maintenance waits for the application to finish starting before claiming rows.
+By then, hosted transports have finished starting, regardless of registration order.
+
 Each recovery pass reads at most `BatchSize` due, unordered pending rows older than `RecoveryDelay`,
 using a fixed UUID high-water mark before wrapping. Failed, previously claimed and newly due older rows
 are revisited even while newer rows arrive. Nonempty passes continue immediately, committing and releasing

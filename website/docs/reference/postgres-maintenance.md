@@ -51,6 +51,9 @@ All instances sharing these tables must agree on retention and timing settings.
 
 ## Recovery and ownership
 
+Hosted maintenance waits for the application to finish starting before claiming rows.
+By then, hosted transports have finished starting, regardless of registration order.
+
 Only one instance holds the `sweeper` lease for these tables. A separate `cleanup` lease permits only one
 retention job. Both use `relayer_leases` (with your configured prefix), the database clock, unique owner
 identities and transaction locks. A connected job holds its lease row lock until its recovery pass or individual retention batch finishes; even

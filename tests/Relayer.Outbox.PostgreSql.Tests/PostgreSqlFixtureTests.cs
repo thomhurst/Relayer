@@ -12,8 +12,8 @@ public class PostgreSqlFixtureTests
     {
         using var shim = new BlockingCommandShim();
         var docker = new DockerCommand(TimeSpan.FromSeconds(3), _ => shim.StartInfo());
+        // Only a backstop against a hang: killing the process tree alone can take over ten seconds on macOS.
         var exception = await Assert.ThrowsAsync<TimeoutException>(() =>
-            // Only a backstop against a hang: killing the process tree alone can take over ten seconds on macOS.
             docker.RunAsync([command, "owned-container"]).WaitAsync(TimeSpan.FromSeconds(60)));
 
         await Assert.That(exception!.Message).Contains($"docker {command} owned-container");

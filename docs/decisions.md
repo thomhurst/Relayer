@@ -895,6 +895,11 @@ across multiple bounded passes, and native calls can delay cleanup. Poison handl
 separate work. D36 defines the EF Core inbox boundary. No schema evolution or expiry of undelivered messages
 is required.
 
+**Hosted startup (#1003).** The shared SQL maintenance loop waits for the Generic Host's
+`IHostApplicationLifetime.ApplicationStarted` signal before taking leases or claiming rows.
+The host signals after hosted service startup, including destination transports. Cancelling the worker
+before that signal leaves the rows untouched. This applies to PostgreSQL, SQL Server and MySQL.
+
 ## D39. Named transports capture startup-prepared serializers
 
 **Context.** Named Kafka clusters can use independent registries, credentials and schemas. An application-wide

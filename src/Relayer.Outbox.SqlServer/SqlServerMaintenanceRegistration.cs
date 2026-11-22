@@ -42,7 +42,8 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
         services.AddKeyedSingleton<SqlServerMaintenanceWorker>(name, (provider, _) => new(connectionString,
             provider.GetRequiredService<IOptionsMonitor<SqlServerMaintenanceOptions>>().Get(name), provider.GetServices<ITransport>(),
             provider.GetRequiredService<ILogger<SqlServerMaintenanceWorker>>(), provider.GetRequiredService<ILogger<SqlServerDirectDispatcher>>(),
-            provider.GetService<RelayerInstrumentation>(), storeName: name));
+            provider.GetService<RelayerInstrumentation>(), storeName: name,
+            hostLifetime: provider.GetService<IHostApplicationLifetime>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<SqlServerMaintenanceWorker>(name));
         return services;
     }
