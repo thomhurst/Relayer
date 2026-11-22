@@ -164,6 +164,8 @@ configure their attempt limits independently of enlistment.
 Select the context before sending, so Relayer knows which future save owns the messages:
 
 ```csharp
+using Relayer.Outbox.EntityFrameworkCore;
+
 using var outbox = db.EnlistRelayerOutbox();
 db.Orders.Add(order);
 await outbox.EnqueueAsync(new OrderPlaced(order.Id), cancellationToken);
@@ -256,6 +258,10 @@ in EF's execution strategy. Creating a fresh DI scope and DbContext on each atte
 tracked state between attempts:
 
 ```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+
 await strategyContext.Database.CreateExecutionStrategy().ExecuteAsync(async attemptToken =>
 {
     await using var scope = serviceScopeFactory.CreateAsyncScope();

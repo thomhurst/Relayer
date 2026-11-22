@@ -30,6 +30,10 @@ services.AddRelayerHarness();
 Start the host before sending. Resolve the scoped `ISender` from a scope and the singleton harness from the host:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+using Relayer.Testing;
+
 var harness = host.Services.GetRequiredService<RelayerHarness>();
 using var scope = host.Services.CreateScope();
 await scope.ServiceProvider.GetRequiredService<ISender>()
