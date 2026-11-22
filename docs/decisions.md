@@ -693,8 +693,11 @@ Reusing scoped buffers in the background would corrupt messages when the next un
 
 **Decision.** PostgreSQL direct dispatch is an explicitly named hosted service. EF context options
 select the dispatcher and validate matching schema/prefix settings. Its data source is application-owned
-and must target the same database as the DbContext. Only a successful EF commit transfers owned, reusable
-message buffers into the worker's bounded channel. The scope receives cleared replacement buffers.
+and must target the same database as the writer. Scoped ADO.NET enlistment checks both transaction
+overloads against the named dispatcher's Npgsql host, port and database settings before opening a writer
+connection or beginning a native transaction. The database can default to a configured username.
+Only a successful commit transfers owned, reusable message buffers into the worker's bounded channel.
+The scope receives cleared replacement buffers.
 No per-message task or scoped DbContext travels with the queued commit.
 
 The worker filters ordered and future-due rows and groups by transport/destination within the endpoint's

@@ -76,6 +76,11 @@ await using var transaction = await outbox.BeginTransactionAsync(dataSource,
 // Use transaction.Connection for the business commands, then send and commit as above.
 ```
 
+For a named direct dispatcher, configure the writer and dispatcher with matching Npgsql host, port
+and database settings. Separate data sources can use different credentials or pooling settings.
+Set `Database` explicitly if the connection settings also omit `Username`. A mismatch throws
+`InvalidOperationException` before Relayer opens a writer connection or starts a transaction.
+
 The connection overload requires an already open connection and leaves it open after completion.
 The data source overload closes its opened connection on commit, rollback, failure or disposal, without
 disposing the application-owned data source. Disposing the borrowed connection view does not dispose the native

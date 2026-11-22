@@ -16,6 +16,54 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 public class AdoNetEnlistmentTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Named_dispatch_rejects_another_database_and_accepts_a_separate_source_for_the_same_database(bool useDataSource)
+    {
+        await using var dispatcherDatabase = new Database();
+        await using var otherDatabase = new Database();
+        await dispatcherDatabase.Start();
+        await otherDatabase.Start();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddRelayerPostgreSqlOutbox("orders", Database.Options);
+        services.AddRelayerPostgreSqlDirectDispatch("orders", dispatcherDatabase.Source, Database.Options);
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        await using var scope = provider.CreateAsyncScope();
+        var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+        await using var otherConnection = await otherDatabase.Source.OpenConnectionAsync();
+        var otherSourceBuilder = new NpgsqlDataSourceBuilder(otherDatabase.ConnectionString);
+        otherSourceBuilder.UsePhysicalConnectionInitializer(
+            static _ => throw new InvalidOperationException("The mismatched writer connection was opened."),
+            static _ => throw new InvalidOperationException("The mismatched writer connection was opened."));
+        await using var otherSource = otherSourceBuilder.Build();
+
+        await Assert.That(async () =>
+        {
+            await using var rejected = useDataSource
+                ? await outbox.BeginTransactionAsync(otherSource)
+                : await outbox.BeginTransactionAsync(otherConnection);
+        }).Throws<InvalidOperationException>().WithMessageContaining("same PostgreSQL host, port and database");
+        await Assert.That(outbox.IsActive).IsFalse();
+        await Assert.That(otherConnection.State).IsEqualTo(ConnectionState.Open);
+
+        var writerSettings = new NpgsqlConnectionStringBuilder(dispatcherDatabase.ConnectionString)
+        {
+            ApplicationName = "orders-writer"
+        };
+        await using var writerSource = NpgsqlDataSource.Create(writerSettings.ConnectionString);
+        await using var writerConnection = await writerSource.OpenConnectionAsync();
+        await using var transaction = useDataSource
+            ? await outbox.BeginTransactionAsync(writerSource)
+            : await outbox.BeginTransactionAsync(writerConnection);
+        await outbox.EnlistAsync(Record(), default);
+        await transaction.CommitAsync();
+
+        await Assert.That(await dispatcherDatabase.Count()).IsEqualTo(1L);
+        await Assert.That(await otherDatabase.Count()).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task Batch_assigns_insert_sequence_in_enqueue_order_instead_of_UUID_order()
     {
         await using var database = new Database();
