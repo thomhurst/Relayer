@@ -73,7 +73,7 @@ public static class HarnessServiceCollectionExtensions
     }
 }
 
-internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITransportWrapper
+internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITransportWrapper, ITransportSendTargetWrapper
 {
     private readonly ITransport _inner;
     private readonly RelayerHarness _harness;

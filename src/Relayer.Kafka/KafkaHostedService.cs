@@ -173,7 +173,9 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 var sends = new KafkaTransactionalSends(shared);
                 // The sender and the failure pipeline both use the registered adapter, including its test wrapper.
                 registeredTransport ??= provider.GetServices<ITransport>().Single(transport => transport.Name == name);
-                var target = registeredTransport is ITransportWrapper wrapper ? wrapper.WrapSendTarget(sends) : sends;
+                var target = registeredTransport is ITransportSendTargetWrapper wrapper
+                    ? wrapper.WrapSendTarget(sends)
+                    : sends;
                 composed.SendRedirect = (registeredTransport, target);
 
                 var group = consumer.Options.Group!;
