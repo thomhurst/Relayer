@@ -46,8 +46,9 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
                 var endpoint = new MessagingEndpoint { System = "aws_sqs", Destination = consumer.Source };
                 var settlement = new SqsSettlement(tracing, endpoint);
                 var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Source,
-                    consumer.Failure, context => Copy(context, consumer.Options.HeaderNames.Id,
-                        _transport.GetIdentityHeader(consumer.Failure.DeadLetterEndpoint!)), provider.GetService<IFailureScheduler>());
+                    nativeRedeliveryOnly: false, consumer.Failure,
+                    (context, destination) => Copy(context, consumer.Options.HeaderNames.Id, _transport.GetIdentityHeader(destination)),
+                    provider.GetService<IFailureScheduler>(), timeProvider: null);
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                     provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
                     consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>());
@@ -81,7 +82,7 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
         }
     }
 
-    internal static OutgoingMessage Copy(MessageContext context, string sourceIdentityHeader = "ce_id", string deadIdentityHeader = "ce_id")
+    internal static OutgoingMessage Copy(MessageContext context, string sourceIdentityHeader = "ce_id", string destinationIdentityHeader = "ce_id")
     {
         var delivery = context.Features.GetRequired<NativeMessage<SqsDelivery>>().Message;
         var attributes = delivery.Message.MessageAttributes;
@@ -90,11 +91,11 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
         // identity can require the original native fallback, which an outbox cannot store.
         var hasSourceIdentity = attributes?.TryGetValue(sourceIdentityHeader, out var sourceIdentity) == true &&
             sourceIdentity.DataType == "String" && IsDeduplicationId(sourceIdentity.StringValue);
-        var hasDeadIdentity = attributes?.TryGetValue(deadIdentityHeader, out var deadIdentity) == true &&
-            deadIdentity.DataType == "String" && IsDeduplicationId(deadIdentity.StringValue);
-        var deduplication = hasSourceIdentity && hasDeadIdentity ? null :
+        var hasDestinationIdentity = attributes?.TryGetValue(destinationIdentityHeader, out var destinationIdentity) == true &&
+            destinationIdentity.DataType == "String" && IsDeduplicationId(destinationIdentity.StringValue);
+        var deduplication = hasSourceIdentity && hasDestinationIdentity ? null :
             delivery.Message.Attributes?.GetValueOrDefault("MessageDeduplicationId");
-        var bindDeadIdentity = hasDeadIdentity && deduplication is null;
+        var bindDestinationIdentity = hasDestinationIdentity && deduplication is null;
         var headers = new List<KeyValuePair<string, WireString>>(attributes?.Count ?? 0);
         Dictionary<string, MessageAttributeValue>? native = null;
 
@@ -105,7 +106,7 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
                 // Keep the destination identity native if binding it would overwrite a fallback
                 // or produce an invalid FIFO deduplication ID.
                 if (attribute.Value.DataType == "String" && attribute.Value.StringValue is { } text &&
-                    (!fifo || attribute.Key != deadIdentityHeader || bindDeadIdentity))
+                    (!fifo || attribute.Key != destinationIdentityHeader || bindDestinationIdentity))
                 {
                     headers.Add(new(attribute.Key, new(text)));
                 }

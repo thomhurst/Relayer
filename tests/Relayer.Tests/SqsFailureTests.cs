@@ -266,7 +266,10 @@ public sealed class SqsFailureTests
     }
 
     [Test]
-    public async Task Twelve_hour_redelivery_deletes_the_Floci_receipt_after_scheduling()
+    [Arguments(null)]
+    [Arguments("ce_")]
+    [Arguments("retry_")]
+    public async Task Durable_redelivery_uses_the_source_binding_and_deletes_after_scheduling(string? fifoSourcePrefix)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
@@ -275,10 +278,12 @@ public sealed class SqsFailureTests
             ServiceURL = await SharedBrokers.FlociUrlAsync(token),
             AuthenticationRegion = "us-east-1"
         });
-        var source = TestContext.Current!.Isolation.GetIsolatedName("source");
-        var dead = TestContext.Current!.Isolation.GetIsolatedName("dead");
-        var sourceUrl = (await client.CreateQueueAsync(source, token)).QueueUrl;
-        await client.CreateQueueAsync(dead, token);
+        var fifo = fifoSourcePrefix is not null;
+        var suffix = fifo ? ".fifo" : "";
+        var source = TestContext.Current!.Isolation.GetIsolatedName("source") + suffix;
+        var dead = TestContext.Current!.Isolation.GetIsolatedName("dead") + suffix;
+        var sourceUrl = (await client.CreateQueueAsync(Queue(source), token)).QueueUrl;
+        await client.CreateQueueAsync(Queue(dead), token);
         var deleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         client.AfterResponseEvent += (_, args) =>
         {
@@ -289,20 +294,41 @@ public sealed class SqsFailureTests
         };
 
         var scheduler = new Scheduler();
-        using var host = Host(client, TimeSpan.FromHours(12), scheduler, source, dead);
+        var delay = TimeSpan.FromHours(fifo ? 13 : 12);
+        using var host = Host(client, delay, scheduler, source, dead, fifoSourcePrefix);
 
         try
         {
             await host.StartAsync(token);
             var message = SqsReceiveTests.Message("{\"Value\":1}", 1);
+            var identityHeader = new HeaderNames(fifoSourcePrefix ?? "ce_").Id;
+
+            if (identityHeader != "ce_id")
+            {
+                // The receive binding can decode the envelope while a separate send binding
+                // supplies the destination's native FIFO deduplication ID.
+                message.MessageAttributes.Add(identityHeader, new()
+                {
+                    DataType = "String",
+                    StringValue = "retry-id"
+                });
+            }
+
             await client.SendMessageAsync(new SendMessageRequest
             {
                 QueueUrl = sourceUrl,
                 MessageBody = message.Body,
-                MessageAttributes = message.MessageAttributes
+                MessageAttributes = message.MessageAttributes,
+                MessageGroupId = fifo ? "group" : null,
+                MessageDeduplicationId = fifo ? "native-id" : null
             }, token);
             await scheduler.Started.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
             await Assert.That(scheduler.Destination).IsEqualTo(source);
+            await Assert.That(scheduler.Body).IsEqualTo(message.Body);
+            await Assert.That(scheduler.Headers["ce_id"]).IsEqualTo("id");
+            await Assert.That(scheduler.Headers[identityHeader]).IsEqualTo(message.MessageAttributes[identityHeader].StringValue);
+            await Assert.That(scheduler.Headers[FailureHeaders.Redeliveries]).IsEqualTo("1");
+            await Assert.That(scheduler.OrderingKey).IsEqualTo(fifo ? "group" : null);
             await Assert.That(deleted.Task.IsCompleted).IsFalse();
 
             scheduler.Commit.SetResult();
@@ -314,8 +340,19 @@ public sealed class SqsFailureTests
         }
     }
 
+    private static CreateQueueRequest Queue(string name)
+    {
+        return new(name)
+        {
+            Attributes = name.EndsWith(".fifo", StringComparison.Ordinal) ? new()
+            {
+                ["FifoQueue"] = "true"
+            } : []
+        };
+    }
+
     private static IHost Host(IAmazonSQS client, TimeSpan? redeliveryDelay = null, Scheduler? scheduler = null,
-        string source = "orders", string dead = "dead")
+        string source = "orders", string dead = "dead", string? fifoSourcePrefix = null)
     {
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(new SqsReceiveFlociTests.Control());
@@ -334,9 +371,34 @@ public sealed class SqsFailureTests
                 sqs.Options.Configure(options =>
                 {
                     options.SqsClient = client;
-                    options.Queues.Add(new(source));
-                    options.Queues.Add(new(dead));
+                    options.Queues.Add(Queue(source));
+                    options.Queues.Add(Queue(dead));
                 });
+
+                if (fifoSourcePrefix is not null)
+                {
+                    sqs.Send<SqsSendTests.Order>(dead, route =>
+                    {
+                        route.SendOptions = new()
+                        {
+                            HeaderNames = new("dead_")
+                        };
+                        route.OrderingKey(static _ => "group");
+                    });
+
+                    if (fifoSourcePrefix != "ce_")
+                    {
+                        sqs.Send<SqsReceiveFlociTests.Payload>(source, route =>
+                        {
+                            route.SendOptions = new()
+                            {
+                                HeaderNames = new(fifoSourcePrefix)
+                            };
+                            route.OrderingKey(static _ => "group");
+                        });
+                    }
+                }
+
                 sqs.Consume(source, consumer =>
                 {
                     consumer.Handler<SqsReceiveFlociTests.Handler>();
@@ -360,6 +422,8 @@ public sealed class SqsFailureTests
         internal string? Transport;
         internal string? Destination;
         internal string? Body;
+        internal string? OrderingKey;
+        internal readonly Dictionary<string, string> Headers = [];
         internal DateTimeOffset? Due;
 
         public async ValueTask ScheduleAsync(string transportName, OutgoingMessage message, CancellationToken token)
@@ -368,6 +432,13 @@ public sealed class SqsFailureTests
             Destination = message.Destination;
             Due = message.DeliverAt;
             Body = System.Text.Encoding.UTF8.GetString(message.Body.Span);
+            OrderingKey = message.OrderingKey?.ToString();
+
+            foreach (var header in message.Headers.Span)
+            {
+                Headers.Add(header.Key, header.Value.ToString());
+            }
+
             Started.SetResult();
             await Commit.Task.WaitAsync(token);
         }

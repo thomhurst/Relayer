@@ -216,7 +216,7 @@ public class ConsumerFailurePolicyTests
         await Assert.That(() => service.StartAsync(default)).Throws<InvalidOperationException>()
             .WithMessageContaining("Copy and outbox redelivery fallbacks are unavailable");
         var manual = new FailurePipeline(provider, "local", "source", "group", true,
-            FailureOptions.None, static _ => default, null, null);
+            FailureOptions.None, static (_, _) => default, null, null);
         await Assert.That(() => manual.ValidateSettlement(Disposition.Redeliver(TimeSpan.FromSeconds(1))))
             .Throws<InvalidOperationException>().WithMessageContaining("MaxRedeliveryDelay");
     }

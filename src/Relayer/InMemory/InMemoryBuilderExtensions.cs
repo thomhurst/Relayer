@@ -115,10 +115,10 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static OutgoingMessage Copy(MessageContext context)
+    private static OutgoingMessage Copy(MessageContext context, string destination)
     {
         var message = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message.Message;
-        return new("failure-copy", message.Body, message.Headers, message.OrderingKey);
+        return new(destination, message.Body, message.Headers, message.OrderingKey);
     }
 
     private static ValueTask SettleAsync(MessageContext context)
