@@ -8,6 +8,11 @@ internal static class RelayerCommand
 {
     public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error)
     {
+        if (args.Length >= 2 && args[0] == "topology" && args[1] == "export")
+        {
+            return await TopologyExportCommand.RunAsync(args, output, error).ConfigureAwait(false);
+        }
+
         if (args.Length < 2 || args[0] != "message" || args[1] != "locate")
         {
             return Run(args, output, error);
@@ -138,11 +143,6 @@ internal static class RelayerCommand
 
     public static int Run(string[] args, TextWriter output, TextWriter error)
     {
-        if (args.Length >= 2 && args[0] == "topology" && args[1] == "export")
-        {
-            return TopologyExportCommand.Run(args, output, error);
-        }
-
         if (args is ["--help"] or ["-h"])
         {
             output.WriteLine(TopologyExportCommand.Usage);

@@ -11,7 +11,7 @@ internal static class TopologyExportCommand
 {
     internal const string Usage = "dotnet relayer topology export --assembly <application.dll> --type <Namespace.Declarations> --format json|bicep|terraform [--transport <name>] [--account-id <12 digits> --region <aws-region> --partition aws]";
 
-    public static int Run(string[] args, TextWriter output, TextWriter error)
+    public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error)
     {
         var options = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -97,7 +97,14 @@ internal static class TopologyExportCommand
             }
             finally
             {
-                (services as IDisposable)?.Dispose();
+                if (services is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+                else if (services is IAsyncDisposable asyncDisposable)
+                {
+                    await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+                }
             }
 
             output.Write(text);
