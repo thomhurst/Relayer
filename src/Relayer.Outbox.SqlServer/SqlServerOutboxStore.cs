@@ -33,7 +33,6 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     private readonly string _retry;
     private readonly string _count;
     private readonly string _boundedCount;
-    private readonly string _batchClaim;
     private readonly string _batchComplete;
     private readonly byte[] _id = new byte[16];
     private readonly byte[] _token = new byte[16];
@@ -62,9 +61,12 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         var eligible = "status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
         var fenced = "id = @id AND claim_token = @token AND claim_expires_at > @now";
         _read = $"SELECT TOP (@limit) id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {eligible} AND (lane = @lane OR (lane IS NULL AND @lane IS NULL)) AND (@after IS NULL OR id > @after) ORDER BY id";
-        _claim = $"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires OUTPUT CAST(1 AS bit) WHERE id = @id AND {eligible}";
-        _renew = $"UPDATE {table} SET claim_expires_at = CASE WHEN claim_expires_at > @expires THEN claim_expires_at ELSE @expires END OUTPUT CAST(1 AS bit) WHERE {fenced}";
-        _complete = $"DELETE FROM {table} OUTPUT CAST(1 AS bit) WHERE {fenced}";
+        // Report the DML row count explicitly so enabled triggers can run.
+        _claim = $"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible}; SELECT CAST(@@ROWCOUNT AS bit)";
+        _renew = $"UPDATE {table} SET claim_expires_at = CASE WHEN claim_expires_at > @expires THEN claim_expires_at ELSE @expires END WHERE {fenced}; SELECT CAST(@@ROWCOUNT AS bit)";
+        var delete = $"DELETE FROM {table} WHERE {fenced}";
+        _complete = delete + "; SELECT CAST(@@ROWCOUNT AS bit)";
+        _batchComplete = delete + "; SELECT CAST(@@ROWCOUNT AS bigint)";
         _fail = $"""
             SET XACT_ABORT ON;
             DECLARE @own bit = CASE WHEN @@TRANCOUNT = 0 THEN 1 ELSE 0 END;
@@ -99,8 +101,6 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         _retry = SqlServerDispatchSql.Retry(table, fenced, "@now");
         _count = $"SELECT COUNT_BIG(*) FROM {table} WHERE {eligible}";
         _boundedCount = $"SELECT COUNT_BIG(*) FROM (SELECT TOP (@countLimit) 1 AS value FROM {table} WHERE {eligible}) AS pending";
-        _batchClaim = _claim.Replace(" OUTPUT CAST(1 AS bit)", "", StringComparison.Ordinal) + "; SELECT CAST(@@ROWCOUNT AS bit)";
-        _batchComplete = _complete.Replace(" OUTPUT CAST(1 AS bit)", "", StringComparison.Ordinal) + "; SELECT CAST(@@ROWCOUNT AS bigint)";
     }
 
     /// <inheritdoc />
@@ -322,7 +322,17 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
+        try
+        {
+            return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
+        }
+        // SqlClient can report an attention acknowledgement after a blocked mutation as two synthetic errors.
+        // Preserve cancellation without masking numbered database errors or matching localized messages.
+        catch (SqlException exception) when (cancellationToken.IsCancellationRequested &&
+            exception.Errors is [{ Number: 0, State: 0, Class: 11 }, { Number: 0, State: 0, Class: 11 }])
+        {
+            throw new OperationCanceledException("The SQL Server outbox mutation was canceled.", exception, cancellationToken);
+        }
     }
 
     // Native RPC batches retain one independently fenced autocommit statement per row.
@@ -353,7 +363,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         using var ownedConnection = _dispatchConnection is null ? new SqlConnection(_connectionString) : null;
         var connection = _dispatchConnection ?? ownedConnection!;
         await using var batch = new SqlBatch(connection, _dispatchTransaction);
-        PrepareBatch(batch, claims.Span, _batchClaim, now, expiresAt);
+        PrepareBatch(batch, claims.Span, _claim, now, expiresAt);
 
         if (ownedConnection is not null)
         {

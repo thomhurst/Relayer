@@ -16,11 +16,13 @@ namespace Relayer.Outbox.SqlServer.Tests;
 public sealed class MaintenanceTests(SqlServerFixture database)
 {
     [Test]
-    [Arguments("headers=0x01", "header")]
-    [Arguments("transport=N''", "transport")]
-    [Arguments("message_type=N''", "message type")]
-    [Arguments("destination=N' '", "destination")]
-    public async Task Malformed_row_is_quarantined_and_unrelated_rows_dispatch_in_same_pass(string corruption, string error)
+    [Arguments("headers=0x01", "header", false)]
+    [Arguments("headers=0x01", "header", true)]
+    [Arguments("transport=N''", "transport", false)]
+    [Arguments("message_type=N''", "message type", false)]
+    [Arguments("destination=N' '", "destination", false)]
+    public async Task Malformed_row_is_quarantined_and_unrelated_rows_dispatch_in_same_pass(
+        string corruption, string error, bool withAuditTrigger)
     {
         var data = new StoreData(database);
         await data.Create();
@@ -29,6 +31,18 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         await data.Insert(bad, DateTimeOffset.UtcNow.AddDays(-1));
         await data.Insert(good, DateTimeOffset.UtcNow.AddDays(-1));
         await data.Execute($"UPDATE {data.Table} SET {corruption} WHERE id=0x{Convert.ToHexString(bad.ToByteArray(bigEndian: true))}");
+
+        if (withAuditTrigger)
+        {
+            await data.Execute($"""
+                CREATE TRIGGER [dbo].[{data.Options.TablePrefix}audit] ON {data.Table} AFTER UPDATE AS
+                BEGIN
+                    SET NOCOUNT ON;
+                    DECLARE @audit_count bigint = (SELECT COUNT_BIG(*) FROM inserted);
+                END;
+                """);
+        }
+
         var transport = new Transport();
         using var worker = Worker(data, transport);
         await Assert.That(await worker.SweepAsync()).IsEqualTo(2);
