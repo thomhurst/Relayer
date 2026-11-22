@@ -252,6 +252,76 @@ public class HandlerGeneratorTests
     }
 
     [Test]
+    [Arguments("IConsumerBuilder", "builder.Handler<OrderHandler>()")]
+    [Arguments("ITransportConsumerBuilder", "builder.Consume<OrderHandler>(\"orders\")")]
+    public async Task Handler_and_message_from_an_alias_only_reference_compile(string builderType, string registration)
+    {
+        var external = CreateCompilation("""
+            using Relayer;
+            using System.Threading;
+            using System.Threading.Tasks;
+            namespace Broker;
+            public sealed class Order { }
+            public sealed class OrderHandler : IHandler<Order>
+            {
+                public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken cancellationToken) => default;
+            }
+            """).WithAssemblyName("Broker");
+        using var stream = new MemoryStream();
+        var emitted = external.Emit(stream);
+        await Assert.That(emitted.Success).IsTrue();
+
+        var compilation = CreateCompilation("""
+            extern alias BrokerReference;
+            using Relayer;
+            using Order = BrokerReference::Broker.Order;
+            using OrderHandler = BrokerReference::Broker.OrderHandler;
+
+            public static class Registration
+            {
+                public static void Add(BUILDER builder) => REGISTRATION;
+                public static void AddTyped(IConsumerBuilder builder) => builder.Handler<OrderHandler, Order>();
+            }
+            """.Replace("BUILDER", builderType).Replace("REGISTRATION", registration))
+            .AddReferences(MetadataReference.CreateFromImage(stream.ToArray(), new MetadataReferenceProperties(aliases: ["BrokerReference"])));
+
+        var driver = Run(compilation, out _);
+        await Assert.That(Generated(driver)).Contains("TryAddScoped<@BrokerReference::Broker.OrderHandler>");
+        await Assert.That(Generated(driver)).Contains("HandlerDescriptor<@BrokerReference::Broker.Order>");
+    }
+
+    [Test]
+    public async Task Generated_types_keep_distinct_aliases_inside_nested_generic_arguments()
+    {
+        const string Contract = "namespace Shared; public sealed class Order { }";
+        var orders = CreateCompilation(Contract).WithAssemblyName("Orders").ToMetadataReference(["Common", "Orders"]);
+        var returns = CreateCompilation(Contract).WithAssemblyName("Returns").ToMetadataReference(["Common", "class"]);
+        var compilation = CreateCompilation("""
+            extern alias Orders;
+            extern alias @class;
+            using Relayer;
+            using System.Threading;
+            using System.Threading.Tasks;
+
+            public class Envelope<T>
+            {
+                public sealed class Message<U> { }
+            }
+
+            public sealed class OrderHandler :
+                IHandler<Envelope<Orders::Shared.Order>.Message<@class::Shared.Order>[]>
+            {
+                public ValueTask HandleAsync(Envelope<Orders::Shared.Order>.Message<@class::Shared.Order>[] message,
+                    MessageContext context, CancellationToken cancellationToken) => default;
+            }
+            """).AddReferences(orders, returns);
+
+        var driver = Run(compilation, out _);
+        await Assert.That(Generated(driver))
+            .Contains("HandlerDescriptor<global::Envelope<@Orders::Shared.Order>.Message<@class::Shared.Order>[]>");
+    }
+
+    [Test]
     public async Task Friend_assembly_registration_does_not_collide_with_the_referenced_assembly()
     {
         var library = CreateCompilation(Handlers).WithAssemblyName("Library").AddSyntaxTrees(CSharpSyntaxTree.ParseText("""
