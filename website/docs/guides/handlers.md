@@ -154,14 +154,33 @@ public static class OrderConsumer
 The generated `Handler<THandler>()` only knows the handlers named in its own compilation, so it cannot register a handler that is a type parameter. A shared helper names the message as well, with `Handler<THandler, TMessage>()`:
 
 ```csharp
-// In a shared messaging library.
-public static void LocalQueue<TMessage, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(
-    this IConsumerBuilder consumer)
-    where THandler : class, IHandler<TMessage>
-    => consumer.Handler<THandler, TMessage>();
+using System.Diagnostics.CodeAnalysis;
+using Relayer;
 
-// In each module.
-kafka.Consume("orders", consumer => consumer.LocalQueue<OrderPlaced, OrderPlacedHandler>());
+namespace MyApp.Messaging;
+
+public static class ConsumerBuilderExtensions
+{
+    public static void LocalQueue<TMessage,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(
+        this IConsumerBuilder consumer)
+        where THandler : class, IHandler<TMessage>
+    {
+        consumer.Handler<THandler, TMessage>();
+    }
+}
+```
+
+Reference the shared library and import its namespace in the module that configures the consumer:
+
+```csharp
+using MyApp.Messaging;
+
+kafka.Consume("orders", consumer =>
+{
+    consumer.Options.Group = "orders-handler";
+    consumer.LocalQueue<OrderPlaced, OrderPlacedHandler>();
+});
 ```
 
 It selects the handler for that one `IHandler<TMessage>` contract on this consumer, even when other consumers register its other contracts, and registers it as a scoped service. Dispatch is typed and reflection-free, the same as the generated path, and registering the same handler both ways is idempotent. The typed overload rejects tombstone and saga handlers during configuration. Register them with the generated `Handler<THandler>()`, which also registers the saga execution service. The `DynamicallyAccessedMembers` annotation keeps the handler's constructor under trimming and Native AOT.
