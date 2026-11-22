@@ -1,0 +1,19 @@
+--- a/tools/FrozenAllocationProfiler/Profiler.cpp
++++ b/tools/FrozenAllocationProfiler/Profiler.cpp
+@@ -15,0 +16,14 @@
++// MTP passes the profiling environment to every test host in the solution.
++bool isSelectedProcess() {
++    const char* target = std::getenv("RELAYER_ALLOCATION_TARGET");
++    if (!target) return true;
++
++    std::ifstream arguments("/proc/self/cmdline", std::ios::binary);
++    std::string argument;
++    while (std::getline(arguments, argument, '\0')) {
++        const auto fileName = argument.substr(argument.find_last_of('/') + 1);
++        if (fileName == target || fileName == std::string(target) + ".dll") return true;
++    }
++    return false;
++}
++
+@@ -193,0 +208,1 @@
++        if (!isSelectedProcess()) return S_OK;
