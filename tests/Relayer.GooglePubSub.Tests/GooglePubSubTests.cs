@@ -250,6 +250,103 @@ public class GooglePubSubTests
     }
 
     [Test]
+    public async Task Hosted_stop_deadline_releases_caller_while_disposal_joins_native_cleanup()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        using var stopDeadline = new CancellationTokenSource();
+        var token = timeout.Token;
+        await using var broker = await PubSubBroker.StartAsync(token);
+        var name = TestContext.Current!.Isolation.GetIsolatedName("shutdown-deadline");
+        var topic = TopicName.FromProjectTopic("relayer-test", name);
+        var subscription = SubscriptionName.FromProjectSubscription("relayer-test", name);
+        var deadLetter = TopicName.FromProjectTopic("relayer-test", name + "-dead");
+        var handler = new PubSubShutdownHandler();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(handler);
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(PubSubJson.Default);
+            relayer.GooglePubSub("events", transport =>
+            {
+                transport.TopologyMode = TopologyMode.Provision;
+                transport.Options.Configure(options =>
+                {
+                    options.Publisher = broker.Publisher;
+                    options.Subscriber = broker.Subscriber;
+                    options.PublisherSettings = new()
+                    {
+                        EnableMessageOrdering = true
+                    };
+                    options.Topics.Add(topic);
+                    options.Topics.Add(deadLetter);
+                    options.Subscriptions.Add(new()
+                    {
+                        SubscriptionName = subscription,
+                        Topic = topic.ToString(),
+                        AckDeadlineSeconds = 10
+                    });
+                });
+                transport.Send<PubSubOrder>(topic.ToString());
+                transport.Consume(subscription.ToString(), consumer =>
+                {
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = deadLetter.ToString()
+                    });
+                    consumer.Handler<PubSubShutdownHandler>();
+                });
+            });
+        });
+        var host = builder.Build();
+        var lifetime = (IAsyncDisposable)host;
+        Task? disposal = null;
+        Task completion;
+        var stopReturned = false;
+
+        try
+        {
+            await host.StartAsync(token);
+
+            using (var scope = host.Services.CreateScope())
+            {
+                var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+                await sender.SendWithoutOutboxAsync(new PubSubOrder(42), cancellationToken: token);
+            }
+
+            await handler.Entered.Task.WaitAsync(token);
+            completion = host.Services.GetRequiredKeyedService<GooglePubSubTransport>("events").Consumers.Single().Completion;
+            var stopping = host.StopAsync(stopDeadline.Token);
+            await stopDeadline.CancelAsync();
+            await handler.Cancelled.Task.WaitAsync(token);
+
+            stopReturned = await Task.WhenAny(stopping, Task.Delay(TimeSpan.FromSeconds(10), token)) == stopping;
+            await Assert.That(stopReturned).IsTrue();
+            var error = await Assert.ThrowsAsync<AggregateException>(() => stopping);
+            await Assert.That(error?.InnerExceptions.Single()).IsAssignableTo<OperationCanceledException>();
+            await Assert.That(completion.IsCompleted).IsFalse();
+
+            disposal = lifetime.DisposeAsync().AsTask();
+            await Assert.That(disposal.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            handler.ReleaseCleanup.TrySetResult();
+
+            try
+            {
+                await (disposal ?? lifetime.DisposeAsync().AsTask()).WaitAsync(token);
+            }
+            catch (AggregateException error) when (!stopReturned && error.InnerExceptions.SingleOrDefault() is OperationCanceledException)
+            {
+                // Preserve the original assertion if native disposal reports the same hard stop.
+            }
+        }
+
+        await Assert.That(completion.IsCompleted).IsTrue();
+    }
+
+    [Test]
     [Arguments(false, false)]
     [Arguments(true, false)]
     [Arguments(true, true)]
@@ -398,6 +495,33 @@ public sealed class PubSubHandler(PubSubControl control) : IHandler<PubSubOrder>
 
         control.Values.Writer.TryWrite(message.Value);
         return default;
+    }
+}
+
+public sealed class PubSubShutdownHandler : IHandler<PubSubOrder>
+{
+    internal TaskCompletionSource Entered
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal TaskCompletionSource Cancelled
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal TaskCompletionSource ReleaseCleanup
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public async ValueTask HandleAsync(PubSubOrder message, MessageContext context, CancellationToken cancellationToken)
+    {
+        using var registration = cancellationToken.Register(() => Cancelled.TrySetResult());
+        Entered.TrySetResult();
+        await Cancelled.Task;
+        await ReleaseCleanup.Task;
+        cancellationToken.ThrowIfCancellationRequested();
     }
 }
 

@@ -1450,6 +1450,11 @@ of adding an adapter retry engine. Outage conformance may explicitly recreate it
 after recognizing the exact native subscriber failure caused by the injected TCP reset. Unrelated
 shutdown errors remain failures, and every acknowledged message must still arrive on the same endpoint.
 
+SubscriberClientImpl.StopAsync uses the cancellation token to signal a native hard stop. Its returned task
+still waits for native shutdown, including handler cleanup. Bound the host's wait with Task.WaitAsync and
+retain the shutdown task for disposal. Disposal joins that task and treats cancellation-only completion
+as expected when the host deadline requested the hard stop.
+
 Nack cannot change broker attributes, and native DeadLetterPolicy cannot supply on-demand dead-lettering
 with Relayer error history. Keep these capabilities unavailable to the core durable failure policy. Reuse
 the existing core retry and acknowledged dead-letter-copy path, with explicit destination topics. Native

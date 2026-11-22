@@ -9,9 +9,10 @@ internal sealed class GooglePubSubConsumer(Func<SubscriberClient> create, Messag
     private static readonly Task<SubscriberClient.Reply> s_ack = Task.FromResult(SubscriberClient.Reply.Ack);
     private static readonly Task<SubscriberClient.Reply> s_nack = Task.FromResult(SubscriberClient.Reply.Nack);
     private readonly MessageOperationTracing _ack = new(tracing, new() { System = "gcp_pubsub", Destination = topic, Subscription = subscription }, MessagingOperation.Settle, "ack");
-    private bool _started;
-    private bool _stopped;
+    private readonly Lock _lifecycle = new();
     private SubscriberClient? _native;
+    private Task? _shutdown;
+    private CancellationToken _stopDeadline;
     private readonly GooglePubSubPool<GooglePubSubReply> _replies = new(static () => new());
 
     internal Func<GooglePubSubDelivery, CancellationToken, ValueTask<Disposition>> Receive
@@ -26,29 +27,31 @@ internal sealed class GooglePubSubConsumer(Func<SubscriberClient> create, Messag
 
     internal void Start()
     {
-        if (_started && !_stopped)
+        lock (_lifecycle)
         {
-            throw new InvalidOperationException("Pub/Sub subscriber is already running.");
-        }
+            if (_native is not null || _shutdown is { IsCompleted: false })
+            {
+                throw new InvalidOperationException("Pub/Sub subscriber is already running or shutting down.");
+            }
 
-        if (Completion.IsFaulted || Completion.IsCanceled)
-        {
-            throw new InvalidOperationException("Recreate the application host after a failed Pub/Sub subscriber.");
-        }
+            if (Completion.IsFaulted || Completion.IsCanceled || _shutdown is { IsCompletedSuccessfully: false })
+            {
+                throw new InvalidOperationException("Recreate the application host after a failed Pub/Sub subscriber.");
+            }
 
-        _started = true;
-        _stopped = false;
-        _native = create();
+            _native = create();
+            _shutdown = null;
 
-        if (ExecutionContext.IsFlowSuppressed())
-        {
-            Completion = _native.StartAsync(HandleAsync);
-        }
-        else
-        {
-            using (ExecutionContext.SuppressFlow())
+            if (ExecutionContext.IsFlowSuppressed())
             {
                 Completion = _native.StartAsync(HandleAsync);
+            }
+            else
+            {
+                using (ExecutionContext.SuppressFlow())
+                {
+                    Completion = _native.StartAsync(HandleAsync);
+                }
             }
         }
     }
@@ -141,27 +144,81 @@ internal sealed class GooglePubSubConsumer(Func<SubscriberClient> create, Messag
         };
     }
 
-    internal async Task StopAsync(CancellationToken token)
+    internal Task StopAsync(CancellationToken token)
     {
-        if (!_started || _stopped)
+        lock (_lifecycle)
         {
-            return;
+            // Native cancellation signals the handler. Bound the caller's wait independently.
+            return GetOrStartShutdown(token).WaitAsync(token);
+        }
+    }
+
+    private Task GetOrStartShutdown(CancellationToken? stopDeadline)
+    {
+        if (_shutdown is not null)
+        {
+            return _shutdown;
         }
 
-        await _native!.StopAsync(new SubscriberClient.ShutdownOptions { Mode = SubscriberClient.ShutdownMode.WaitForProcessing }, token).ConfigureAwait(false);
-        await Completion.ConfigureAwait(false);
-        await _native.DisposeAsync().ConfigureAwait(false);
-        _native = null;
-        _stopped = true;
+        if (_native is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        _stopDeadline = stopDeadline.GetValueOrDefault();
+        _shutdown = ShutdownAsync(_native, stopDeadline);
+        return _shutdown;
+    }
+
+    private async Task ShutdownAsync(SubscriberClient native, CancellationToken? stopDeadline)
+    {
+        try
+        {
+            // The SDK's StopAsync and DisposeAsync both return the subscriber's shutdown completion.
+            if (stopDeadline is { } token)
+            {
+                await native.StopAsync(new SubscriberClient.ShutdownOptions { Mode = SubscriberClient.ShutdownMode.WaitForProcessing }, token).ConfigureAwait(false);
+            }
+            else
+            {
+                await native.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        catch when (!Completion.IsCompleted)
+        {
+            // The SDK can invoke cancellation callbacks before returning its shutdown task.
+            // Keep the subscriber alive until those callbacks and native shutdown finish.
+            await Task.WhenAny(Completion).ConfigureAwait(false);
+            throw;
+        }
+        finally
+        {
+            lock (_lifecycle)
+            {
+                _native = null;
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_native is not null)
+        Task shutdown;
+        CancellationToken stopDeadline;
+
+        lock (_lifecycle)
         {
-            await _native.DisposeAsync().ConfigureAwait(false);
+            shutdown = GetOrStartShutdown(null);
+            stopDeadline = _stopDeadline;
         }
 
-        _native = null;
+        try
+        {
+            await shutdown.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (stopDeadline.IsCancellationRequested &&
+            (Completion.IsCanceled || Completion.Exception?.InnerExceptions.All(static error => error is OperationCanceledException) == true))
+        {
+            // The SDK can report a hard stop as a canceled task or as cancellation exceptions from its channels.
+        }
     }
 }
