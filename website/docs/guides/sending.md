@@ -99,6 +99,8 @@ await sender.SendAsync(message, options =>
 }, cancellationToken);
 ```
 
+## Send route requirements
+
 Declare known send requirements on the existing route settings:
 
 ```csharp
@@ -116,6 +118,8 @@ When hosted startup checks outbox capabilities, it awaits disposal of the valida
 `TransactionRequirement.None` is the default. `Outbox` requires a registered transaction executor at startup and an active transaction for every send on that route. `SendWithoutOutboxAsync` cannot bypass it. `Native` requires the endpoint to advertise native `Transactions`; the application still configures and owns the transaction through the native client. It does not automatically begin or commit a broker transaction. Native transactions cannot be replaced by database outbox durability, and an active outbox is rejected on a native-required route; use `SendWithoutOutboxAsync` with the native transaction configuration. A native-required route also cannot use an outbox scheduling fallback. Current built-in adapters advertise conservative transaction capabilities and reject a native requirement until their native transaction integration supports it.
 
 For PostgreSQL fallback validation, the outbox options and registered worker must agree on schema and table prefix. Ordered workers also need the same lane count. Applications remain responsible for pointing writers and workers at the same database. EF Core startup uses the outbox options registered through the Options pattern; match them to the participating DbContext options. Execution also checks the selected DbContext's actual store, so a per-context override cannot silently use another store's scheduler. Third-party outbox integrations report executable scheduling support through `IOutboxEnlistment.SupportsScheduling` and `SupportsOrderedScheduling`; the defaults are false. These are executor capabilities, not user switches that enable an unimplemented fallback.
+
+## Send execution
 
 The core serializes the body and writes the [CloudEvents envelope](../transports/envelopes.md). Set `SendRouteOptions.HeaderNames` to the transport's binary-mode binding. Per-send headers cannot override the envelope identity or creation context. `MessageEnvelopeMode.Raw` omits the envelope and allows explicit legacy headers. The serializer's content type is supplied in `content-type`; the transport maps it to its native property as needed. The transport applies native callbacks immediately before sending and retains its native scheduling and ordering semantics.
 

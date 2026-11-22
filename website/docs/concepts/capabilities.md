@@ -33,7 +33,14 @@ The core runs every fallback, so transports contain native code only.
 | Dead-letter with error metadata | Service Bus DLQ with properties | Send a copy to the dead-letter endpoint (Kafka DLT topic, SQS DLQ queue), then complete |
 | Ordering | Kafka partition key, Service Bus sessions, SQS FIFO message group | None: the route must not declare an ordering key |
 | Batching | Kafka, SQS (10), Service Bus batches | Client-side batching |
-| Transactions | Kafka transactions, Service Bus cross-entity transactions | Outbox |
+
+## Send route transactions
+
+The built-in Kafka and Service Bus send endpoints reject `SendTransactionRequirement.Native` at startup. See [send route requirements](../guides/sending.md#send-route-requirements) for how Relayer validates the endpoint's `Transactions` capability.
+
+In [Kafka-to-Kafka exactly-once mode](../transports/kafka.md#kafka-to-kafka-exactly-once), the consumer owns the native transaction. It commits handler output sent through the same Kafka transport together with the consumed offsets.
+
+For database durability, explicitly select `SendTransactionRequirement.Outbox` and send within an active [outbox transaction](../guides/outbox.md#send-within-the-business-transaction). When an endpoint lacks `Transactions`, startup rejects a native requirement even if an outbox is configured.
 
 ## Validation
 
