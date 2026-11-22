@@ -36,21 +36,43 @@ public sealed class BatchReceiveExecutor<TIncoming>
         ArgumentException.ThrowIfNullOrWhiteSpace(consumerName);
         ArgumentException.ThrowIfNullOrWhiteSpace(consumer.Source);
         var location = $"Consumer '{consumerName}' from '{consumer.Source}' on transport '{transportName}'";
+
         if (consumer.BatchSize < 1 || consumer.BatchWait <= TimeSpan.Zero)
+        {
             throw new InvalidOperationException($"{location}: BatchSize must be positive and BatchWait must be positive.");
+        }
+
         ITransport? selected = null;
+
         foreach (var transport in services.GetServices<ITransport>())
         {
-            if (transport.Name != transportName) continue;
-            if (selected is not null) throw new InvalidOperationException($"{location}: register exactly one named ITransport.");
+            if (transport.Name != transportName)
+            {
+                continue;
+            }
+
+            if (selected is not null)
+            {
+                throw new InvalidOperationException($"{location}: register exactly one named ITransport.");
+            }
+
             selected = transport;
         }
-        if (selected is null) throw new InvalidOperationException($"{location}: register a named ITransport adapter.");
+
+        if (selected is null)
+        {
+            throw new InvalidOperationException($"{location}: register a named ITransport adapter.");
+        }
+
         var errors = new List<string>();
         var validator = new EndpointCapabilityValidator([selected], errors, services.GetRequiredService<EndpointCapabilityCache>());
         var capabilities = validator.GetCapabilities(selected, consumer.Source);
+
         if (errors.Count != 0 || capabilities is null)
+        {
             throw new InvalidOperationException($"{location}: {string.Join(Environment.NewLine, errors)}");
+        }
+
         UsesNativeBatching = nativeReceive is not null && (capabilities.MaxBatchSize > 1 || consumer.BatchSize == 1);
         MaximumSize = UsesNativeBatching ? Math.Min(consumer.BatchSize, capabilities.MaxBatchSize) : consumer.BatchSize;
         _receive = (UsesNativeBatching ? nativeReceive : singleReceive)
@@ -60,9 +82,16 @@ public sealed class BatchReceiveExecutor<TIncoming>
     }
 
     /// <summary>Whether native batching was selected at startup.</summary>
-    public bool UsesNativeBatching { get; }
+    public bool UsesNativeBatching
+    {
+        get;
+    }
+
     /// <summary>The effective count limit, capped by the native limit when using native batching.</summary>
-    public int MaximumSize { get; }
+    public int MaximumSize
+    {
+        get;
+    }
 
     /// <summary>Receives one batch. Process only the returned prefix, then settle using the native client.</summary>
     /// <remarks>
@@ -74,29 +103,53 @@ public sealed class BatchReceiveExecutor<TIncoming>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<int> ReceiveAsync(Memory<TIncoming> destination, CancellationToken cancellationToken = default)
     {
-        if (destination.Length < MaximumSize) throw new ArgumentException("Provide storage for MaximumSize deliveries.", nameof(destination));
+        if (destination.Length < MaximumSize)
+        {
+            throw new ArgumentException("Provide storage for MaximumSize deliveries.", nameof(destination));
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
+
         if (UsesNativeBatching)
         {
             var nativeCount = ValidateCount(await _receive(destination[..MaximumSize], _wait, cancellationToken).ConfigureAwait(false), MaximumSize);
             cancellationToken.ThrowIfCancellationRequested();
             return nativeCount;
         }
+
         var count = 0;
         long started = 0;
+
         while (count < MaximumSize)
         {
             var remaining = count == 0 ? _wait : _wait - _time.GetElapsedTime(started);
-            if (remaining <= TimeSpan.Zero) break;
+
+            if (remaining <= TimeSpan.Zero)
+            {
+                break;
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
             var received = ValidateCount(await _receive(destination.Slice(count, 1), remaining, cancellationToken).ConfigureAwait(false), 1);
             cancellationToken.ThrowIfCancellationRequested();
-            if (received == 0) break;
-            if (count++ == 0) started = _time.GetTimestamp();
+
+            if (received == 0)
+            {
+                break;
+            }
+
+            if (count++ == 0)
+            {
+                started = _time.GetTimestamp();
+            }
         }
+
         return count;
     }
 
-    private static int ValidateCount(int count, int maximum) => (uint)count <= (uint)maximum ? count
-        : throw new InvalidOperationException("The receive executor returned a count outside its supplied destination.");
+    private static int ValidateCount(int count, int maximum)
+    {
+        return (uint)count <= (uint)maximum ? count
+                : throw new InvalidOperationException("The receive executor returned a count outside its supplied destination.");
+    }
 }

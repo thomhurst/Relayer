@@ -22,9 +22,11 @@ public class DestinationSelectorTests
             t.Consume("regional-us", c => c.Handler<UsHandler>());
         });
         await host.StartAsync();
+
         try
         {
             var seen = host.Services.GetRequiredService<Seen>();
+
             using (var scope = host.Services.CreateScope())
             {
                 var sender = scope.ServiceProvider.GetRequiredService<ISender>();
@@ -32,10 +34,14 @@ public class DestinationSelectorTests
                 await sender.SendAsync(new RegionalOrder("regional-us", 2));
                 await sender.SendAsync(new RegionalOrder("regional-eu", 3));
             }
+
             await seen.Done.Task.WaitAsync(TimeSpan.FromSeconds(10));
             await Assert.That(seen.Sources.OrderBy(source => source)).IsEquivalentTo(new[] { "regional-eu:1", "regional-eu:3", "regional-us:2" });
         }
-        finally { await host.StopAsync(); }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 
     [Test]
@@ -43,6 +49,7 @@ public class DestinationSelectorTests
     {
         using var host = Host(t => t.Send<RegionalOrder>(["regional-eu"], static order => order.Topic));
         await host.StartAsync();
+
         try
         {
             using var scope = host.Services.CreateScope();
@@ -50,7 +57,10 @@ public class DestinationSelectorTests
             await Assert.That(async () => await sender.SendAsync(new RegionalOrder("regional-apac", 1)))
                 .Throws<InvalidOperationException>().WithMessageContaining("returned 'regional-apac', which the route does not declare");
         }
-        finally { await host.StopAsync(); }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 
     [Test]
@@ -58,6 +68,7 @@ public class DestinationSelectorTests
     {
         using var host = Host(t => t.Send<RegionalOrder>(["regional-eu"], static _ => null!));
         await host.StartAsync();
+
         try
         {
             using var scope = host.Services.CreateScope();
@@ -65,7 +76,10 @@ public class DestinationSelectorTests
             await Assert.That(async () => await sender.SendAsync(new RegionalOrder("regional-eu", 1)))
                 .Throws<InvalidOperationException>().WithMessageContaining("returned null, which the route does not declare");
         }
-        finally { await host.StopAsync(); }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 
     [Test]
@@ -75,12 +89,32 @@ public class DestinationSelectorTests
             route => route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromDays(1) }),
             options =>
             {
-                options.Endpoints["regional-eu"] = new() { Capabilities = new() { MaxDeliveryDelay = TimeSpan.FromHours(1) } };
-                options.Endpoints["regional-us"] = new() { Capabilities = new() { MaxDeliveryDelay = TimeSpan.FromHours(1) } };
+                options.Endpoints["regional-eu"] = new()
+                {
+                    Capabilities = new()
+                    {
+                        MaxDeliveryDelay = TimeSpan.FromHours(1)
+                    }
+                };
+                options.Endpoints["regional-us"] = new()
+                {
+                    Capabilities = new()
+                    {
+                        MaxDeliveryDelay = TimeSpan.FromHours(1)
+                    }
+                };
             });
         OptionsValidationException? failure = null;
-        try { await host.StartAsync(); }
-        catch (OptionsValidationException error) { failure = error; }
+
+        try
+        {
+            await host.StartAsync();
+        }
+        catch (OptionsValidationException error)
+        {
+            failure = error;
+        }
+
         await Assert.That(failure).IsNotNull();
         await Assert.That(failure!.Message).Contains("'regional-eu'");
         await Assert.That(failure.Message).Contains("'regional-us'");
@@ -169,8 +203,13 @@ public class DestinationSelectorTests
 
     private sealed class RecordingOutbox : IOutboxEnlistment
     {
-        public List<string> Destinations { get; } = [];
+        public List<string> Destinations
+        {
+            get;
+        } = [];
+
         public bool IsActive => true;
+
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
             Destinations.Add(record.Message.Destination);
@@ -181,41 +220,88 @@ public class DestinationSelectorTests
     private sealed class Sink : ITransport
     {
         public string Name => "sink";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { Tombstones = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => default;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                Tombstones = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private static IHost Host(Action<TransportBuilder<InMemoryTransportOptions, InMemoryConsumerOptions>> configure,
-        Action<InMemoryTransportOptions>? options = null) =>
-        new HostBuilder().ConfigureServices(services =>
-        {
-            services.AddSingleton(new Seen(expected: 3));
-            services.AddRelayer(r =>
-            {
-                r.AddMessageTypesFromThisAssembly();
-                r.InMemory("local", t =>
+        Action<InMemoryTransportOptions>? options = null)
+    {
+        return new HostBuilder().ConfigureServices(services =>
                 {
-                    if (options is not null) t.Options.Configure(options);
-                    configure(t);
-                });
-            });
-        }).Build();
+                    services.AddSingleton(new Seen(expected: 3));
+                    services.AddRelayer(r =>
+                    {
+                        r.AddMessageTypesFromThisAssembly();
+                        r.InMemory("local", t =>
+                        {
+                            if (options is not null)
+                            {
+                                t.Options.Configure(options);
+                            }
+
+                            configure(t);
+                        });
+                    });
+                }).Build();
+    }
 
     public sealed class Seen(int expected)
     {
-        public ConcurrentBag<string> Sources { get; } = [];
-        public TaskCompletionSource Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentBag<string> Sources
+        {
+            get;
+        } = [];
+
+        public TaskCompletionSource Done
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void Add(RegionalOrder order, string source)
         {
             Sources.Add($"{source}:{order.Number}");
-            if (Sources.Count == expected) Done.TrySetResult();
+
+            if (Sources.Count == expected)
+            {
+                Done.TrySetResult();
+            }
         }
     }
 

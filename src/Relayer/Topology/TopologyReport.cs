@@ -8,10 +8,18 @@ public sealed class TopologyReport
     {
         ArgumentNullException.ThrowIfNull(differences);
         var snapshot = differences.ToArray();
-        foreach (var difference in snapshot) ArgumentException.ThrowIfNullOrWhiteSpace(difference);
+
+        foreach (var difference in snapshot)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(difference);
+        }
+
         Differences = Array.AsReadOnly(snapshot);
     }
 
     /// <summary>Actionable, native entity differences; provisioning must report anything it could not reconcile.</summary>
-    public IReadOnlyList<string> Differences { get; }
+    public IReadOnlyList<string> Differences
+    {
+        get;
+    }
 }

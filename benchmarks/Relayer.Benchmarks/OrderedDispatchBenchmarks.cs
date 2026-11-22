@@ -1,6 +1,6 @@
 using BenchmarkDotNet.Attributes;
-using Relayer.Outbox.PostgreSql;
 using Relayer.Outbox.MySql;
+using Relayer.Outbox.PostgreSql;
 using Relayer.Outbox.SqlServer;
 using Relayer.Transports;
 
@@ -26,25 +26,69 @@ public class OrderedDispatchBenchmarks
     }
 
     [Benchmark]
-    public OutgoingMessage ResolveAndProject() => PostgreSqlOrderedDispatcher.Prepare(_row, _transports, _capabilities).Message;
+    public OutgoingMessage ResolveAndProject()
+    {
+        return PostgreSqlOrderedDispatcher.Prepare(_row, _transports, _capabilities).Message;
+    }
 
     [Benchmark]
-    public OutgoingMessage MySqlResolveAndProject() => MySqlOrderedDispatcher.Prepare(_row, _transports, _capabilities).Message;
-    [Benchmark]
-    public OutgoingMessage SqlServerResolveAndProject() => SqlServerOrderedDispatcher.Prepare(_row, _transports, _capabilities).Message;
+    public OutgoingMessage MySqlResolveAndProject()
+    {
+        return MySqlOrderedDispatcher.Prepare(_row, _transports, _capabilities).Message;
+    }
 
     [Benchmark]
-    public OutboxClaim CreateClaim() => new(_row.Id, Guid.NewGuid());
+    public OutgoingMessage SqlServerResolveAndProject()
+    {
+        return SqlServerOrderedDispatcher.Prepare(_row, _transports, _capabilities).Message;
+    }
+
+    [Benchmark]
+    public OutboxClaim CreateClaim()
+    {
+        return new(_row.Id, Guid.NewGuid());
+    }
 
     private sealed class NoOpTransport : ITransport
     {
         public string Name => "benchmark";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

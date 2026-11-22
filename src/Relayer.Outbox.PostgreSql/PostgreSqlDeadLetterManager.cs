@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using Npgsql;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
 
@@ -27,25 +27,37 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
         _listed = Array.AsReadOnly(new[] { new DeadLetterSource(name, name) });
     }
 
-    public IReadOnlyList<DeadLetterSource> List() => _listed;
+    public IReadOnlyList<DeadLetterSource> List()
+    {
+        return _listed;
+    }
 
     public async ValueTask<DeadLetterPage> PeekAsync(string source, int maxMessages = 20, string? cursor = null,
         CancellationToken cancellationToken = default)
     {
         Validate(source, maxMessages);
         Guid? after = null;
+
         if (cursor is not null)
+        {
             after = Guid.TryParseExact(cursor, "D", out var parsed) ? parsed : throw new ArgumentException("Invalid PostgreSQL dead-letter cursor.", nameof(cursor));
+        }
+
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         var messages = await ReadAsync(connection, null, maxMessages, after, cancellationToken).ConfigureAwait(false);
         return new(messages.AsReadOnly(), messages.Count == 0 ? null : messages[^1].MessageId);
     }
 
     public ValueTask<int> RedriveAsync(string source, Func<DeadLetterMessage, bool>? filter = null,
-        int maxMessages = 20, CancellationToken cancellationToken = default) => MaintainAsync(source, filter, maxMessages, false, cancellationToken);
+        int maxMessages = 20, CancellationToken cancellationToken = default)
+    {
+        return MaintainAsync(source, filter, maxMessages, false, cancellationToken);
+    }
 
     public ValueTask<int> PurgeAsync(string source, int maxMessages = 20, CancellationToken cancellationToken = default)
-        => MaintainAsync(source, null, maxMessages, true, cancellationToken);
+    {
+        return MaintainAsync(source, null, maxMessages, true, cancellationToken);
+    }
 
     private async ValueTask<int> MaintainAsync(string source, Func<DeadLetterMessage, bool>? filter, int maxMessages,
         bool purge, CancellationToken cancellationToken)
@@ -56,43 +68,78 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
         // Lock bounded dead rows, then restore their original durable rows. Never send from management.
         var messages = await ReadAsync(connection, transaction, maxMessages, null, cancellationToken).ConfigureAwait(false);
         int changed = 0, restored = 0, parked = 0;
+
         foreach (var message in messages)
         {
-            if (!purge && filter is not null && !filter(message)) continue;
+            if (!purge && filter is not null && !filter(message))
+            {
+                continue;
+            }
+
             var row = message.Features.GetRequired<PostgreSqlDeadLetterDetails>().Record;
             var sql = purge
                 ? $"DELETE FROM {_table} WHERE id = @id AND status = 'parked'"
                 : row.Lane is not null
                     ? $"UPDATE {_table} SET status = 'pending', attempts = 0, last_error = NULL WHERE id = @id AND status = 'parked'"
                     : $"INSERT INTO {_table} (id, lane, ordering_key, transport, destination, message_type, headers, body, created_at, deliver_at, tenant_id) SELECT id, lane, ordering_key, transport, destination, message_type, headers, body, created_at, deliver_at, tenant_id FROM {_dead} WHERE id = @id";
+
             using (var command = new NpgsqlCommand(sql, connection, transaction))
             {
                 command.Parameters.AddWithValue("id", row.Id);
                 var affected = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                if (purge) parked += affected;
-                else if (row.Lane is not null) parked++;
-                else restored++;
-                if (!purge && affected != 1) throw new InvalidOperationException($"Ordered dead row {row.Id:D} has no parked barrier. Restore its durable row at the original sequence before redrive, or explicitly purge the dead row to discard it. The redrive batch was rolled back.");
+
+                if (purge)
+                {
+                    parked += affected;
+                }
+                else if (row.Lane is not null)
+                {
+                    parked++;
+                }
+                else
+                {
+                    restored++;
+                }
+
+                if (!purge && affected != 1)
+                {
+                    throw new InvalidOperationException($"Ordered dead row {row.Id:D} has no parked barrier. Restore its durable row at the original sequence before redrive, or explicitly purge the dead row to discard it. The redrive batch was rolled back.");
+                }
             }
+
             using (var command = new NpgsqlCommand($"DELETE FROM {_dead} WHERE id = @id", connection, transaction))
             {
                 command.Parameters.AddWithValue("id", row.Id);
                 await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
+
             changed++;
         }
+
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
         if (_instrumentation is { } instrumentation)
         {
             // A redriven unordered row is back in the table; a redriven parked row is outstanding again;
             // a purged parked row leaves the table it was still counted in.
-            if (restored != 0) instrumentation.AddOutboxPending(restored);
+            if (restored != 0)
+            {
+                instrumentation.AddOutboxPending(restored);
+            }
+
             if (parked != 0)
             {
-                if (purge) instrumentation.RecordOutboxParkedPurged(parked);
-                else instrumentation.RecordOutboxUnparked(parked);
+                if (purge)
+                {
+                    instrumentation.RecordOutboxParkedPurged(parked);
+                }
+                else
+                {
+                    instrumentation.RecordOutboxUnparked(parked);
+                }
             }
         }
+
         return changed;
     }
 
@@ -105,6 +152,7 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
         command.Parameters.AddWithValue("limit", limit);
         var messages = new List<DeadLetterMessage>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             KeyValuePair<string, WireString>[] entries = [];
@@ -119,12 +167,20 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
             snapshot.Features.Set(new PostgreSqlDeadLetterDetails(row, reader.GetFieldValue<DateTimeOffset>(13)));
             messages.Add(snapshot);
         }
+
         return messages;
     }
 
     private void Validate(string source, int limit)
     {
-        if (!StringComparer.Ordinal.Equals(source, _id)) throw new ArgumentException("Unknown PostgreSQL outbox dead-letter source.", nameof(source));
-        if (limit is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(limit));
+        if (!StringComparer.Ordinal.Equals(source, _id))
+        {
+            throw new ArgumentException("Unknown PostgreSQL outbox dead-letter source.", nameof(source));
+        }
+
+        if (limit is < 1 or > 1000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(limit));
+        }
     }
 }

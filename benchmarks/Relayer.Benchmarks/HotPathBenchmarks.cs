@@ -1,5 +1,5 @@
-using Relayer.Pipeline;
 using BenchmarkDotNet.Attributes;
+using Relayer.Pipeline;
 
 namespace Relayer.Benchmarks;
 
@@ -22,12 +22,20 @@ public class HotPathBenchmarks
     }
 
     [Benchmark]
-    public FeatureC? FeatureLookup() => _features.Get<FeatureC>();
+    public FeatureC? FeatureLookup()
+    {
+        return _features.Get<FeatureC>();
+    }
 
     [Benchmark]
-    public bool MessageTypeLookup() => _registry.TryGetMessageType(typeof(FeatureC), out _);
+    public bool MessageTypeLookup()
+    {
+        return _registry.TryGetMessageType(typeof(FeatureC), out _);
+    }
 
     public sealed class FeatureA;
+
     public sealed class FeatureB;
+
     public sealed class FeatureC;
 }

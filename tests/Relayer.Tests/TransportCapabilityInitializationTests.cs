@@ -30,12 +30,17 @@ public class TransportCapabilityInitializationTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var starting = host.StartAsync(timeout.Token);
         await transport.Entered.Task.WaitAsync(timeout.Token);
+
         try
         {
             await Assert.That(starting.IsCompleted).IsFalse();
             await Assert.That(transport.Lookups).IsEqualTo(0);
         }
-        finally { transport.Release.TrySetResult(); }
+        finally
+        {
+            transport.Release.TrySetResult();
+        }
+
         await starting;
         await Assert.That(transport.Initializations).IsEqualTo(1);
         await Assert.That(transport.Lookups).IsEqualTo(1);
@@ -46,6 +51,7 @@ public class TransportCapabilityInitializationTests
     }
 
     public sealed class Options;
+
     [Message("capabilities.initialization.sample")]
     public sealed record Sample;
 
@@ -57,7 +63,9 @@ public class TransportCapabilityInitializationTests
         internal int Lookups;
         internal TopologyMode Mode;
         private bool _initialized;
+
         public string Name => "native";
+
         public async ValueTask InitializeCapabilitiesAsync(TopologyMode mode, CancellationToken token)
         {
             Initializations++;
@@ -66,17 +74,50 @@ public class TransportCapabilityInitializationTests
             await Release.Task.WaitAsync(token);
             _initialized = true;
         }
+
         public TransportCapabilities GetCapabilities(string endpoint)
         {
             Lookups++;
-            if (!_initialized) throw new InvalidOperationException("Native capability evidence is pending.");
-            return new() { MaxDeliveryDelay = TimeSpan.FromHours(1) };
+
+            if (!_initialized)
+            {
+                throw new InvalidOperationException("Native capability evidence is pending.");
+            }
+
+            return new()
+            {
+                MaxDeliveryDelay = TimeSpan.FromHours(1)
+            };
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => new(new TopologyReport([]));
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken token) => ValueTask.CompletedTask;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => ValueTask.CompletedTask;
-        public Task StartAsync(CancellationToken token) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken token) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public Task StartAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

@@ -4,8 +4,14 @@ namespace Relayer.Sagas;
 public abstract class SagaData
 {
     /// <summary>The stable process correlation key.</summary>
-    public Guid Id { get; init; }
+    public Guid Id
+    {
+        get; init;
+    }
 
     /// <summary>Retains completed state as a tombstone so later messages cannot restart the process.</summary>
-    public bool IsCompleted { get; set; }
+    public bool IsCompleted
+    {
+        get; set;
+    }
 }

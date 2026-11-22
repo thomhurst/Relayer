@@ -35,7 +35,10 @@ public class InMemoryTransportBenchmarks
     ];
 
     [Params(ConsumptionModel.Queue, ConsumptionModel.Log)]
-    public ConsumptionModel Mode { get; set; }
+    public ConsumptionModel Mode
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -95,10 +98,16 @@ public class InMemoryTransportBenchmarks
     }
 
     [Benchmark(Baseline = true)]
-    public ValueTask<int> NativeRoundTrip() => RoundTrip(_native);
+    public ValueTask<int> NativeRoundTrip()
+    {
+        return RoundTrip(_native);
+    }
 
     [Benchmark]
-    public ValueTask<int> ComposedRoundTrip() => RoundTrip(_composed);
+    public ValueTask<int> ComposedRoundTrip()
+    {
+        return RoundTrip(_composed);
+    }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<int> RoundTrip(InMemoryTransport transport)
@@ -121,6 +130,7 @@ public class InMemoryTransportBenchmarks
 
 [Message("bench.inmemory-order")]
 public readonly record struct InMemoryBenchmarkOrder(int Id);
+
 public sealed class InMemoryBenchmarkHandler(Channel<int> received) : IHandler<InMemoryBenchmarkOrder>
 {
     public ValueTask HandleAsync(InMemoryBenchmarkOrder message, MessageContext context, CancellationToken cancellationToken)

@@ -1,6 +1,6 @@
-using Relayer.Pipeline;
 using System.Collections.ObjectModel;
 using Microsoft.Extensions.Logging;
+using Relayer.Pipeline;
 
 namespace Relayer;
 
@@ -23,5 +23,8 @@ internal sealed class ConsumeLogScope(string? messageId, string? messageType, st
         new("MessageId", messageId), new("MessageType", messageType), new("CorrelationId", correlationId),
     ])
 {
-    public override string ToString() => $"MessageId={this[0].Value} MessageType={this[1].Value} CorrelationId={this[2].Value}";
+    public override string ToString()
+    {
+        return $"MessageId={this[0].Value} MessageType={this[1].Value} CorrelationId={this[2].Value}";
+    }
 }

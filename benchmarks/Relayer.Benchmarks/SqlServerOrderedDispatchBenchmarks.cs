@@ -19,7 +19,10 @@ public class SqlServerOrderedDispatchBenchmarks
     private SqlServerOrderedDispatcher _worker = null!;
 
     [Params(1, 64)]
-    public int Rows { get; set; }
+    public int Rows
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -41,13 +44,26 @@ public class SqlServerOrderedDispatchBenchmarks
         _rows.Columns.Add("headers", typeof(byte[]));
         _rows.Columns.Add("body", typeof(byte[]));
         _rows.Columns.Add("created_at", typeof(DateTimeOffset));
+
         for (var i = 0; i < Rows; i++)
+        {
             _rows.Rows.Add(Guid.CreateVersion7().ToByteArray(bigEndian: true), 0, "customer", "events", "orders", "probe;v=1",
                 new byte[] { 1, 0, 0, 0, 0, 0, 0, 0 }, new byte[1024], DateTimeOffset.UtcNow);
-        _worker = new(_connectionString, new() { TablePrefix = _options.TablePrefix, Lanes = 1, BatchSize = 64 },
+        }
+
+        _worker = new(_connectionString, new()
+        {
+            TablePrefix = _options.TablePrefix,
+            Lanes = 1,
+            BatchSize = 64
+        },
             [new NoOpTransport()], NullLogger<SqlServerOrderedDispatcher>.Instance);
         Insert();
-        if (await DispatchLane() != Rows) throw new InvalidOperationException("Incomplete ordered benchmark batch.");
+
+        if (await DispatchLane() != Rows)
+        {
+            throw new InvalidOperationException("Incomplete ordered benchmark batch.");
+        }
     }
 
     [IterationSetup]
@@ -56,12 +72,20 @@ public class SqlServerOrderedDispatchBenchmarks
         using var connection = new SqlConnection(_connectionString);
         connection.Open();
         using var copy = new SqlBulkCopy(connection) { DestinationTableName = _table };
-        foreach (DataColumn column in _rows.Columns) copy.ColumnMappings.Add(column.ColumnName, column.ColumnName);
+
+        foreach (DataColumn column in _rows.Columns)
+        {
+            copy.ColumnMappings.Add(column.ColumnName, column.ColumnName);
+        }
+
         copy.WriteToServer(_rows);
     }
 
     [Benchmark]
-    public ValueTask<int> DispatchLane() => _worker.DispatchLaneAsync(0, default);
+    public ValueTask<int> DispatchLane()
+    {
+        return _worker.DispatchLaneAsync(0, default);
+    }
 
     [GlobalCleanup]
     public async Task Cleanup()
@@ -77,12 +101,43 @@ public class SqlServerOrderedDispatchBenchmarks
     private sealed class NoOpTransport : ITransport
     {
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken token) => ValueTask.CompletedTask;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken token) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken token) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

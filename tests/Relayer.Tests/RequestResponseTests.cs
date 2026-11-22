@@ -1,12 +1,12 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Text;
 using System.Threading.Channels;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Relayer.InMemory;
 using Relayer.AzureServiceBus;
+using Relayer.InMemory;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -14,18 +14,21 @@ namespace Relayer.Tests;
 
 [Message("tests.rpc.request")]
 public sealed record RpcRequest(int Value);
+
 [Message("tests.rpc.response")]
 public sealed record RpcResponse(int Value);
 
 public sealed class RequestEchoHandler : IHandler<RpcRequest>
 {
-    public ValueTask HandleAsync(RpcRequest message, MessageContext context, CancellationToken cancellationToken) =>
-        context.ReplyAsync(new RpcResponse(message.Value), cancellationToken);
+    public ValueTask HandleAsync(RpcRequest message, MessageContext context, CancellationToken cancellationToken)
+    {
+        return context.ReplyAsync(new RpcResponse(message.Value), cancellationToken);
+    }
 }
 
 public class RequestResponseTests
 {
-    private static readonly TimeSpan Limit = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan s_limit = TimeSpan.FromSeconds(10);
 
     [Test]
     public async Task Request_configuration_preserves_native_builders_and_composes_callbacks()
@@ -63,7 +66,10 @@ public class RequestResponseTests
             {
                 transport.Request<RpcRequest, RpcResponse>("requests", "replies", request =>
                 {
-                    request.Options = new() { MaxPendingRequests = 128 };
+                    request.Options = new()
+                    {
+                        MaxPendingRequests = 128
+                    };
                     request.Send(route => route.SendOptions = new() { Source = "/configured-request" });
                     request.Replies(c => c.Concurrency(4));
                 });
@@ -72,15 +78,19 @@ public class RequestResponseTests
             });
         })).Build();
         await host.StartAsync();
+
         try
         {
             using var scope = host.Services.CreateScope();
             var client = scope.ServiceProvider.GetRequiredService<IRequestClient<RpcRequest, RpcResponse>>();
-            var requests = Enumerable.Range(0, 64).Select(i => client.RequestAsync(new(i), Limit).AsTask()).ToArray();
-            var responses = await Task.WhenAll(requests).WaitAsync(Limit);
+            var requests = Enumerable.Range(0, 64).Select(i => client.RequestAsync(new(i), s_limit).AsTask()).ToArray();
+            var responses = await Task.WhenAll(requests).WaitAsync(s_limit);
             await Assert.That(responses.Select(r => r.Value).SequenceEqual(Enumerable.Range(0, 64))).IsTrue();
         }
-        finally { await host.StopAsync(); }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 
     [Test]
@@ -89,7 +99,7 @@ public class RequestResponseTests
     public async Task Extensions_follow_native_binding_and_duplicate_or_unmatched_replies_settle_normally(string prefix)
     {
         await using var fixture = new Fixture(prefix: prefix);
-        var request = fixture.Client.RequestAsync(new(42), Limit).AsTask();
+        var request = fixture.Client.RequestAsync(new(42), s_limit).AsTask();
         var sent = await fixture.Next();
         await Assert.That(sent.Headers[fixture.Names.ReplyTo].ToString()).IsEqualTo("replies");
         var correlation = sent.Headers[fixture.Names.CorrelationId];
@@ -99,7 +109,7 @@ public class RequestResponseTests
         await fixture.Reply(new("not-a-correlation"), 99);
         await fixture.Reply(default, 99);
         // A reply removes its reservation; a new request can use the same bounded capacity.
-        var next = fixture.Client.RequestAsync(new(43), Limit).AsTask();
+        var next = fixture.Client.RequestAsync(new(43), s_limit).AsTask();
         var nextSent = await fixture.Next();
         await fixture.Reply(nextSent.Headers[fixture.Names.CorrelationId], 43);
         await Assert.That((await next).Value).IsEqualTo(43);
@@ -114,7 +124,7 @@ public class RequestResponseTests
         var first = await fixture.Next();
         clock.Advance(TimeSpan.FromSeconds(1));
         await Assert.That(async () => await expired).Throws<TimeoutException>();
-        var current = fixture.Client.RequestAsync(new(2), Limit).AsTask();
+        var current = fixture.Client.RequestAsync(new(2), s_limit).AsTask();
         var second = await fixture.Next();
         await fixture.Reply(first.Headers[fixture.Names.CorrelationId], 100);
         await Assert.That(current.IsCompleted).IsFalse();
@@ -127,13 +137,13 @@ public class RequestResponseTests
     {
         await using var fixture = new Fixture();
         using var cancellation = new CancellationTokenSource();
-        var request = fixture.Client.RequestAsync(new(1), Limit, cancellation.Token).AsTask();
+        var request = fixture.Client.RequestAsync(new(1), s_limit, cancellation.Token).AsTask();
         var sent = await fixture.Next();
         cancellation.Cancel();
         var error = await Assert.That(async () => await request).Throws<OperationCanceledException>();
         await Assert.That(error!.CancellationToken).IsEqualTo(cancellation.Token);
         await fixture.Reply(sent.Headers[fixture.Names.CorrelationId], 100);
-        var next = fixture.Client.RequestAsync(new(2), Limit).AsTask();
+        var next = fixture.Client.RequestAsync(new(2), s_limit).AsTask();
         var second = await fixture.Next();
         await fixture.Reply(second.Headers[fixture.Names.CorrelationId], 2);
         await Assert.That((await next).Value).IsEqualTo(2);
@@ -149,13 +159,13 @@ public class RequestResponseTests
             await release.Task.WaitAsync(token);
             throw new InvalidOperationException("send failed");
         };
-        var request = fixture.Client.RequestAsync(new(1), Limit).AsTask();
+        var request = fixture.Client.RequestAsync(new(1), s_limit).AsTask();
         var first = await fixture.Next();
         await fixture.Reply(first.Headers[fixture.Names.CorrelationId], 1);
         release.SetResult();
         await Assert.That(async () => await request).Throws<InvalidOperationException>();
         fixture.Transport.Send = null;
-        var next = fixture.Client.RequestAsync(new(2), Limit).AsTask();
+        var next = fixture.Client.RequestAsync(new(2), s_limit).AsTask();
         var second = await fixture.Next();
         await fixture.Reply(second.Headers[fixture.Names.CorrelationId], 2);
         await Assert.That((await next).Value).IsEqualTo(2);
@@ -172,7 +182,7 @@ public class RequestResponseTests
         clock.Advance(TimeSpan.FromSeconds(1));
         await Assert.That(async () => await request).Throws<TimeoutException>();
         fixture.Transport.Send = null;
-        var next = fixture.Client.RequestAsync(new(2), Limit).AsTask();
+        var next = fixture.Client.RequestAsync(new(2), s_limit).AsTask();
         var second = await fixture.Next();
         await fixture.Reply(second.Headers[fixture.Names.CorrelationId], 2);
         await Assert.That((await next).Value).IsEqualTo(2);
@@ -182,9 +192,9 @@ public class RequestResponseTests
     public async Task Bounded_capacity_rejects_excess_requests_without_sending()
     {
         await using var fixture = new Fixture();
-        var first = fixture.Client.RequestAsync(new(1), Limit).AsTask();
+        var first = fixture.Client.RequestAsync(new(1), s_limit).AsTask();
         var sent = await fixture.Next();
-        await Assert.That(async () => await fixture.Client.RequestAsync(new(2), Limit)).Throws<InvalidOperationException>();
+        await Assert.That(async () => await fixture.Client.RequestAsync(new(2), s_limit)).Throws<InvalidOperationException>();
         await Assert.That(fixture.Transport.Sent.Reader.TryRead(out _)).IsFalse();
         await fixture.Reply(sent.Headers[fixture.Names.CorrelationId], 1);
         await first;
@@ -205,7 +215,7 @@ public class RequestResponseTests
     public async Task Already_cancelled_request_is_not_sent()
     {
         await using var fixture = new Fixture();
-        await Assert.That(async () => await fixture.Client.RequestAsync(new(1), Limit, new(true))).Throws<OperationCanceledException>();
+        await Assert.That(async () => await fixture.Client.RequestAsync(new(1), s_limit, new(true))).Throws<OperationCanceledException>();
         await Assert.That(fixture.Transport.Sent.Reader.TryRead(out _)).IsFalse();
     }
 
@@ -213,12 +223,13 @@ public class RequestResponseTests
     public async Task Native_Service_Bus_application_properties_correlate_a_reply()
     {
         await using var fixture = new Fixture(prefix: "cloudEvents:");
-        var request = fixture.Client.RequestAsync(new(5), Limit).AsTask();
+        var request = fixture.Client.RequestAsync(new(5), s_limit).AsTask();
         var sent = await fixture.Next();
         var correlation = sent.Headers[fixture.Names.CorrelationId].ToString();
         var native = ServiceBusModelFactory.ServiceBusReceivedMessage(new BinaryData("{\"Value\":5}"), deliveryCount: 1, properties: new Dictionary<string, object>
         {
-            ["cloudEvents:id"] = "native-reply", ["cloudEvents:type"] = "tests.rpc.response;v=1",
+            ["cloudEvents:id"] = "native-reply",
+            ["cloudEvents:type"] = "tests.rpc.response;v=1",
             ["cloudEvents:correlationid"] = correlation,
         });
         var receive = new ReceivePipeline<ProcessMessageEventArgs, ServiceBusMessageBinding>(
@@ -248,8 +259,18 @@ public class RequestResponseTests
             builder.InMemory("local", transport =>
             {
                 transport.Request<RpcRequest, RpcResponse>("requests", "replies",
-                    request => request.Replies(consumer => { if (!shared) consumer.Batch(2, TimeSpan.FromSeconds(1)); }));
-                if (shared) transport.Consume("replies", consumer => consumer.Handler<RequestEchoHandler>());
+                    request => request.Replies(consumer =>
+                    {
+                        if (!shared)
+                        {
+                            consumer.Batch(2, TimeSpan.FromSeconds(1));
+                        }
+                    }));
+
+                if (shared)
+                {
+                    transport.Consume("replies", consumer => consumer.Handler<RequestEchoHandler>());
+                }
             });
         })).Build();
         await Assert.That(async () => await host.StartAsync()).Throws<Microsoft.Extensions.Options.OptionsValidationException>();
@@ -300,6 +321,7 @@ public class RequestResponseTests
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         using var context = fixture.ReplyContext(cancellation.Token);
+
         if (explicitNone)
         {
             await context.ReplyAsync(new RpcResponse(7), CancellationToken.None);
@@ -331,13 +353,17 @@ public class RequestResponseTests
     public async Task Reply_uses_scoped_buffer_and_rejects_a_different_destination()
     {
         await using var fixture = new Fixture();
-        var request = fixture.Client.RequestAsync(new(7), Limit).AsTask();
+        var request = fixture.Client.RequestAsync(new(7), s_limit).AsTask();
         var sent = await fixture.Next();
         var headers = new Dictionary<string, WireString>(sent.Headers);
         headers[fixture.Names.CorrelationId] = new(Encoding.UTF8.GetBytes(sent.Headers[fixture.Names.CorrelationId].ToString()));
         var pipeline = fixture.Pipeline(new EchoDescriptor(headers, false), durable: true);
+
         using (var context = pipeline.RentContext(fixture.Message(new RpcRequest(7), headers, "tests.rpc.request")))
+        {
             await pipeline.ProcessAsync(context);
+        }
+
         var response = await fixture.Next();
         await Assert.That(response.Headers[fixture.Names.CorrelationId].ToString()).IsEqualTo(sent.Headers[fixture.Names.CorrelationId].ToString());
         await fixture.Reply(response.Headers[fixture.Names.CorrelationId], 7);
@@ -355,7 +381,8 @@ public class RequestResponseTests
         await using var fixture = new Fixture();
         var headers = new Dictionary<string, WireString>
         {
-            [fixture.Names.ReplyTo] = new("replies"), [fixture.Names.CorrelationId] = new("borrowed-correlation"u8.ToArray()),
+            [fixture.Names.ReplyTo] = new("replies"),
+            [fixture.Names.CorrelationId] = new("borrowed-correlation"u8.ToArray()),
         };
         var pipeline = fixture.Pipeline(new EchoDescriptor(headers, true), durable: true);
         using var context = pipeline.RentContext(fixture.Message(new RpcRequest(1), headers, "tests.rpc.request"));
@@ -366,24 +393,47 @@ public class RequestResponseTests
 
     private sealed class EchoDescriptor(Dictionary<string, WireString> headers, bool fail) : HandlerDescriptor<RpcRequest>(typeof(RequestEchoHandler)), IHandlerMarker
     {
-        public override IHandlerMarker Resolve(IServiceProvider services) => this;
+        public override IHandlerMarker Resolve(IServiceProvider services)
+        {
+            return this;
+        }
+
         public override async ValueTask DispatchAsync(IHandlerMarker handler, RpcRequest message, MessageContext context, CancellationToken cancellationToken)
         {
             await context.ReplyAsync(new RpcResponse(message.Value), cancellationToken);
-            if (fail) throw new InvalidOperationException("handler failed");
+
+            if (fail)
+            {
+                throw new InvalidOperationException("handler failed");
+            }
             // The send must already own borrowed headers before native storage can be reused.
-            if (System.Runtime.InteropServices.MemoryMarshal.TryGetArray(headers["ce_correlationid"].Utf8, out var data) && data.Array is not null) Array.Clear(data.Array, data.Offset, data.Count);
+            if (System.Runtime.InteropServices.MemoryMarshal.TryGetArray(headers["ce_correlationid"].Utf8, out var data) && data.Array is not null)
+            {
+                Array.Clear(data.Array, data.Offset, data.Count);
+            }
         }
     }
 
     private sealed class Fixture : IAsyncDisposable
     {
-        internal Sink Transport { get; } = new();
-        internal HeaderNames Names { get; }
+        internal Sink Transport
+        {
+            get;
+        } = new();
+
+        internal HeaderNames Names
+        {
+            get;
+        }
         private readonly ServiceProvider _provider;
         private readonly IServiceScope _scope;
         private readonly ReceivePipeline<Incoming, Binding> _replies;
-        internal IRequestClient<RpcRequest, RpcResponse> Client { get; }
+
+        internal IRequestClient<RpcRequest, RpcResponse> Client
+        {
+            get;
+        }
+
         internal Fixture(TimeProvider? clock = null, string prefix = "ce_")
         {
             Names = new(prefix);
@@ -394,7 +444,10 @@ public class RequestResponseTests
                 builder.AddMessageTypesFromThisAssembly();
                 builder.AddTransport<Options, Options>("sink", transport =>
                 {
-                    transport.SendDefaults = new() { HeaderNames = Names };
+                    transport.SendDefaults = new()
+                    {
+                        HeaderNames = Names
+                    };
                     transport.Request<RpcRequest, RpcResponse>("requests", "replies", request => request.Options = new() { MaxPendingRequests = 1, TimeProvider = clock ?? TimeProvider.System });
                     transport.Send<RpcResponse>("replies");
                 });
@@ -404,11 +457,13 @@ public class RequestResponseTests
             Client = _scope.ServiceProvider.GetRequiredService<IRequestClient<RpcRequest, RpcResponse>>();
             _replies = new(Pipeline(new ReplyDescriptor<RpcRequest, RpcResponse>()), Names);
         }
+
         internal DefaultMessageContext ReplyContext(CancellationToken cancellationToken)
         {
             var headers = new Dictionary<string, WireString>
             {
-                [Names.ReplyTo] = new("replies"), [Names.CorrelationId] = new("test-correlation"),
+                [Names.ReplyTo] = new("replies"),
+                [Names.CorrelationId] = new("test-correlation"),
             };
             var context = Pipeline(new EchoDescriptor(headers, false)).RentContext(
                 Message(new RpcRequest(7), headers, "tests.rpc.request"), cancellationToken);
@@ -431,54 +486,142 @@ public class RequestResponseTests
         {
             var buffer = new ArrayBufferWriter<byte>();
             _provider.GetRequiredService<IMessageSerializer>().Serialize(value, buffer);
-            return new() { MessageId = "id", MessageType = new(type, 1), Body = new(buffer.WrittenMemory), Headers = new Headers(headers) };
+            return new()
+            {
+                MessageId = "id",
+                MessageType = new(type, 1),
+                Body = new(buffer.WrittenMemory),
+                Headers = new Headers(headers)
+            };
         }
+
         internal async Task Reply(WireString correlation, int value)
         {
             // Kafka delivers UTF-8 values. Exercise the same lazy representation for both header prefixes.
             var headers = new Dictionary<string, WireString>();
-            if (!correlation.IsEmpty) headers[Names.CorrelationId] = new(Encoding.UTF8.GetBytes(correlation.ToString()));
+
+            if (!correlation.IsEmpty)
+            {
+                headers[Names.CorrelationId] = new(Encoding.UTF8.GetBytes(correlation.ToString()));
+            }
+
             headers[Names.Id] = new("reply-id");
             headers[Names.Type] = new("tests.rpc.response;v=1");
             var message = Message(new RpcResponse(value), headers, "tests.rpc.response");
             var disposition = await _replies.ProcessAsync(new Incoming(message.Body, headers));
             await Assert.That(disposition.Kind).IsEqualTo(DispositionKind.Complete);
         }
-        internal async Task<Sent> Next() => await Transport.Sent.Reader.ReadAsync().AsTask().WaitAsync(Limit);
-        public async ValueTask DisposeAsync() { _scope.Dispose(); await _provider.DisposeAsync(); }
+
+        internal async Task<Sent> Next()
+        {
+            return await Transport.Sent.Reader.ReadAsync().AsTask().WaitAsync(s_limit);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            _scope.Dispose();
+            await _provider.DisposeAsync();
+        }
     }
 
     private sealed class Headers(Dictionary<string, WireString> values) : MessageHeaders
     {
-        public override bool TryGetValue(string name, out WireString value) => values.TryGetValue(name, out value);
+        public override bool TryGetValue(string name, out WireString value)
+        {
+            return values.TryGetValue(name, out value);
+        }
     }
-    private sealed class Options { public string? NativeSetting { get; set; } }
+
+    private sealed class Options
+    {
+        public string? NativeSetting
+        {
+            get; set;
+        }
+    }
+
     private sealed class Receiver : ServiceBusReceiver;
+
     private sealed record Incoming(ReadOnlySequence<byte> Body, Dictionary<string, WireString> Headers);
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => message.Body;
-        public static int? GetDeliveryCount(Incoming message) => 1;
-        public static bool TryGetHeader(Incoming message, string name, out WireString value) => message.Headers.TryGetValue(name, out value);
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return message.Body;
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
+        public static bool TryGetHeader(Incoming message, string name, out WireString value)
+        {
+            return message.Headers.TryGetValue(name, out value);
+        }
     }
+
     private sealed record Sent(Dictionary<string, WireString> Headers);
+
     private sealed class Sink : ITransport
     {
-        internal Channel<Sent> Sent { get; } = Channel.CreateUnbounded<Sent>();
-        internal Func<CancellationToken, ValueTask>? Send { get; set; }
+        internal Channel<Sent> Sent
+        {
+            get;
+        } = Channel.CreateUnbounded<Sent>();
+
+        internal Func<CancellationToken, ValueTask>? Send
+        {
+            get; set;
+        }
+
         public string Name => "sink";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { DeadLetter = true };
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                DeadLetter = true
+            };
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             var headers = new Dictionary<string, WireString>();
-            foreach (var header in message.Headers.Span) headers[header.Key] = new(header.Value.ToString());
+
+            foreach (var header in message.Headers.Span)
+            {
+                headers[header.Key] = new(header.Value.ToString());
+            }
+
             Sent.Writer.TryWrite(new(headers));
             return Send?.Invoke(cancellationToken) ?? default;
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

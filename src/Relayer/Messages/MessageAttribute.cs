@@ -9,8 +9,14 @@ namespace Relayer;
 public sealed class MessageAttribute(string name) : Attribute
 {
     /// <summary>The stable message type name.</summary>
-    public string Name { get; } = name;
+    public string Name
+    {
+        get;
+    } = name;
 
     /// <summary>The contract version. Defaults to 1.</summary>
-    public int Version { get; init; } = 1;
+    public int Version
+    {
+        get; init;
+    } = 1;
 }

@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Collections.Frozen;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Pipeline;
 
@@ -32,35 +32,69 @@ public sealed class ConsumePipelineBuilder
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(consumer);
+
         if (_telemetry is not null)
+        {
             throw new InvalidOperationException("Batch consumers do not support single-message metrics. Record batch metrics around ProcessBatchAsync.");
+        }
+
         if (_tracing is not null && activitySource is not null)
+        {
             throw new InvalidOperationException("Use Tracing for the shared Relayer source, or supply an ActivitySource, but not both.");
+        }
+
         if (_dispatch.Count != 0 || _tombstones.Count != 0 || _middleware.Count != 0)
+        {
             throw new InvalidOperationException("Compose batch handlers separately from single-message handlers and middleware.");
+        }
+
         if (!_messages.IsFrozen || !_messages.TryGetMessageType(descriptor.MessageType, out var identity))
+        {
             throw new InvalidOperationException("Register and freeze the batch message's stable wire identity before composition.");
+        }
+
         ArgumentOutOfRangeException.ThrowIfLessThan(consumer.BatchSize, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(consumer.Concurrency, 1);
-        if (consumer.BatchWait <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(consumer));
+
+        if (consumer.BatchWait <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(consumer));
+        }
+
         using var compositionScope = _scopes.CreateScope();
+
         if (compositionScope.ServiceProvider.GetService<TenantContextPool>() is not null)
+        {
             throw new InvalidOperationException("Tenant propagation requires single-message consumers. Batch consumers share one DI scope; use individual delivery scopes.");
+        }
+
         var readers = compositionScope.ServiceProvider.GetService<UpcasterRegistry>()?.Compose(descriptor.MessageType, _messages, _serializer) ?? [];
         var batch = descriptor.CreateBatchDispatcher(_serializer, consumer.BatchSize, consumer.Concurrency, readers);
         compositionScope.ServiceProvider.GetService<SenderPool>()?.Enable();
         _built = true;
         var additional = new HashSet<MessageType>(readers.Keys);
+
         foreach (var accepted in _accepted)
         {
             if (accepted.MessageType != descriptor.MessageType)
+            {
                 throw new InvalidOperationException($"Consumer accepts '{accepted.Identity}' for '{accepted.MessageType}', but its batch handler handles '{descriptor.MessageType}'.");
+            }
+
             if (accepted.Identity == identity || !additional.Add(accepted.Identity))
+            {
                 throw new InvalidOperationException($"Consumer already handles '{accepted.Identity}'. Accept each incoming identity once.");
+            }
         }
+
         ConsumeDelegate batchOnly = static _ => throw new InvalidOperationException("Use ProcessBatchAsync for a batch handler.");
         var identities = new Dictionary<MessageType, ConsumeDelegate> { [identity] = batchOnly };
-        foreach (var source in additional) identities.Add(source, batchOnly);
+
+        foreach (var source in additional)
+        {
+            identities.Add(source, batchOnly);
+        }
+
         return new ConsumePipeline(_scopes, identities.ToFrozenDictionary(), [], _failure, _classifier,
             checked(consumer.BatchSize * consumer.Concurrency), _failures, null, _settlement, _tracing)
         {
@@ -99,20 +133,25 @@ public sealed class ConsumePipelineBuilder
     {
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(descriptor);
+
         if (!_messages.IsFrozen)
         {
             throw new InvalidOperationException("Freeze message registration before composing a consumer.");
         }
+
         if (!_messages.TryGetMessageType(descriptor.MessageType, out var identity))
         {
             throw new InvalidOperationException($"Register a stable wire identity for '{descriptor.MessageType}' before composing its consumer.");
         }
+
         var dispatch = descriptor.CreateConsumeDelegate(_serializer);
         var table = descriptor.IsTombstone ? _tombstones : _dispatch;
+
         if (!table.TryAdd(identity, dispatch))
         {
             throw new InvalidOperationException($"Consumer already handles '{identity}'. Use one handler to coordinate work for this message type.");
         }
+
         _handlers.Add(descriptor);
         return this;
     }
@@ -130,14 +169,22 @@ public sealed class ConsumePipelineBuilder
     {
         EnsureMutable();
         ValidateAccepted(identities);
+
         foreach (var identity in identities)
+        {
             _accepted.Add(new(typeof(TMessage), typeof(Tombstone<TMessage>), identity));
+        }
+
         return this;
     }
 
     internal static void ValidateAccepted(ReadOnlySpan<MessageType> identities)
     {
-        if (identities.IsEmpty) throw new ArgumentException("Accept at least one wire identity.", nameof(identities));
+        if (identities.IsEmpty)
+        {
+            throw new ArgumentException("Accept at least one wire identity.", nameof(identities));
+        }
+
         foreach (var identity in identities)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(identity.Name, nameof(identities));
@@ -150,8 +197,12 @@ public sealed class ConsumePipelineBuilder
     {
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(middleware);
+
         if (middleware is IConsumeTransactionMiddleware && _middleware.Count != 0)
+        {
             throw new InvalidOperationException("Register the consumer transaction boundary once, before other middleware.");
+        }
+
         _middleware.Add(middleware);
         return this;
     }
@@ -183,8 +234,12 @@ public sealed class ConsumePipelineBuilder
     {
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(telemetry);
+
         if (!telemetry.IsProcess)
+        {
             throw new ArgumentException("A consumer requires an endpoint recorder with OperationName 'process'.", nameof(telemetry));
+        }
+
         _telemetry = telemetry;
         return this;
     }
@@ -218,30 +273,43 @@ public sealed class ConsumePipelineBuilder
     {
         EnsureMutable();
         ArgumentOutOfRangeException.ThrowIfLessThan(contextPoolCapacity, 1);
+
         if (_dispatch.Count == 0 && _tombstones.Count == 0)
         {
             throw new InvalidOperationException("Register at least one generated handler before building a consumer.");
         }
+
         using (var scope = _scopes.CreateScope())
         {
             if (scope.ServiceProvider.GetService<UpcasterRegistry>() is { } upcasters)
             {
                 foreach (var descriptor in _handlers)
                 {
-                    if (descriptor.IsTombstone) continue;
+                    if (descriptor.IsTombstone)
+                    {
+                        continue;
+                    }
+
                     foreach (var pair in upcasters.Compose(descriptor.MessageType, _messages, _serializer))
+                    {
                         if (!_dispatch.TryAdd(pair.Key, descriptor.CreateUpcastDelegate(pair.Value)))
+                        {
                             throw new InvalidOperationException($"Consumer has ambiguous handlers for '{pair.Key}'. Select one handler reachable from each incoming version.");
+                        }
+                    }
                 }
             }
         }
+
         AddAcceptedIdentities();
+
         foreach (var identity in _dispatch.Keys.Union(_tombstones.Keys).ToArray())
         {
             _dispatch.TryGetValue(identity, out var value);
             _tombstones.TryGetValue(identity, out var tombstone);
             _dispatch[identity] = new NativeValueDispatch(value, tombstone).InvokeAsync;
         }
+
         _built = true;
         return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier,
             contextPoolCapacity, _failures, _telemetry, _settlement, _tracing, SingletonHandlerServices());
@@ -253,17 +321,34 @@ public sealed class ConsumePipelineBuilder
     {
         // This scope lives as long as the consumer. It only resolves singletons, which the root owns.
         var scope = _scopes.CreateScope();
+
         if (scope.ServiceProvider.GetService<IRelayerBuilder>() is { } builder)
         {
             var singletons = new HashSet<Type>();
+
             foreach (var service in builder.Services)
             {
-                if (service.IsKeyedService) continue;
-                if (service.Lifetime == ServiceLifetime.Singleton) singletons.Add(service.ServiceType);
-                else singletons.Remove(service.ServiceType);
+                if (service.IsKeyedService)
+                {
+                    continue;
+                }
+
+                if (service.Lifetime == ServiceLifetime.Singleton)
+                {
+                    singletons.Add(service.ServiceType);
+                }
+                else
+                {
+                    singletons.Remove(service.ServiceType);
+                }
             }
-            if (_handlers.TrueForAll(handler => singletons.Contains(handler.HandlerType))) return scope.ServiceProvider;
+
+            if (_handlers.TrueForAll(handler => singletons.Contains(handler.HandlerType)))
+            {
+                return scope.ServiceProvider;
+            }
         }
+
         scope.Dispose();
         return null;
     }
@@ -273,17 +358,30 @@ public sealed class ConsumePipelineBuilder
         foreach (var accepted in _accepted)
         {
             var found = false;
+
             foreach (var descriptor in _handlers)
             {
                 var table = descriptor.IsTombstone ? _tombstones : _dispatch;
-                if (descriptor.MessageType != (descriptor.IsTombstone ? accepted.TombstoneType : accepted.MessageType)) continue;
+
+                if (descriptor.MessageType != (descriptor.IsTombstone ? accepted.TombstoneType : accepted.MessageType))
+                {
+                    continue;
+                }
+
                 _messages.TryGetMessageType(descriptor.MessageType, out var identity);
+
                 if (!table.TryAdd(accepted.Identity, table[identity]))
+                {
                     throw new InvalidOperationException($"Consumer already handles '{accepted.Identity}'. Accept each incoming identity for one handler only.");
+                }
+
                 found = true;
             }
+
             if (!found)
+            {
                 throw new InvalidOperationException($"Consumer accepts '{accepted.Identity}' for '{accepted.MessageType}', but declares no handler for that type. Add its handler to this consumer.");
+            }
         }
     }
 
@@ -294,8 +392,13 @@ public sealed class ConsumePipelineBuilder
         internal ValueTask InvokeAsync(MessageContext context)
         {
             var dispatch = ((DefaultMessageContext)context).IsTombstone ? tombstone : value;
-            if (dispatch is null) throw new MessageDeserializationException(context.MessageType,
+
+            if (dispatch is null)
+            {
+                throw new MessageDeserializationException(context.MessageType,
                 new InvalidOperationException("No handler is registered for this native value kind. Register IHandler<Tombstone<T>> for null values and IHandler<T> for non-null values."));
+            }
+
             return dispatch(context);
         }
     }

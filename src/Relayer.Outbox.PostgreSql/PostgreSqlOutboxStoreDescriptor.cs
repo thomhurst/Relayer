@@ -15,14 +15,26 @@ public sealed class PostgreSqlOutboxStoreDescriptor
     }
 
     /// <summary>The store name used for registration.</summary>
-    public string Name { get; }
+    public string Name
+    {
+        get;
+    }
 
     /// <summary>The application-owned data source the store uses.</summary>
-    public NpgsqlDataSource DataSource { get; }
+    public NpgsqlDataSource DataSource
+    {
+        get;
+    }
 
     /// <summary>The schema for Relayer tables. <see langword="null"/> uses public.</summary>
-    public string? Schema { get; }
+    public string? Schema
+    {
+        get;
+    }
 
     /// <summary>The prefix for table and index names.</summary>
-    public string TablePrefix { get; }
+    public string TablePrefix
+    {
+        get;
+    }
 }

@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
@@ -8,6 +7,7 @@ using Amazon.SQS;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.Options;
 using Relayer.AmazonSqs;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -40,7 +40,11 @@ public sealed class SqsBatchReceiveTests
     {
         using var client = new BatchClient { FailRequest = wholeRequestFailure };
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var settlement = new SqsSettlement(tracing, new() { System = "aws_sqs", Destination = "orders" });
+        var settlement = new SqsSettlement(tracing, new()
+        {
+            System = "aws_sqs",
+            Destination = "orders"
+        });
         var completed = new ConcurrentQueue<string>();
         var failed = new ConcurrentQueue<string>();
         var deliveries = new ConcurrentQueue<SqsDelivery>();
@@ -48,8 +52,17 @@ public sealed class SqsBatchReceiveTests
         {
             deliveries.Enqueue(delivery);
             var body = delivery.Message.Body;
-            try { await settlement.SettleAsync(delivery, Disposition.Complete, token); completed.Enqueue(body); }
-            catch { failed.Enqueue(body); throw; }
+
+            try
+            {
+                await settlement.SettleAsync(delivery, Disposition.Complete, token);
+                completed.Enqueue(body);
+            }
+            catch
+            {
+                failed.Enqueue(body);
+                throw;
+            }
             finally
             {
                 await Assert.That(delivery.Message.Body).IsEqualTo(body);
@@ -71,7 +84,11 @@ public sealed class SqsBatchReceiveTests
     {
         using var client = new BatchClient { AllSucceed = true };
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var settlement = new SqsSettlement(tracing, new() { System = "aws_sqs", Destination = "orders" });
+        var settlement = new SqsSettlement(tracing, new()
+        {
+            System = "aws_sqs",
+            Destination = "orders"
+        });
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var visited = new ConcurrentQueue<string>();
@@ -79,8 +96,18 @@ public sealed class SqsBatchReceiveTests
         {
             var body = delivery.Message.Body;
             visited.Enqueue(body);
-            if (body == "one") { entered.SetResult(); await release.Task.WaitAsync(token); }
-            if (body == "copy-failed") throw new InvalidOperationException("durable failure copy failed");
+
+            if (body == "one")
+            {
+                entered.SetResult();
+                await release.Task.WaitAsync(token);
+            }
+
+            if (body == "copy-failed")
+            {
+                throw new InvalidOperationException("durable failure copy failed");
+            }
+
             await settlement.SettleAsync(delivery, Disposition.Complete, token);
         });
         await consumer.StartAsync(default);
@@ -100,22 +127,39 @@ public sealed class SqsBatchReceiveTests
     {
         using var client = new BatchClient { AllSucceed = true };
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var settlement = new SqsSettlement(tracing, new() { System = "aws_sqs", Destination = "orders" });
+        var settlement = new SqsSettlement(tracing, new()
+        {
+            System = "aws_sqs",
+            Destination = "orders"
+        });
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var visited = new ConcurrentQueue<string>();
         await using var consumer = new SqsConsumer(Declaration(10), client, "url", async (delivery, token) =>
         {
             visited.Enqueue(delivery.Message.Body);
+
             if (delivery.Message.Body == "two")
-            { entered.SetResult(); await Task.Delay(Timeout.InfiniteTimeSpan, token); }
+            {
+                entered.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }
+
             await settlement.SettleAsync(delivery, Disposition.Complete, token);
         });
         await consumer.StartAsync(default);
         await client.Batches.Writer.WriteAsync([Message("one"), Message("two"), Message("three")]);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        using var deadline = new CancellationTokenSource(); deadline.Cancel();
-        try { await consumer.StopAsync(deadline.Token); }
-        catch (OperationCanceledException) { }
+        using var deadline = new CancellationTokenSource();
+        deadline.Cancel();
+
+        try
+        {
+            await consumer.StopAsync(deadline.Token);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
         await consumer.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(visited.ToArray()).IsEquivalentTo(new[] { "one", "two" });
         await Assert.That(client.Deleted.Count).IsEqualTo(0);
@@ -134,7 +178,11 @@ public sealed class SqsBatchReceiveTests
             ActivityStopped = stopped.Add,
         };
         ActivitySource.AddActivityListener(listener);
-        var settlement = new SqsSettlement(tracing, new() { System = "aws_sqs", Destination = "orders" });
+        var settlement = new SqsSettlement(tracing, new()
+        {
+            System = "aws_sqs",
+            Destination = "orders"
+        });
         using var parent = new Activity("parent").Start();
         var completions = 0;
         await using var consumer = new SqsConsumer(Declaration(10), client, "url", async (delivery, token) =>
@@ -146,22 +194,49 @@ public sealed class SqsBatchReceiveTests
             completions++;
         });
         using var batch = new SqsConsumer.SqsReceiveBatch(consumer, 10);
+
         for (var i = 0; i < 3; i++)
-            await batch.ProcessAsync(new() { Messages = [Message("one"), Message("two")] }, TimeProvider.System.GetTimestamp(), default);
+        {
+            await batch.ProcessAsync(new()
+            {
+                Messages = [Message("one"), Message("two")]
+            }, TimeProvider.System.GetTimestamp(), default);
+        }
+
         await Assert.That(completions).IsEqualTo(6);
         await Assert.That(stopped.Count).IsEqualTo(6);
+
         foreach (var activity in stopped)
         {
             await Assert.That(activity.ParentId).IsEqualTo(parent.Id);
             await Assert.That(activity.Duration > TimeSpan.Zero).IsTrue();
         }
+
         await Assert.That(Activity.Current).IsSameReferenceAs(parent);
     }
 
-    internal static ConsumerDefinition<AmazonSqsConsumerOptions> Declaration(int size, string source = "orders") =>
-        new(source, new() { ConfigureReceive = request => request.MaxNumberOfMessages = size }, [], 1, 1, default,
-            failure: new() { DeadLetterEndpoint = "dead" });
-    internal static Message Message(string body) => new() { Body = body, ReceiptHandle = body, Attributes = [], MessageAttributes = [] };
+    internal static ConsumerDefinition<AmazonSqsConsumerOptions> Declaration(int size, string source = "orders")
+    {
+        return new(source, new()
+        {
+            ConfigureReceive = request => request.MaxNumberOfMessages = size
+        }, [], 1, 1, default,
+                    failure: new()
+                    {
+                        DeadLetterEndpoint = "dead"
+                    });
+    }
+
+    internal static Message Message(string body)
+    {
+        return new()
+        {
+            Body = body,
+            ReceiptHandle = body,
+            Attributes = [],
+            MessageAttributes = []
+        };
+    }
 
     internal sealed class BatchClient() : AmazonSQSClient(new BasicAWSCredentials("test", "test"),
         new AmazonSQSConfig { ServiceURL = "http://localhost", AuthenticationRegion = "us-east-1" })
@@ -172,16 +247,34 @@ public sealed class SqsBatchReceiveTests
         internal int Polls;
         internal bool FailRequest;
         internal bool AllSucceed;
+
         public override async Task<ReceiveMessageResponse> ReceiveMessageAsync(ReceiveMessageRequest request, CancellationToken cancellationToken = default)
         {
-            if (Interlocked.Increment(ref Polls) > 1) NextPoll.TrySetResult();
-            return new() { Messages = await Batches.Reader.ReadAsync(cancellationToken) };
+            if (Interlocked.Increment(ref Polls) > 1)
+            {
+                NextPoll.TrySetResult();
+            }
+
+            return new()
+            {
+                Messages = await Batches.Reader.ReadAsync(cancellationToken)
+            };
         }
+
         public override Task<DeleteMessageBatchResponse> DeleteMessageBatchAsync(DeleteMessageBatchRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            foreach (var entry in request.Entries) Deleted.Enqueue(entry.ReceiptHandle);
-            if (FailRequest) return Task.FromException<DeleteMessageBatchResponse>(new AmazonSQSException("request failed"));
+
+            foreach (var entry in request.Entries)
+            {
+                Deleted.Enqueue(entry.ReceiptHandle);
+            }
+
+            if (FailRequest)
+            {
+                return Task.FromException<DeleteMessageBatchResponse>(new AmazonSQSException("request failed"));
+            }
+
             return Task.FromResult(new DeleteMessageBatchResponse
             {
                 Successful = request.Entries.Where((_, index) => AllSucceed || index == 0).Select(entry => new DeleteMessageBatchResultEntry { Id = entry.Id }).ToList(),

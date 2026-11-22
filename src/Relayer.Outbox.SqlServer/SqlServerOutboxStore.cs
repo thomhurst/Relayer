@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Data;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Transactions;
 using Microsoft.Data.SqlClient;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer;
 
@@ -19,6 +19,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     private readonly string _read;
     private SqlConnection? _dispatchConnection;
     private SqlTransaction? _dispatchTransaction;
+
     internal void UseDispatchTransaction(SqlConnection? connection, SqlTransaction? transaction)
     {
         _dispatchConnection = connection;
@@ -108,9 +109,18 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     public async ValueTask<int> ReadPendingAsync(OutboxReadRequest request, Memory<OutboxRecord> destination,
         CancellationToken cancellationToken)
     {
-        if (request.Lane < 0) throw new ArgumentOutOfRangeException(nameof(request), "Lane must not be negative.");
+        if (request.Lane < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request), "Lane must not be negative.");
+        }
+
         CheckOperation(cancellationToken);
-        if (destination.IsEmpty) return 0;
+
+        if (destination.IsEmpty)
+        {
+            return 0;
+        }
+
         using var ownedConnection = _dispatchConnection is null ? new SqlConnection(_connectionString) : null;
         var connection = _dispatchConnection ?? ownedConnection!;
         using var command = new SqlCommand(_read, connection, _dispatchTransaction);
@@ -119,10 +129,20 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         Unsafe.Unbox<int>(_limit) = destination.Length;
         Add(command, "@now", SqlDbType.DateTimeOffset, _now);
         Add(command, "@lane", SqlDbType.Int, request.Lane.HasValue ? _lane : null);
-        if (request.AfterId is { } after) after.TryWriteBytes(_id, bigEndian: true, out _);
+
+        if (request.AfterId is { } after)
+        {
+            after.TryWriteBytes(_id, bigEndian: true, out _);
+        }
+
         Add(command, "@after", SqlDbType.Binary, request.AfterId.HasValue ? _id : null, 16);
         Add(command, "@limit", SqlDbType.Int, _limit);
-        if (ownedConnection is not null) await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        if (ownedConnection is not null)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await ReadRowsAsync(reader, destination, false, cancellationToken).ConfigureAwait(false);
     }
@@ -151,27 +171,50 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         bool isolateMalformed, CancellationToken cancellationToken, bool includeOrderedSequence = false)
     {
         var count = 0;
+
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (_rows.Count == count) _rows.Add(new());
+            if (_rows.Count == count)
+            {
+                _rows.Add(new());
+            }
+
             var slot = _rows[count];
             reader.GetBytes(0, 0, _id, 0, 16);
             var id = new Guid(_id, bigEndian: true);
+
             try
             {
                 var body = ReadBytes(reader, 4, ref slot.Body);
                 var headers = DurableOutboxHeaderCodec.Read(ReadBytes(reader, 5, ref slot.Headers), ref slot.Entries);
+
                 if (includeOrderedSequence)
+                {
                     headers = OrderedSequenceHeader.Add(headers.Span, ref slot.OrderedEntries, slot.Sequence, reader.GetInt64(13));
+                }
+
                 var transport = reader.GetString(1);
                 var messageType = reader.GetString(2);
                 var destinationName = reader.GetString(3);
+
                 if (isolateMalformed)
                 {
-                    if (string.IsNullOrWhiteSpace(transport)) throw new InvalidDataException("Outbox transport name is empty.");
-                    if (string.IsNullOrWhiteSpace(messageType)) throw new InvalidDataException("Outbox message type is empty.");
-                    if (string.IsNullOrWhiteSpace(destinationName)) throw new InvalidDataException("Outbox destination is empty.");
+                    if (string.IsNullOrWhiteSpace(transport))
+                    {
+                        throw new InvalidDataException("Outbox transport name is empty.");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(messageType))
+                    {
+                        throw new InvalidDataException("Outbox message type is empty.");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(destinationName))
+                    {
+                        throw new InvalidDataException("Outbox destination is empty.");
+                    }
                 }
+
                 var message = new OutgoingMessage(destinationName, body, headers,
                     reader.IsDBNull(6) ? null : new WireString(reader.GetString(6)),
                     reader.IsDBNull(7) ? null : reader.GetDateTimeOffset(7));
@@ -188,6 +231,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
                     reader.IsDBNull(12) ? null : reader.GetString(12));
             }
         }
+
         return count;
     }
 
@@ -260,17 +304,24 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         Add(command, "@token", SqlDbType.Binary, _token, 16);
         Unsafe.Unbox<DateTimeOffset>(_now) = now.ToUniversalTime();
         Add(command, "@now", SqlDbType.DateTimeOffset, _now);
+
         if (expiresAt.HasValue)
         {
             Unsafe.Unbox<DateTimeOffset>(_expires) = expiresAt.Value.ToUniversalTime();
             Add(command, "@expires", SqlDbType.DateTimeOffset, _expires);
         }
+
         if (error is not null)
         {
             Add(command, "@error", SqlDbType.NVarChar, error, -1);
             Add(command, "@maxAttempts", SqlDbType.Int, failureLimit ?? _failureLimit);
         }
-        if (ownedConnection is not null) await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        if (ownedConnection is not null)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
     }
 
@@ -281,22 +332,48 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         DateTimeOffset now, DateTimeOffset expiresAt, CancellationToken cancellationToken)
     {
         CheckOperation(cancellationToken);
-        if (claimed.Length < claims.Length) throw new ArgumentException("The claim result buffer is too small.", nameof(claimed));
-        if (expiresAt <= now) throw new ArgumentOutOfRangeException(nameof(expiresAt));
+
+        if (claimed.Length < claims.Length)
+        {
+            throw new ArgumentException("The claim result buffer is too small.", nameof(claimed));
+        }
+
+        if (expiresAt <= now)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expiresAt));
+        }
+
         claimed.Span.Clear();
-        if (claims.IsEmpty) return;
+
+        if (claims.IsEmpty)
+        {
+            return;
+        }
+
         using var ownedConnection = _dispatchConnection is null ? new SqlConnection(_connectionString) : null;
         var connection = _dispatchConnection ?? ownedConnection!;
         await using var batch = new SqlBatch(connection, _dispatchTransaction);
         PrepareBatch(batch, claims.Span, _batchClaim, now, expiresAt);
-        if (ownedConnection is not null) await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        if (ownedConnection is not null)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         await using var reader = await batch.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
         for (var i = 0; i < claims.Length; i++)
         {
             if (i != 0 && !await reader.NextResultAsync(cancellationToken).ConfigureAwait(false))
+            {
                 throw new InvalidDataException("SQL Server did not return every batched claim result.");
+            }
+
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
                 throw new InvalidDataException("SQL Server returned an empty batched claim result.");
+            }
+
             claimed.Span[i] = reader.GetBoolean(0);
         }
     }
@@ -307,22 +384,40 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         CancellationToken cancellationToken)
     {
         CheckOperation(cancellationToken);
-        if (claims.IsEmpty) return 0;
+
+        if (claims.IsEmpty)
+        {
+            return 0;
+        }
+
         using var ownedConnection = _dispatchConnection is null ? new SqlConnection(_connectionString) : null;
         var connection = _dispatchConnection ?? ownedConnection!;
         await using var batch = new SqlBatch(connection, _dispatchTransaction);
         PrepareBatch(batch, claims.Span, _batchComplete, now, null);
-        if (ownedConnection is not null) await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        if (ownedConnection is not null)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         await using var reader = await batch.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         long completed = 0;
+
         for (var i = 0; i < claims.Length; i++)
         {
             if (i != 0 && !await reader.NextResultAsync(cancellationToken).ConfigureAwait(false))
+            {
                 throw new InvalidDataException("SQL Server did not return every batched completion result.");
+            }
+
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
                 throw new InvalidDataException("SQL Server returned an empty batched completion result.");
+            }
+
             completed += reader.GetInt64(0);
         }
+
         return completed;
     }
 
@@ -330,10 +425,16 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     {
         Unsafe.Unbox<DateTimeOffset>(_now) = now.ToUniversalTime();
         Unsafe.Unbox<DateTimeOffset>(_expires) = expiresAt.GetValueOrDefault().ToUniversalTime();
+
         for (var i = 0; i < claims.Length; i++)
         {
             Validate(claims[i]);
-            if (_batchClaims.Count == i) _batchClaims.Add(new());
+
+            if (_batchClaims.Count == i)
+            {
+                _batchClaims.Add(new());
+            }
+
             var slot = _batchClaims[i];
             claims[i].MessageId.TryWriteBytes(slot.Id, bigEndian: true, out _);
             claims[i].Token.TryWriteBytes(slot.Token, bigEndian: true, out _);
@@ -341,7 +442,12 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             command.Parameters.Add(new SqlParameter("@id", SqlDbType.Binary, 16) { Value = slot.Id });
             command.Parameters.Add(new SqlParameter("@token", SqlDbType.Binary, 16) { Value = slot.Token });
             command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTimeOffset) { Value = _now });
-            if (expiresAt.HasValue) command.Parameters.Add(new SqlParameter("@expires", SqlDbType.DateTimeOffset) { Value = _expires });
+
+            if (expiresAt.HasValue)
+            {
+                command.Parameters.Add(new SqlParameter("@expires", SqlDbType.DateTimeOffset) { Value = _expires });
+            }
+
             batch.BatchCommands.Add(command);
         }
     }
@@ -363,7 +469,12 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         using var command = new SqlCommand(_count, connection, _dispatchTransaction);
         Unsafe.Unbox<DateTimeOffset>(_now) = now.ToUniversalTime();
         Add(command, "@now", SqlDbType.DateTimeOffset, _now);
-        if (ownedConnection is not null) await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        if (ownedConnection is not null)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 
@@ -377,33 +488,57 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         using var command = new SqlCommand(_boundedCount, connection, _dispatchTransaction);
         Add(command, "@now", SqlDbType.DateTimeOffset, now.ToUniversalTime());
         Add(command, "@countLimit", SqlDbType.BigInt, countLimit);
-        if (ownedConnection is not null) await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        if (ownedConnection is not null)
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 
     private static void CheckOperation(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
         if (Transaction.Current is not null)
+        {
             throw new InvalidOperationException("SQL Server outbox store operations require autocommit. Call outside an ambient TransactionScope.");
+        }
     }
 
     private static void Validate(OutboxClaim claim, DateTimeOffset? now = null, DateTimeOffset? expiresAt = null)
     {
         if (claim.MessageId == Guid.Empty || claim.Token == Guid.Empty)
+        {
             throw new ArgumentException("Outbox message ID and claim token must not be empty.", nameof(claim));
-        if (expiresAt <= now) throw new ArgumentOutOfRangeException(nameof(expiresAt), "Claim expiry must be after now.");
+        }
+
+        if (expiresAt <= now)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expiresAt), "Claim expiry must be after now.");
+        }
     }
 
-    private static void Add(SqlCommand command, string name, SqlDbType type, object? value, int size = 0) =>
+    private static void Add(SqlCommand command, string name, SqlDbType type, object? value, int size = 0)
+    {
         command.Parameters.Add(new SqlParameter(name, type, size) { Value = value ?? DBNull.Value });
+    }
 
     private static ReadOnlyMemory<byte> ReadBytes(SqlDataReader reader, int ordinal, ref byte[] buffer)
     {
         var length = checked((int)reader.GetBytes(ordinal, 0, null, 0, 0));
-        if (buffer.Length < length) Array.Resize(ref buffer, length);
+
+        if (buffer.Length < length)
+        {
+            Array.Resize(ref buffer, length);
+        }
+
         if (reader.GetBytes(ordinal, 0, buffer, 0, length) != length)
+        {
             throw new InvalidDataException("Truncated SQL Server outbox payload.");
+        }
+
         return buffer.AsMemory(0, length);
     }
 

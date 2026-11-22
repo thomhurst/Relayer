@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Transactions;
 using Microsoft.Extensions.DependencyInjection;
 using MySqlConnector;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql.Tests;
 
@@ -42,6 +42,7 @@ public sealed class MySqlOutboxStoreTests
         var claim = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
         await database.Insert(claim.MessageId, now);
         await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsTrue();
+
         using (var transaction = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
         {
             await Assert.ThrowsAsync<InvalidOperationException>(async () =>
@@ -64,7 +65,10 @@ public sealed class MySqlOutboxStoreTests
         await using var database = new MySqlFixture();
         await database.StartAsync();
         await database.Execute(MySqlOutboxSchema.CreateScript()); // idempotent deployment
-        await database.Execute(MySqlOutboxSchema.CreateScript(new() { TablePrefix = new string('x', 52) }));
+        await database.Execute(MySqlOutboxSchema.CreateScript(new()
+        {
+            TablePrefix = new string('x', 52)
+        }));
         var quotedOptions = new MySqlOutboxOptions { TablePrefix = "tenant`_" };
         await database.Execute(MySqlOutboxSchema.CreateScript(quotedOptions));
         using var store = new MySqlOutboxStore(database.Source);
@@ -75,6 +79,7 @@ public sealed class MySqlOutboxStoreTests
         using var quotedStore = new MySqlOutboxStore(database.Source, quotedOptions);
         await Assert.That(await quotedStore.GetPendingCountAsync(now, default)).IsEqualTo(1L);
         var rows = new OutboxRecord[1];
+
         for (var read = 0; read < 2; read++)
         {
             await Assert.That(await store.ReadPendingAsync(new(null, now), rows, default)).IsEqualTo(1);
@@ -94,6 +99,7 @@ public sealed class MySqlOutboxStoreTests
             await Assert.That(row.MessageType).IsEqualTo("order;v=1");
             await Assert.That(row.Message.Destination).IsEqualTo("orders");
         }
+
         await database.Execute("UPDATE relayer_outbox SET headers = X'00'");
         await Assert.ThrowsAsync<InvalidDataException>(async () => await store.ReadPendingAsync(new(null, now), rows, default));
         await database.Execute("DROP TABLE relayer_outbox");
@@ -129,6 +135,7 @@ public sealed class MySqlOutboxStoreTests
             services.AddRelayerMySqlOutboxStore("orders", source);
             return Task.CompletedTask;
         });
+
         using (var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true }))
         {
             using var first = provider.CreateScope();
@@ -137,6 +144,7 @@ public sealed class MySqlOutboxStoreTests
             await Assert.That(store).IsSameReferenceAs(first.ServiceProvider.GetRequiredKeyedService<IOutboxStore>("orders"));
             await Assert.That(ReferenceEquals(store, second.ServiceProvider.GetRequiredKeyedService<IOutboxStore>("orders"))).IsFalse();
         }
+
         using var connection = source.CreateConnection(); // registration did not dispose source
         await using var incompatible = new MySqlDataSource("Server=unused;UseAffectedRows=true");
         await Assert.ThrowsAsync<ArgumentException>(() =>
@@ -154,13 +162,22 @@ public sealed class MySqlOutboxStoreTests
     [Test]
     public async Task Schema_quotes_prefixes_and_rejects_invalid_identifiers()
     {
-        await Assert.That(MySqlOutboxSchema.CreateScript(new() { TablePrefix = "tenant`_" })).Contains("`tenant``_outbox`");
+        await Assert.That(MySqlOutboxSchema.CreateScript(new()
+        {
+            TablePrefix = "tenant`_"
+        })).Contains("`tenant``_outbox`");
+
         foreach (var prefix in new[] { new string('x', 53), "bad\0", "😀" })
+        {
             await Assert.ThrowsAsync<ArgumentException>(() =>
             {
-                _ = MySqlOutboxSchema.CreateScript(new() { TablePrefix = prefix });
+                _ = MySqlOutboxSchema.CreateScript(new()
+                {
+                    TablePrefix = prefix
+                });
                 return Task.CompletedTask;
             });
+        }
     }
 
     [Test]
@@ -170,13 +187,30 @@ public sealed class MySqlOutboxStoreTests
         using var owned = parameters.Command;
         var now = new DateTimeOffset(2030, 1, 2, 3, 4, 5, TimeSpan.FromHours(5));
         var claim = new OutboxClaim(Guid.NewGuid(), Guid.NewGuid());
-        for (var i = 0; i < 100; i++) Update();
+
+        for (var i = 0; i < 100; i++)
+        {
+            Update();
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) Update();
+
+        for (var i = 0; i < 1000; i++)
+        {
+            Update();
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
         var timestamp = (ReadOnlyMemory<char>)owned.Parameters["now"].Value!;
         await Assert.That(timestamp.ToString()).IsEqualTo("2030-01-01 22:04:05.000000");
-        void Update() { parameters.Now(now); parameters.Expires(now.AddMinutes(1)); parameters.Claim(claim); parameters.Read(2, claim.MessageId, 64); }
+
+        void Update()
+        {
+            parameters.Now(now);
+            parameters.Expires(now.AddMinutes(1));
+            parameters.Claim(claim);
+            parameters.Read(2, claim.MessageId, 64);
+        }
     }
 }

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Relayer.Transports;
+
 namespace Relayer;
 
 /// <summary>Registers the shared tracing source and options without process-wide mutable state.</summary>

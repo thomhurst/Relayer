@@ -26,8 +26,14 @@ public class AdoNetEnlistmentTests
         await using var transaction = await outbox.BeginTransactionAsync(database.Source);
         var first = Guid.Parse("01900000-0000-7000-8000-000000000002");
         var second = Guid.Parse("01900000-0000-7000-8000-000000000001");
-        await outbox.EnlistAsync(Record() with { Id = first }, default);
-        await outbox.EnlistAsync(Record() with { Id = second }, default);
+        await outbox.EnlistAsync(Record() with
+        {
+            Id = first
+        }, default);
+        await outbox.EnlistAsync(Record() with
+        {
+            Id = second
+        }, default);
         await transaction.CommitAsync();
         await using var connection = await database.Source.OpenConnectionAsync();
         var ids = await connection.QueryAsync<Guid>($"SELECT id FROM {Database.Table} ORDER BY seq");
@@ -63,16 +69,22 @@ public class AdoNetEnlistmentTests
         var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
         await using var transaction = await outbox.BeginTransactionAsync(database.Source);
         await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (1), (2)", transaction: transaction);
-        const string sql = "SELECT count(*)::integer FROM business WHERE id = ANY(@Ids)";
-        var parameters = new { Ids = new[] { 1, 2 } };
+        const string Sql = "SELECT count(*)::integer FROM business WHERE id = ANY(@Ids)";
+        var parameters = new
+        {
+            Ids = new[] { 1, 2 }
+        };
         var count = synchronous
-            ? transaction.Connection!.ExecuteScalar<int>(sql, parameters, transaction)
-            : await transaction.Connection!.ExecuteScalarAsync<int>(sql, parameters, transaction);
+            ? transaction.Connection!.ExecuteScalar<int>(Sql, parameters, transaction)
+            : await transaction.Connection!.ExecuteScalarAsync<int>(Sql, parameters, transaction);
         await Assert.That(count).IsEqualTo(2);
-        var empty = new { Ids = Array.Empty<int>() };
+        var empty = new
+        {
+            Ids = Array.Empty<int>()
+        };
         var emptyCount = synchronous
-            ? transaction.Connection!.ExecuteScalar<int>(sql, empty, transaction)
-            : await transaction.Connection!.ExecuteScalarAsync<int>(sql, empty, transaction);
+            ? transaction.Connection!.ExecuteScalar<int>(Sql, empty, transaction)
+            : await transaction.Connection!.ExecuteScalarAsync<int>(Sql, empty, transaction);
         await Assert.That(emptyCount).IsEqualTo(0);
         await outbox.EnlistAsync(Record(), default);
         await transaction.CommitAsync();
@@ -95,14 +107,39 @@ public class AdoNetEnlistmentTests
         await using var transaction = await outbox.BeginTransactionAsync(connection, IsolationLevel.ReadCommitted);
         await Assert.That(transaction.IsolationLevel).IsEqualTo(IsolationLevel.ReadCommitted);
         await Assert.That(enlistment.IsActive).IsTrue();
+
         if (synchronous)
-            transaction.Connection!.Execute("INSERT INTO business VALUES (@id)", new { id = 1 }, transaction);
+        {
+            transaction.Connection!.Execute("INSERT INTO business VALUES (@id)", new
+            {
+                id = 1
+            }, transaction);
+        }
         else
-            await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (@id)", new { id = 1 }, transaction);
-        for (var i = 0; i < 7_000; i++) await enlistment.EnlistAsync(Record(), default);
+        {
+            await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (@id)", new
+            {
+                id = 1
+            }, transaction);
+        }
+
+        for (var i = 0; i < 7_000; i++)
+        {
+            await enlistment.EnlistAsync(Record(), default);
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM business")).IsEqualTo(0L);
-        if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+
+        if (synchronous)
+        {
+            transaction.Commit();
+        }
+        else
+        {
+            await transaction.CommitAsync();
+        }
+
         await Assert.That(enlistment.IsActive).IsFalse();
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
         await Assert.That(await database.Count()).IsEqualTo(7_000L);
@@ -122,19 +159,43 @@ public class AdoNetEnlistmentTests
         var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
         var enlistment = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
         await using var connection = await database.Source.OpenConnectionAsync();
+
         await using (var transaction = await outbox.BeginTransactionAsync(connection))
         {
             await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (1)", transaction: transaction);
             await enlistment.EnlistAsync(Record(), default);
-            if (synchronous) transaction.Rollback(); else await transaction.RollbackAsync();
+
+            if (synchronous)
+            {
+                transaction.Rollback();
+            }
+            else
+            {
+                await transaction.RollbackAsync();
+            }
         }
+
         var abandoned = await outbox.BeginTransactionAsync(connection);
         await abandoned.Connection!.ExecuteAsync("INSERT INTO business VALUES (2)", transaction: abandoned);
         await enlistment.EnlistAsync(Record(), default);
-        if (synchronous) abandoned.Dispose(); else await abandoned.DisposeAsync();
+
+        if (synchronous)
+        {
+            abandoned.Dispose();
+        }
+        else
+        {
+            await abandoned.DisposeAsync();
+        }
+
         await Assert.That(enlistment.IsActive).IsFalse();
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
-        await using (var next = await outbox.BeginTransactionAsync(connection)) await next.CommitAsync();
+
+        await using (var next = await outbox.BeginTransactionAsync(connection))
+        {
+            await next.CommitAsync();
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM business")).IsEqualTo(0L);
     }
@@ -151,27 +212,50 @@ public class AdoNetEnlistmentTests
         var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
         var enlistment = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
         var duplicate = Record();
+
         await using (var first = await outbox.BeginTransactionAsync(database.Source))
         {
             await enlistment.EnlistAsync(duplicate, default);
             await first.CommitAsync();
         }
+
         await using (var failedInsert = await outbox.BeginTransactionAsync(database.Source))
         {
             await failedInsert.Connection!.ExecuteAsync("INSERT INTO business VALUES (1)", transaction: failedInsert);
             await enlistment.EnlistAsync(duplicate, default);
-            if (synchronous) await Assert.That(() => failedInsert.Commit()).Throws<PostgresException>();
-            else await Assert.That(async () => await failedInsert.CommitAsync()).Throws<PostgresException>();
+
+            if (synchronous)
+            {
+                await Assert.That(() => failedInsert.Commit()).Throws<PostgresException>();
+            }
+            else
+            {
+                await Assert.That(async () => await failedInsert.CommitAsync()).Throws<PostgresException>();
+            }
         }
+
         await using (var failedCommit = await outbox.BeginTransactionAsync(database.Source))
         {
             await failedCommit.Connection!.ExecuteAsync("INSERT INTO deferred_business VALUES (1, 999)", transaction: failedCommit);
             await enlistment.EnlistAsync(Record(), default);
-            if (synchronous) await Assert.That(() => failedCommit.Commit()).Throws<PostgresException>();
-            else await Assert.That(async () => await failedCommit.CommitAsync()).Throws<PostgresException>();
+
+            if (synchronous)
+            {
+                await Assert.That(() => failedCommit.Commit()).Throws<PostgresException>();
+            }
+            else
+            {
+                await Assert.That(async () => await failedCommit.CommitAsync()).Throws<PostgresException>();
+            }
         }
+
         await Assert.That(enlistment.IsActive).IsFalse();
-        await using (var next = await outbox.BeginTransactionAsync(database.Source)) await next.CommitAsync();
+
+        await using (var next = await outbox.BeginTransactionAsync(database.Source))
+        {
+            await next.CommitAsync();
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(1L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM business")).IsEqualTo(0L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM deferred_business")).IsEqualTo(0L);
@@ -192,6 +276,7 @@ public class AdoNetEnlistmentTests
         await Assert.That(async () => await outbox.BeginTransactionAsync(database.Source, cancellationToken: canceled.Token))
             .Throws<OperationCanceledException>();
         await using var connection = await database.Source.OpenConnectionAsync();
+
         await using (var transaction = await outbox.BeginTransactionAsync(connection))
         {
             await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (1)", transaction: transaction);
@@ -199,9 +284,15 @@ public class AdoNetEnlistmentTests
             await enlistment.EnlistAsync(Record(), default);
             await Assert.That(async () => await transaction.CommitAsync(canceled.Token)).Throws<OperationCanceledException>();
         }
+
         await Assert.That(enlistment.IsActive).IsFalse();
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
-        await using (var next = await outbox.BeginTransactionAsync(connection)) await next.CommitAsync();
+
+        await using (var next = await outbox.BeginTransactionAsync(connection))
+        {
+            await next.CommitAsync();
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM business")).IsEqualTo(0L);
     }
@@ -222,6 +313,7 @@ public class AdoNetEnlistmentTests
         byte[] key = System.Text.Encoding.UTF8.GetBytes("café");
         byte[] value = [0xff, 0, 0xfe];
         KeyValuePair<string, WireString>[] headers = [new("duplicate", new WireString("first")), new("duplicate", new WireString(value)), new("empty", new WireString(""))];
+
         await using (var transaction = await outbox.BeginTransactionAsync(database.Source))
         {
             var outgoing = new OutgoingMessage("original-destination", body, headers, new WireString(key), delivery);
@@ -232,6 +324,7 @@ public class AdoNetEnlistmentTests
             headers.AsSpan().Clear();
             await transaction.CommitAsync();
         }
+
         var lane = (int)await database.Scalar($"SELECT lane::bigint FROM {Database.Table}");
         var store = new PostgreSqlOutboxStore(database.Source, Database.Options);
         var rows = new OutboxRecord[1];
@@ -265,6 +358,7 @@ public class AdoNetEnlistmentTests
         await using var provider = database.Services();
         DbTransaction abandoned;
         int abandonedBackend;
+
         await using (var scope = provider.CreateAsyncScope())
         {
             var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
@@ -275,21 +369,25 @@ public class AdoNetEnlistmentTests
             await Assert.That(await database.Scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND state='idle in transaction'"))
                 .IsEqualTo(1L);
         }
+
         await database.WaitForBackendExit(abandonedBackend);
         await abandoned.DisposeAsync();
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM business")).IsEqualTo(0L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND state='idle in transaction'"))
             .IsEqualTo(0L);
+
         await using (var nextScope = provider.CreateAsyncScope())
         {
             var outbox = nextScope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+
             await using (var committed = await outbox.BeginTransactionAsync(database.Source))
             {
                 var backend = await committed.Connection!.QuerySingleAsync<int>("SELECT pg_backend_pid()", transaction: committed);
                 await committed.CommitAsync();
                 await database.WaitForBackendExit(backend);
             }
+
             await using (var rolledBack = await outbox.BeginTransactionAsync(database.Source))
             {
                 var backend = await rolledBack.Connection!.QuerySingleAsync<int>("SELECT pg_backend_pid()", transaction: rolledBack);
@@ -297,6 +395,7 @@ public class AdoNetEnlistmentTests
                 await database.WaitForBackendExit(backend);
             }
         }
+
         await using var usableSource = await database.Source.OpenConnectionAsync();
         await Assert.That(usableSource.State).IsEqualTo(ConnectionState.Open);
         await Assert.That(await unrelated.ExecuteScalarAsync<int>("SELECT 42")).IsEqualTo(42);
@@ -336,7 +435,9 @@ public class AdoNetEnlistmentTests
         await Assert.That(async () => await enlistment.EnlistAsync(Record() with { Id = Guid.NewGuid() }, default)).Throws<InvalidOperationException>();
         await Assert.That(async () => await enlistment.EnlistAsync(Record() with { MessageType = "" }, default)).Throws<InvalidOperationException>();
         await Assert.That(async () => await enlistment.EnlistAsync(Record() with { Attempts = 1 }, default)).Throws<ArgumentException>();
-        var native = new OutgoingMessage("destination", new byte[] { 1 }, options: new SendOptions().ConfigureNative<object>(static _ => { }));
+        var native = new OutgoingMessage("destination", new byte[] { 1 }, options: new SendOptions().ConfigureNative<object>(static _ =>
+        {
+        }));
         await Assert.That(async () => await enlistment.EnlistAsync(Record() with { Message = native }, default)).Throws<InvalidOperationException>();
         await transaction.CommitAsync();
         await Assert.That(await database.Count()).IsEqualTo(0L);
@@ -356,6 +457,7 @@ public class AdoNetEnlistmentTests
         await Assert.That(transport.Sends).IsEqualTo(0);
         await sender.SendWithoutOutboxAsync(new Probe(1));
         await Assert.That(transport.Sends).IsEqualTo(1);
+
         await using (var transaction = await outbox.BeginTransactionAsync(database.Source))
         {
             await sender.SendAsync(new Probe(2));
@@ -364,6 +466,7 @@ public class AdoNetEnlistmentTests
             await Assert.That(await database.Count()).IsEqualTo(0L);
             await transaction.CommitAsync();
         }
+
         await Assert.That(await database.Count()).IsEqualTo(2L);
         await Assert.That(transport.Sends).IsEqualTo(1);
         await using var command = database.Source.CreateCommand($"SELECT id, message_type, headers FROM {Database.Table} LIMIT 1");
@@ -395,8 +498,11 @@ public class AdoNetEnlistmentTests
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["Schema"] = "configured", ["TablePrefix"] = "prefix_", ["Lanes"] = "8",
-            ["LeaseDuration"] = "00:00:45", ["MaxDispatchAttempts"] = "7"
+            ["Schema"] = "configured",
+            ["TablePrefix"] = "prefix_",
+            ["Lanes"] = "8",
+            ["LeaseDuration"] = "00:00:45",
+            ["MaxDispatchAttempts"] = "7"
         }).Build();
         var services = new ServiceCollection().AddRelayerPostgreSqlOutbox(configuration);
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -468,12 +574,22 @@ public class AdoNetEnlistmentTests
     {
         await using var database = new Database();
         await database.Start();
+
         await using (var install = database.Source.CreateCommand($"""
             CREATE FUNCTION block_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(118); RETURN NULL; END; $$;
             CREATE TRIGGER block_insert BEFORE INSERT ON {Database.Table} FOR EACH STATEMENT EXECUTE FUNCTION block_insert();
-            """)) await install.ExecuteNonQueryAsync();
+            """))
+        {
+            await install.ExecuteNonQueryAsync();
+        }
+
         await using var blocker = await database.Source.OpenConnectionAsync();
-        await using (var hold = new NpgsqlCommand("SELECT pg_advisory_lock(118)", blocker)) await hold.ExecuteNonQueryAsync();
+
+        await using (var hold = new NpgsqlCommand("SELECT pg_advisory_lock(118)", blocker))
+        {
+            await hold.ExecuteNonQueryAsync();
+        }
+
         await using var provider = database.Services();
         await using var scope = provider.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
@@ -486,7 +602,10 @@ public class AdoNetEnlistmentTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         // Cancel only after PostgreSQL confirms the insert is waiting on our held lock.
         while (await database.Scalar("SELECT count(*) FROM pg_stat_activity WHERE wait_event='advisory' AND datname = current_database()") == 0)
+        {
             await Task.Delay(10, timeout.Token);
+        }
+
         cancellation.Cancel();
         await Assert.That(async () => await commit).Throws<OperationCanceledException>();
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
@@ -497,16 +616,25 @@ public class AdoNetEnlistmentTests
         await next.CommitAsync();
     }
 
-    private static OutboxRecord Record() => new(Guid.CreateVersion7(), "events", "ado.probe;v=1",
-        new OutgoingMessage("destination", new byte[] { 1 }), DateTimeOffset.UtcNow);
+    private static OutboxRecord Record()
+    {
+        return new(Guid.CreateVersion7(), "events", "ado.probe;v=1",
+                new OutgoingMessage("destination", new byte[] { 1 }), DateTimeOffset.UtcNow);
+    }
 
     private sealed class Database : IAsyncDisposable
     {
         internal static PostgreSqlOutboxOptions Options => new() { Schema = "ADO\"Schema", TablePrefix = "a.\"_", Lanes = 8 };
         internal const string Table = "\"ADO\"\"Schema\".\"a.\"\"_outbox\"";
         private readonly PostgreSqlFixture _fixture = new();
+
         internal string ConnectionString => _fixture.ConnectionString;
-        internal NpgsqlDataSource Source { get; private set; } = null!;
+
+        internal NpgsqlDataSource Source
+        {
+            get; private set;
+        } = null!;
+
         internal async Task Start()
         {
             await _fixture.StartAsync();
@@ -520,6 +648,7 @@ public class AdoNetEnlistmentTests
                 """);
             await command.ExecuteNonQueryAsync();
         }
+
         internal ServiceProvider Services(bool fanOut = false)
         {
             var services = new ServiceCollection();
@@ -535,12 +664,21 @@ public class AdoNetEnlistmentTests
                 builder.AddTransport<Empty, Empty>("events", transport =>
                 {
                     transport.Send<Probe>("destination");
-                    if (fanOut) transport.Send<Probe>("audit");
+
+                    if (fanOut)
+                    {
+                        transport.Send<Probe>("audit");
+                    }
                 });
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }
-        internal Task<long> Count() => Scalar($"SELECT count(*) FROM {Table}");
+
+        internal Task<long> Count()
+        {
+            return Scalar($"SELECT count(*) FROM {Table}");
+        }
+
         internal async Task WaitForBackendExit(int backend)
         {
             // Client disposal sends Terminate without waiting for the server backend to exit.
@@ -549,44 +687,97 @@ public class AdoNetEnlistmentTests
             await using var observer = await Source.OpenConnectionAsync(timeout.Token);
             await using var command = new NpgsqlCommand("SELECT count(*) FROM pg_stat_activity WHERE pid=$1", observer);
             command.Parameters.AddWithValue(backend);
+
             while ((long)(await command.ExecuteScalarAsync(timeout.Token))! != 0)
+            {
                 await Task.Delay(10, timeout.Token);
+            }
         }
+
         internal async Task<long> Scalar(string sql)
         {
             await using var command = Source.CreateCommand(sql);
             return (long)(await command.ExecuteScalarAsync())!;
         }
+
         public async ValueTask DisposeAsync()
         {
-            if (Source is not null) await Source.DisposeAsync();
+            if (Source is not null)
+            {
+                await Source.DisposeAsync();
+            }
+
             await _fixture.DisposeAsync();
         }
     }
 
     [Message("ado.probe")]
     public sealed record Probe(byte Value);
+
     public sealed class Empty;
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
         {
             destination.GetSpan(1)[0] = ((Probe)(object)message!).Value;
             destination.Advance(1);
         }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class Transport : ITransport
     {
-        public int Sends { get; private set; }
+        public int Sends
+        {
+            get; private set;
+        }
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Sends++; return default; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Sends++;
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

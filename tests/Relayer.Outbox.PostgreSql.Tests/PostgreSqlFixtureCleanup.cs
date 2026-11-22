@@ -8,6 +8,8 @@ public static class PostgreSqlFixtureCleanup
     {
         if (context.StateBag.TryGetValue<List<Exception>>("PostgreSqlFixture.CleanupFailures", out var failures)
             && failures.Count > 0)
+        {
             throw new AggregateException("PostgreSQL fixture cleanup failed.", failures);
+        }
     }
 }

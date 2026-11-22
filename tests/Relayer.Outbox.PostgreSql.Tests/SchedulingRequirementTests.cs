@@ -17,7 +17,10 @@ public class SchedulingRequirementTests
     public async Task Ef_default_capabilities_validate_once_per_options_version_and_reload_for_new_scopes()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        { ["TablePrefix"] = "relayer_", ["Lanes"] = "32" }).Build();
+        {
+            ["TablePrefix"] = "relayer_",
+            ["Lanes"] = "32"
+        }).Build();
         var validations = new CountingValidator();
         var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox(configuration);
         services.AddSingleton<IValidateOptions<EntityFrameworkCoreOutboxOptions>>(validations);
@@ -28,31 +31,37 @@ public class SchedulingRequirementTests
         var original = first.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
         await Assert.That(original.SupportsScheduling).IsTrue();
         await Assert.That(original.SupportsOrderedScheduling).IsTrue();
+
         using (var sameVersion = provider.CreateScope())
         {
             var next = sameVersion.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
             await Assert.That(next.SupportsScheduling).IsTrue();
             await Assert.That(next.SupportsOrderedScheduling).IsTrue();
         }
+
         await Assert.That(validations.Count).IsEqualTo(1);
 
         configuration["Lanes"] = "16";
         configuration.Reload();
+
         using (var changedLanes = provider.CreateScope())
         {
             var next = changedLanes.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
             await Assert.That(next.SupportsScheduling).IsTrue();
             await Assert.That(next.SupportsOrderedScheduling).IsFalse();
         }
+
         await Assert.That(validations.Count).IsEqualTo(2);
         configuration["TablePrefix"] = "other_";
         configuration.Reload();
+
         using (var changedStore = provider.CreateScope())
         {
             var next = changedStore.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
             await Assert.That(next.SupportsScheduling).IsFalse();
             await Assert.That(next.SupportsOrderedScheduling).IsFalse();
         }
+
         await Assert.That(validations.Count).IsEqualTo(3);
         await Assert.That(original.SupportsScheduling).IsTrue();
         await Assert.That(original.SupportsOrderedScheduling).IsTrue();
@@ -70,8 +79,12 @@ public class SchedulingRequirementTests
         await Assert.That(executor.SupportsScheduling).IsTrue();
         await Assert.That(executor.SupportsOrderedScheduling).IsTrue();
         var options = new DbContextOptionsBuilder().UseNpgsql("Host=unused")
-            .AddRelayerOutbox(scope.ServiceProvider, new() { TablePrefix = "other_" });
+            .AddRelayerOutbox(scope.ServiceProvider, new()
+            {
+                TablePrefix = "other_"
+            });
         using var context = new DbContext(options.Options);
+
         using (context.EnlistRelayerOutbox())
         {
             await Assert.That(executor.IsActive).IsTrue();
@@ -82,6 +95,7 @@ public class SchedulingRequirementTests
             await Assert.That(async () => await executor.EnlistAsync(record, default))
                 .Throws<InvalidOperationException>().WithMessageContaining("selected DbContext");
         }
+
         await Assert.That(executor.IsActive).IsFalse();
         await Assert.That(executor.SupportsScheduling).IsTrue();
         await Assert.That(executor.SupportsOrderedScheduling).IsTrue();
@@ -89,7 +103,11 @@ public class SchedulingRequirementTests
 
     private sealed class CountingValidator : IValidateOptions<EntityFrameworkCoreOutboxOptions>
     {
-        internal int Count { get; private set; }
+        internal int Count
+        {
+            get; private set;
+        }
+
         public ValidateOptionsResult Validate(string? name, EntityFrameworkCoreOutboxOptions options)
         {
             Count++;
@@ -126,11 +144,22 @@ public class SchedulingRequirementTests
     {
         await using var source = NpgsqlDataSource.Create("Host=unused");
         var services = new ServiceCollection().AddLogging();
-        if (ef) services.AddRelayerEntityFrameworkCoreOutbox();
-        else services.AddRelayerPostgreSqlOutbox();
+
+        if (ef)
+        {
+            services.AddRelayerEntityFrameworkCoreOutbox();
+        }
+        else
+        {
+            services.AddRelayerPostgreSqlOutbox();
+        }
         // Enlistment requires due-row recovery even when no direct dispatcher is installed.
-        if (worker) services.AddRelayerPostgreSqlMaintenance("due", source,
+        if (worker)
+        {
+            services.AddRelayerPostgreSqlMaintenance("due", source,
             new PostgreSqlMaintenanceOptions { TablePrefix = mismatch ? "other_" : "relayer_" });
+        }
+
         services.AddSingleton<ITransport>(new Transport());
         services.AddSingleton<IMessageSerializer, Serializer>();
         Configure(services);
@@ -138,10 +167,19 @@ public class SchedulingRequirementTests
         var start = async () =>
         {
             foreach (var lifecycle in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+            {
                 await lifecycle.StartingAsync(default);
+            }
         };
-        if (valid) await start();
-        else await Assert.That(start).Throws<OptionsValidationException>().WithMessageContaining("matching due-row dispatch worker");
+
+        if (valid)
+        {
+            await start();
+        }
+        else
+        {
+            await Assert.That(start).Throws<OptionsValidationException>().WithMessageContaining("matching due-row dispatch worker");
+        }
     }
 
     [Test]
@@ -163,7 +201,10 @@ public class SchedulingRequirementTests
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         // Validate before opening any transaction or starting a dispatcher.
         foreach (var lifecycle in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+        {
             await lifecycle.StartingAsync(default);
+        }
+
         await using (var scope = provider.CreateAsyncScope())
         {
             var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
@@ -178,13 +219,17 @@ public class SchedulingRequirementTests
             skew.Parameters.AddWithValue("offset", TimeSpan.FromDays(creationOffsetDays));
             await Assert.That(await skew.ExecuteNonQueryAsync()).IsEqualTo(1);
         }
+
         var worker = provider.GetRequiredKeyedService<PostgreSqlMaintenanceWorker>("due");
         await Assert.That(await worker.SweepAsync(default)).IsEqualTo(0);
         await Assert.That(transport.Count).IsEqualTo(0);
         // RecoveryDelay also compares host-originated created_at with the database clock.
         // Advance both eligibility timestamps so clock skew cannot hide a due row.
         await using (var due = source.CreateCommand("UPDATE relayer_outbox SET created_at = clock_timestamp() - interval '1 day', deliver_at = clock_timestamp() - interval '1 day'"))
+        {
             await Assert.That(await due.ExecuteNonQueryAsync()).IsEqualTo(1);
+        }
+
         await Assert.That(await worker.SweepAsync(default)).IsEqualTo(1);
         await Assert.That(transport.Count).IsEqualTo(1);
         await Assert.That(transport.LastBody).IsEqualTo((byte)42);
@@ -192,34 +237,65 @@ public class SchedulingRequirementTests
         await worker.ReleaseAsync(default);
     }
 
-    private static void Configure(IServiceCollection services) => services.AddRelayer(builder =>
+    private static void Configure(IServiceCollection services)
     {
-        builder.Infrastructure().MessageTypes.Add<Probe>("schedule.probe");
-        builder.AddTransport<Empty, Empty>("events", transport => transport.Send<Probe>("orders", route =>
-            route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromDays(1),
-                TransactionRequirement = SendTransactionRequirement.Outbox }));
-    });
+        services.AddRelayer(builder =>
+            {
+                builder.Infrastructure().MessageTypes.Add<Probe>("schedule.probe");
+                builder.AddTransport<Empty, Empty>("events", transport => transport.Send<Probe>("orders", route =>
+                    route.SendOptions = new()
+                    {
+                        RequiredDeliveryDelay = TimeSpan.FromDays(1),
+                        TransactionRequirement = SendTransactionRequirement.Outbox
+                    }));
+            });
+    }
 
     [Message("schedule.probe")]
     public sealed record Probe(byte Value);
+
     public sealed class Empty;
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
         {
             destination.GetSpan(1)[0] = ((Probe)(object)message!).Value;
             destination.Advance(1);
         }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class Transport : ITransport
     {
         public string Name => "events";
-        internal int Count { get; private set; }
-        internal byte LastBody { get; private set; }
-        internal DateTimeOffset? LastDeliverAt { get; private set; }
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
+
+        internal int Count
+        {
+            get; private set;
+        }
+
+        internal byte LastBody
+        {
+            get; private set;
+        }
+
+        internal DateTimeOffset? LastDeliverAt
+        {
+            get; private set;
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Count++;
@@ -227,10 +303,30 @@ public class SchedulingRequirementTests
             LastDeliverAt = message.DeliverAt;
             return ValueTask.CompletedTask;
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

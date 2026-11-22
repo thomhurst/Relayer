@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using RabbitMQ.Client;
+using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
 
@@ -11,8 +11,16 @@ namespace Relayer.RabbitMQ;
 internal sealed class RabbitMqSendPool
 {
     private readonly SlotPool<RabbitMqSendOperation> _operations = new(capacity: 256);
-    internal RabbitMqSendOperation Rent() => _operations.TryRent() ?? new(this);
-    internal void Return(RabbitMqSendOperation operation) => _operations.TryReturn(operation);
+
+    internal RabbitMqSendOperation Rent()
+    {
+        return _operations.TryRent() ?? new(this);
+    }
+
+    internal void Return(RabbitMqSendOperation operation)
+    {
+        _operations.TryReturn(operation);
+    }
 }
 
 internal sealed class RabbitMqSendOperation : IValueTaskSource
@@ -41,7 +49,16 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
     private long _started;
     private Stage _stage;
     private int _consumed;
-    private enum Stage { Lease, Recover, Publish, BatchLease, BatchRecover, BatchDrain }
+
+    private enum Stage
+    {
+        Lease,
+        Recover,
+        Publish,
+        BatchLease,
+        BatchRecover,
+        BatchDrain
+    }
 
     internal RabbitMqSendOperation(RabbitMqSendPool? pool = null)
     {
@@ -64,13 +81,25 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
         _publishers = publishers;
         _token = token;
         _stage = Stage.Lease;
+
         try
         {
             _lease = publishers.Reader.ReadAsync(token).ConfigureAwait(false).GetAwaiter();
-            if (_lease.IsCompleted) Advance();
-            else _lease.UnsafeOnCompleted(_continuation);
+
+            if (_lease.IsCompleted)
+            {
+                Advance();
+            }
+            else
+            {
+                _lease.UnsafeOnCompleted(_continuation);
+            }
         }
-        catch (Exception error) { Finish(error); }
+        catch (Exception error)
+        {
+            Finish(error);
+        }
+
         return new(this, _completion.Version);
     }
 
@@ -108,20 +137,38 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
         _traceBatchMessages = traceMessages;
         _token = token;
         _stage = Stage.BatchLease;
+
         try
         {
             _lease = publishers.Reader.ReadAsync(token).ConfigureAwait(false).GetAwaiter();
-            if (_lease.IsCompleted) Advance();
-            else _lease.UnsafeOnCompleted(_continuation);
+
+            if (_lease.IsCompleted)
+            {
+                Advance();
+            }
+            else
+            {
+                _lease.UnsafeOnCompleted(_continuation);
+            }
         }
-        catch (Exception error) { Finish(error); }
+        catch (Exception error)
+        {
+            Finish(error);
+        }
+
         return new(this, _completion.Version);
     }
 
     private void Resume()
     {
-        if (_context is null) Advance();
-        else ExecutionContext.Run(_context, static state => ((RabbitMqSendOperation)state!).Advance(), this);
+        if (_context is null)
+        {
+            Advance();
+        }
+        else
+        {
+            ExecutionContext.Run(_context, static state => ((RabbitMqSendOperation)state!).Advance(), this);
+        }
     }
 
     private void Advance()
@@ -138,7 +185,12 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
                         _stage = Stage.BatchRecover;
                         _pending = (_publisher.Channel.IsOpen ? ValueTask.CompletedTask :
                             _transport.ReplacePublisherChannelAsync(_publisher, _connection, _token)).ConfigureAwait(false).GetAwaiter();
-                        if (!_pending.IsCompleted) { _pending.UnsafeOnCompleted(_continuation); return; }
+                        if (!_pending.IsCompleted)
+                        {
+                            _pending.UnsafeOnCompleted(_continuation);
+                            return;
+                        }
+
                         break;
                     case Stage.BatchRecover:
                         _pending.GetResult();
@@ -157,19 +209,37 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
                                 _batchSends[_batchCount++] = send;
                             }
                         }
-                        catch (Exception error) { _batchError = error; }
+                        catch (Exception error)
+                        {
+                            _batchError = error;
+                        }
+
                         _stage = Stage.BatchDrain;
                         break;
                     case Stage.BatchDrain:
                         while (_batchIndex < _batchCount)
                         {
                             ref var send = ref _batchSends[_batchIndex];
-                            if (!send.IsCompleted) { send.UnsafeOnCompleted(_continuation); return; }
-                            try { send.GetResult(); }
-                            catch (Exception error) { _batchError ??= error; }
+
+                            if (!send.IsCompleted)
+                            {
+                                send.UnsafeOnCompleted(_continuation);
+                                return;
+                            }
+
+                            try
+                            {
+                                send.GetResult();
+                            }
+                            catch (Exception error)
+                            {
+                                _batchError ??= error;
+                            }
+
                             send = default;
                             _batchIndex++;
                         }
+
                         Finish(_batchError);
                         return;
                     case Stage.Lease:
@@ -179,7 +249,12 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
                         _stage = Stage.Recover;
                         _pending = (_publisher.Channel.IsOpen ? ValueTask.CompletedTask :
                             _transport.ReplacePublisherChannelAsync(_publisher, _connection, _token)).ConfigureAwait(false).GetAwaiter();
-                        if (!_pending.IsCompleted) { _pending.UnsafeOnCompleted(_continuation); return; }
+                        if (!_pending.IsCompleted)
+                        {
+                            _pending.UnsafeOnCompleted(_continuation);
+                            return;
+                        }
+
                         break;
                     case Stage.Recover:
                         _pending.GetResult();
@@ -191,7 +266,12 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
                         _pending = _publisher.Channel.BasicPublishAsync(_delay > 0 ? _endpoint.DelayedExchange! : _endpoint.Exchange,
                             _endpoint.RoutingKey, mandatory: _delay == 0, _publisher.Properties, _message.Body, _token)
                             .ConfigureAwait(false).GetAwaiter();
-                        if (!_pending.IsCompleted) { _pending.UnsafeOnCompleted(_continuation); return; }
+                        if (!_pending.IsCompleted)
+                        {
+                            _pending.UnsafeOnCompleted(_continuation);
+                            return;
+                        }
+
                         break;
                     case Stage.Publish:
                         _pending.GetResult();
@@ -200,39 +280,69 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
                 }
             }
         }
-        catch (Exception error) { Finish(error); }
+        catch (Exception error)
+        {
+            Finish(error);
+        }
     }
 
     private void Finish(Exception? error)
     {
         if (_publisher is { } publisher)
         {
-            try { _endpoint?.Telemetry?.RecordDuration(Stopwatch.GetElapsedTime(_started), error is not null); }
-            catch (Exception telemetryError) { error ??= telemetryError; }
+            try
+            {
+                _endpoint?.Telemetry?.RecordDuration(Stopwatch.GetElapsedTime(_started), error is not null);
+            }
+            catch (Exception telemetryError)
+            {
+                error ??= telemetryError;
+            }
             finally
             {
                 publisher.Clear();
                 _publisher = null;
-                if (!_borrowed) _publishers.Writer.TryWrite(publisher);
+
+                if (!_borrowed)
+                {
+                    _publishers.Writer.TryWrite(publisher);
+                }
             }
         }
+
         _message = default;
         _batch = default;
         _batchError = null;
         _batchSends = [];
         _pending = default;
         _lease = default;
-        if (error is null) _completion.SetResult(true);
-        else _completion.SetException(error);
+
+        if (error is null)
+        {
+            _completion.SetResult(true);
+        }
+        else
+        {
+            _completion.SetException(error);
+        }
     }
 
     public void GetResult(short token)
     {
         if (_completion.GetStatus(token) == ValueTaskSourceStatus.Pending)
+        {
             throw new InvalidOperationException("The RabbitMQ send has not completed.");
+        }
+
         if (Interlocked.Exchange(ref _consumed, 1) != 0)
+        {
             throw new InvalidOperationException("Consume the RabbitMQ send ValueTask only once.");
-        try { _completion.GetResult(token); }
+        }
+
+        try
+        {
+            _completion.GetResult(token);
+        }
         finally
         {
             _context = null;
@@ -246,7 +356,14 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
             _pool?.Return(this);
         }
     }
-    public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-    public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+
+    public ValueTaskSourceStatus GetStatus(short token)
+    {
+        return _completion.GetStatus(token);
+    }
+
+    public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+    {
         _completion.OnCompleted(continuation, state, token, flags);
+    }
 }

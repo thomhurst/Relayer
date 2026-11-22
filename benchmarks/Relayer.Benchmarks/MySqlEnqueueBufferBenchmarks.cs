@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using MySqlConnector;
 using Relayer.Outbox.MySql;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -17,7 +17,10 @@ public class MySqlEnqueueBufferBenchmarks
     private bool _short;
 
     [Params(256, 4096)]
-    public int BodySize { get; set; }
+    public int BodySize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -25,12 +28,19 @@ public class MySqlEnqueueBufferBenchmarks
         _record = new(Guid.CreateVersion7(), "events", "benchmark.order;v=1",
             new OutgoingMessage("orders", new byte[BodySize], new KeyValuePair<string, WireString>[] { new("ce_type", new("benchmark.order;v=1")) },
                 new WireString("customer-42"), DateTimeOffset.UtcNow.AddMinutes(1)), DateTimeOffset.UtcNow, TenantId: "tenant");
-        _shortRecord = _record with { Message = new OutgoingMessage("orders", new byte[BodySize / 2]) };
+        _shortRecord = _record with
+        {
+            Message = new OutgoingMessage("orders", new byte[BodySize / 2])
+        };
         var sql = MySqlOutboxBatch.CreateInsertSql("`relayer_outbox`");
         _reused = new(sql);
         _native = new(sql);
+
         foreach (MySqlParameter parameter in _reused.Command.Parameters)
+        {
             _native.Parameters.Add(new MySqlParameter(parameter.ParameterName, parameter.MySqlDbType));
+        }
+
         ReusedParameters();
     }
 

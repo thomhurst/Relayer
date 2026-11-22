@@ -17,7 +17,10 @@ public class InMemorySchedulingBenchmarks
     private InMemoryTransport _transport = null!;
 
     [Params(1, 4)]
-    public int Partitions { get; set; }
+    public int Partitions
+    {
+        get; set;
+    }
 
     [GlobalSetup(Targets = [nameof(DirectRoundTrip), nameof(ScheduledRoundTrip), nameof(EqualDueBatchRoundTrip)])]
     public async Task Setup()
@@ -29,7 +32,12 @@ public class InMemorySchedulingBenchmarks
                 Partitions = Partitions,
                 Capacity = 4,
                 MessagePoolCapacity = 4,
-                Capabilities = new() { OrderedByKey = true, MaxBatchSize = 3, MaxDeliveryDelay = TimeSpan.FromMinutes(1) },
+                Capabilities = new()
+                {
+                    OrderedByKey = true,
+                    MaxBatchSize = 3,
+                    MaxDeliveryDelay = TimeSpan.FromMinutes(1)
+                },
             },
         }, _clock);
         _transport.RegisterConsumer("orders", (delivery, _) =>
@@ -41,10 +49,16 @@ public class InMemorySchedulingBenchmarks
     }
 
     [Benchmark(Baseline = true)]
-    public ValueTask<int> DirectRoundTrip() => RoundTrip(false);
+    public ValueTask<int> DirectRoundTrip()
+    {
+        return RoundTrip(false);
+    }
 
     [Benchmark]
-    public ValueTask<int> ScheduledRoundTrip() => RoundTrip(true);
+    public ValueTask<int> ScheduledRoundTrip()
+    {
+        return RoundTrip(true);
+    }
 
     [GlobalSetup(Target = nameof(FutureDeadlineRoundTrip))]
     public async Task SetupFutureDeadline()
@@ -71,11 +85,21 @@ public class InMemorySchedulingBenchmarks
     public async ValueTask<int> EqualDueBatchRoundTrip()
     {
         var at = _clock.GetUtcNow().AddTicks(1);
-        for (var i = 0; i < _batch.Length; i++) _batch[i] = new("orders", _body, orderingKey: new WireString("key"), deliverAt: at);
+
+        for (var i = 0; i < _batch.Length; i++)
+        {
+            _batch[i] = new("orders", _body, orderingKey: new WireString("key"), deliverAt: at);
+        }
+
         await _transport.SendBatchAsync(_batch, default);
         _clock.Advance();
         var total = 0;
-        for (var i = 0; i < _batch.Length; i++) total += await _received.Reader.ReadAsync();
+
+        for (var i = 0; i < _batch.Length; i++)
+        {
+            total += await _received.Reader.ReadAsync();
+        }
+
         return total;
     }
 
@@ -91,24 +115,42 @@ public class InMemorySchedulingBenchmarks
     }
 
     [GlobalCleanup]
-    public async Task Cleanup() => await _transport.DisposeAsync();
+    public async Task Cleanup()
+    {
+        await _transport.DisposeAsync();
+    }
 
     private sealed class DispatchClock(bool manualDeadlines = false) : TimeProvider
     {
         private readonly Channel<DispatchTimer> _armed = Channel.CreateBounded<DispatchTimer>(1);
         private long _ticks = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).Ticks;
-        public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _ticks), TimeSpan.Zero);
-        internal void Advance() => Interlocked.Increment(ref _ticks);
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            return new(Interlocked.Read(ref _ticks), TimeSpan.Zero);
+        }
+
+        internal void Advance()
+        {
+            Interlocked.Increment(ref _ticks);
+        }
 
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
-            if (!manualDeadlines) return base.CreateTimer(callback, state, dueTime, period);
+            if (!manualDeadlines)
+            {
+                return base.CreateTimer(callback, state, dueTime, period);
+            }
+
             var timer = new DispatchTimer(this, callback, state);
             timer.Change(dueTime, period);
             return timer;
         }
 
-        internal ValueTask<DispatchTimer> NextDeadline() => _armed.Reader.ReadAsync();
+        internal ValueTask<DispatchTimer> NextDeadline()
+        {
+            return _armed.Reader.ReadAsync();
+        }
 
         internal void Fire(DispatchTimer timer)
         {
@@ -119,18 +161,35 @@ public class InMemorySchedulingBenchmarks
         internal sealed class DispatchTimer(DispatchClock clock, TimerCallback callback, object? state) : ITimer
         {
             internal long DueTicks;
+
             public bool Change(TimeSpan dueTime, TimeSpan period)
             {
                 if (dueTime != Timeout.InfiniteTimeSpan)
                 {
                     DueTicks = clock.GetUtcNow().Ticks + dueTime.Ticks;
-                    if (!clock._armed.Writer.TryWrite(this)) throw new InvalidOperationException("Unconsumed benchmark deadline.");
+
+                    if (!clock._armed.Writer.TryWrite(this))
+                    {
+                        throw new InvalidOperationException("Unconsumed benchmark deadline.");
+                    }
                 }
+
                 return true;
             }
-            internal void Fire() => callback(state);
-            public void Dispose() { }
-            public ValueTask DisposeAsync() => default;
+
+            internal void Fire()
+            {
+                callback(state);
+            }
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return default;
+            }
         }
     }
 }

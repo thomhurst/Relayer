@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Relayer.HealthChecks;
+using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
 
@@ -20,11 +20,13 @@ public static class RabbitMqHealthServiceCollectionExtensions
             new RabbitMqHealthProvider((RabbitMqNativeTransport)provider.GetServices<Relayer.Transports.ITransport>().Single(transport => transport.Name == name)));
         services.TryAddKeyedSingleton<IConsumerHealthProvider>(name, (provider, _) =>
             new RabbitMqHealthProvider((RabbitMqNativeTransport)provider.GetServices<Relayer.Transports.ITransport>().Single(transport => transport.Name == name)));
+
         if (!services.Any(descriptor => descriptor.ServiceType == typeof(HealthRegistration) && Equals(descriptor.ServiceKey, name)))
         {
             services.AddKeyedSingleton(name, new HealthRegistration());
             services.AddSingleton<IHostedService>(provider => new RabbitMqHealthStartup(provider, name));
         }
+
         return services;
     }
 
@@ -39,11 +41,31 @@ public static class RabbitMqHealthServiceCollectionExtensions
             transport.HealthTracking = true;
             return Task.CompletedTask;
         }
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StartedAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StoppingAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StoppedAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class RabbitMqHealthProvider(RabbitMqNativeTransport transport) : ITransportHealthProbe, IConsumerHealthProvider
@@ -59,12 +81,18 @@ public static class RabbitMqHealthServiceCollectionExtensions
         public ValueTask<ConsumerHealthState?> GetStateAsync(IConsumerDefinition consumer, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
             foreach (var receiver in transport.Consumers)
             {
-                if (!ReferenceEquals(receiver.Declaration, consumer)) continue;
+                if (!ReferenceEquals(receiver.Declaration, consumer))
+                {
+                    continue;
+                }
+
                 var state = receiver.GetHealthState();
                 return ValueTask.FromResult<ConsumerHealthState?>(state is { } value ? new(value.IsIdle, value.LastProgressAt) : null);
             }
+
             return ValueTask.FromResult<ConsumerHealthState?>(null);
         }
     }

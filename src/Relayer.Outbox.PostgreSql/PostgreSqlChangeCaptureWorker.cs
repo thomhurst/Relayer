@@ -39,17 +39,25 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
         // Provisioning belongs to the application, never to the privileged replication worker.
         await using var slot = _source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = @slot AND plugin = 'pgoutput' AND slot_type = 'logical' AND database = current_database() AND NOT temporary)");
         slot.Parameters.AddWithValue("slot", _options.Slot.Name);
+
         if (await slot.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true)
+        {
             throw new InvalidOperationException("Outbox CDC requires an existing persistent pgoutput slot in the writer's database.");
+        }
+
         foreach (var publication in _options.Replication.PublicationNames)
         {
             await using var command = _source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_publication p JOIN pg_publication_tables t ON t.pubname = p.pubname WHERE p.pubname = @publication AND p.pubinsert AND NOT p.pubupdate AND NOT p.pubdelete AND NOT p.pubtruncate AND t.schemaname = @schema AND t.tablename = @table AND t.rowfilter IS NULL)");
             command.Parameters.AddWithValue("publication", publication);
             command.Parameters.AddWithValue("schema", _schema);
             command.Parameters.AddWithValue("table", _table);
+
             if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true)
+            {
                 throw new InvalidOperationException($"Outbox CDC publication '{publication}' must include the outbox table without a row filter and publish INSERT only.");
+            }
         }
+
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -66,13 +74,25 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
                     // The slot already retains commits made during this bounded startup traversal.
                     await _recovery.DispatchCommittedAsync(stoppingToken).ConfigureAwait(false);
                     var changed = false;
+
                     await foreach (var message in connection.StartReplication(_options.Slot, _options.Replication, stoppingToken).ConfigureAwait(false))
                     {
                         if (message is InsertMessage insert && insert.Relation.Namespace == _schema &&
                             insert.Relation.RelationName == _table)
+                        {
                             changed = true;
-                        if (message is not CommitMessage commit) continue;
-                        if (changed) await _recovery.DispatchCommittedAsync(stoppingToken).ConfigureAwait(false);
+                        }
+
+                        if (message is not CommitMessage commit)
+                        {
+                            continue;
+                        }
+
+                        if (changed)
+                        {
+                            await _recovery.DispatchCommittedAsync(stoppingToken).ConfigureAwait(false);
+                        }
+
                         changed = false;
                         // Failed sends remain durable in the table for maintenance. Never acknowledge
                         // a database failure or cancellation before the dispatch transaction commits.
@@ -86,7 +106,9 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
                 }
             }
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
     }
 
     public override void Dispose()

@@ -16,7 +16,10 @@ public class BuilderTests
         Action<RouteBuilder<OrderPlaced>> configureRequest = route =>
         {
             route.OrderingKey(static message => message.OrderId);
-            route.SendOptions = new() { Source = "/requests" };
+            route.SendOptions = new()
+            {
+                Source = "/requests"
+            };
         };
         services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, ConsumerOptions>("requests", broker =>
             broker.Request<OrderPlaced, OrderCancelled>("orders", "replies",
@@ -45,10 +48,21 @@ public class BuilderTests
         services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", broker =>
         {
             broker.Send<OrderPlaced>("before");
-            broker.SendDefaults = new() { Source = "/defaults", HeaderNames = new("cloudEvents:") };
+            broker.SendDefaults = new()
+            {
+                Source = "/defaults",
+                HeaderNames = new("cloudEvents:")
+            };
             broker.Send<OrderCancelled>("after", route =>
             {
-                if (replace) route.SendOptions = new() { Source = "/override", HeaderNames = new("custom:") };
+                if (replace)
+                {
+                    route.SendOptions = new()
+                    {
+                        Source = "/override",
+                        HeaderNames = new("custom:")
+                    };
+                }
             });
         }));
         await using var provider = services.BuildServiceProvider();
@@ -148,13 +162,24 @@ public class BuilderTests
         });
         await using var provider = services.BuildServiceProvider();
         OptionsValidationException? failure = null;
-        try { await Start(provider); }
-        catch (OptionsValidationException error) { failure = error; }
+
+        try
+        {
+            await Start(provider);
+        }
+        catch (OptionsValidationException error)
+        {
+            failure = error;
+        }
+
         await Assert.That(failure).IsNotNull();
         var errors = failure!.Message;
+
         foreach (var expected in new[] { "TopologyMode", "server required", "credentials required", "destination",
                      "stable message identity", "source", "handler", "concurrency", "batch size", "batch wait", "more than once", "only one route" })
+        {
             await Assert.That(errors).Contains(expected);
+        }
     }
 
     [Test]
@@ -164,7 +189,9 @@ public class BuilderTests
         services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", b =>
         {
             services.AddSingleton<IHostedService, TransportService>();
-            b.Consume("orders", _ => { });
+            b.Consume("orders", _ =>
+            {
+            });
         }));
         await using var provider = services.BuildServiceProvider();
         await Assert.That(provider.GetServices<IHostedService>().First()).IsTypeOf<TopologyStartupService>();
@@ -213,7 +240,9 @@ public class BuilderTests
                 b.Consume("orders", c => consumer = c);
             });
         });
-        await Assert.That(() => root!.AddTransport<BrokerOptions, ConsumerOptions>("late", _ => { }))
+        await Assert.That(() => root!.AddTransport<BrokerOptions, ConsumerOptions>("late", _ =>
+            {
+            }))
             .Throws<InvalidOperationException>();
         await Assert.That(() => transport!.Send<OrderCancelled>("late")).Throws<InvalidOperationException>();
         await Assert.That(() => transport!.SendDefaults = new()).Throws<InvalidOperationException>();
@@ -241,8 +270,16 @@ public class BuilderTests
         });
         await using var provider = services.BuildServiceProvider();
         OptionsValidationException? failure = null;
-        try { await Start(provider); }
-        catch (OptionsValidationException error) { failure = error; }
+
+        try
+        {
+            await Start(provider);
+        }
+        catch (OptionsValidationException error)
+        {
+            failure = error;
+        }
+
         await Assert.That(failure).IsNotNull();
         await Assert.That(failure!.Message).Contains("numeric");
         await Assert.That(failure.Message).Contains("other failure");
@@ -268,23 +305,68 @@ public class BuilderTests
     private static async Task Start(IServiceProvider provider)
     {
         foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+        {
             await service.StartingAsync(CancellationToken.None);
+        }
+
         foreach (var service in provider.GetServices<IHostedService>())
+        {
             await service.StartAsync(CancellationToken.None);
+        }
     }
 
-    public sealed class BrokerOptions { public string Server { get; set; } = ""; }
-    public sealed class OtherBrokerOptions { }
-    public sealed class NumericOptions { public int Count { get; set; } }
-    public sealed class ConsumerOptions { public string Group { get; set; } = ""; }
+    public sealed class BrokerOptions
+    {
+        public string Server
+        {
+            get; set;
+        } = "";
+    }
+
+    public sealed class OtherBrokerOptions
+    {
+    }
+
+    public sealed class NumericOptions
+    {
+        public int Count
+        {
+            get; set;
+        }
+    }
+
+    public sealed class ConsumerOptions
+    {
+        public string Group
+        {
+            get; set;
+        } = "";
+    }
+
     public sealed class OrderHandler : IHandler<OrderPlaced>
     {
-        public ValueTask HandleAsync(OrderPlaced message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask HandleAsync(OrderPlaced message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
     }
+
     private sealed class TransportService : IHostedService
     {
-        public bool Started { get; private set; }
-        public Task StartAsync(CancellationToken cancellationToken) { Started = true; return Task.CompletedTask; }
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public bool Started
+        {
+            get; private set;
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            Started = true;
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
     }
 }

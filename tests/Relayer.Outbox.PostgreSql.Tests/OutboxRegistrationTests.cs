@@ -32,6 +32,7 @@ public class OutboxRegistrationTests
         await using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var builder = new DbContextOptionsBuilder();
+
         if (providerFirst)
         {
             ((IDbContextOptionsBuilderInfrastructure)builder).AddOrUpdateExtension(new UnsupportedProvider());
@@ -42,7 +43,11 @@ public class OutboxRegistrationTests
         {
             builder.AddRelayerOutbox(scope.ServiceProvider);
             ((IDbContextOptionsBuilderInfrastructure)builder).AddOrUpdateExtension(new UnsupportedProvider());
-            await Assert.That(() => { using var db = new DbContext(builder.Options); _ = db.Model; })
+            await Assert.That(() =>
+                {
+                    using var db = new DbContext(builder.Options);
+                    _ = db.Model;
+                })
                 .Throws<InvalidOperationException>()
                 .WithMessageContaining("Configure UseNpgsql");
         }
@@ -52,15 +57,34 @@ public class OutboxRegistrationTests
     private sealed class UnsupportedProvider : IDbContextOptionsExtension
     {
         public DbContextOptionsExtensionInfo Info => new ProviderInfo(this);
-        public void ApplyServices(IServiceCollection services) { }
-        public void Validate(IDbContextOptions options) { }
+
+        public void ApplyServices(IServiceCollection services)
+        {
+        }
+
+        public void Validate(IDbContextOptions options)
+        {
+        }
+
         private sealed class ProviderInfo(IDbContextOptionsExtension extension) : DbContextOptionsExtensionInfo(extension)
         {
             public override bool IsDatabaseProvider => true;
+
             public override string LogFragment => "unsupported";
-            public override int GetServiceProviderHashCode() => 0;
-            public override void PopulateDebugInfo(IDictionary<string, string> debugInfo) { }
-            public override bool ShouldUseSameServiceProvider(DbContextOptionsExtensionInfo other) => other is ProviderInfo;
+
+            public override int GetServiceProviderHashCode()
+            {
+                return 0;
+            }
+
+            public override void PopulateDebugInfo(IDictionary<string, string> debugInfo)
+            {
+            }
+
+            public override bool ShouldUseSameServiceProvider(DbContextOptionsExtensionInfo other)
+            {
+                return other is ProviderInfo;
+            }
         }
     }
 
@@ -72,12 +96,33 @@ public class OutboxRegistrationTests
         await using var source = NpgsqlDataSource.Create("Host=unused");
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton<ITransport>(new FailingTransport());
-        void Native() => services.AddDbContext<OrdersContext>(options => options.UseNpgsql(source,
-            postgres => postgres.CommandTimeout(73)));
-        if (configureNativeFirst) Native();
+
+        void Native()
+        {
+            services.AddDbContext<OrdersContext>(options => options.UseNpgsql(source,
+                        postgres => postgres.CommandTimeout(73)));
+        }
+
+        if (configureNativeFirst)
+        {
+            Native();
+        }
+
         services.AddRelayer(relayer => relayer.UsePostgreSqlOutbox<OrdersContext>(source,
-            new() { DispatchStoreName = "orders", Schema = "messaging", TablePrefix = "orders_", Lanes = 16, MaxDispatchAttempts = 4 }));
-        if (!configureNativeFirst) Native();
+            new()
+            {
+                DispatchStoreName = "orders",
+                Schema = "messaging",
+                TablePrefix = "orders_",
+                Lanes = 16,
+                MaxDispatchAttempts = 4
+            }));
+
+        if (!configureNativeFirst)
+        {
+            Native();
+        }
+
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         await ValidateRecovery(provider);
         var ordered = provider.GetRequiredService<IOptionsMonitor<PostgreSqlOrderedDispatchOptions>>().Get("orders");
@@ -99,7 +144,12 @@ public class OutboxRegistrationTests
         var outbox = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
         await Assert.That(outbox.SupportsScheduling).IsTrue();
         await Assert.That(outbox.SupportsOrderedScheduling).IsTrue();
-        using (db.EnlistRelayerOutbox()) await Assert.That(outbox.IsActive).IsTrue();
+
+        using (db.EnlistRelayerOutbox())
+        {
+            await Assert.That(outbox.IsActive).IsTrue();
+        }
+
         await Assert.That(outbox.IsActive).IsFalse();
         using var other = provider.CreateScope();
         await Assert.That(other.ServiceProvider.GetRequiredService<IOutboxEnlistment>()).IsNotSameReferenceAs(outbox);
@@ -113,7 +163,12 @@ public class OutboxRegistrationTests
         services.AddSingleton<ITransport>(new FailingTransport());
         services.AddDbContext<OrdersContext>(options => options.UseNpgsql(source));
         services.AddRelayer(relayer => relayer.UsePostgreSqlOutbox<OrdersContext>(source,
-            new() { DispatchStoreName = "orders", Schema = "messaging", TablePrefix = "orders_" }));
+            new()
+            {
+                DispatchStoreName = "orders",
+                Schema = "messaging",
+                TablePrefix = "orders_"
+            }));
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         var store = provider.GetRequiredKeyedService<PostgreSqlOutboxStoreDescriptor>("orders");
         await Assert.That(store.Name).IsEqualTo("orders");
@@ -147,8 +202,16 @@ public class OutboxRegistrationTests
         await Assert.That(workers.OfType<PostgreSqlMaintenanceWorker>().Count()).IsEqualTo(1);
         using var scope = provider.CreateScope();
         var outbox = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
-        using (scope.ServiceProvider.GetRequiredService<OrdersContext>().EnlistRelayerOutbox()) await Assert.That(outbox.IsActive).IsTrue();
-        using (scope.ServiceProvider.GetRequiredService<BillingContext>().EnlistRelayerOutbox()) await Assert.That(outbox.IsActive).IsTrue();
+
+        using (scope.ServiceProvider.GetRequiredService<OrdersContext>().EnlistRelayerOutbox())
+        {
+            await Assert.That(outbox.IsActive).IsTrue();
+        }
+
+        using (scope.ServiceProvider.GetRequiredService<BillingContext>().EnlistRelayerOutbox())
+        {
+            await Assert.That(outbox.IsActive).IsTrue();
+        }
     }
 
     [Test]
@@ -183,9 +246,17 @@ public class OutboxRegistrationTests
         var direct = new PostgreSqlDirectDispatchOptions { QueueCapacity = 64, BatchSize = 5 };
         services.AddRelayer(relayer =>
         {
-            relayer.UsePostgreSqlOutbox<OrdersContext>(source, new() { Schema = "messaging", MaxDispatchAttempts = 4 },
+            relayer.UsePostgreSqlOutbox<OrdersContext>(source, new()
+            {
+                Schema = "messaging",
+                MaxDispatchAttempts = 4
+            },
                 direct, ordered, maintenance);
-            relayer.UsePostgreSqlOutbox<BillingContext>(source, new() { Schema = "messaging", MaxDispatchAttempts = 4 },
+            relayer.UsePostgreSqlOutbox<BillingContext>(source, new()
+            {
+                Schema = "messaging",
+                MaxDispatchAttempts = 4
+            },
                 direct, ordered, maintenance);
         });
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -237,7 +308,10 @@ public class OutboxRegistrationTests
         var services = new ServiceCollection();
         await Assert.That(() => services.AddRelayer(relayer =>
         {
-            relayer.UsePostgreSqlOutbox<OrdersContext>(source, maintenance: new() { RecoveryDelay = TimeSpan.FromSeconds(1) });
+            relayer.UsePostgreSqlOutbox<OrdersContext>(source, maintenance: new()
+            {
+                RecoveryDelay = TimeSpan.FromSeconds(1)
+            });
             relayer.UsePostgreSqlOutbox<BillingContext>(source);
         })).Throws<InvalidOperationException>().WithMessageContaining("already composed with a different NpgsqlDataSource or options");
     }
@@ -254,12 +328,17 @@ public class OutboxRegistrationTests
         var builder = Host.CreateApplicationBuilder();
         builder.Services.Configure<HostOptions>(options => options.ServicesStartConcurrently = true);
         builder.Services.AddRelayerPostgreSqlDirectDispatch("orders", source);
-        if (mismatch != "missing") builder.Services.AddRelayerPostgreSqlMaintenance("recovery",
+
+        if (mismatch != "missing")
+        {
+            builder.Services.AddRelayerPostgreSqlMaintenance("recovery",
             mismatch == "source" ? other : source, new PostgreSqlMaintenanceOptions
             {
                 Schema = mismatch == "schema" ? "other" : null,
                 TablePrefix = mismatch == "prefix" ? "other_" : "relayer_"
             });
+        }
+
         using var host = builder.Build();
         await Assert.That(async () => await host.StartAsync()).Throws<OptionsValidationException>()
             .WithMessageContaining("requires recovery");
@@ -299,10 +378,12 @@ public class OutboxRegistrationTests
         await ValidateRecovery(provider);
         var direct = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("default");
         await direct.StartAsync(default);
+
         try
         {
             using var scope = provider.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+
             using (db.EnlistRelayerOutbox())
             {
                 await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(42));
@@ -312,11 +393,17 @@ public class OutboxRegistrationTests
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await direct.StopAsync(timeout.Token);
             await Assert.That(transport.Attempts).IsEqualTo(1);
+
             await using (var query = source.CreateCommand("SELECT attempts FROM relayer_outbox"))
+            {
                 await Assert.That((int)(await query.ExecuteScalarAsync())!).IsEqualTo(1);
+            }
             // Advance persisted age and retry eligibility without waiting for wall-clock delays.
             await using (var age = source.CreateCommand("UPDATE relayer_outbox SET created_at = clock_timestamp() - interval '1 minute', deliver_at = clock_timestamp() - interval '1 second'"))
+            {
                 await age.ExecuteNonQueryAsync();
+            }
+
             var recovery = provider.GetRequiredKeyedService<PostgreSqlMaintenanceWorker>("default");
             await Assert.That(await recovery.SweepAsync(default)).IsEqualTo(1);
             await Assert.That(transport.Attempts).IsEqualTo(2);
@@ -334,40 +421,89 @@ public class OutboxRegistrationTests
     private static async Task ValidateRecovery(IServiceProvider provider)
     {
         foreach (var validator in provider.GetServices<IHostedService>().OfType<PostgreSqlRecoveryStartupValidator>())
+        {
             await validator.StartingAsync(default);
+        }
     }
 
     public sealed class OrdersContext(DbContextOptions<OrdersContext> options) : DbContext(options);
+
     public sealed class BillingContext(DbContextOptions<BillingContext> options) : DbContext(options);
+
     [Message("registration.probe")]
     public sealed record Probe(byte Value);
+
     public sealed class Empty;
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
         {
             destination.GetSpan(1)[0] = ((Probe)(object)message!).Value;
             destination.Advance(1);
         }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class FailingTransport : ITransport
     {
         public string Name => "events";
-        public int Attempts { get; private set; }
-        public byte LastValue { get; private set; }
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
+
+        public int Attempts
+        {
+            get; private set;
+        }
+
+        public byte LastValue
+        {
+            get; private set;
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (++Attempts == 1) throw new InvalidOperationException("Broker unavailable on first send.");
+            if (++Attempts == 1)
+            {
+                throw new InvalidOperationException("Broker unavailable on first send.");
+            }
+
             LastValue = message.Body.Span[0];
             return default;
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

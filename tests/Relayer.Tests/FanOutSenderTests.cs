@@ -83,31 +83,76 @@ public class FanOutSenderTests
 
     private sealed class CountingTransport(string name) : ITransport
     {
-        public int Count { get; private set; }
+        public int Count
+        {
+            get; private set;
+        }
+
         public string Name => name;
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true
+            };
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Count++;
             return ValueTask.CompletedTask;
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed record Row(Guid Id, string Transport, string Destination, string? OrderingKey, Dictionary<string, string> Headers);
 
     private sealed class RecordingOutbox : IOutboxEnlistment
     {
-        public bool IsActive { get; init; }
-        public List<Row> Rows { get; } = [];
+        public bool IsActive
+        {
+            get; init;
+        }
+
+        public List<Row> Rows
+        {
+            get;
+        } = [];
+
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
             var headers = new Dictionary<string, string>();
-            foreach (var header in record.Message.Headers.Span) headers.Add(header.Key, header.Value.ToString());
+
+            foreach (var header in record.Message.Headers.Span)
+            {
+                headers.Add(header.Key, header.Value.ToString());
+            }
+
             Rows.Add(new(record.Id, record.TransportName, record.Message.Destination, record.Message.OrderingKey?.ToString(), headers));
             return ValueTask.CompletedTask;
         }

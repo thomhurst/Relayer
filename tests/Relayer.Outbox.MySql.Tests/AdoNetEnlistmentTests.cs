@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Data;
 using System.Data.Common;
 using Dapper;
@@ -7,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql.Tests;
 
@@ -30,8 +30,22 @@ public class AdoNetEnlistmentTests
         await using var connection = await database.Source.OpenConnectionAsync();
         await using DbTransaction transaction = await outbox.BeginTransactionAsync(connection, IsolationLevel.ReadCommitted);
         await Assert.That(transaction.IsolationLevel).IsEqualTo(IsolationLevel.ReadCommitted);
-        if (synchronous) transaction.Connection!.Execute("INSERT INTO business VALUES (@id)", new { id = 1 }, transaction);
-        else await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (@id)", new { id = 1 }, transaction);
+
+        if (synchronous)
+        {
+            transaction.Connection!.Execute("INSERT INTO business VALUES (@id)", new
+            {
+                id = 1
+            }, transaction);
+        }
+        else
+        {
+            await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (@id)", new
+            {
+                id = 1
+            }, transaction);
+        }
+
         var body = new byte[] { 1, 255 };
         var header = new byte[] { 255, 0, 254 };
         var key = "customer-é"u8.ToArray();
@@ -43,10 +57,24 @@ public class AdoNetEnlistmentTests
         body[0] = 99;
         header[0] = 99;
         key[0] = 99;
-        for (var i = 0; i < 128; i++) await enlistment.EnlistAsync(Record(), default);
+
+        for (var i = 0; i < 128; i++)
+        {
+            await enlistment.EnlistAsync(Record(), default);
+        }
+
         await Assert.That(await Scalar(database, "SELECT count(*) FROM relayer_outbox")).IsEqualTo(0L);
         await Assert.That(await Scalar(database, "SELECT count(*) FROM business")).IsEqualTo(0L);
-        if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+
+        if (synchronous)
+        {
+            transaction.Commit();
+        }
+        else
+        {
+            await transaction.CommitAsync();
+        }
+
         await Assert.That(enlistment.IsActive).IsFalse();
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
         await Assert.That(await Scalar(database, "SELECT count(*) FROM relayer_outbox")).IsEqualTo(129L);
@@ -54,7 +82,10 @@ public class AdoNetEnlistmentTests
         using var store = new MySqlOutboxStore(database.Source);
         var buffer = new OutboxRecord[1];
         var owned = new BufferedOutboxMessage();
-        owned.Copy(record with { Message = new OutgoingMessage("orders", new byte[] { 1, 255 }, orderingKey: new WireString("customer-é")) }, 8);
+        owned.Copy(record with
+        {
+            Message = new OutgoingMessage("orders", new byte[] { 1, 255 }, orderingKey: new WireString("customer-é"))
+        }, 8);
         await Assert.That(await store.ReadPendingAsync(new(owned.Lane, created.AddDays(2)), buffer, default)).IsEqualTo(1);
         var actual = buffer[0];
         await Assert.That(actual.Id).IsEqualTo(record.Id);
@@ -78,29 +109,56 @@ public class AdoNetEnlistmentTests
         await using var provider = Services();
         await using var scope = provider.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
+
         for (var mode = 0; mode < 3; mode++)
         {
             var transaction = await outbox.BeginTransactionAsync(database.Source);
             await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (1)", transaction: transaction);
             var row = Record();
             await outbox.EnlistAsync(row, default);
+
             if (mode == 0)
             {
-                if (synchronous) transaction.Rollback(); else await transaction.RollbackAsync();
+                if (synchronous)
+                {
+                    transaction.Rollback();
+                }
+                else
+                {
+                    await transaction.RollbackAsync();
+                }
             }
+
             if (mode == 2)
             {
                 // The first insert succeeds, then the second fails. Native disposal must roll back both.
                 await outbox.EnlistAsync(row, default);
-                if (synchronous) await Assert.That(() => transaction.Commit()).Throws<MySqlException>();
-                else await Assert.That(async () => await transaction.CommitAsync()).Throws<MySqlException>();
+
+                if (synchronous)
+                {
+                    await Assert.That(() => transaction.Commit()).Throws<MySqlException>();
+                }
+                else
+                {
+                    await Assert.That(async () => await transaction.CommitAsync()).Throws<MySqlException>();
+                }
             }
-            if (synchronous) transaction.Dispose(); else await transaction.DisposeAsync();
+
+            if (synchronous)
+            {
+                transaction.Dispose();
+            }
+            else
+            {
+                await transaction.DisposeAsync();
+            }
+
             await Assert.That(outbox.IsActive).IsFalse();
             await Assert.That(transaction.Connection).IsNull();
             await Assert.That(await Scalar(database, "SELECT count(*) FROM relayer_outbox")).IsEqualTo(0L);
             await Assert.That(await Scalar(database, "SELECT count(*) FROM business")).IsEqualTo(0L);
         }
+
         await using var next = await outbox.BeginTransactionAsync(database.Source);
         await outbox.EnlistAsync(Record(), default);
         await next.CommitAsync();
@@ -120,6 +178,7 @@ public class AdoNetEnlistmentTests
         canceled.Cancel();
         await Assert.That(async () => await outbox.BeginTransactionAsync(database.Source, cancellationToken: canceled.Token)).Throws<OperationCanceledException>();
         await using var connection = await database.Source.OpenConnectionAsync();
+
         await using (var transaction = await outbox.BeginTransactionAsync(connection))
         {
             await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (1)", transaction: transaction);
@@ -127,6 +186,7 @@ public class AdoNetEnlistmentTests
             await outbox.EnlistAsync(Record(), default);
             await Assert.That(async () => await transaction.CommitAsync(canceled.Token)).Throws<OperationCanceledException>();
         }
+
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
         await Assert.That(await Scalar(database, "SELECT count(*) FROM business")).IsEqualTo(0L);
         await Assert.That(await Scalar(database, "SELECT count(*) FROM relayer_outbox")).IsEqualTo(0L);
@@ -142,11 +202,15 @@ public class AdoNetEnlistmentTests
         await using var provider = Services();
         await using var scope = provider.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
+
         foreach (var size in new[] { 4096, 0, 7, 16, 2 })
         {
             var bytes = new byte[size];
             Array.Fill(bytes, (byte)size);
-            var record = Record() with { Message = new OutgoingMessage("orders", bytes) };
+            var record = Record() with
+            {
+                Message = new OutgoingMessage("orders", bytes)
+            };
             await using var transaction = await outbox.BeginTransactionAsync(database.Source);
             await outbox.EnlistAsync(record, default);
             await transaction.CommitAsync();
@@ -165,6 +229,7 @@ public class AdoNetEnlistmentTests
         var blocked = Record();
         await using var blocker = await database.Source.OpenConnectionAsync();
         await using var hold = await blocker.BeginTransactionAsync();
+
         await using (var insert = new MySqlCommand("""
             INSERT INTO relayer_outbox (id, transport, destination, message_type, body, headers, created_at)
             VALUES (@id, 'events', 'orders', 'order;v=1', X'01', X'0100000000000000', UTC_TIMESTAMP(6))
@@ -173,6 +238,7 @@ public class AdoNetEnlistmentTests
             insert.Parameters.AddWithValue("id", blocked.Id.ToByteArray(bigEndian: true));
             await insert.ExecuteNonQueryAsync();
         }
+
         await using var provider = Services();
         await using var scope = provider.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
@@ -183,18 +249,23 @@ public class AdoNetEnlistmentTests
         await outbox.EnlistAsync(blocked, default);
         using var cancellation = new CancellationTokenSource();
         var commit = transaction.CommitAsync(cancellation.Token);
+
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             await using var observer = database.Source.CreateCommand("SELECT count(*) FROM performance_schema.data_lock_waits w JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID WHERE l.OBJECT_SCHEMA = DATABASE()");
+
             while (Convert.ToInt64(await observer.ExecuteScalarAsync(timeout.Token)) == 0)
+            {
                 await Task.Delay(10, timeout.Token);
+            }
         }
         finally
         {
             cancellation.Cancel();
             await Assert.That(async () => await commit).Throws<OperationCanceledException>();
         }
+
         await hold.RollbackAsync();
         await Assert.That(outbox.IsActive).IsFalse();
         await Assert.That(await Scalar(database, "SELECT count(*) FROM business")).IsEqualTo(0L);
@@ -247,7 +318,16 @@ public class AdoNetEnlistmentTests
         var transaction = await outbox.BeginTransactionAsync(connection);
         await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (1)", transaction: transaction);
         await outbox.EnlistAsync(Record(), default);
-        if (synchronous) scope.Dispose(); else await scope.DisposeAsync();
+
+        if (synchronous)
+        {
+            scope.Dispose();
+        }
+        else
+        {
+            await scope.DisposeAsync();
+        }
+
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
         await Assert.That(transaction.Connection).IsNull();
         await Assert.That(await Scalar(database, "SELECT count(*) FROM business")).IsEqualTo(0L);
@@ -270,7 +350,10 @@ public class AdoNetEnlistmentTests
     public async Task Configuration_binds_immutable_options_and_scopes_share_only_their_own_enlistment()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-            { ["Lanes"] = "8", ["TablePrefix"] = "custom_" }).Build();
+        {
+            ["Lanes"] = "8",
+            ["TablePrefix"] = "custom_"
+        }).Build();
         var services = new ServiceCollection();
         services.AddRelayerMySqlOutbox(configuration);
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -309,8 +392,11 @@ public class AdoNetEnlistmentTests
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
-    private static OutboxRecord Record() => new(Guid.CreateVersion7(), "events", "order;v=1",
-        new OutgoingMessage("orders", new byte[] { 1 }), DateTimeOffset.UtcNow);
+    private static OutboxRecord Record()
+    {
+        return new(Guid.CreateVersion7(), "events", "order;v=1",
+                new OutgoingMessage("orders", new byte[] { 1 }), DateTimeOffset.UtcNow);
+    }
 
     private static async Task<long> Scalar(MySqlFixture database, string sql)
     {

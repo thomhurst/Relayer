@@ -1,8 +1,8 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
@@ -54,6 +54,7 @@ public static class EntityFrameworkCoreConsumerExtensions
                 requireOutbox: requireOutbox);
             return new RetryingEntityFrameworkCoreConsumer<TContext>(scoped, consumer, conflictRetries: isolationLevel is not null);
         }
+
         var context = services.GetRequiredService<TContext>();
         var settings = OutboxConfiguration.ValidateConsumer(context, inbox, new PostgreSqlOutboxConfiguration(options ?? new()), options is not null, requireOutbox);
         var boundary = new EntityFrameworkCoreConsumer<TContext>(consumer, settings.Inbox, settings.Outbox,

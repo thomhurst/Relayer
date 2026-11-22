@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
+using Relayer.Transports;
 
 namespace Relayer.Pipeline;
 
@@ -24,7 +24,9 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
 
     /// <summary>Adapts a consumer with its transport's CloudEvents header binding.</summary>
     public ReceivePipeline(ConsumePipeline consumer, HeaderNames names, int contextPoolCapacity = 64)
-        : this(consumer, names, contextPoolCapacity, false) { }
+        : this(consumer, names, contextPoolCapacity, false)
+    {
+    }
 
     internal ReceivePipeline(ConsumePipeline consumer, HeaderNames names, int contextPoolCapacity, bool preserveSettledFailures)
     {
@@ -35,19 +37,32 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         _consumer = consumer;
         _names = names;
         _states = new(contextPoolCapacity, contextPoolCapacity);
-        for (var i = 0; i < contextPoolCapacity; i++) _states.TryReturn(new State(consumer, names, preserveSettledFailures, i), i);
+
+        for (var i = 0; i < contextPoolCapacity; i++)
+        {
+            _states.TryReturn(new State(consumer, names, preserveSettledFailures, i), i);
+        }
+
         if (consumer.BatchExecution is { } batch)
         {
             var capacity = Math.Max(1, contextPoolCapacity / batch.Size);
             _batches = new(capacity, capacity);
-            for (var i = 0; i < capacity; i++) _batches.TryReturn(new BatchState(batch.Size), i);
+
+            for (var i = 0; i < capacity; i++)
+            {
+                _batches.TryReturn(new BatchState(batch.Size), i);
+            }
         }
     }
 
     /// <summary>Processes one delivery and releases all native references before returning its disposition.</summary>
     public ValueTask<Disposition> ProcessAsync(TIncoming message, CancellationToken cancellationToken = default)
     {
-        if (cancellationToken.IsCancellationRequested) return ValueTask.FromCanceled<Disposition>(cancellationToken);
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return ValueTask.FromCanceled<Disposition>(cancellationToken);
+        }
+
         return Rent().Start(this, message, cancellationToken);
     }
 
@@ -58,7 +73,11 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
     /// </remarks>
     public ValueTask ProcessSettledAsync(TIncoming message, CancellationToken cancellationToken = default)
     {
-        if (cancellationToken.IsCancellationRequested) return ValueTask.FromCanceled(cancellationToken);
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return ValueTask.FromCanceled(cancellationToken);
+        }
+
         return Rent().StartSettled(this, message, cancellationToken);
     }
 
@@ -75,13 +94,18 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         CancellationToken cancellationToken = default)
     {
         if (dispositions.Length < messages.Length)
+        {
             throw new ArgumentException("Provide at least one disposition slot per incoming message.", nameof(dispositions));
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
+
         if (_consumer.IsBatch)
         {
             await ProcessHandlerBatchAsync(messages, dispositions, cancellationToken).ConfigureAwait(false);
             return;
         }
+
         for (var i = 0; i < messages.Length; i++)
         {
             var disposition = await ProcessAsync(messages.Span[i], cancellationToken).ConfigureAwait(false);
@@ -95,10 +119,20 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         CancellationToken cancellationToken)
     {
         var maximum = _consumer.BatchExecution!.Size;
-        if (messages.Length > maximum) throw new ArgumentOutOfRangeException(nameof(messages), "Batch exceeds the configured maximum size.");
-        if (messages.IsEmpty) return;
+
+        if (messages.Length > maximum)
+        {
+            throw new ArgumentOutOfRangeException(nameof(messages), "Batch exceeds the configured maximum size.");
+        }
+
+        if (messages.IsEmpty)
+        {
+            return;
+        }
+
         var batch = _batches!.TryRent() ?? new BatchState(maximum);
         var count = 0;
+
         try
         {
             for (; count < messages.Length; count++)
@@ -110,7 +144,9 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
                 batch.Contexts[count] = context;
                 context.Features.Set(state.Native);
             }
+
             await _consumer.ProcessBatchAsync(batch.Contexts.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+
             for (var i = 0; i < count; i++)
             {
                 var native = batch.States[i]!.Native.Disposition;
@@ -125,11 +161,17 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
             {
                 batch.Contexts[i]?.Dispose();
                 batch.Contexts[i] = null!;
-                if (batch.States[i] is not { } state) continue;
+
+                if (batch.States[i] is not { } state)
+                {
+                    continue;
+                }
+
                 state.Clear();
                 Return(state);
                 batch.States[i] = null;
             }
+
             _batches.TryReturn(batch);
         }
     }
@@ -141,19 +183,27 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
     }
 
     private State Rent()
-        => (_consumer.IsBatch ? _states.TryRent(ref _batchCursor) : _states.TryRent())
-            ?? new State(_consumer, _names, _preserveSettledFailures);
+    {
+        return (_consumer.IsBatch ? _states.TryRent(ref _batchCursor) : _states.TryRent())
+                    ?? new State(_consumer, _names, _preserveSettledFailures);
+    }
 
     private void Return(State state)
     {
-        if (_consumer.IsBatch) _states.TryReturn(state, state.PoolSlot);
-        else _states.TryReturn(state);
+        if (_consumer.IsBatch)
+        {
+            _states.TryReturn(state, state.PoolSlot);
+        }
+        else
+        {
+            _states.TryReturn(state);
+        }
     }
 
     private sealed class State : ReceiveMessageState, IValueTaskSource<Disposition>, IValueTaskSource
     {
-        private readonly ConsumePipeline consumer;
-        private readonly HeaderNames names;
+        private readonly ConsumePipeline _consumer;
+        private readonly HeaderNames _names;
         private readonly Action _continuation;
         private ReceivePipeline<TIncoming, TBinding> _owner = null!;
         private DefaultMessageContext? _context;
@@ -168,8 +218,8 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         internal State(ConsumePipeline consumer, HeaderNames names, bool preserveSettledFailures, int poolSlot = -1)
         {
             _preserveSettledFailures = preserveSettledFailures;
-            this.consumer = consumer;
-            this.names = names;
+            this._consumer = consumer;
+            this._names = names;
             PoolSlot = poolSlot;
             _continuation = Complete;
         }
@@ -177,7 +227,12 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         internal ValueTask<Disposition> Start(ReceivePipeline<TIncoming, TBinding> owner, TIncoming message, CancellationToken cancellationToken)
         {
             Run(owner, message, cancellationToken);
-            if (_asynchronous) return new ValueTask<Disposition>(this, _completion.Version);
+
+            if (_asynchronous)
+            {
+                return new ValueTask<Disposition>(this, _completion.Version);
+            }
+
             var result = _result;
             var failure = Release(owner);
             return failure is null ? new ValueTask<Disposition>(result) : ValueTask.FromException<Disposition>(failure);
@@ -186,7 +241,12 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         internal ValueTask StartSettled(ReceivePipeline<TIncoming, TBinding> owner, TIncoming message, CancellationToken cancellationToken)
         {
             Run(owner, message, cancellationToken);
-            if (_asynchronous) return new ValueTask(this, _completion.Version);
+
+            if (_asynchronous)
+            {
+                return new ValueTask(this, _completion.Version);
+            }
+
             var failure = Release(owner);
             return failure is null ? default : ValueTask.FromException(failure);
         }
@@ -212,12 +272,14 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         private void Begin(TIncoming message, CancellationToken cancellationToken)
         {
             _asynchronous = false;
+
             try
             {
                 Initialize(message);
-                _context = consumer.RentContext(this, cancellationToken);
+                _context = _consumer.RentContext(this, cancellationToken);
                 _context.Features.Set(Native);
-                _pending = consumer.ProcessAsync(_context).ConfigureAwait(false).GetAwaiter();
+                _pending = _consumer.ProcessAsync(_context).ConfigureAwait(false).GetAwaiter();
+
                 if (!_pending.IsCompleted)
                 {
                     _completion.Reset();
@@ -226,25 +288,44 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
                     _pending.UnsafeOnCompleted(_continuation);
                     return;
                 }
+
                 _pending.GetResult();
                 _result = Native.Disposition;
             }
-            catch (Exception error) { _error = error; }
+            catch (Exception error)
+            {
+                _error = error;
+            }
+
             Cleanup();
         }
 
         private struct Runner(State state, TIncoming message, CancellationToken cancellationToken) : IAsyncStateMachine
         {
-            public void MoveNext() => state.Begin(message, cancellationToken);
-            public void SetStateMachine(IAsyncStateMachine stateMachine) => throw new NotSupportedException();
+            public void MoveNext()
+            {
+                state.Begin(message, cancellationToken);
+            }
+
+            public void SetStateMachine(IAsyncStateMachine stateMachine)
+            {
+                throw new NotSupportedException();
+            }
         }
+
         private void Complete()
         {
             var executionContext = _executionContext;
             _executionContext = null;
+
             if (executionContext is not null)
+            {
                 ExecutionContext.Run(executionContext, static state => ((State)state!).CompleteCore(), this);
-            else CompleteCore();
+            }
+            else
+            {
+                CompleteCore();
+            }
         }
 
         private void CompleteCore()
@@ -254,22 +335,42 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
                 _pending.GetResult();
                 _result = Native.Disposition;
             }
-            catch (Exception error) { _error = error; }
+            catch (Exception error)
+            {
+                _error = error;
+            }
+
             Cleanup();
             var errorResult = _error;
             _error = null;
-            if (errorResult is null) _completion.SetResult(_result);
-            else _completion.SetException(errorResult);
+
+            if (errorResult is null)
+            {
+                _completion.SetResult(_result);
+            }
+            else
+            {
+                _completion.SetException(errorResult);
+            }
         }
 
         private void Cleanup()
         {
-            try { _context?.Dispose(); }
-            catch (Exception error) { _error = error; }
+            try
+            {
+                _context?.Dispose();
+            }
+            catch (Exception error)
+            {
+                _error = error;
+            }
             finally
             {
                 if (_error is not null && _preserveSettledFailures && Native.Disposition.Kind == DispositionKind.SettledByHandler)
+                {
                     _error = new SettledReceiveException(_error);
+                }
+
                 _context = null;
                 _pending = default;
                 Clear();
@@ -279,7 +380,10 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         public Disposition GetResult(short token)
         {
             // Keep continuation storage reserved until its ValueTask is consumed.
-            try { return _completion.GetResult(token); }
+            try
+            {
+                return _completion.GetResult(token);
+            }
             finally
             {
                 _completion.Reset();
@@ -289,13 +393,28 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
                 owner.Return(this);
             }
         }
-        void IValueTaskSource.GetResult(short token) => GetResult(token);
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
-            => _completion.OnCompleted(continuation, state, token, flags);
 
-        internal override HeaderNames EnvelopeNames => names;
-        internal int PoolSlot { get; }
+        void IValueTaskSource.GetResult(short token)
+        {
+            GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
+            _completion.OnCompleted(continuation, state, token, flags);
+        }
+
+        internal override HeaderNames EnvelopeNames => _names;
+
+        internal int PoolSlot
+        {
+            get;
+        }
         private MessageHeaders<TIncoming, TBinding> _headers;
         private WireString _id;
         private string? _messageId;
@@ -303,15 +422,23 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         private ConsumeDelegate? _dispatch;
         private int _attempt;
         private ReadOnlySequence<byte> _body;
-        internal NativeMessage<TIncoming> Native { get; } = new();
 
-        internal override void SetDisposition(Disposition disposition) => Native.Disposition = disposition;
+        internal NativeMessage<TIncoming> Native
+        {
+            get;
+        } = new();
+
+        internal override void SetDisposition(Disposition disposition)
+        {
+            Native.Disposition = disposition;
+        }
+
         internal override Disposition Disposition => Native.Disposition;
 
         internal void Initialize(TIncoming message)
         {
             Native.Message = message;
-            _headers = new(message, names);
+            _headers = new(message, _names);
             _body = TBinding.GetBody(message);
             _attempt = TBinding.GetDeliveryCount(message) ?? 1;
             ArgumentOutOfRangeException.ThrowIfLessThan(_attempt, 1);
@@ -321,9 +448,16 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         {
             get
             {
-                if (_messageId is not null) return _messageId;
-                if (_id.IsEmpty && (!TryGetValue(names.Id, out _id) || _id.IsEmpty))
-                    throw new MessageEnvelopeException($"The incoming message has no '{names.Id}' header.");
+                if (_messageId is not null)
+                {
+                    return _messageId;
+                }
+
+                if (_id.IsEmpty && (!TryGetValue(_names.Id, out _id) || _id.IsEmpty))
+                {
+                    throw new MessageEnvelopeException($"The incoming message has no '{_names.Id}' header.");
+                }
+
                 return _messageId = _id.ToString();
             }
         }
@@ -332,16 +466,28 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         {
             get
             {
-                if (_messageType is { } identity) return identity;
-                if (!_headers.TryGetValue(names.Type, out var type) || type.IsEmpty)
-                    throw new MessageEnvelopeException($"The incoming message has no '{names.Type}' header.");
-                var resolved = consumer.ResolveWireIdentity(type, out _dispatch);
+                if (_messageType is { } identity)
+                {
+                    return identity;
+                }
+
+                if (!_headers.TryGetValue(_names.Type, out var type) || type.IsEmpty)
+                {
+                    throw new MessageEnvelopeException($"The incoming message has no '{_names.Type}' header.");
+                }
+
+                var resolved = _consumer.ResolveWireIdentity(type, out _dispatch);
                 _messageType = resolved;
-                if (!TryGetValue(names.Id, out _id) || _id.IsEmpty)
-                    throw new MessageEnvelopeException($"The incoming message has no '{names.Id}' header.");
+
+                if (!TryGetValue(_names.Id, out _id) || _id.IsEmpty)
+                {
+                    throw new MessageEnvelopeException($"The incoming message has no '{_names.Id}' header.");
+                }
+
                 return resolved;
             }
         }
+
         internal override ConsumeDelegate? ResolvedDispatch
         {
             get
@@ -350,15 +496,33 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
                 return _dispatch;
             }
         }
+
         internal override int Attempt => _attempt;
+
         internal override ReadOnlySequence<byte> Body => _body;
+
         internal override bool IsTombstone => TBinding.IsTombstone(Native.Message);
+
         internal override WireString? TombstoneKey => TBinding.GetTombstoneKey(Native.Message);
+
         internal override MessageOperationTracing? ProcessTracing => TBinding.GetProcessTracing(Native.Message);
+
         internal override string? TracePartitionId => TBinding.GetPartitionId(Native.Message);
-        internal override void EnrichActivity(System.Diagnostics.Activity activity) => TBinding.EnrichActivity(activity, Native.Message);
-        internal override bool TryConsumeLoggedSettlementError(Exception error) => TBinding.TryConsumeLoggedSettlementError(Native.Message, error);
-        public override bool TryGetValue(string name, out WireString value) => _headers.TryGetValue(name, out value);
+
+        internal override void EnrichActivity(System.Diagnostics.Activity activity)
+        {
+            TBinding.EnrichActivity(activity, Native.Message);
+        }
+
+        internal override bool TryConsumeLoggedSettlementError(Exception error)
+        {
+            return TBinding.TryConsumeLoggedSettlementError(Native.Message, error);
+        }
+
+        public override bool TryGetValue(string name, out WireString value)
+        {
+            return _headers.TryGetValue(name, out value);
+        }
 
         internal void Clear()
         {

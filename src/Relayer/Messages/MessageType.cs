@@ -6,5 +6,8 @@ namespace Relayer;
 public readonly record struct MessageType(string Name, int Version)
 {
     /// <summary>Formats the identity as written to the <c>ce_type</c> attribute, e.g. <c>billing.charge-card;v=2</c>.</summary>
-    public override string ToString() => $"{Name};v={Version}";
+    public override string ToString()
+    {
+        return $"{Name};v={Version}";
+    }
 }

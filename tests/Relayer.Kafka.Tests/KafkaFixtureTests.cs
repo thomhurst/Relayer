@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using System.Text;
 using Dekaf.Admin;
 using DotNet.Testcontainers.Configurations;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.Kafka.Tests;
 
@@ -13,7 +13,12 @@ public class KafkaFixtureTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var runs = new Task<string>[4];
-        for (var i = 0; i < runs.Length; i++) runs[i] = VerifyLifecycleAsync(timeout.Token);
+
+        for (var i = 0; i < runs.Length; i++)
+        {
+            runs[i] = VerifyLifecycleAsync(timeout.Token);
+        }
+
         var endpoints = await Task.WhenAll(runs);
         await Assert.That(endpoints.Distinct().Count()).IsEqualTo(runs.Length);
     }
@@ -93,6 +98,7 @@ public class KafkaFixtureTests
             var topics = await admin.ListTopicsAsync(cancellationToken: token);
             await Assert.That(topics.Any(topic => topic.Name == fixture.Destination)).IsTrue();
         }
+
         return endpoint;
     }
 }

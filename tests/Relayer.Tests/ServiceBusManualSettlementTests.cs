@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -10,7 +10,11 @@ public sealed class ServiceBusManualSettlementTests
     public async Task Unset_disposition_is_rejected_without_acknowledging_delivery()
     {
         using var tracing = new MessageTracing(Microsoft.Extensions.Options.Options.Create(new TracingOptions()), []);
-        var settlement = new ServiceBusSettlement(tracing, new() { System = "servicebus", Destination = "queue" });
+        var settlement = new ServiceBusSettlement(tracing, new()
+        {
+            System = "servicebus",
+            Destination = "queue"
+        });
         var receiver = new ServiceBusReceiveTests.NativeReceiver();
         await Assert.That(async () => await settlement.SettleAsync(ServiceBusReceiveTests.Args(receiver), default, default))
             .Throws<InvalidOperationException>();

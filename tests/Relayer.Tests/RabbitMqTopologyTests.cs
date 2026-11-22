@@ -29,7 +29,10 @@ public class RabbitMqTopologyTests
                 rabbit.Options.Configure(options =>
                 {
                     options.ConnectionFactory = factory;
-                    options.Exchanges.Add(new("orders") { Type = ExchangeType.Topic });
+                    options.Exchanges.Add(new("orders")
+                    {
+                        Type = ExchangeType.Topic
+                    });
                     options.Exchanges.Add(new("dead"));
                     options.Queues.Add(new("orders")
                     {
@@ -40,7 +43,11 @@ public class RabbitMqTopologyTests
                         },
                     });
                     options.Queues.Add(new("dead"));
-                    options.Queues.Add(new("owned") { Durable = false, Exclusive = true });
+                    options.Queues.Add(new("owned")
+                    {
+                        Durable = false,
+                        Exclusive = true
+                    });
                     options.Bindings.Add(new("orders", "orders", "placed.*"));
                     options.Bindings.Add(new("dead", "dead", "failed"));
                 });
@@ -76,8 +83,14 @@ public class RabbitMqTopologyTests
         await using var driftProvider = RabbitMqConfigurationTests.Provider(options =>
         {
             options.ConnectionFactory = broker.Factory();
-            options.Exchanges.Add(new("orders") { Type = ExchangeType.Direct });
-            options.Queues.Add(new("orders") { Durable = false });
+            options.Exchanges.Add(new("orders")
+            {
+                Type = ExchangeType.Direct
+            });
+            options.Queues.Add(new("orders")
+            {
+                Durable = false
+            });
             options.Queues.Add(new("after-errors"));
         });
         var drift = await driftProvider.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Provision, token);
@@ -89,7 +102,8 @@ public class RabbitMqTopologyTests
         await channel.ExchangeDeclareAsync("orders", ExchangeType.Topic, true, false, cancellationToken: token);
         await channel.QueueDeclareAsync("orders", true, false, false, new Dictionary<string, object?>
         {
-            ["x-dead-letter-exchange"] = "dead", ["x-dead-letter-routing-key"] = "failed",
+            ["x-dead-letter-exchange"] = "dead",
+            ["x-dead-letter-routing-key"] = "failed",
         }, cancellationToken: token);
 
         await host.StopAsync(token);
@@ -142,8 +156,14 @@ public class RabbitMqTopologyTests
         await using var unverifiable = RabbitMqConfigurationTests.Provider(options =>
         {
             options.ConnectionFactory = readOnly;
-            options.Exchanges.Add(new("events") { Type = ExchangeType.Fanout });
-            options.Queues.Add(new("existing") { Durable = true });
+            options.Exchanges.Add(new("events")
+            {
+                Type = ExchangeType.Fanout
+            });
+            options.Queues.Add(new("existing")
+            {
+                Durable = true
+            });
             options.Bindings.Add(new("existing", "events", ""));
         });
         var unresolved = (await unverifiable.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Validate, token)).Differences;
@@ -174,8 +194,11 @@ public class RabbitMqTopologyTests
     private sealed class NativeCredentials : ICredentialsProvider
     {
         private int _calls;
+
         public int Calls => Volatile.Read(ref _calls);
+
         public string Name => "native-test";
+
         public Task<Credentials> GetCredentialsAsync(CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _calls);
@@ -189,7 +212,11 @@ public class RabbitMqTopologyTests
     {
         private readonly IContainer _container;
         private readonly bool _dedicated;
-        internal string VirtualHost { get; }
+
+        internal string VirtualHost
+        {
+            get;
+        }
 
         private Broker(IContainer container, string virtualHost, bool dedicated)
         {
@@ -200,7 +227,11 @@ public class RabbitMqTopologyTests
 
         internal static async Task<Broker> StartAsync(CancellationToken token, bool delayedPlugin = false, bool dedicated = false)
         {
-            if (dedicated) return new(await StartContainerAsync(delayedPlugin, shared: false, token), "/", true);
+            if (dedicated)
+            {
+                return new(await StartContainerAsync(delayedPlugin, shared: false, token), "/", true);
+            }
+
             var container = await (delayedPlugin ? SharedBrokers.RabbitMqWithDelayedPlugin : SharedBrokers.RabbitMq).Value.WaitAsync(token);
             var broker = new Broker(container, TestContext.Current!.Isolation.GetIsolatedName(Guid.NewGuid().ToString("N")[..8]), false);
             await broker.CommandAsync(["rabbitmqctl", "add_vhost", broker.VirtualHost], token);
@@ -219,7 +250,11 @@ public class RabbitMqTopologyTests
                 .WithPortBinding(5672, true)
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Server startup complete"));
             // A dedicated broker serves one test; keep its Erlang VM small.
-            if (!shared) builder = builder.WithEnvironment("RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS", "+S 2:2 +A 2");
+            if (!shared)
+            {
+                builder = builder.WithEnvironment("RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS", "+S 2:2 +A 2");
+            }
+
             if (delayedPlugin)
             {
                 using var http = new HttpClient();
@@ -227,25 +262,46 @@ public class RabbitMqTopologyTests
                 builder = builder.WithResourceMapping(plugin, FilePath.Of("/opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange-4.1.0.ez"))
                     .WithResourceMapping("[rabbitmq_delayed_message_exchange]."u8.ToArray(), FilePath.Of("/etc/rabbitmq/enabled_plugins"));
             }
-            if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "5672");
+
+            if (OperatingSystem.IsLinux())
+            {
+                builder = builder.WithPortBinding("20000-29999", "5672");
+            }
+
             var container = builder.Build();
-            try { await container.StartAsync(token); return container; }
-            catch { await container.DisposeAsync(); throw; }
+
+            try
+            {
+                await container.StartAsync(token);
+                return container;
+            }
+            catch
+            {
+                await container.DisposeAsync();
+                throw;
+            }
         }
 
-        internal ConnectionFactory Factory() => new()
+        internal ConnectionFactory Factory()
         {
-            HostName = _container.Hostname,
-            Port = _container.GetMappedPublicPort(5672),
-            UserName = "relayer",
-            Password = "relayer",
-            VirtualHost = VirtualHost,
-        };
+            return new()
+            {
+                HostName = _container.Hostname,
+                Port = _container.GetMappedPublicPort(5672),
+                UserName = "relayer",
+                Password = "relayer",
+                VirtualHost = VirtualHost,
+            };
+        }
 
         internal async Task CommandAsync(string[] command, CancellationToken token)
         {
             var result = await _container.ExecAsync(command, token);
-            if (result.ExitCode != 0) throw new InvalidOperationException(result.Stderr);
+
+            if (result.ExitCode != 0)
+            {
+                throw new InvalidOperationException(result.Stderr);
+            }
         }
 
         public async ValueTask DisposeAsync()
@@ -256,8 +312,14 @@ public class RabbitMqTopologyTests
                 return;
             }
             // Throwing here would replace an exception unwinding through await using; the session removes the broker.
-            try { await CommandAsync(["rabbitmqctl", "delete_vhost", VirtualHost], CancellationToken.None); }
-            catch (Exception exception) { Console.Error.WriteLine($"Could not delete RabbitMQ virtual host {VirtualHost}: {exception}"); }
+            try
+            {
+                await CommandAsync(["rabbitmqctl", "delete_vhost", VirtualHost], CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"Could not delete RabbitMQ virtual host {VirtualHost}: {exception}");
+            }
         }
     }
 }

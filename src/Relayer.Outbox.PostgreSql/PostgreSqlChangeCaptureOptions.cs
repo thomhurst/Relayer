@@ -8,38 +8,84 @@ namespace Relayer.Outbox.PostgreSql;
 public sealed class PostgreSqlChangeCaptureOptions
 {
     /// <summary>Existing persistent pgoutput slot. Only one active reader may use a slot.</summary>
-    public required PgOutputReplicationSlot Slot { get; init; }
+    public required PgOutputReplicationSlot Slot
+    {
+        get; init;
+    }
+
     /// <summary>Native pgoutput settings. Use protocol V1, without streaming or two-phase decoding.</summary>
-    public required PgOutputReplicationOptions Replication { get; init; }
+    public required PgOutputReplicationOptions Replication
+    {
+        get; init;
+    }
+
     /// <summary>Schema shared with writers. Null selects public.</summary>
-    public string? Schema { get; init; }
+    public string? Schema
+    {
+        get; init;
+    }
+
     /// <summary>Table prefix shared with writers.</summary>
-    public string TablePrefix { get; init; } = "relayer_";
+    public string TablePrefix
+    {
+        get; init;
+    } = "relayer_";
+
     /// <summary>Retain sent IDs, destinations and completion times. Disabled by default; enable on every dispatcher and maintenance worker for this store.</summary>
-    public bool RetainSentMessages { get; init; }
+    public bool RetainSentMessages
+    {
+        get; init;
+    }
 
     /// <summary>Failure budget for local-handler failures, preparation errors and explicit store failure recording. Classified retryable native-send failures retry indefinitely with durable backoff. Must match other dispatchers for this store.</summary>
-    public int MaxDispatchAttempts { get; init; } = 10;
+    public int MaxDispatchAttempts
+    {
+        get; init;
+    } = 10;
+
     /// <summary>Maximum rows read per database transaction.</summary>
-    public int BatchSize { get; init; } = 100;
+    public int BatchSize
+    {
+        get; init;
+    } = 100;
+
     /// <summary>Claim duration, longer than native send and database latency.</summary>
-    public TimeSpan ClaimDuration { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan ClaimDuration
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(30);
+
     /// <summary>Delay before reconnecting after a transient native connection failure.</summary>
-    public TimeSpan ReconnectDelay { get; init; } = TimeSpan.FromSeconds(5);
+    public TimeSpan ReconnectDelay
+    {
+        get; init;
+    } = TimeSpan.FromSeconds(5);
 
     internal PostgreSqlMaintenanceOptions Validate()
     {
         ArgumentNullException.ThrowIfNull(Slot);
         ArgumentNullException.ThrowIfNull(Replication);
+
         if (Replication.ProtocolVersion != PgOutputProtocolVersion.V1 ||
             Replication.StreamingMode is not (null or PgOutputStreamingMode.Off) || Replication.TwoPhase == true)
+        {
             throw new ArgumentException("Outbox CDC requires pgoutput protocol V1 without streaming or two-phase decoding.", nameof(Replication));
+        }
+
         if (ReconnectDelay <= TimeSpan.Zero || ReconnectDelay.TotalMilliseconds > uint.MaxValue - 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(ReconnectDelay));
+        }
+
         var recovery = new PostgreSqlMaintenanceOptions
         {
-            Schema = Schema, TablePrefix = TablePrefix, BatchSize = BatchSize,
-            MaxDispatchAttempts = MaxDispatchAttempts, RetainSentMessages = RetainSentMessages, ClaimDuration = ClaimDuration, RecoveryDelay = TimeSpan.Zero
+            Schema = Schema,
+            TablePrefix = TablePrefix,
+            BatchSize = BatchSize,
+            MaxDispatchAttempts = MaxDispatchAttempts,
+            RetainSentMessages = RetainSentMessages,
+            ClaimDuration = ClaimDuration,
+            RecoveryDelay = TimeSpan.Zero
         };
         _ = recovery.Validate();
         return recovery;

@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Buffers;
 using System.Diagnostics;
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Kafka;
 
@@ -24,7 +24,10 @@ public readonly record struct KafkaDelivery
     /// <summary>The untouched native record.</summary>
     public ConsumeResult<byte[], byte[]> Result
     {
-        get => _result;
+        get
+        {
+            return _result;
+        }
         init
         {
             _result = value;
@@ -34,39 +37,68 @@ public readonly record struct KafkaDelivery
     }
 
     /// <summary>The native partition identifier.</summary>
-    public string PartitionId { get; init; }
+    public string PartitionId
+    {
+        get; init;
+    }
 
     internal IReadOnlyList<Header> Headers => _headers ?? Array.Empty<Header>();
 
     /// <summary>Deconstructs the native record and partition identifier.</summary>
     public void Deconstruct(out ConsumeResult<byte[], byte[]> Result, out string PartitionId)
-        => (Result, PartitionId) = (this.Result, this.PartitionId);
+    {
+        (Result, PartitionId) = (this.Result, this.PartitionId);
+    }
 
     // The shared native view is an implementation detail, not part of delivery identity.
     /// <inheritdoc />
     public bool Equals(KafkaDelivery other)
-        => EqualityComparer<ConsumeResult<byte[], byte[]>>.Default.Equals(Result, other.Result)
-            && EqualityComparer<string>.Default.Equals(PartitionId, other.PartitionId);
+    {
+        return EqualityComparer<ConsumeResult<byte[], byte[]>>.Default.Equals(Result, other.Result)
+                    && EqualityComparer<string>.Default.Equals(PartitionId, other.PartitionId);
+    }
 
     /// <inheritdoc />
     public override int GetHashCode()
-        => unchecked(EqualityComparer<ConsumeResult<byte[], byte[]>>.Default.GetHashCode(Result) * -1521134295
+    {
+        return unchecked(EqualityComparer<ConsumeResult<byte[], byte[]>>.Default.GetHashCode(Result) * -1521134295
             + EqualityComparer<string>.Default.GetHashCode(PartitionId!));
+    }
 }
 
 /// <summary>Reads the native Kafka binary CloudEvents binding through borrowed native header lookups and the borrowed body.</summary>
 public readonly struct KafkaMessageBinding : IMessageBinding<KafkaDelivery>
 {
     /// <inheritdoc />
-    public static ReadOnlySequence<byte> GetBody(KafkaDelivery message) => new(message.Result.Value ?? []);
+    public static ReadOnlySequence<byte> GetBody(KafkaDelivery message)
+    {
+        return new(message.Result.Value ?? []);
+    }
+
     /// <inheritdoc />
-    public static bool IsTombstone(KafkaDelivery message) => message.Result.Value is null;
+    public static bool IsTombstone(KafkaDelivery message)
+    {
+        return message.Result.Value is null;
+    }
+
     /// <inheritdoc />
-    public static WireString? GetTombstoneKey(KafkaDelivery message) => message.Result.IsKeyNull ? null : new WireString(message.Result.Key!);
+    public static WireString? GetTombstoneKey(KafkaDelivery message)
+    {
+        return message.Result.IsKeyNull ? null : new WireString(message.Result.Key!);
+    }
+
     /// <inheritdoc />
-    public static int? GetDeliveryCount(KafkaDelivery message) => null;
+    public static int? GetDeliveryCount(KafkaDelivery message)
+    {
+        return null;
+    }
+
     /// <inheritdoc />
-    public static string GetPartitionId(KafkaDelivery message) => message.PartitionId;
+    public static string GetPartitionId(KafkaDelivery message)
+    {
+        return message.PartitionId;
+    }
+
     /// <inheritdoc />
     public static bool TryGetHeader(KafkaDelivery message, string name, out WireString value)
     {
@@ -76,16 +108,26 @@ public readonly struct KafkaMessageBinding : IMessageBinding<KafkaDelivery>
             value = new(header.Value);
             return true;
         }
+
         value = default;
         return false;
     }
+
     /// <inheritdoc />
     public static void EnrichActivity(Activity activity, KafkaDelivery message)
     {
         var record = message.Result;
         activity.SetTag("messaging.kafka.offset", record.Offset);
-        if (!record.IsKeyNull) activity.SetTag("messaging.kafka.message.key", Encoding.UTF8.GetString(record.Key!));
-        if (record.Value is null) activity.SetTag("messaging.kafka.message.tombstone", true);
+
+        if (!record.IsKeyNull)
+        {
+            activity.SetTag("messaging.kafka.message.key", Encoding.UTF8.GetString(record.Key!));
+        }
+
+        if (record.Value is null)
+        {
+            activity.SetTag("messaging.kafka.message.tombstone", true);
+        }
     }
 }
 
@@ -93,7 +135,12 @@ public readonly struct KafkaMessageBinding : IMessageBinding<KafkaDelivery>
 public readonly struct KafkaConsumeFeature
 {
     private readonly NativeMessage<KafkaDelivery> _native;
-    internal KafkaConsumeFeature(NativeMessage<KafkaDelivery> native) => _native = native;
+
+    internal KafkaConsumeFeature(NativeMessage<KafkaDelivery> native)
+    {
+        _native = native;
+    }
+
     /// <summary>The native Dekaf record, including its headers, key, partition and offset.</summary>
     public ConsumeResult<byte[], byte[]> ConsumeResult => _native.Message.Result;
 }
@@ -102,5 +149,8 @@ public readonly struct KafkaConsumeFeature
 public static class KafkaContextExtensions
 {
     /// <summary>Returns a borrowed view of the native record; throws for another transport.</summary>
-    public static KafkaConsumeFeature Kafka(this MessageContext context) => new(context.Features.GetRequired<NativeMessage<KafkaDelivery>>());
+    public static KafkaConsumeFeature Kafka(this MessageContext context)
+    {
+        return new(context.Features.GetRequired<NativeMessage<KafkaDelivery>>());
+    }
 }

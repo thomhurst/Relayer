@@ -1,6 +1,6 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using BenchmarkDotNet.Attributes;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 

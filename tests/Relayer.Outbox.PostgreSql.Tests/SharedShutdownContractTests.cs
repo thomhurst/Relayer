@@ -1,10 +1,10 @@
-using Relayer.Transports;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using Relayer.TestFixtures;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
@@ -14,8 +14,17 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
     protected override async Task<ShutdownFixture> CreateFixtureAsync(string worker, ShutdownTransport transport, ShutdownLogs logs)
     {
         var fixture = new Fixture(worker, transport, logs);
-        try { await fixture.PrepareAsync(); return fixture; }
-        catch { await fixture.DisposeAsync(); throw; }
+
+        try
+        {
+            await fixture.PrepareAsync();
+            return fixture;
+        }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
     }
 
     [Test]
@@ -37,12 +46,18 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
     {
         var sender = new ShutdownTransport(false);
         var send = sender.SendAsync(default, default).AsTask();
+
         try
         {
             await sender.Entered.Task;
             await Assert.ThrowsAsync<InvalidOperationException>(() => sender.StopAsync(default));
         }
-        finally { sender.Release.TrySetResult(); await send; }
+        finally
+        {
+            sender.Release.TrySetResult();
+            await send;
+        }
+
         await sender.StopAsync(default);
         await sender.SendAsync(default, default);
         await sender.DisposeAsync();
@@ -85,11 +100,21 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
                 var source = _resources.Source;
                 _worker = kind switch
                 {
-                    "direct" => new PostgreSqlDirectDispatcher(source, new(), new() { BatchSize = 2 }, [transport],
+                    "direct" => new PostgreSqlDirectDispatcher(source, new(), new()
+                    {
+                        BatchSize = 2
+                    }, [transport],
                         provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>()),
-                    "ordered" => new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1 }, [transport],
+                    "ordered" => new PostgreSqlOrderedDispatcher(source, new()
+                    {
+                        Lanes = 1
+                    }, [transport],
                         provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>()),
-                    "maintenance" => new PostgreSqlMaintenanceWorker(source, new() { BatchSize = 2, RecoveryDelay = TimeSpan.Zero },
+                    "maintenance" => new PostgreSqlMaintenanceWorker(source, new()
+                    {
+                        BatchSize = 2,
+                        RecoveryDelay = TimeSpan.Zero
+                    },
                         [transport], provider.GetRequiredService<ILogger<PostgreSqlMaintenanceWorker>>(),
                         provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>()),
                     _ => throw new ArgumentOutOfRangeException(nameof(kind))
@@ -98,9 +123,12 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
                 return _worker;
             });
             _host = builder.Build();
+
             if (kind == "direct")
+            {
                 _host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.Register(
                     () => transport.Stopping.TrySetResult());
+            }
         }
 
         public override async Task StartAsync()
@@ -108,8 +136,14 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
             // Persist an owned cleanup lease before the sweeper enters its uncommitted send transaction.
             // This makes the shutdown check prove release, even when the in-flight lease rolls back.
             _ = _host!.Services.GetServices<IHostedService>().ToArray();
-            if (_worker is PostgreSqlMaintenanceWorker maintenance) await maintenance.CleanupAsync(default);
+
+            if (_worker is PostgreSqlMaintenanceWorker maintenance)
+            {
+                await maintenance.CleanupAsync(default);
+            }
+
             await _host.StartAsync();
+
             if (_worker is PostgreSqlDirectDispatcher direct)
             {
                 // Exercise the real post-commit handoff with rows already committed by native PostgreSQL.
@@ -125,8 +159,11 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
         {
             await Assert.That(transport.Active).IsEqualTo(1);
             await Assert.That(logs.DatabaseCommands.Count).IsGreaterThan(0);
+
             if (kind == "direct")
+            {
                 await Assert.That(await Scalar("SELECT count(*) FROM relayer_outbox WHERE claim_token IS NOT NULL AND claim_expires_at IS NOT NULL")).IsEqualTo(2L);
+            }
             else
             {
                 await Assert.That(await Scalar("SELECT count(*) FROM relayer_leases")).IsGreaterThan(1L);
@@ -142,7 +179,10 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
             }
         }
 
-        public override Task StopAsync(CancellationToken token) => _host!.StopAsync(token);
+        public override Task StopAsync(CancellationToken token)
+        {
+            return _host!.StopAsync(token);
+        }
 
         public override async Task VerifyDurableStateAsync()
         {
@@ -156,17 +196,23 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
             await using var rows = _observer!.CreateCommand("SELECT id, body FROM relayer_outbox ORDER BY id");
             await using var reader = await rows.ExecuteReaderAsync();
             var ids = new List<Guid>();
+
             while (await reader.ReadAsync())
             {
                 ids.Add(reader.GetGuid(0));
                 await Assert.That(reader.GetFieldValue<byte[]>(1)).IsEquivalentTo(new byte[] { 7, 8, 9 });
             }
+
             await Assert.That(ids).IsEquivalentTo(kind == "direct" ? new[] { _future } : new[] { _first, _second, _future });
         }
 
         public override async ValueTask DisposeHostAsync()
         {
-            if (_disposed || _host is null) return;
+            if (_disposed || _host is null)
+            {
+                return;
+            }
+
             _disposed = true;
             await ((IAsyncDisposable)_host).DisposeAsync();
         }
@@ -184,26 +230,46 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
         public override async ValueTask DisposeAsync()
         {
             transport.Release.TrySetResult();
+
             try
             {
                 if (!_disposed && _host is not null)
                 {
                     using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                    try { await _host.StopAsync(deadline.Token); }
-                    finally { await DisposeHostAsync(); }
+
+                    try
+                    {
+                        await _host.StopAsync(deadline.Token);
+                    }
+                    finally
+                    {
+                        await DisposeHostAsync();
+                    }
                 }
             }
             finally
             {
-                try { if (_observer is not null) await _observer.DisposeAsync(); }
-                finally { await _database.DisposeAsync(); }
+                try
+                {
+                    if (_observer is not null)
+                    {
+                        await _observer.DisposeAsync();
+                    }
+                }
+                finally
+                {
+                    await _database.DisposeAsync();
+                }
             }
         }
 
-        private OutboxRecord Record(Guid id, bool future) => new(id, "events", "shutdown.probe;v=1",
-            new("orders", new byte[] { 7, 8, 9 }, new KeyValuePair<string, WireString>[] { new("ce_id", new(id.ToString())) },
-                kind == "ordered" ? new WireString("customer") : null,
-                future ? DateTimeOffset.UtcNow.AddDays(1) : null), DateTimeOffset.UtcNow.AddDays(-1));
+        private OutboxRecord Record(Guid id, bool future)
+        {
+            return new(id, "events", "shutdown.probe;v=1",
+                        new("orders", new byte[] { 7, 8, 9 }, new KeyValuePair<string, WireString>[] { new("ce_id", new(id.ToString())) },
+                            kind == "ordered" ? new WireString("customer") : null,
+                            future ? DateTimeOffset.UtcNow.AddDays(1) : null), DateTimeOffset.UtcNow.AddDays(-1));
+        }
 
         private async Task Insert(Guid id, bool future)
         {
@@ -229,6 +295,7 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
             await using var command = _observer!.CreateCommand(sql);
             await command.ExecuteNonQueryAsync();
         }
+
         private async Task<long> Scalar(string sql)
         {
             await using var command = _observer!.CreateCommand(sql);
@@ -239,12 +306,24 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
     private sealed class Resources(NpgsqlDataSource source, ShutdownLogs logs) : IAsyncDisposable
     {
         public NpgsqlDataSource Source => source;
-        public BackgroundService? Worker { get; set; }
-        public bool Closed { get; private set; }
+
+        public BackgroundService? Worker
+        {
+            get; set;
+        }
+
+        public bool Closed
+        {
+            get; private set;
+        }
+
         public async ValueTask DisposeAsync()
         {
             if (Worker?.ExecuteTask?.IsCompletedSuccessfully != true)
+            {
                 throw new InvalidOperationException("Database disposed before its worker completed.");
+            }
+
             await source.DisposeAsync();
             Closed = logs.DatabaseClosed = true;
         }
@@ -253,8 +332,19 @@ public sealed class SharedShutdownContractTests : OutboxShutdownContractTests
     // Registered before the worker so Generic Host stops the worker before closing its native sender.
     private sealed class SenderLifetime(ShutdownTransport sender) : IHostedService, IAsyncDisposable
     {
-        public Task StartAsync(CancellationToken token) => sender.StartAsync(token);
-        public Task StopAsync(CancellationToken token) => sender.StopAsync(token);
-        public ValueTask DisposeAsync() => sender.DisposeAsync();
+        public Task StartAsync(CancellationToken token)
+        {
+            return sender.StartAsync(token);
+        }
+
+        public Task StopAsync(CancellationToken token)
+        {
+            return sender.StopAsync(token);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return sender.DisposeAsync();
+        }
     }
 }

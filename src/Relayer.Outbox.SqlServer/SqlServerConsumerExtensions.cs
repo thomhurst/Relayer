@@ -1,11 +1,11 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Data;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer;
 
@@ -26,8 +26,12 @@ public static class SqlServerConsumerExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(consumer);
+
         if (consumer.Length > 256 || consumer.EndsWith(' '))
+        {
             throw new ArgumentException("Consumer identities must fit 256 UTF-16 code units and must not end in a space.", nameof(consumer));
+        }
+
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         _ = new SqlConnectionStringBuilder(connectionString);
         return builder.Use(services =>
@@ -50,15 +54,24 @@ public static class SqlServerConsumerExtensions
         public async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
         {
             var id = default(Guid);
+
             if (insert is not null && (!Guid.TryParse(context.MessageId, out id) || id == Guid.Empty || id.Version != 7))
+            {
                 throw new MessageEnvelopeException("Inbox processing requires the original non-empty UUIDv7 message ID.");
+            }
+
             var outbox = context.Services.GetRequiredService<SqlServerOutbox>();
+
             if (outbox.Table != outboxTable)
+            {
                 throw new InvalidOperationException("SQL Server consumer schema or prefix changed after composition. Restart the consumer pipeline with matching deployed outbox options.");
+            }
+
             var cancellation = context.CancellationToken;
             await using var transaction = (SqlServerOutboxTransaction)await outbox.BeginTransactionAsync(
                 connectionString, IsolationLevel.ReadCommitted, cancellation).ConfigureAwait(false);
             transaction.ConsumerOwned = true;
+
             if (insert is not null)
             {
                 // Native serializable key-range locking waits for an overlapping owner before checking its committed key.
@@ -86,12 +99,20 @@ public static class SqlServerConsumerExtensions
                     return;
                 }
             }
+
             await next(context).ConfigureAwait(false);
+
             if (!ReferenceEquals(outbox.CurrentTransaction, transaction))
+            {
                 throw new InvalidOperationException("The handler ended the SQL Server consumer transaction. Let Relayer complete it.");
+            }
+
             transaction.ConsumerOwned = false;
+
             if (context.Features.Get<ISettlementFeature>()?.RequestedDisposition is { Kind: not DispositionKind.Complete })
+            {
                 await transaction.RollbackAsync(cancellation).ConfigureAwait(false);
+            }
             else
             {
                 RequestCompletion(context);
@@ -102,7 +123,9 @@ public static class SqlServerConsumerExtensions
         private static void RequestCompletion(MessageContext context)
         {
             if (context.Features.Get<ISettlementFeature>() is { RequestedDisposition: null } settlement)
+            {
                 settlement.Complete();
+            }
         }
     }
 }

@@ -16,49 +16,49 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 {
     private const string MessageAttributeName = "Relayer.MessageAttribute";
 
-    private static readonly DiagnosticDescriptor InaccessibleMessage = new(
+    private static readonly DiagnosticDescriptor s_inaccessibleMessage = new(
         "RLYM002", "Message type is inaccessible",
         "Message type '{0}' cannot be accessed by generated registration and JSON metadata. Make the message and its containing types assembly-accessible and non-file-local.",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym002");
 
-    private static readonly DiagnosticDescriptor OpenGenericMessage = new(
+    private static readonly DiagnosticDescriptor s_openGenericMessage = new(
         "RLYM001", "Message declaration has unbound type parameters",
         "Message '{0}' has type parameters on itself or a containing type. Declare a concrete, non-generic message outside generic containing types.",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym001");
 
-    private static readonly DiagnosticDescriptor RefLikeMessage = new(
+    private static readonly DiagnosticDescriptor s_refLikeMessage = new(
         "RLYM003", "Message type is ref-like",
         "Message type '{0}' is ref-like and cannot be registered or serialized. Use an ordinary struct, class or record for the wire message.",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym003");
 
-    private static readonly DiagnosticDescriptor StaticMessage = new(
+    private static readonly DiagnosticDescriptor s_staticMessage = new(
         "RLYM004", "Message type is static",
         "Message type '{0}' is static and cannot be used by generated registration or JSON metadata. Declare a non-static message class, struct or record.",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym004");
 
-    private static readonly DiagnosticDescriptor NullMessageName = new(
+    private static readonly DiagnosticDescriptor s_nullMessageName = new(
         "RLYM005", "Message name cannot be null",
         "Message '{0}' has a null name. A stable message name cannot be null; specify a permanent wire name in [Message(\"name\")].",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym005");
 
-    private static readonly DiagnosticDescriptor InvalidMessageName = new(
+    private static readonly DiagnosticDescriptor s_invalidMessageName = new(
         "RLYM006", "Message name is empty or whitespace",
         "Message '{0}' must have a name containing at least one non-whitespace character",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym006");
 
-    private static readonly DiagnosticDescriptor InvalidMessageVersion = new(
+    private static readonly DiagnosticDescriptor s_invalidMessageVersion = new(
         "RLYM007", "Message version is below 1",
         "Message '{0}' must have a version of at least 1",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym007");
 
-    private static readonly DiagnosticDescriptor InvalidRegistrationName = new(
+    private static readonly DiagnosticDescriptor s_invalidRegistrationName = new(
         "RLYM008", "Invalid exported message registration name",
         "GenerateMessageTypes requires a non-keyword C# identifier other than AddMessageTypesFromThisAssembly; choose a unique method name such as AddOrderMessages",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
@@ -78,7 +78,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                         : null)
             .Where(static model => model is not null);
         context.RegisterSourceOutput(refLikeMessages, static (spc, model) =>
-            spc.ReportDiagnostic(Diagnostic.Create(RefLikeMessage,
+            spc.ReportDiagnostic(Diagnostic.Create(s_refLikeMessage,
                 Location.Create(model!.Path, model.Span, model.LineSpan), model.Name)));
 
         var declarations = context.SyntaxProvider
@@ -94,25 +94,34 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         {
             if (model.NullNameLocation is { } nullNameLocation)
             {
-                spc.ReportDiagnostic(Diagnostic.Create(NullMessageName,
+                spc.ReportDiagnostic(Diagnostic.Create(s_nullMessageName,
                     Location.Create(nullNameLocation.FilePath, nullNameLocation.Span, nullNameLocation.LineSpan), model.FullyQualifiedName));
             }
+
             if (model.InvalidIdentityLocation is { } identityLocation)
             {
                 var attributeLocation = Location.Create(identityLocation.FilePath, identityLocation.Span, identityLocation.LineSpan);
+
                 if (string.IsNullOrWhiteSpace(model.Name))
-                    spc.ReportDiagnostic(Diagnostic.Create(InvalidMessageName, attributeLocation, model.FullyQualifiedName));
+                {
+                    spc.ReportDiagnostic(Diagnostic.Create(s_invalidMessageName, attributeLocation, model.FullyQualifiedName));
+                }
+
                 if (model.Version < 1)
-                    spc.ReportDiagnostic(Diagnostic.Create(InvalidMessageVersion, attributeLocation, model.FullyQualifiedName));
+                {
+                    spc.ReportDiagnostic(Diagnostic.Create(s_invalidMessageVersion, attributeLocation, model.FullyQualifiedName));
+                }
             }
+
             if (model.InaccessibleLocation is { } inaccessibleLocation)
             {
-                spc.ReportDiagnostic(Diagnostic.Create(model.IsStatic ? StaticMessage : InaccessibleMessage,
+                spc.ReportDiagnostic(Diagnostic.Create(model.IsStatic ? s_staticMessage : s_inaccessibleMessage,
                     Location.Create(inaccessibleLocation.FilePath, inaccessibleLocation.Span, inaccessibleLocation.LineSpan), model.FullyQualifiedName));
             }
+
             if (model.OpenGenericLocation is { } location)
             {
-                spc.ReportDiagnostic(Diagnostic.Create(OpenGenericMessage,
+                spc.ReportDiagnostic(Diagnostic.Create(s_openGenericMessage,
                     Location.Create(location.FilePath, location.Span, location.LineSpan), model.FullyQualifiedName));
             }
         });
@@ -123,16 +132,23 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
             Emit(spc, input.Left);
             var attribute = input.Right.Assembly.GetAttributes().FirstOrDefault(static a =>
                 a.AttributeClass?.ToDisplayString() == "Relayer.GenerateMessageTypesAttribute");
-            if (attribute is null) return;
+
+            if (attribute is null)
+            {
+                return;
+            }
+
             var name = attribute.ConstructorArguments.FirstOrDefault().Value as string;
+
             if (string.IsNullOrEmpty(name) || !SyntaxFacts.IsValidIdentifier(name!)
                 || SyntaxFacts.GetKeywordKind(name!) != SyntaxKind.None
                 || name == "AddMessageTypesFromThisAssembly")
             {
-                spc.ReportDiagnostic(Diagnostic.Create(InvalidRegistrationName,
+                spc.ReportDiagnostic(Diagnostic.Create(s_invalidRegistrationName,
                     attribute.ApplicationSyntaxReference?.GetSyntax().GetLocation()));
                 return;
             }
+
             Emit(spc, input.Left, name);
         });
         context.RegisterSourceOutput(messages.Combine(context.CompilationProvider),
@@ -154,18 +170,21 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         }
 
         var attribute = context.Attributes[0];
+
         if (attribute.ConstructorArguments.Length == 1 && attribute.ConstructorArguments[0].IsNull)
         {
             var location = attribute.ApplicationSyntaxReference?.GetSyntax().GetLocation() ?? context.TargetNode.GetLocation();
             return new MessageModel(type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), "", 1,
                 NullNameLocation: new DiagnosticLocation(location.GetLineSpan().Path, location.SourceSpan, location.GetLineSpan().Span));
         }
+
         if (attribute.ConstructorArguments.Length != 1 || attribute.ConstructorArguments[0].Value is not string name)
         {
             return null;
         }
 
         var version = 1;
+
         foreach (var argument in attribute.NamedArguments)
         {
             if (argument.Key == "Version" && argument.Value.Value is int v)
@@ -176,6 +195,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
         var fullyQualifiedName = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         DiagnosticLocation? openGenericLocation = null;
+
         for (var current = type; current is not null; current = current.ContainingType)
         {
             if (current.Arity != 0)
@@ -186,13 +206,16 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                 break;
             }
         }
+
         DiagnosticLocation? invalidIdentityLocation = null;
+
         if (string.IsNullOrWhiteSpace(name) || version < 1)
         {
             var location = attribute.ApplicationSyntaxReference!.GetSyntax().GetLocation();
             invalidIdentityLocation = new DiagnosticLocation(location.GetLineSpan().Path,
                 location.SourceSpan, location.GetLineSpan().Span);
         }
+
         return new MessageModel(fullyQualifiedName, name, version, openGenericLocation,
             InvalidIdentityLocation: invalidIdentityLocation);
     }
@@ -212,10 +235,12 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         builder.AppendLine("{");
         builder.AppendLine("    /// <summary>Message types declared with [Message] in this assembly.</summary>");
         builder.AppendLine("    [global::System.CodeDom.Compiler.GeneratedCode(\"Relayer.SourceGenerators\", \"1.0.0\")]");
+
         if (exportedName is null)
         {
             builder.AppendLine("    [global::Microsoft.CodeAnalysis.EmbeddedAttribute]");
         }
+
         builder.Append("    ").Append(exportedName is null ? "internal" : "public")
             .Append(" static class ").AppendLine(exportedName is null ? "RelayerGeneratedMessageTypes" : exportedName + "Extensions");
         builder.AppendLine("    {");
@@ -248,16 +273,21 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
     private static void EmitJsonContext(SourceProductionContext context, ImmutableArray<MessageModel> models, Compilation compilation)
     {
-        if (models.IsDefaultOrEmpty) return;
+        if (models.IsDefaultOrEmpty)
+        {
+            return;
+        }
 
         var source = new StringBuilder("// <auto-generated/>\n#nullable enable\nnamespace Relayer\n{\n");
         var index = 0;
+
         foreach (var model in models.OrderBy(m => m.FullyQualifiedName, StringComparer.Ordinal))
         {
             source.Append("    [global::System.Text.Json.Serialization.JsonSerializable(typeof(")
                 .Append(model.FullyQualifiedName).Append("), TypeInfoPropertyName = \"RelayerMessage")
                 .Append(index++).AppendLine("\")]");
         }
+
         source.AppendLine("    [global::Microsoft.CodeAnalysis.EmbeddedAttribute]");
         source.AppendLine("    internal sealed partial class RelayerGeneratedJsonContext : global::System.Text.Json.Serialization.JsonSerializerContext { }");
         source.AppendLine("}");
@@ -272,6 +302,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         var result = CSharpGeneratorDriver.Create([JsonGeneratorLoader.Create().AsSourceGenerator()], parseOptions: parseOptions)
             .RunGenerators(compilation.AddSyntaxTrees(declaration), context.CancellationToken)
             .GetRunResult();
+
         foreach (var generated in result.Results.SelectMany(r => r.GeneratedSources))
         {
             if (generated.HintName.StartsWith("RelayerGeneratedJsonContext.", StringComparison.Ordinal))
@@ -279,6 +310,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                 context.AddSource(generated.HintName, generated.SourceText);
             }
         }
+
         foreach (var diagnostic in result.Diagnostics)
         {
             if (diagnostic.Location.SourceTree != declaration)
@@ -295,10 +327,12 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         }
     }
 
-    private static bool CanReference(INamedTypeSymbol type, Compilation compilation) =>
-        !type.IsFileLocal
-        && compilation.IsSymbolAccessibleWithin(type, compilation.Assembly)
-        && (type.ContainingType is null || CanReference(type.ContainingType, compilation));
+    private static bool CanReference(INamedTypeSymbol type, Compilation compilation)
+    {
+        return !type.IsFileLocal
+                && compilation.IsSymbolAccessibleWithin(type, compilation.Assembly)
+                && (type.ContainingType is null || CanReference(type.ContainingType, compilation));
+    }
 
     private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null, bool IsStatic = false, DiagnosticLocation? NullNameLocation = null, DiagnosticLocation? InvalidIdentityLocation = null);
 

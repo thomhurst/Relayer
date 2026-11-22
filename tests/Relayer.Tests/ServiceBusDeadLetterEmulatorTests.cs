@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using Azure.Messaging.ServiceBus;
 using Relayer.AzureServiceBus;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -13,6 +13,7 @@ public sealed class ServiceBusDeadLetterEmulatorTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var token = timeout.Token;
         await using var client = new ServiceBusClient(broker.ConnectionString);
+
         foreach (var (entity, subscription, session) in new[]
         {
             ("dlq-orders", (string?)null, (string?)null),
@@ -24,22 +25,30 @@ public sealed class ServiceBusDeadLetterEmulatorTests
                 [new ConsumerDefinition<ServiceBusConsumerOptions>(entity, new() { Subscription = subscription }, [], 1, 1, TimeSpan.Zero)]);
             var source = manager.List()[0].Id;
             await using var sender = client.CreateSender(entity);
+
             for (var i = 0; i < 3; i++)
             {
                 var outgoing = new ServiceBusMessage(new BinaryData(new byte[] { (byte)i }))
-                { MessageId = "message-" + i, SessionId = session, CorrelationId = "correlation" };
+                {
+                    MessageId = "message-" + i,
+                    SessionId = session,
+                    CorrelationId = "correlation"
+                };
                 outgoing.ApplicationProperties["traceparent"] = "creation-context";
                 await sender.SendMessageAsync(outgoing, token);
             }
+
             await using ServiceBusReceiver original = session is not null
                 ? await client.AcceptSessionAsync(entity, session, cancellationToken: token)
                 : subscription is not null ? client.CreateReceiver(entity, subscription) : client.CreateReceiver(entity);
+
             for (var i = 0; i < 3; i++)
             {
                 var message = await original.ReceiveMessageAsync(TimeSpan.FromSeconds(10), token)
                     ?? throw new InvalidOperationException("Expected original delivery.");
                 await original.DeadLetterMessageAsync(message, "poison", "test failure", token);
             }
+
             var first = await manager.PeekAsync(source, 1, cancellationToken: token);
             await Assert.That(first.Messages.Count).IsEqualTo(1);
             var next = await manager.PeekAsync(source, 10, first.NextCursor, token);
@@ -51,19 +60,27 @@ public sealed class ServiceBusDeadLetterEmulatorTests
                 .Throws<InvalidOperationException>();
             // A new native receiver must immediately see the entire abandoned batch.
             await using (var retry = subscription is not null
-                ? client.CreateReceiver(entity, subscription, new() { SubQueue = SubQueue.DeadLetter })
+                ? client.CreateReceiver(entity, subscription, new()
+                {
+                    SubQueue = SubQueue.DeadLetter
+                })
                 : client.CreateReceiver(entity, new ServiceBusReceiverOptions { SubQueue = SubQueue.DeadLetter }))
             {
                 var availableMessages = new List<ServiceBusReceivedMessage>();
+
                 for (var i = 0; i < 3; i++)
                 {
                     var available = await retry.ReceiveMessageAsync(TimeSpan.FromSeconds(1), token)
                         ?? throw new InvalidOperationException("Failed maintenance left a delivery locked.");
                     availableMessages.Add(available);
                 }
+
                 foreach (var available in availableMessages)
+                {
                     await retry.AbandonMessageAsync(available, cancellationToken: token);
+                }
             }
+
             var selected = first.Messages[0].MessageId;
             var count = await manager.RedriveAsync(source, m => m.MessageId == selected, 3, token);
             await Assert.That(count).IsEqualTo(1);

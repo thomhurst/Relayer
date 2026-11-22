@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -20,8 +20,12 @@ public sealed class ServiceBusCircuitTests
             consumer =>
             {
                 consumer.Failures(FailureOptions.None);
-                consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
+                consumer.Options.CircuitBreaker = new()
+                {
+                    MinimumThroughput = 1
+                };
             }, health: true, time: clock);
+
         try
         {
             await ServiceBusReceiveTests.Start(provider, token);
@@ -60,17 +64,35 @@ public sealed class ServiceBusCircuitTests
         {
             consumer.Failures(FailureOptions.None);
             consumer.Concurrency(2);
-            consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1, FailureRatio = 1 };
-            if (sessions) consumer.Options.SessionProcessorOptions = new()
-            { AutoCompleteMessages = false, MaxConcurrentSessions = 1, MaxConcurrentCallsPerSession = 2 };
-            else consumer.Options.ProcessorOptions.MaxConcurrentCalls = 2;
+            consumer.Options.CircuitBreaker = new()
+            {
+                MinimumThroughput = 1,
+                FailureRatio = 1
+            };
+
+            if (sessions)
+            {
+                consumer.Options.SessionProcessorOptions = new()
+                {
+                    AutoCompleteMessages = false,
+                    MaxConcurrentSessions = 1,
+                    MaxConcurrentCallsPerSession = 2
+                };
+            }
+            else
+            {
+                consumer.Options.ProcessorOptions.MaxConcurrentCalls = 2;
+            }
         }, sessions: sessions, time: clock);
         var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
         var states = new ConcurrentQueue<int>();
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
-            if (ReferenceEquals(instrument, instrumentation.CircuitState)) meterListener.EnableMeasurementEvents(instrument);
+            if (ReferenceEquals(instrument, instrumentation.CircuitState))
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<int>((_, state, _, _) => states.Enqueue(state));
         listener.Start();
@@ -85,13 +107,33 @@ public sealed class ServiceBusCircuitTests
         provider.GetRequiredService<ServiceBusReceiveTests.Control>().Handle = async (message, _, _) =>
         {
             Interlocked.Increment(ref calls);
-            if (message.Value == 2) { entered.SetResult(); await release.Task; }
-            if (message.Value == 3) { probeEntered.SetResult(); await probeRelease.Task; return; }
+
+            if (message.Value == 2)
+            {
+                entered.SetResult();
+                await release.Task;
+            }
+
+            if (message.Value == 3)
+            {
+                probeEntered.SetResult();
+                await probeRelease.Task;
+                return;
+            }
+
             throw new InvalidOperationException("dependency unavailable");
         };
         var drain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (sessions) client.SessionProcessors.Single().Drain = drain.Task;
-        else client.Processors.Single().Drain = drain.Task;
+
+        if (sessions)
+        {
+            client.SessionProcessors.Single().Drain = drain.Task;
+        }
+        else
+        {
+            client.Processors.Single().Drain = drain.Task;
+        }
+
         var lateReceiver = new ServiceBusReceiveTests.NativeReceiver();
         var lateSession = new ServiceBusReceiveTests.NativeSessionReceiver();
         var late = Emit(lateReceiver, lateSession, 2);
@@ -150,7 +192,10 @@ public sealed class ServiceBusCircuitTests
             consumer =>
             {
                 consumer.Failures(FailureOptions.None);
-                consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
+                consumer.Options.CircuitBreaker = new()
+                {
+                    MinimumThroughput = 1
+                };
             }, time: clock);
         var control = provider.GetRequiredService<ServiceBusReceiveTests.Control>();
         control.Handle = (_, _, _) => ValueTask.FromException(new InvalidOperationException("offline"));
@@ -162,13 +207,18 @@ public sealed class ServiceBusCircuitTests
         await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("stop");
         clock.Recovery.Fire();
         await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("start");
+
         if (settlementFails)
         {
             control.Handle = (_, _, _) => ValueTask.CompletedTask;
             receiver.Failure = new InvalidOperationException("settlement unavailable");
             await Assert.That(async () => await processor.Emit(ServiceBusReceiveTests.Args(receiver))).Throws<InvalidOperationException>();
         }
-        else await processor.Emit(ServiceBusReceiveTests.Args(receiver));
+        else
+        {
+            await processor.Emit(ServiceBusReceiveTests.Args(receiver));
+        }
+
         await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("stop");
         clock.Recovery.Fire();
         await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("start");
@@ -187,8 +237,15 @@ public sealed class ServiceBusCircuitTests
         var client = new ServiceBusReceiveTests.NativeClient();
         await using var provider = ServiceBusReceiveTests.Provider(client, consumer =>
         {
-            consumer.Options.CircuitBreaker = new() { MinimumThroughput = 3, FailureRatio = .5 };
-            consumer.Failures(new() { RetryDelays = new[] { TimeSpan.Zero } });
+            consumer.Options.CircuitBreaker = new()
+            {
+                MinimumThroughput = 3,
+                FailureRatio = .5
+            };
+            consumer.Failures(new()
+            {
+                RetryDelays = new[] { TimeSpan.Zero }
+            });
         });
         await ServiceBusReceiveTests.Start(provider, token);
         var processor = client.Processors.Single();
@@ -227,7 +284,10 @@ public sealed class ServiceBusCircuitTests
             consumer =>
             {
                 consumer.Failures(FailureOptions.None);
-                consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
+                consumer.Options.CircuitBreaker = new()
+                {
+                    MinimumThroughput = 1
+                };
             }, time: clock);
         provider.GetRequiredService<ServiceBusReceiveTests.Control>().Handle = (_, _, _) =>
             ValueTask.FromException(new InvalidOperationException("offline"));
@@ -253,7 +313,12 @@ public sealed class ServiceBusCircuitTests
     {
         var client = new ServiceBusReceiveTests.NativeClient();
         await using var provider = ServiceBusReceiveTests.Provider(client, consumer => consumer.Options.CircuitBreaker = new()
-        { FailureRatio = ratio, MinimumThroughput = minimum, SamplingDuration = TimeSpan.FromMilliseconds(sampling), BreakDuration = TimeSpan.FromMilliseconds(duration) });
+        {
+            FailureRatio = ratio,
+            MinimumThroughput = minimum,
+            SamplingDuration = TimeSpan.FromMilliseconds(sampling),
+            BreakDuration = TimeSpan.FromMilliseconds(duration)
+        });
         await Assert.That(async () => await ServiceBusReceiveTests.Start(provider)).Throws<ArgumentOutOfRangeException>();
         await Assert.That(client.Processors.Count).IsEqualTo(0);
     }

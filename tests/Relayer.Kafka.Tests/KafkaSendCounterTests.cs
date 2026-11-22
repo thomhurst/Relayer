@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Diagnostics.Metrics;
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 using Testcontainers.Kafka;
 
 namespace Relayer.Kafka.Tests;
@@ -28,7 +28,9 @@ public class KafkaSendCounterTests
             InstrumentPublished = (instrument, metrics) =>
             {
                 if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                {
                     metrics.EnableMeasurementEvents(instrument);
+                }
             },
         };
         listener.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref sent, count));

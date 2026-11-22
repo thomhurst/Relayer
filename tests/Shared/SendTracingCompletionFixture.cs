@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using System.Threading.Tasks.Sources;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.TestFixtures;
 
@@ -25,12 +25,17 @@ public sealed class SendTracingCompletionFixture : IDisposable
     private int _next;
     private long _workerBytes;
 
-    public long CallerBytes { get; private set; }
+    public long CallerBytes
+    {
+        get; private set;
+    }
+
     public long WorkerBytes => _workerBytes;
 
     public SendTracingCompletionFixture(bool batch, bool listener)
     {
         _batch = batch;
+
         if (listener)
         {
             _listener = new()
@@ -40,9 +45,21 @@ public sealed class SendTracingCompletionFixture : IDisposable
             };
             ActivitySource.AddActivityListener(_listener);
         }
-        for (var i = 0; i < Count; i++) _sources[i] = new();
-        _send = new(_tracing, new() { System = "test.native", Destination = "orders" }, Send, SendBatch);
-        _worker = new(Work) { IsBackground = true };
+
+        for (var i = 0; i < Count; i++)
+        {
+            _sources[i] = new();
+        }
+
+        _send = new(_tracing, new()
+        {
+            System = "test.native",
+            Destination = "orders"
+        }, Send, SendBatch);
+        _worker = new(Work)
+        {
+            IsBackground = true
+        };
         _worker.Start();
     }
 
@@ -52,51 +69,91 @@ public sealed class SendTracingCompletionFixture : IDisposable
     {
         _next = 0;
         var start = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < Count; i++)
         {
             _pending[i] = traced
                 ? _batch ? _send.SendBatchAsync(_messages) : _send.SendAsync(_messages[0])
                 : _batch ? SendBatch(_messages, default) : Send(_messages[0], default);
-            if (_pending[i].IsCompleted) throw new InvalidOperationException("Native send must suspend.");
+
+            if (_pending[i].IsCompleted)
+            {
+                throw new InvalidOperationException("Native send must suspend.");
+            }
         }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - start;
         var consumer = asynchronousCaller ? AwaitAll() : null;
         start = GC.GetAllocatedBytesForCurrentThread();
         _release.Set();
-        if (!_finished.WaitOne(TimeSpan.FromSeconds(30))) throw new TimeoutException("Native completion did not finish.");
+
+        if (!_finished.WaitOne(TimeSpan.FromSeconds(30)))
+        {
+            throw new TimeoutException("Native completion did not finish.");
+        }
+
         if (consumer is not null)
         {
-            if (!consumer.IsCompleted) throw new InvalidOperationException("Async caller did not finish.");
+            if (!consumer.IsCompleted)
+            {
+                throw new InvalidOperationException("Async caller did not finish.");
+            }
+
             consumer.GetAwaiter().GetResult();
         }
         else
         {
             for (var i = 0; i < Count; i++)
             {
-                if (!_pending[i].IsCompleted) throw new InvalidOperationException("Send did not complete.");
+                if (!_pending[i].IsCompleted)
+                {
+                    throw new InvalidOperationException("Send did not complete.");
+                }
+
                 _pending[i].GetAwaiter().GetResult();
             }
         }
+
         CallerBytes = allocated + GC.GetAllocatedBytesForCurrentThread() - start;
         return CallerBytes + _workerBytes;
     }
 
     private async Task AwaitAll()
     {
-        for (var i = 0; i < Count; i++) await _pending[i].ConfigureAwait(false);
+        for (var i = 0; i < Count; i++)
+        {
+            await _pending[i].ConfigureAwait(false);
+        }
     }
 
-    private ValueTask Send(OutgoingMessage message, CancellationToken token) => _sources[_next++].Wait();
-    private ValueTask SendBatch(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => _sources[_next++].Wait();
+    private ValueTask Send(OutgoingMessage message, CancellationToken token)
+    {
+        return _sources[_next++].Wait();
+    }
+
+    private ValueTask SendBatch(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
+    {
+        return _sources[_next++].Wait();
+    }
 
     private void Work()
     {
         while (true)
         {
             _release.WaitOne();
-            if (_stopping) return;
+
+            if (_stopping)
+            {
+                return;
+            }
+
             var start = GC.GetAllocatedBytesForCurrentThread();
-            foreach (var source in _sources) source.Complete();
+
+            foreach (var source in _sources)
+            {
+                source.Complete();
+            }
+
             _workerBytes = GC.GetAllocatedBytesForCurrentThread() - start;
             _finished.Set();
         }
@@ -117,11 +174,31 @@ public sealed class SendTracingCompletionFixture : IDisposable
     private sealed class Source : IValueTaskSource
     {
         private ManualResetValueTaskSourceCore<bool> _completion;
-        internal ValueTask Wait() { _completion.Reset(); return new(this, _completion.Version); }
-        internal void Complete() => _completion.SetResult(true);
-        public void GetResult(short token) => _completion.GetResult(token);
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+
+        internal ValueTask Wait()
+        {
+            _completion.Reset();
+            return new(this, _completion.Version);
+        }
+
+        internal void Complete()
+        {
+            _completion.SetResult(true);
+        }
+
+        public void GetResult(short token)
+        {
+            _completion.GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
             _completion.OnCompleted(continuation, state, token, flags);
+        }
     }
 }

@@ -88,8 +88,11 @@ public static class SqlServerOutboxSchema
             """;
     }
 
-    internal static string DeadTable(SqlServerOutboxOptions options) =>
-        QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "outbox_dead");
+    internal static string DeadTable(SqlServerOutboxOptions options)
+    {
+        return QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "outbox_dead");
+    }
+
     /// <summary>Explicit upgrade for pre-sequence tables. Stop writers/workers and execute in one application-owned transaction.</summary>
     /// <remarks>Preserves historical UUID order; historical insertion order cannot be recovered. Do not reset the sequence.</remarks>
     public static string UpgradeOrderedDispatchScript(SqlServerOutboxOptions? options = null)
@@ -130,17 +133,25 @@ public static class SqlServerOutboxSchema
             """;
     }
 
-    internal static string Sequence(SqlServerOutboxOptions options) =>
-        QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "outbox_sequence");
+    internal static string Sequence(SqlServerOutboxOptions options)
+    {
+        return QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "outbox_sequence");
+    }
 
-    internal static string OrderedLeaseTable(SqlServerOutboxOptions options) =>
-        QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "ordered_leases");
+    internal static string OrderedLeaseTable(SqlServerOutboxOptions options)
+    {
+        return QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "ordered_leases");
+    }
 
-    internal static string LeaseTable(SqlServerOutboxOptions options) =>
-        QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "leases");
+    internal static string LeaseTable(SqlServerOutboxOptions options)
+    {
+        return QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "leases");
+    }
 
-    internal static string InboxTable(SqlServerOutboxOptions options) =>
-        QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "inbox");
+    internal static string InboxTable(SqlServerOutboxOptions options)
+    {
+        return QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "inbox");
+    }
 
     internal static string Table(SqlServerOutboxOptions options)
     {
@@ -151,9 +162,15 @@ public static class SqlServerOutboxSchema
     internal static string QuoteIdentifier(string identifier)
     {
         if (identifier.Length is 0 or > 128 || identifier.Contains('\0'))
+        {
             throw new ArgumentException("SQL Server identifiers must be nonempty, contain no NUL, and fit in 128 UTF-16 code units.", nameof(identifier));
+        }
+
         return "[" + identifier.Replace("]", "]]", StringComparison.Ordinal) + "]";
     }
 
-    private static string Literal(string value) => value.Replace("'", "''", StringComparison.Ordinal);
+    private static string Literal(string value)
+    {
+        return value.Replace("'", "''", StringComparison.Ordinal);
+    }
 }

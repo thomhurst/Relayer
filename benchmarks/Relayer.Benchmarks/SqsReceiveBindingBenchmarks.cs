@@ -15,6 +15,7 @@ public class SqsReceiveBindingBenchmarks
     private readonly byte[] _raw = new byte[256];
     private AmazonSQSClient _client = null!;
     private SqsDelivery _delivery = null!;
+
     [GlobalSetup]
     public void Setup()
     {
@@ -22,8 +23,13 @@ public class SqsReceiveBindingBenchmarks
         _delivery = new(_client, "http://localhost/queue");
         Binding();
     }
+
     [Benchmark(Baseline = true)]
-    public int Raw() => Encoding.UTF8.GetBytes(_message.Body, _raw);
+    public int Raw()
+    {
+        return Encoding.UTF8.GetBytes(_message.Body, _raw);
+    }
+
     [Benchmark]
     public long Binding()
     {
@@ -32,6 +38,11 @@ public class SqsReceiveBindingBenchmarks
         _delivery.Clear();
         return length;
     }
+
     [GlobalCleanup]
-    public void Cleanup() { _delivery.Dispose(); _client.Dispose(); }
+    public void Cleanup()
+    {
+        _delivery.Dispose();
+        _client.Dispose();
+    }
 }

@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using Relayer.Outbox.SqlServer;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -16,7 +16,10 @@ public class SqlServerOutboxDispatchBenchmarks
     private DateTimeOffset _now;
 
     [Params(1, 64)]
-    public int Rows { get; set; }
+    public int Rows
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -25,6 +28,7 @@ public class SqlServerOutboxDispatchBenchmarks
         _records = new OutboxRecord[Rows];
         var body = new byte[1024];
         KeyValuePair<string, WireString>[] headers = [new("ce_type", new WireString("dispatch.probe;v=1"))];
+
         for (var i = 0; i < Rows; i++)
         {
             _source.Add(new());
@@ -48,6 +52,7 @@ public class SqlServerOutboxDispatchBenchmarks
     public int SeparateCommitProjection()
     {
         var bytes = 0;
+
         for (var i = 0; i < Rows; i++)
         {
             _one[0].Copy(_records[i], 32);
@@ -56,6 +61,7 @@ public class SqlServerOutboxDispatchBenchmarks
             bytes += _notification.Rows[0].ToMessage().Body.Length;
             _notification.Clear();
         }
+
         return bytes;
     }
 
@@ -67,17 +73,28 @@ public class SqlServerOutboxDispatchBenchmarks
         for (var i = 0; i < Rows; i++)
         {
             _one[0].Copy(_records[i], 32);
-            if (i == 0) _batch.Take(_one, 1, _now);
+
+            if (i == 0)
+            {
+                _batch.Take(_one, 1, _now);
+            }
             else
             {
                 _notification.Take(_one, 1, _now);
                 _batch.Append(_notification);
             }
+
             _notification.Clear();
         }
+
         _batch.Sort();
         var bytes = 0;
-        for (var i = 0; i < _batch.Count; i++) bytes += _batch.Rows[i].ToMessage().Body.Length;
+
+        for (var i = 0; i < _batch.Count; i++)
+        {
+            bytes += _batch.Rows[i].ToMessage().Body.Length;
+        }
+
         _batch.Clear();
         return bytes;
     }
@@ -86,23 +103,34 @@ public class SqlServerOutboxDispatchBenchmarks
     public int BufferOnly()
     {
         var bytes = 0;
+
         for (var i = 0; i < Rows; i++)
         {
             _source[i].Copy(_records[i], 32);
             bytes += _source[i].ToMessage().Body.Length;
             _source[i].Clear();
         }
+
         return bytes;
     }
 
     [Benchmark]
     public int RecoveryBufferAndGroup()
     {
-        for (var i = 0; i < Rows; i++) _source[i].Copy(_records[i], 32, unordered: true);
+        for (var i = 0; i < Rows; i++)
+        {
+            _source[i].Copy(_records[i], 32, unordered: true);
+        }
+
         _batch.Take(_source, Rows, _now);
         _batch.Sort();
         var bytes = 0;
-        for (var i = 0; i < _batch.Count; i++) bytes += _batch.Rows[i].ToMessage().Body.Length;
+
+        for (var i = 0; i < _batch.Count; i++)
+        {
+            bytes += _batch.Rows[i].ToMessage().Body.Length;
+        }
+
         _batch.Clear();
         return bytes;
     }
@@ -110,11 +138,20 @@ public class SqlServerOutboxDispatchBenchmarks
     [Benchmark]
     public int TransferAndGroup()
     {
-        for (var i = 0; i < Rows; i++) _source[i].Copy(_records[i], 32);
+        for (var i = 0; i < Rows; i++)
+        {
+            _source[i].Copy(_records[i], 32);
+        }
+
         _batch.Take(_source, Rows, _now);
         _batch.Sort();
         var bytes = 0;
-        for (var i = 0; i < _batch.Count; i++) bytes += _batch.Rows[i].ToMessage().Body.Length;
+
+        for (var i = 0; i < _batch.Count; i++)
+        {
+            bytes += _batch.Rows[i].ToMessage().Body.Length;
+        }
+
         _batch.Clear();
         return bytes;
     }

@@ -24,10 +24,16 @@ public class ConformanceFailureTests
             return new(creation.Task);
         }, useDeadline ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromSeconds(30));
         var run = suite.RunAsync(TransportConformanceCase.SendReceiveSettle, caller.Token);
+
         try
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            if (!useDeadline) caller.Cancel();
+
+            if (!useDeadline)
+            {
+                caller.Cancel();
+            }
+
             var error = await CaptureAsync(run.WaitAsync(TimeSpan.FromSeconds(5)));
             await Assert.That(error.Message).Contains("SendReceiveSettle failed during fixture creation");
             await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
@@ -84,13 +90,18 @@ public class ConformanceFailureTests
         var fixture = new FailingFixture { DisposalCompletion = new ValueTask(disposal, 0) };
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((_, _) => new(creation, 0));
         var run = suite.RunAsync(TransportConformanceCase.SendReceiveSettle, caller.Token);
+
         try
         {
             // RunAsync has returned its pending task, so the factory has been invoked.
             caller.Cancel();
             var error = await CaptureAsync(run.WaitAsync(TimeSpan.FromSeconds(5)));
             await Assert.That(error.Message).Contains("fixture creation");
-            if (factoryFails) creation.Fail(new IOException("late provisioning failed"));
+
+            if (factoryFails)
+            {
+                creation.Fail(new IOException("late provisioning failed"));
+            }
             else
             {
                 creation.Complete(fixture);
@@ -100,6 +111,7 @@ public class ConformanceFailureTests
                 await Assert.That(disposal.ConsumptionCount).IsEqualTo(1);
                 await Assert.That(fixture.DisposeCount).IsEqualTo(1);
             }
+
             await creation.Observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(creation.ConsumptionCount).IsEqualTo(1);
         }
@@ -134,6 +146,7 @@ public class ConformanceFailureTests
                 };
                 return new(failedFixture);
             }
+
             return new(new InMemoryFixture(tracing)
             {
                 AfterDisposal = () =>
@@ -146,6 +159,7 @@ public class ConformanceFailureTests
         });
         var run = suite.RunAsync(TransportConformanceCase.SendReceiveSettle, caller.Token);
         var watchdog = TimeSpan.FromSeconds(30);
+
         try
         {
             await (scenarioFails ? failedFixture!.DisposedSignal.Task : entered.Task).WaitAsync(watchdog);
@@ -156,6 +170,7 @@ public class ConformanceFailureTests
             await Assert.That(timeout.Message).Contains("fixture disposal");
             await Assert.That(timeout.Message).Contains("15");
             await Assert.That(disposal.Observed.Task.IsCompleted).IsFalse();
+
             if (scenarioFails)
             {
                 var scenarioFailure = failures.OfType<InvalidOperationException>().Single();
@@ -164,8 +179,16 @@ public class ConformanceFailureTests
                 await Assert.That(caller.IsCancellationRequested).IsTrue();
                 await Assert.That(failedFixture!.StoppedWithLiveToken).IsTrue();
             }
-            if (lateFailure) disposal.Fail(new IOException("late fixture disposal failed"));
-            else disposal.Complete(0);
+
+            if (lateFailure)
+            {
+                disposal.Fail(new IOException("late fixture disposal failed"));
+            }
+            else
+            {
+                disposal.Complete(0);
+            }
+
             await disposal.Observed.Task.WaitAsync(watchdog);
             await Assert.That(disposal.ConsumptionCount).IsEqualTo(1);
             await Assert.That(scenarioFails ? failedFixture!.DisposeCount : disposeCount).IsEqualTo(1);
@@ -173,8 +196,15 @@ public class ConformanceFailureTests
         finally
         {
             disposal.TryComplete(0);
-            try { await run.WaitAsync(watchdog); }
-            catch (Exception) when (run.IsCompleted) { }
+
+            try
+            {
+                await run.WaitAsync(watchdog);
+            }
+            catch (Exception) when (run.IsCompleted)
+            {
+            }
+
             await disposal.Observed.Task.WaitAsync(watchdog);
         }
     }
@@ -192,8 +222,17 @@ public class ConformanceFailureTests
         await Assert.That(failures.Length).IsEqualTo(1 + (stopFails ? 1 : 0) + (disposeFails ? 1 : 0));
         var scenarioFailure = failures.Single(failure => ReferenceEquals(failure.InnerException, fixture.PrimaryFailure));
         await Assert.That(scenarioFailure.Message).Contains("send 1");
-        if (stopFails) await Assert.That(failures).Contains(fixture.StopFailure);
-        if (disposeFails) await Assert.That(failures).Contains(fixture.DisposeFailure);
+
+        if (stopFails)
+        {
+            await Assert.That(failures).Contains(fixture.StopFailure);
+        }
+
+        if (disposeFails)
+        {
+            await Assert.That(failures).Contains(fixture.DisposeFailure);
+        }
+
         await Assert.That(fixture.StoppedWithLiveToken).IsTrue();
         await Assert.That(fixture.Disposed).IsTrue();
     }
@@ -226,6 +265,7 @@ public class ConformanceFailureTests
         };
 
         var run = Suite(fixture).RunAsync(TransportConformanceCase.SendReceiveSettle, cancellation.Token);
+
         try
         {
             var message = await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -268,13 +308,22 @@ public class ConformanceFailureTests
         await Assert.That(fixture.Disposed).IsTrue();
     }
 
-    private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(FailingFixture fixture) =>
-        new((_, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(fixture));
+    private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(FailingFixture fixture)
+    {
+        return new((_, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(fixture));
+    }
 
     private static async Task<Exception> CaptureAsync(Task task)
     {
-        try { await task; }
-        catch (Exception error) { return error; }
+        try
+        {
+            await task;
+        }
+        catch (Exception error)
+        {
+            return error;
+        }
+
         throw new InvalidOperationException("Expected conformance failure.");
     }
 
@@ -284,59 +333,185 @@ public class ConformanceFailureTests
     {
         private ManualResetValueTaskSourceCore<T> _source = new() { RunContinuationsAsynchronously = true };
         private bool _completed;
-        internal TaskCompletionSource Observed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal int ConsumptionCount { get; private set; }
-        internal void Complete(T result) { _completed = true; _source.SetResult(result); }
-        internal void Fail(Exception error) { _completed = true; _source.SetException(error); }
-        internal void TryComplete(T result) { if (!_completed) Complete(result); }
+
+        internal TaskCompletionSource Observed
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal int ConsumptionCount
+        {
+            get; private set;
+        }
+
+        internal void Complete(T result)
+        {
+            _completed = true;
+            _source.SetResult(result);
+        }
+
+        internal void Fail(Exception error)
+        {
+            _completed = true;
+            _source.SetException(error);
+        }
+
+        internal void TryComplete(T result)
+        {
+            if (!_completed)
+            {
+                Complete(result);
+            }
+        }
+
         public T GetResult(short token)
         {
             ConsumptionCount++;
-            try { return _source.GetResult(token); }
-            finally { Observed.TrySetResult(); }
+
+            try
+            {
+                return _source.GetResult(token);
+            }
+            finally
+            {
+                Observed.TrySetResult();
+            }
         }
-        void IValueTaskSource.GetResult(short token) => GetResult(token);
-        public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+
+        void IValueTaskSource.GetResult(short token)
+        {
+            GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _source.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
             _source.OnCompleted(continuation, state, token, flags);
+        }
     }
 
     private sealed class FailingFixture : ITransportConformanceFixture<InMemoryDelivery>, ITransport
     {
-        internal Exception PrimaryFailure { get; } = new IOException("native operation failed");
-        internal Exception StopFailure { get; } = new IOException("native shutdown failed");
-        internal Exception DisposeFailure { get; } = new IOException("fixture disposal failed");
-        internal bool StopFails { get; init; }
-        internal bool DisposeFails { get; init; }
-        internal bool StartFails { get; init; }
-        internal ValueTask DisposalCompletion { get; init; }
-        internal Func<OutgoingMessage, ValueTask>? Send { get; init; }
-        internal CancellationTokenSource? CancelAfterSend { get; init; }
-        internal bool StoppedWithLiveToken { get; private set; }
-        internal bool Disposed { get; private set; }
-        internal int DisposeCount { get; private set; }
-        internal TaskCompletionSource DisposedSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal Exception PrimaryFailure
+        {
+            get;
+        } = new IOException("native operation failed");
+
+        internal Exception StopFailure
+        {
+            get;
+        } = new IOException("native shutdown failed");
+
+        internal Exception DisposeFailure
+        {
+            get;
+        } = new IOException("fixture disposal failed");
+
+        internal bool StopFails
+        {
+            get; init;
+        }
+
+        internal bool DisposeFails
+        {
+            get; init;
+        }
+
+        internal bool StartFails
+        {
+            get; init;
+        }
+
+        internal ValueTask DisposalCompletion
+        {
+            get; init;
+        }
+
+        internal Func<OutgoingMessage, ValueTask>? Send
+        {
+            get; init;
+        }
+
+        internal CancellationTokenSource? CancelAfterSend
+        {
+            get; init;
+        }
+
+        internal bool StoppedWithLiveToken
+        {
+            get; private set;
+        }
+
+        internal bool Disposed
+        {
+            get; private set;
+        }
+
+        internal int DisposeCount
+        {
+            get; private set;
+        }
+
+        internal TaskCompletionSource DisposedSignal
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public ITransport Transport => this;
+
         public string Name => "failing";
+
         public string Destination => "isolated";
+
         public string MessagingSystem => "relayer.inmemory";
+
         public string SettlementOperation => "complete";
-        public HeaderNames HeaderNames { get; } = new();
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
-        public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive) { }
-        public Task StartAsync(CancellationToken cancellationToken) => StartFails ? Task.FromException(PrimaryFailure) : Task.CompletedTask;
+
+        public HeaderNames HeaderNames
+        {
+            get;
+        } = new();
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
+        public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive)
+        {
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return StartFails ? Task.FromException(PrimaryFailure) : Task.CompletedTask;
+        }
+
         public Task StopAsync(CancellationToken cancellationToken)
         {
             StoppedWithLiveToken = cancellationToken.CanBeCanceled && !cancellationToken.IsCancellationRequested;
             return StopFails ? Task.FromException(StopFailure) : Task.CompletedTask;
         }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (Send is not null) return Send(message);
-            if (CancelAfterSend is null) return ValueTask.FromException(PrimaryFailure);
+            if (Send is not null)
+            {
+                return Send(message);
+            }
+
+            if (CancelAfterSend is null)
+            {
+                return ValueTask.FromException(PrimaryFailure);
+            }
+
             CancelAfterSend.Cancel();
             return default;
         }
+
         public ValueTask DisposeAsync()
         {
             DisposeCount++;
@@ -344,11 +519,35 @@ public class ConformanceFailureTests
             DisposedSignal.TrySetResult();
             return DisposeFails ? ValueTask.FromException(DisposeFailure) : DisposalCompletion;
         }
-        public Task DisconnectAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task ReconnectAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task DisconnectAsync(CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task ReconnectAsync(CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

@@ -1,4 +1,3 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -10,6 +9,7 @@ using Microsoft.Extensions.Options;
 using Npgsql;
 using Relayer.InMemory;
 using Relayer.Outbox.EntityFrameworkCore;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -35,7 +35,8 @@ public class OutboxTelemetryTests
         services.AddDbContext<Context>((provider, builder) => builder.UseNpgsql(database.ConnectionString)
             .AddRelayerOutbox(provider, new EntityFrameworkCoreOutboxOptions
             {
-                Lanes = 1, DispatchStoreName = mode == "direct" ? "store" : null,
+                Lanes = 1,
+                DispatchStoreName = mode == "direct" ? "store" : null,
             }));
         services.AddRelayer(builder =>
         {
@@ -46,7 +47,11 @@ public class OutboxTelemetryTests
                 transport.Send<Probe>("orders");
                 transport.Options.Configure(options => options.Endpoints["orders"] = new()
                 {
-                    Capabilities = new() { OrderedByKey = true, MaxBatchSize = 10 },
+                    Capabilities = new()
+                    {
+                        OrderedByKey = true,
+                        MaxBatchSize = 10
+                    },
                 });
             });
         });
@@ -56,6 +61,7 @@ public class OutboxTelemetryTests
         using var capture = new Capture(tracing, instrumentation);
         ActivitySpanId request;
         ActivityTraceId requestTrace;
+
         using (var activity = new Activity("HTTP request").Start())
         {
             request = activity.SpanId;
@@ -64,15 +70,23 @@ public class OutboxTelemetryTests
             var context = scope.ServiceProvider.GetRequiredService<Context>();
             using var selection = context.EnlistRelayerOutbox();
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
             for (var i = 0; i < count; i++)
+            {
                 await sender.SendAsync(new Probe(i), options =>
                 {
-                    if (mode == "ordered") options.OrderingKey = "same-key";
+                    if (mode == "ordered")
+                    {
+                        options.OrderingKey = "same-key";
+                    }
                 });
+            }
+
             await Assert.That(capture.Pending.Sum()).IsEqualTo(0);
             await Assert.That(capture.Sent.Sum()).IsEqualTo(0);
             await context.SaveChangesAsync();
         }
+
         var creates = capture.Activities.Where(a => a.OperationName == "create orders").ToArray();
         await Assert.That(creates.Length).IsEqualTo(count);
         await Assert.That(creates.All(a => a.Kind == ActivityKind.Producer && a.ParentSpanId == request &&
@@ -93,7 +107,10 @@ public class OutboxTelemetryTests
         {
             if (mode == "ordered")
             {
-                using var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1 },
+                using var worker = new PostgreSqlOrderedDispatcher(source, new()
+                {
+                    Lanes = 1
+                },
                     provider.GetServices<ITransport>(), NullLogger<PostgreSqlOrderedDispatcher>.Instance,
                     instrumentation: instrumentation);
                 await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(count);
@@ -101,7 +118,11 @@ public class OutboxTelemetryTests
             else
             {
                 var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
-                if (mode == "recovery") await worker.DispatchRecoveredAsync(rows, default);
+
+                if (mode == "recovery")
+                {
+                    await worker.DispatchRecoveredAsync(rows, default);
+                }
                 else
                 {
                     // Start outside the request's ExecutionContext. The queue transfers payloads alone.
@@ -111,6 +132,7 @@ public class OutboxTelemetryTests
                 }
             }
         }
+
         var sends = capture.Activities.Where(a => a.OperationName == "send orders").ToArray();
         await Assert.That(sends.Length).IsEqualTo(mode == "ordered" ? count : 1);
         await Assert.That(sends.All(a => a.Kind == ActivityKind.Client &&
@@ -131,7 +153,11 @@ public class OutboxTelemetryTests
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
             static (_, error, _) => ValueTask.FromException(error))
             .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Probe, Handler>())
-            .Tracing(tracing, new() { System = InMemoryTransport.MessagingSystem, Destination = "orders" })
+            .Tracing(tracing, new()
+            {
+                System = InMemoryTransport.MessagingSystem,
+                Destination = "orders"
+            })
             .Settle(context =>
             {
                 receivedSequences.Enqueue(context.OutboxSequence);
@@ -147,11 +173,16 @@ public class OutboxTelemetryTests
             return receive.ProcessAsync(delivery, token);
         });
         await transport.StartAsync(default);
+
         try
         {
             await capture.WaitForProcesses(count).WaitAsync(TimeSpan.FromSeconds(30));
         }
-        finally { await transport.StopAsync(default); }
+        finally
+        {
+            await transport.StopAsync(default);
+        }
+
         var processes = capture.Activities.Where(a => a.OperationName == "process orders").ToArray();
         await Assert.That(processes.Select(a => a.Links.Single().Context.SpanId)).IsEquivalentTo(creates.Select(a => a.SpanId));
         await Assert.That(processes.All(a => a.TraceId == requestTrace && creates.Any(c => c.SpanId == a.ParentSpanId))).IsTrue();
@@ -175,14 +206,20 @@ public class OutboxTelemetryTests
         using var capture = new Capture(tracing, instrumentation);
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(instrumentation);
-        if (ado) services.AddRelayerPostgreSqlOutbox();
+
+        if (ado)
+        {
+            services.AddRelayerPostgreSqlOutbox();
+        }
         else
         {
             services.AddRelayerEntityFrameworkCoreOutbox();
             services.AddDbContext<Context>((provider, builder) => builder.UseNpgsql(database.ConnectionString).AddRelayerOutbox(provider));
         }
+
         await using var provider = services.BuildServiceProvider();
         await using var scope = provider.CreateAsyncScope();
+
         for (var commit = 0; commit < 2; commit++)
         {
             var enlistment = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
@@ -190,25 +227,79 @@ public class OutboxTelemetryTests
             var ef = context is null ? null : await context.Database.BeginTransactionAsync();
             await using var transaction = ado
                 ? await scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>().BeginTransactionAsync(source) : null;
+
             try
             {
                 await enlistment.EnlistAsync(new(Guid.CreateVersion7(), "local", "outbox.trace;v=1",
                     new OutgoingMessage("orders", new byte[] { 1 }), DateTimeOffset.UtcNow), default);
-                if (context is not null) await context.SaveChangesAsync();
+
+                if (context is not null)
+                {
+                    await context.SaveChangesAsync();
+                }
+
                 await Assert.That(capture.Pending.Sum()).IsEqualTo(0);
+
                 if (commit == 0)
                 {
-                    if (ado) { if (synchronous) transaction!.Rollback(); else await transaction!.RollbackAsync(); }
-                    else { if (synchronous) ef!.Rollback(); else await ef!.RollbackAsync(); }
+                    if (ado)
+                    {
+                        if (synchronous)
+                        {
+                            transaction!.Rollback();
+                        }
+                        else
+                        {
+                            await transaction!.RollbackAsync();
+                        }
+                    }
+                    else
+                    {
+                        if (synchronous)
+                        {
+                            ef!.Rollback();
+                        }
+                        else
+                        {
+                            await ef!.RollbackAsync();
+                        }
+                    }
                 }
                 else
                 {
-                    if (ado) { if (synchronous) transaction!.Commit(); else await transaction!.CommitAsync(); }
-                    else { if (synchronous) ef!.Commit(); else await ef!.CommitAsync(); }
+                    if (ado)
+                    {
+                        if (synchronous)
+                        {
+                            transaction!.Commit();
+                        }
+                        else
+                        {
+                            await transaction!.CommitAsync();
+                        }
+                    }
+                    else
+                    {
+                        if (synchronous)
+                        {
+                            ef!.Commit();
+                        }
+                        else
+                        {
+                            await ef!.CommitAsync();
+                        }
+                    }
                 }
             }
-            finally { if (ef is not null) await ef.DisposeAsync(); }
+            finally
+            {
+                if (ef is not null)
+                {
+                    await ef.DisposeAsync();
+                }
+            }
         }
+
         await Assert.That(capture.Pending.Sum()).IsEqualTo(1);
         await Assert.That(capture.Sent).IsEmpty();
     }
@@ -232,10 +323,31 @@ public class OutboxTelemetryTests
         var message = buffered.ToMessage();
         var expected = Snapshot(message);
         var seen = "";
-        var send = new SendTracing(tracing, new() { System = "test.native", Destination = "orders" },
-            (sent, _) => { seen = Snapshot(sent); return default; },
-            (sent, _) => { seen = Snapshot(sent.Span[0]); return default; });
-        if (batch) await send.SendBatchAsync(new[] { message }); else await send.SendAsync(message);
+        var send = new SendTracing(tracing, new()
+        {
+            System = "test.native",
+            Destination = "orders"
+        },
+            (sent, _) =>
+            {
+                seen = Snapshot(sent);
+                return default;
+            },
+            (sent, _) =>
+            {
+                seen = Snapshot(sent.Span[0]);
+                return default;
+            });
+
+        if (batch)
+        {
+            await send.SendBatchAsync(new[] { message });
+        }
+        else
+        {
+            await send.SendAsync(message);
+        }
+
         var activity = capture.Activities.Single();
         await Assert.That(activity.OperationName).IsEqualTo("send orders");
         await Assert.That(activity.Kind).IsEqualTo(ActivityKind.Client);
@@ -261,6 +373,7 @@ public class OutboxTelemetryTests
         services.AddSingleton(instrumentation);
         services.AddRelayerPostgreSqlOutbox();
         await using var provider = services.BuildServiceProvider();
+
         await using (var scope = provider.CreateAsyncScope())
         {
             var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
@@ -273,11 +386,16 @@ public class OutboxTelemetryTests
                 }), DateTimeOffset.UtcNow.AddMinutes(-1)), default);
             await transaction.CommitAsync();
         }
+
         var store = new PostgreSqlOutboxStore(source);
         var rows = new OutboxRecord[1];
         await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
+
         if (failure == "claim")
+        {
             await store.TryClaimAsync(new(rows[0].Id, Guid.NewGuid()), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), default);
+        }
+
         if (failure == "completion")
         {
             await using var command = source.CreateCommand("""
@@ -286,12 +404,14 @@ public class OutboxTelemetryTests
                 """);
             await command.ExecuteNonQueryAsync();
         }
+
         using var worker = new PostgreSqlDirectDispatcher(source, new(), new(), [transport],
             NullLogger<PostgreSqlDirectDispatcher>.Instance, instrumentation: instrumentation);
         await worker.DispatchRecoveredAsync(rows, default);
         await Assert.That(capture.Pending.Sum()).IsEqualTo(1);
         await Assert.That(capture.Sent.Sum()).IsEqualTo(failure == "claim" ? 0 : 1);
         await Assert.That(capture.Lags.Count).IsEqualTo(failure == "claim" ? 0 : 1);
+
         if (failure == "send")
         {
             var activity = capture.Activities.Single();
@@ -303,7 +423,11 @@ public class OutboxTelemetryTests
             DROP TRIGGER IF EXISTS fail_delete ON relayer_outbox;
             UPDATE relayer_outbox SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE claim_token IS NOT NULL;
             UPDATE relayer_outbox SET deliver_at = clock_timestamp() - interval '1 second' WHERE deliver_at IS NOT NULL;
-            """)) await command.ExecuteNonQueryAsync();
+            """))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         transport.Fail = false;
         await worker.DispatchRecoveredAsync(rows, default);
         await Assert.That(capture.Pending.Sum()).IsEqualTo(0);
@@ -333,28 +457,76 @@ public class OutboxTelemetryTests
     {
         private readonly SendTracing _send;
         internal bool Fail;
-        internal List<string> Headers { get; } = [];
-        internal FailingTransport(MessageTracing tracing) => _send = new(tracing,
-            new() { System = "test.native", Destination = "orders" }, SendNative, static (_, _) => default);
+
+        internal List<string> Headers
+        {
+            get;
+        } = [];
+
+        internal FailingTransport(MessageTracing tracing)
+        {
+            _send = new(tracing,
+                        new()
+                        {
+                            System = "test.native",
+                            Destination = "orders"
+                        }, SendNative, static (_, _) => default);
+        }
+
         public string Name => "local";
-        public SendTracing GetSendTracing(string destination) => _send;
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => _send.SendAsync(message, cancellationToken);
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => _send.SendBatchAsync(messages, cancellationToken);
+
+        public SendTracing GetSendTracing(string destination)
+        {
+            return _send;
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return _send.SendAsync(message, cancellationToken);
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return _send.SendBatchAsync(messages, cancellationToken);
+        }
+
         private ValueTask SendNative(OutgoingMessage message, CancellationToken cancellationToken)
         {
             _send.RecordNativeSend();
             Headers.Add(Snapshot(message));
             return Fail ? ValueTask.FromException(new InvalidOperationException("native send failed")) : default;
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 
-    private static string Snapshot(OutgoingMessage message) =>
-        string.Join("|", message.Headers.Span.ToArray().Select(h => h.Key + "=" + h.Value));
+    private static string Snapshot(OutgoingMessage message)
+    {
+        return string.Join("|", message.Headers.Span.ToArray().Select(h => h.Key + "=" + h.Value));
+    }
 
     private static ActivityContext Read(OutgoingMessage message)
     {
@@ -364,21 +536,32 @@ public class OutboxTelemetryTests
     }
 
     public sealed class Context(DbContextOptions<Context> options) : DbContext(options);
+
     [Message("outbox.trace")]
     public sealed record Probe(int Number);
+
     public sealed class Handler : IHandler<Probe>
     {
-        public ValueTask HandleAsync(Probe message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(Probe message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<T>(T message, IBufferWriter<byte> destination)
         {
             destination.GetSpan(1)[0] = (byte)((Probe)(object)message!).Number;
             destination.Advance(1);
         }
-        public T Deserialize<T>(ReadOnlySequence<byte> source) => (T)(object)new Probe(source.FirstSpan[0]);
+
+        public T Deserialize<T>(ReadOnlySequence<byte> source)
+        {
+            return (T)(object)new Probe(source.FirstSpan[0]);
+        }
     }
 
     private sealed class Capture : IDisposable
@@ -387,10 +570,27 @@ public class OutboxTelemetryTests
         private readonly MeterListener _metrics = new();
         private readonly ConcurrentDictionary<int, TaskCompletionSource> _processed = new();
         private int _processCount;
-        internal ConcurrentQueue<Activity> Activities { get; } = new();
-        internal ConcurrentQueue<long> Pending { get; } = new();
-        internal ConcurrentQueue<long> Sent { get; } = new();
-        internal ConcurrentQueue<double> Lags { get; } = new();
+
+        internal ConcurrentQueue<Activity> Activities
+        {
+            get;
+        } = new();
+
+        internal ConcurrentQueue<long> Pending
+        {
+            get;
+        } = new();
+
+        internal ConcurrentQueue<long> Sent
+        {
+            get;
+        } = new();
+
+        internal ConcurrentQueue<double> Lags
+        {
+            get;
+        } = new();
+
         internal Capture(MessageTracing tracing, RelayerInstrumentation? instrumentation = null)
         {
             _activities = new()
@@ -400,6 +600,7 @@ public class OutboxTelemetryTests
                 ActivityStopped = activity =>
                 {
                     Activities.Enqueue(activity);
+
                     if (activity.OperationName == "process orders")
                     {
                         var count = Interlocked.Increment(ref _processCount);
@@ -411,21 +612,41 @@ public class OutboxTelemetryTests
             _metrics.InstrumentPublished = (instrument, listener) =>
             {
                 if (instrumentation is not null && ReferenceEquals(instrument.Meter.Scope, instrumentation))
+                {
                     listener.EnableMeasurementEvents(instrument);
+                }
             };
             _metrics.SetMeasurementEventCallback<long>((instrument, value, _, _) =>
             {
-                if (instrument.Name == "relayer.outbox.pending") Pending.Enqueue(value);
-                if (instrument.Name == "messaging.client.sent.messages") Sent.Enqueue(value);
+                if (instrument.Name == "relayer.outbox.pending")
+                {
+                    Pending.Enqueue(value);
+                }
+
+                if (instrument.Name == "messaging.client.sent.messages")
+                {
+                    Sent.Enqueue(value);
+                }
             });
             _metrics.SetMeasurementEventCallback<double>((instrument, value, _, _) =>
             {
-                if (instrument.Name == "relayer.outbox.dispatch_lag") Lags.Enqueue(value);
+                if (instrument.Name == "relayer.outbox.dispatch_lag")
+                {
+                    Lags.Enqueue(value);
+                }
             });
             _metrics.Start();
         }
-        internal Task WaitForProcesses(int count) =>
-            _processed.GetOrAdd(count, static _ => new(TaskCreationOptions.RunContinuationsAsynchronously)).Task;
-        public void Dispose() { _activities.Dispose(); _metrics.Dispose(); }
+
+        internal Task WaitForProcesses(int count)
+        {
+            return _processed.GetOrAdd(count, static _ => new(TaskCreationOptions.RunContinuationsAsynchronously)).Task;
+        }
+
+        public void Dispose()
+        {
+            _activities.Dispose();
+            _metrics.Dispose();
+        }
     }
 }

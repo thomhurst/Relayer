@@ -34,13 +34,16 @@ public sealed record OrderPlaced(string OrderId, string CustomerId);
 
 public sealed class CheckoutModule(ISender sender)
 {
-    public ValueTask PlaceAsync(OrderPlaced order, CancellationToken cancellationToken) =>
-        sender.SendAsync(order, cancellationToken);
+    public ValueTask PlaceAsync(OrderPlaced order, CancellationToken cancellationToken)
+    {
+        return sender.SendAsync(order, cancellationToken);
+    }
 }
 
 public sealed class BillingModule
 {
     private readonly TaskCompletionSource _completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public Task Completed => _completed.Task;
 
     public void CreateInvoice(OrderPlaced message)

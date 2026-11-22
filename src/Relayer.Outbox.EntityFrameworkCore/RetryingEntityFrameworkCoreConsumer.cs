@@ -1,9 +1,9 @@
-using Relayer.Pipeline;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
@@ -24,21 +24,36 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         var db = services.GetRequiredService<TContext>();
         var settings = boundary.Resolve(db);
         IExecutionStrategy strategy;
+
         if (boundary.ScopedValidation)
         {
             var native = db.Database.CreateExecutionStrategy();
+
             if (!native.RetriesOnFailure && !conflictRetries)
             {
                 await boundary.InvokeAsync(context, next, db, settings).ConfigureAwait(false);
                 return;
             }
+
             strategy = conflictRetries && !native.RetriesOnFailure ? settings.Configuration.CreateConflictStrategy(db) : native;
         }
-        else strategy = conflictRetries ? settings.Configuration.CreateConflictStrategy(db) : db.Database.CreateExecutionStrategy();
+        else
+        {
+            strategy = conflictRetries ? settings.Configuration.CreateConflictStrategy(db) : db.Database.CreateExecutionStrategy();
+        }
+
         var messageId = settings.Inbox ? EntityFrameworkCoreConsumer<TContext>.ParseMessageId(context.MessageId) : default;
         Operation? operation = null;
+
         for (var i = 0; i < _operations.Length; i++)
-            if (Interlocked.Exchange(ref _operations[i], null) is { } cached) { operation = cached; break; }
+        {
+            if (Interlocked.Exchange(ref _operations[i], null) is { } cached)
+            {
+                operation = cached;
+                break;
+            }
+        }
+
         operation ??= new Operation();
         operation.Context = incoming;
         operation.Next = next;
@@ -46,6 +61,7 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         operation.Inbox = settings.Inbox;
         operation.Outbox = settings.Outbox;
         operation.MessageId = messageId;
+
         try
         {
             await strategy.ExecuteAsync((Owner: this, Operation: operation),
@@ -53,7 +69,10 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 settings.Inbox ? static (_, state, cancellation) => state.Owner.VerifyAsync(state.Operation, cancellation) : null,
                 context.CancellationToken).ConfigureAwait(false);
             // Cleanup belongs outside both native retries and handler-failure policy.
-            if (incoming.ScopeCleanupError is { } cleanup) ExceptionDispatchInfo.Throw(cleanup);
+            if (incoming.ScopeCleanupError is { } cleanup)
+            {
+                ExceptionDispatchInfo.Throw(cleanup);
+            }
         }
         catch
         {
@@ -64,8 +83,14 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         {
             incoming.SetServices(services);
             operation.Clear();
+
             for (var i = 0; i < _operations.Length; i++)
-                if (Interlocked.CompareExchange(ref _operations[i], operation, null) is null) break;
+            {
+                if (Interlocked.CompareExchange(ref _operations[i], operation, null) is null)
+                {
+                    break;
+                }
+            }
         }
     }
 
@@ -78,6 +103,7 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         var services = context.Services;
         var scope = scopes.CreateAsyncScope();
         Sender? sender = null;
+
         try
         {
             try
@@ -86,14 +112,30 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 context.SetServices(scope.ServiceProvider);
                 var db = context.Services.GetRequiredService<TContext>();
                 var settings = boundary.Resolve(db);
+
                 if (settings.Inbox != operation.Inbox || settings.Outbox != operation.Outbox)
+                {
                     throw new InvalidOperationException("The selected DbContext must keep the same inbox and outbox capabilities across native retry attempts.");
+                }
+
                 var scopedSender = context.Services.GetService<ISender>();
+
                 if (scopedSender is not null && scopedSender is not Sender)
+                {
                     throw new InvalidOperationException("EF Core consumer retries require Relayer's scoped ISender.");
+                }
+
                 sender = (Sender?)scopedSender;
-                if (sender is not null) sender.AttemptBuffer = buffer;
-                try { await boundary.InvokeAsync(context, operation.Next, db, settings).ConfigureAwait(false); }
+
+                if (sender is not null)
+                {
+                    sender.AttemptBuffer = buffer;
+                }
+
+                try
+                {
+                    await boundary.InvokeAsync(context, operation.Next, db, settings).ConfigureAwait(false);
+                }
                 finally
                 {
                     // The transaction interceptor registers this scope's configuration first, including
@@ -105,10 +147,20 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
             }
             finally
             {
-                try { await scope.DisposeAsync().ConfigureAwait(false); }
-                catch (Exception error) { context.ScopeCleanupError = error; }
-                finally { sender?.EndAttempt(); }
+                try
+                {
+                    await scope.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception error)
+                {
+                    context.ScopeCleanupError = error;
+                }
+                finally
+                {
+                    sender?.EndAttempt();
+                }
             }
+
             return true;
         }
         catch when (context.ScopeCleanupError is not null)
@@ -122,7 +174,10 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
             // Preserve sends until native unknown-commit verification has finished.
             throw;
         }
-        finally { context.SetServices(services); }
+        finally
+        {
+            context.SetServices(services);
+        }
     }
 
     private async Task<ExecutionResult<bool>> VerifyAsync(Operation operation, CancellationToken cancellation)
@@ -133,6 +188,7 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         var services = context.Services;
         var scope = services.GetRequiredService<IServiceScopeFactory>().CreateAsyncScope();
         var committed = false;
+
         try
         {
             try
@@ -141,21 +197,40 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 context.SetServices(scope.ServiceProvider);
                 var db = scope.ServiceProvider.GetRequiredService<TContext>();
                 var settings = boundary.Resolve(db);
+
                 if (settings.Inbox != operation.Inbox || settings.Outbox != operation.Outbox)
+                {
                     throw new InvalidOperationException("The verification DbContext must keep the attempted inbox and outbox capabilities.");
+                }
+
                 committed = await operation.Configuration.InboxExistsAsync(db.Database.GetDbConnection(),
                     consumer, operation.MessageId, cancellation).ConfigureAwait(false);
                 // Inbox rows commit only on the completion path.
-                if (committed && context.Settlement.Request is null) context.Settlement.Complete();
+                if (committed && context.Settlement.Request is null)
+                {
+                    context.Settlement.Complete();
+                }
             }
             finally
             {
-                try { await scope.DisposeAsync().ConfigureAwait(false); }
-                catch (Exception error) { context.ScopeCleanupError = error; }
+                try
+                {
+                    await scope.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception error)
+                {
+                    context.ScopeCleanupError = error;
+                }
             }
         }
-        catch when (context.ScopeCleanupError is not null) { }
-        finally { context.SetServices(services); }
+        catch when (context.ScopeCleanupError is not null)
+        {
+        }
+        finally
+        {
+            context.SetServices(services);
+        }
+
         return new(committed || context.ScopeCleanupError is not null, true);
     }
 
@@ -167,6 +242,7 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         internal Guid MessageId;
         internal bool Inbox;
         internal bool Outbox;
+
         internal void Clear()
         {
             Context = null!;

@@ -5,7 +5,9 @@ internal static class PostgreSqlPoisonSql
 {
     // Retry after the native send operation has exhausted its own retries. Keep the deadline in
     // the row so a process restart cannot turn a broker outage into a hot retry loop.
-    internal static string Retry(string table, string fenced, string now) => $"""
+    internal static string Retry(string table, string fenced, string now)
+    {
+        return $"""
         WITH retried AS (
             UPDATE {table} SET attempts = LEAST(attempts, 29) + 1, last_error = @error,
                 deliver_at = {now} + LEAST(300, power(2, LEAST(attempts, 9))) * interval '1 second',
@@ -13,15 +15,22 @@ internal static class PostgreSqlPoisonSql
             WHERE {fenced} RETURNING id
         ) SELECT CASE WHEN EXISTS (SELECT 1 FROM retried) THEN 1 ELSE 0 END
         """;
+    }
 
-    internal static string Failure(string table, string dead, string fenced, int limit) =>
-        Failure(table, dead, fenced, limit.ToString(System.Globalization.CultureInfo.InvariantCulture), null);
+    internal static string Failure(string table, string dead, string fenced, int limit)
+    {
+        return Failure(table, dead, fenced, limit.ToString(System.Globalization.CultureInfo.InvariantCulture), null);
+    }
 
     // Local handler failures carry their consumer's attempt limit and the delay before the next attempt.
-    internal static string LocalFailure(string table, string dead, string fenced) =>
-        Failure(table, dead, fenced, "@limit", "clock_timestamp() + @delay");
+    internal static string LocalFailure(string table, string dead, string fenced)
+    {
+        return Failure(table, dead, fenced, "@limit", "clock_timestamp() + @delay");
+    }
 
-    private static string Failure(string table, string dead, string fenced, string limit, string? deliverAt) => $"""
+    private static string Failure(string table, string dead, string fenced, string limit, string? deliverAt)
+    {
+        return $"""
         WITH exhausted AS (
             DELETE FROM {table} WHERE {fenced} AND lane IS NULL AND attempts + 1 >= {limit}
             RETURNING *
@@ -45,4 +54,5 @@ internal static class PostgreSqlPoisonSql
         SELECT CASE WHEN EXISTS (SELECT 1 FROM copied) THEN 2
             WHEN EXISTS (SELECT 1 FROM failed) THEN 1 ELSE 0 END
         """;
+    }
 }

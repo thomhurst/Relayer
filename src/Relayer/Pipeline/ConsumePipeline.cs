@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Globalization;
@@ -6,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Relayer.Transports;
 
 namespace Relayer.Pipeline;
 
@@ -15,9 +15,16 @@ public delegate ValueTask ConsumeFailureDelegate(MessageContext context, Excepti
 /// <summary>A consumer's composed middleware and generated dispatch, shared across concurrent deliveries.</summary>
 public sealed partial class ConsumePipeline
 {
-    internal BatchExecution? BatchExecution { get; init; }
+    internal BatchExecution? BatchExecution
+    {
+        get; init;
+    }
+
     // Native durable failure delegates can reuse attempt buffering without a second retry runtime.
-    internal bool BufferAttemptSends { get; set; }
+    internal bool BufferAttemptSends
+    {
+        get; set;
+    }
 
     /// <summary>Whether this consumer dispatches a generated batch handler.</summary>
     public bool IsBatch => BatchExecution is not null;
@@ -25,19 +32,34 @@ public sealed partial class ConsumePipeline
     /// <summary>Processes one batch, with one scope per batch attempt and only failed items retried.</summary>
     /// <remarks>Optional native settlement callbacks run after all durable work. Keep context memory unchanged until completion. Only use settlement decisions after the entire call succeeds.</remarks>
     public ValueTask ProcessBatchAsync(ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken = default)
-        => Observer is { } observer ? observer.ProcessBatchAsync(this, contexts, cancellationToken)
-            : ProcessBatchCoreAsync(contexts, cancellationToken);
+    {
+        return Observer is { } observer ? observer.ProcessBatchAsync(this, contexts, cancellationToken)
+                    : ProcessBatchCoreAsync(contexts, cancellationToken);
+    }
 
     internal IServiceScopeFactory Scopes => _scopes;
 
     // Set when every handler is a singleton, so dispatch needs no delivery scope.
-    internal IServiceProvider? SingletonHandlerServices { get; }
+    internal IServiceProvider? SingletonHandlerServices
+    {
+        get;
+    }
 
     internal ValueTask ProcessBatchCoreAsync(ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken)
-        => (BatchExecution ?? throw new InvalidOperationException("Build a batch consumer before using batch dispatch."))
-            .ProcessAsync(this, contexts, cancellationToken);
-    internal IRelayerObserver? Observer { get; }
-    internal bool RestoresTenant { get; }
+    {
+        return (BatchExecution ?? throw new InvalidOperationException("Build a batch consumer before using batch dispatch."))
+                    .ProcessAsync(this, contexts, cancellationToken);
+    }
+
+    internal IRelayerObserver? Observer
+    {
+        get;
+    }
+
+    internal bool RestoresTenant
+    {
+        get;
+    }
     private readonly ConsumeDelegate _process;
     private readonly IServiceScopeFactory _scopes;
     private readonly bool _scopesOnDemand;
@@ -52,17 +74,40 @@ public sealed partial class ConsumePipeline
     private readonly ConsumeDelegate? _settlement;
     private readonly ConsumeTracing? _tracing;
     private readonly ILogger? _logger;
-    internal HeaderNames EnvelopeNames { get; } = new();
+
+    internal HeaderNames EnvelopeNames
+    {
+        get;
+    } = new();
     private int _batchCursor;
-    internal ConsumerCircuit? Circuit { get; set; }
-    internal Action<bool>? CircuitChanged { get; set; }
+
+    internal ConsumerCircuit? Circuit
+    {
+        get; set;
+    }
+
+    internal Action<bool>? CircuitChanged
+    {
+        get; set;
+    }
+
     // Without native delivery limits (Kafka), permanent failures must dead-letter rather than be held by the circuit.
-    internal bool CircuitCountsRetryFailuresOnly { get; set; }
+    internal bool CircuitCountsRetryFailuresOnly
+    {
+        get; set;
+    }
+
     // Set once before receives start. Buffered handler sends and failure copies for Source go to Target instead,
     // such as a transport's native transactional producer that commits them with the consumed offsets.
-    internal (ITransport Source, ITransport Target)? SendRedirect { get; set; }
-    internal ITransport Redirect(ITransport transport) =>
-        SendRedirect is { } redirect && ReferenceEquals(transport, redirect.Source) ? redirect.Target : transport;
+    internal (ITransport Source, ITransport Target)? SendRedirect
+    {
+        get; set;
+    }
+
+    internal ITransport Redirect(ITransport transport)
+    {
+        return SendRedirect is { } redirect && ReferenceEquals(transport, redirect.Source) ? redirect.Target : transport;
+    }
 
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
         IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier,
@@ -70,11 +115,13 @@ public sealed partial class ConsumePipeline
         IServiceProvider? singletonHandlerServices = null)
     {
         _scopes = scopes;
+
         using (var scope = scopes.CreateScope())
         {
             Observer = scope.ServiceProvider.GetService<IRelayerObserver>();
             RestoresTenant = scope.ServiceProvider.GetService<TenantContextPool>() is not null;
         }
+
         SingletonHandlerServices = singletonHandlerServices;
         // Tenant restoration writes to a scoped service, so those consumers keep one scope per attempt.
         _scopesOnDemand = failures is not null && singletonHandlerServices is not null && !RestoresTenant;
@@ -90,17 +137,21 @@ public sealed partial class ConsumePipeline
         _contexts = new(capacity, capacity);
         _wireIdentities = new WireIdentity[dispatch.Count];
         var identityIndex = 0;
+
         foreach (var pair in dispatch)
         {
             var identity = pair.Key;
             var text = identity.ToString();
             _wireIdentities[identityIndex++] = new(identity, text, Encoding.UTF8.GetBytes(text), pair.Value);
         }
+
         for (var i = 0; i < capacity; i++)
         {
             _contexts.TryReturn(new DefaultMessageContext(this, i), i);
         }
+
         _pipeline = InvokeHandlerAsync;
+
         for (var i = middleware.Count - 1; i >= 0; i--)
         {
             var step = middleware[i];
@@ -120,7 +171,9 @@ public sealed partial class ConsumePipeline
     }
 
     private DefaultMessageContext RentContext()
-        => (IsBatch ? _contexts.TryRent(ref _batchCursor) : _contexts.TryRent()) ?? new DefaultMessageContext(this);
+    {
+        return (IsBatch ? _contexts.TryRent(ref _batchCursor) : _contexts.TryRent()) ?? new DefaultMessageContext(this);
+    }
 
     internal DefaultMessageContext RentContext(ReceiveMessageState message, CancellationToken cancellationToken)
     {
@@ -144,17 +197,29 @@ public sealed partial class ConsumePipeline
         // Unknown identities are an error path. Preserve them for the consume failure classifier.
         var unknown = wire.ToString();
         var separator = unknown.LastIndexOf(";v=", StringComparison.Ordinal);
+
         if (separator <= 0 || !int.TryParse(unknown.AsSpan(separator + 3), NumberStyles.None,
                 CultureInfo.InvariantCulture, out var version) || version < 1)
+        {
             throw new MessageEnvelopeException("The incoming message type must contain a stable name and positive version, for example 'orders;v=1'.");
+        }
+
         return new(unknown[..separator], version);
     }
 
     internal ConsumeDelegate ResolveDispatch(DefaultMessageContext context)
     {
         // Native receive already selected the delegate while decoding the wire identity.
-        if (context.ResolvedDispatch is { } resolved) return resolved;
-        if (_dispatch.TryGetValue(context.MessageType, out var dispatch)) return dispatch;
+        if (context.ResolvedDispatch is { } resolved)
+        {
+            return resolved;
+        }
+
+        if (_dispatch.TryGetValue(context.MessageType, out var dispatch))
+        {
+            return dispatch;
+        }
+
         throw new UnknownMessageTypeException(context.MessageType);
     }
 
@@ -162,8 +227,12 @@ public sealed partial class ConsumePipeline
     {
         foreach (var identity in _wireIdentities)
         {
-            if (identity.Identity == messageType) return identity.Text;
+            if (identity.Identity == messageType)
+            {
+                return identity.Text;
+            }
         }
+
         return messageType.ToString();
     }
 
@@ -173,16 +242,31 @@ public sealed partial class ConsumePipeline
     /// <remarks>Cancellation propagates. Failure-pipeline and scope-disposal errors propagate, preventing successful settlement.</remarks>
     public ValueTask ProcessAsync(DefaultMessageContext context)
     {
-        if (IsBatch) throw new InvalidOperationException("Use ProcessBatchAsync for a batch consumer.");
+        if (IsBatch)
+        {
+            throw new InvalidOperationException("Use ProcessBatchAsync for a batch consumer.");
+        }
+
         ArgumentNullException.ThrowIfNull(context);
         context.BeginProcessing(this);
-        if (Observer is { } observer) return observer.ProcessAsync(context, _process);
+
+        if (Observer is { } observer)
+        {
+            return observer.ProcessAsync(context, _process);
+        }
+
         return ProcessCoreAsync(context);
     }
 
-    private static ValueTask ProcessCoreAsync(DefaultMessageContext context) => context.CoreProcessing.Start();
+    private static ValueTask ProcessCoreAsync(DefaultMessageContext context)
+    {
+        return context.CoreProcessing.Start();
+    }
 
-    internal void ValidateSettlement(Disposition disposition) => _failures?.ValidateSettlement(disposition);
+    internal void ValidateSettlement(Disposition disposition)
+    {
+        _failures?.ValidateSettlement(disposition);
+    }
 
     internal ConsumeDelegate? Settlement => _settlement;
 
@@ -193,11 +277,21 @@ public sealed partial class ConsumePipeline
             context.LoggedSettlementError = null;
             return;
         }
+
         Observer?.Failed(context, error);
-        if (context.TryConsumeNativeSettlementError(error)) return;
+
+        if (context.TryConsumeNativeSettlementError(error))
+        {
+            return;
+        }
+
         try
         {
-            if (_logger?.IsEnabled(LogLevel.Error) != true) return;
+            if (_logger?.IsEnabled(LogLevel.Error) != true)
+            {
+                return;
+            }
+
             using var scope = _logger.BeginScope(ConsumeLog.CreateScope(context));
             var activity = Activity.Current;
             ConsumeLog.Failed(_logger, error, activity?.TraceId.ToString(), activity?.SpanId.ToString());
@@ -215,11 +309,20 @@ public sealed partial class ConsumePipeline
         context.LoggedSettlementError = error;
     }
 
-    private static ValueTask InvokeHandlerAsync(MessageContext context) => ((DefaultMessageContext)context).Dispatch(context);
+    private static ValueTask InvokeHandlerAsync(MessageContext context)
+    {
+        return ((DefaultMessageContext)context).Dispatch(context);
+    }
 
     internal void Return(DefaultMessageContext context)
     {
-        if (IsBatch) _contexts.TryReturn(context, context.PoolSlot);
-        else _contexts.TryReturn(context);
+        if (IsBatch)
+        {
+            _contexts.TryReturn(context, context.PoolSlot);
+        }
+        else
+        {
+            _contexts.TryReturn(context);
+        }
     }
 }

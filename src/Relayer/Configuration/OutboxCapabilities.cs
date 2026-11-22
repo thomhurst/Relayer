@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Transports;
 
 namespace Relayer;
 
@@ -7,7 +7,11 @@ namespace Relayer;
 internal sealed class OutboxCapabilities(IServiceScopeFactory scopes)
 {
     private readonly Lazy<Snapshot> _snapshot = new(() => Resolve(scopes));
-    internal Snapshot Get() => _snapshot.Value;
+
+    internal Snapshot Get()
+    {
+        return _snapshot.Value;
+    }
 
     private static Snapshot Resolve(IServiceScopeFactory scopes)
     {

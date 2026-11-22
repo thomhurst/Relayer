@@ -1,8 +1,8 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -17,7 +17,11 @@ public class ReceiveContinuationTests
     {
         var control = new Control();
         var services = new ServiceCollection().AddSingleton(control).AddScoped<Lifetime>();
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("continuation"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<Payload>("continuation");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
+        });
         await using var provider = services.BuildServiceProvider();
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), (context, _, _) =>
@@ -44,19 +48,27 @@ public class ReceiveContinuationTests
         var pending = receive.ProcessAsync(new(), cancellation.Token);
         Check(!pending.IsCompleted, "Handler did not suspend.");
         Check(control.Ambient.Value == "caller", "Processing changed caller execution context.");
-        if (cancel) cancellation.Cancel();
+
+        if (cancel)
+        {
+            cancellation.Cancel();
+        }
+
         control.BeforeDisposal = handlerFails ? "failure" : "handler";
         await Release(control, control.Handler, handlerFails ? new InvalidOperationException("handler") : null);
+
         if (handlerFails)
         {
             await control.FailureEntered.Task;
             Check(!control.DisposalEntered.Task.IsCompleted, "Disposal preceded durable failure completion.");
             await Release(control, control.Failure);
         }
+
         await control.DisposalEntered.Task;
         Check(!pending.IsCompleted, "Receive completed before disposal.");
         Check(control.Native!.Message is not null, "Native message cleared before disposal.");
         await Release(control, control.Disposal, disposalFails ? new ApplicationException("dispose") : null);
+
         if (disposalFails)
         {
             await Assert.That(async () => await pending).Throws<ApplicationException>().WithMessage("dispose");
@@ -74,6 +86,7 @@ public class ReceiveContinuationTests
             await Release(control, control.Settlement);
             await pending;
         }
+
         Check(control.Native!.Message is null, "Native message retained after completion.");
         Check(control.Ambient.Value == "caller", "Caller execution context changed after completion.");
     }
@@ -83,7 +96,11 @@ public class ReceiveContinuationTests
     {
         var control = new Control();
         var services = new ServiceCollection().AddSingleton(control).AddScoped<Lifetime>();
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("continuation"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<Payload>("continuation");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
+        });
         await using var provider = services.BuildServiceProvider();
         control.Disposal.SetResult();
         var consumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
@@ -109,37 +126,102 @@ public class ReceiveContinuationTests
         await Task.Run(() =>
         {
             control.Ambient.Value = "worker";
-            if (error is null) gate.SetResult();
-            else gate.SetException(error);
+
+            if (error is null)
+            {
+                gate.SetResult();
+            }
+            else
+            {
+                gate.SetException(error);
+            }
+
             Check(control.Ambient.Value == "worker", "Continuation changed completing worker execution context.");
         });
     }
+
     private static bool ServicesAvailable(MessageContext context)
     {
-        try { _ = context.Services; return true; }
-        catch (InvalidOperationException) { return false; }
+        try
+        {
+            _ = context.Services;
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
     }
+
     private static void Check(bool condition, string message)
     {
-        if (!condition) throw new InvalidOperationException(message);
+        if (!condition)
+        {
+            throw new InvalidOperationException(message);
+        }
     }
 
     [Message("continuation")]
     public sealed class Payload;
+
     public sealed class Control
     {
-        public AsyncLocal<string> Ambient { get; } = new();
-        public TaskCompletionSource Handler { get; set; } = new();
-        public TaskCompletionSource Failure { get; } = new();
-        public TaskCompletionSource Disposal { get; } = new();
-        public TaskCompletionSource Settlement { get; } = new();
-        public TaskCompletionSource FailureEntered { get; } = new();
-        public TaskCompletionSource DisposalEntered { get; set; } = new();
-        public TaskCompletionSource SettlementEntered { get; } = new();
-        public string? BeforeDisposal { get; set; }
-        public bool Disposed { get; set; }
-        internal NativeMessage<Incoming>? Native { get; set; }
+        public AsyncLocal<string> Ambient
+        {
+            get;
+        } = new();
+
+        public TaskCompletionSource Handler
+        {
+            get; set;
+        } = new();
+
+        public TaskCompletionSource Failure
+        {
+            get;
+        } = new();
+
+        public TaskCompletionSource Disposal
+        {
+            get;
+        } = new();
+
+        public TaskCompletionSource Settlement
+        {
+            get;
+        } = new();
+
+        public TaskCompletionSource FailureEntered
+        {
+            get;
+        } = new();
+
+        public TaskCompletionSource DisposalEntered
+        {
+            get; set;
+        } = new();
+
+        public TaskCompletionSource SettlementEntered
+        {
+            get;
+        } = new();
+
+        public string? BeforeDisposal
+        {
+            get; set;
+        }
+
+        public bool Disposed
+        {
+            get; set;
+        }
+
+        internal NativeMessage<Incoming>? Native
+        {
+            get; set;
+        }
     }
+
     public sealed class Handler(Control control) : IHandler<Payload>
     {
         public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
@@ -150,33 +232,62 @@ public class ReceiveContinuationTests
             return new(control.Handler.Task);
         }
     }
+
     private sealed class Lifetime(Control control) : IAsyncDisposable
     {
         public ValueTask DisposeAsync()
         {
             if (control.BeforeDisposal is { } expected)
+            {
                 Check(control.Ambient.Value == expected, "Disposal lost execution context.");
+            }
+
             control.Ambient.Value = "dispose";
             control.Disposed = true;
             control.DisposalEntered.SetResult();
             return new(control.Disposal.Task);
         }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "test/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     internal sealed class Incoming;
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => ReadOnlySequence<byte>.Empty;
-        public static int? GetDeliveryCount(Incoming message) => 1;
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return ReadOnlySequence<byte>.Empty;
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
-            value = name switch { "ce_id" => new("id"), "ce_type" => new("continuation;v=1"), _ => default };
+            value = name switch
+            {
+                "ce_id" => new("id"),
+                "ce_type" => new("continuation;v=1"),
+                _ => default
+            };
             return !value.IsEmpty;
         }
     }

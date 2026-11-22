@@ -15,12 +15,20 @@ public static class AspireConnectionExtensions
         ArgumentNullException.ThrowIfNull(builder);
         var connection = AspireConnectionConfiguration.ReadConnection(configuration, connectionName);
         var servers = connection.Split(',', StringSplitOptions.TrimEntries);
+
         if (Array.Exists(servers, string.IsNullOrWhiteSpace))
+        {
             throw new InvalidOperationException($"ConnectionStrings:{connectionName} must contain comma-separated Kafka bootstrap servers without empty entries.");
+        }
+
         builder.Options.Configure(options =>
         {
             options.BootstrapServers.Clear();
-            foreach (var server in servers) options.BootstrapServers.Add(server);
+
+            foreach (var server in servers)
+            {
+                options.BootstrapServers.Add(server);
+            }
         });
         return builder;
     }

@@ -25,12 +25,19 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
         await using var topics = await TopicsAsync("eos-commit", 1, token);
         await ProduceAsync(topics.Input, 1, token, Enumerable.Range(0, 10).ToArray());
         var control = new ExactlyOnceControl { Poison = 3 };
+
         using (var host = BuildHost(topics, control, TimeSpan.FromMilliseconds(200)))
         {
             await host.StartAsync(token);
-            while (await CommittedAsync(topics.Input, 0, token) != 10) await Task.Delay(50, token);
+
+            while (await CommittedAsync(topics.Input, 0, token) != 10)
+            {
+                await Task.Delay(50, token);
+            }
+
             await host.StopAsync(token);
         }
+
         var output = await ReadOutputAsync(topics.Output, 1, token);
         await Assert.That(output.Order()).IsEquivalentTo(Enumerable.Range(0, 10).Where(number => number != 3));
         await Assert.That(await ReadOutputAsync(topics.DeadLetter, 1, token)).IsEquivalentTo([3]);
@@ -45,26 +52,41 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
         await ProduceAsync(topics.Input, 1, token, Enumerable.Range(0, 10).ToArray());
         // The dead-letter copy of record 5 cannot be written, so the run fails inside its first transaction.
         var failing = new ExactlyOnceControl { Poison = 5 };
+
         using (var host = BuildHost(topics, failing, TimeSpan.FromMinutes(5), missingDeadLetter: true))
         {
             await host.StartAsync(token);
             var receiver = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
             // The copy times out, so the run ends cancelled rather than faulted; either is a failed run.
-            try { await receiver.Completion.WaitAsync(token); }
-            catch (Exception) when (!token.IsCancellationRequested) { }
+            try
+            {
+                await receiver.Completion.WaitAsync(token);
+            }
+            catch (Exception) when (!token.IsCancellationRequested)
+            {
+            }
+
             await Assert.That(receiver.Completion.IsCompletedSuccessfully).IsFalse();
             await Assert.That(failing.Handled.Count).IsEqualTo(5);
         }
+
         await Assert.That(await CommittedAsync(topics.Input, 0, token)).IsNull();
         await Assert.That(await ReadOutputAsync(topics.Output, 1, token)).IsEmpty();
 
         var recovered = new ExactlyOnceControl();
+
         using (var host = BuildHost(topics, recovered, TimeSpan.FromMilliseconds(200)))
         {
             await host.StartAsync(token);
-            while (await CommittedAsync(topics.Input, 0, token) != 10) await Task.Delay(50, token);
+
+            while (await CommittedAsync(topics.Input, 0, token) != 10)
+            {
+                await Task.Delay(50, token);
+            }
+
             await host.StopAsync(token);
         }
+
         var output = await ReadOutputAsync(topics.Output, 1, token);
         await Assert.That(output.Order()).IsEquivalentTo(Enumerable.Range(0, 10));
     }
@@ -82,16 +104,28 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
         using var second = BuildHost(topics, secondControl, TimeSpan.FromSeconds(1));
         await first.StartAsync(token);
         await ProduceBatchAsync();
-        while (firstControl.Handled.IsEmpty) await Task.Delay(20, token);
+
+        while (firstControl.Handled.IsEmpty)
+        {
+            await Task.Delay(20, token);
+        }
         // Joining revokes a partition from the first member while its transaction is open. Keep producing until the
         // second member owns a partition and handles a record.
         await second.StartAsync(token);
-        while (secondControl.Handled.IsEmpty) await ProduceBatchAsync();
+
+        while (secondControl.Handled.IsEmpty)
+        {
+            await ProduceBatchAsync();
+        }
         // Stopping commits the first member's transaction and hands its partition to the second member.
         await first.StopAsync(token);
         await ProduceBatchAsync();
+
         while (await CommittedAsync(topics.Input, 0, token) + await CommittedAsync(topics.Input, 1, token) != produced)
+        {
             await Task.Delay(50, token);
+        }
+
         await second.StopAsync(token);
         var output = await ReadOutputAsync(topics.Output, 2, token);
         await Assert.That(output.Order()).IsEquivalentTo(Enumerable.Range(0, produced));
@@ -122,14 +156,20 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
                 if (committed)
                 {
                     while (await CommittedAsync(topics.Input, 0, token) != 1)
+                    {
                         await WaitForProbeAsync(probe, token);
+                    }
                 }
                 else
                 {
                     while ((await ReadOutputAsync(topics.Output, 1, token, IsolationLevel.ReadUncommitted)).Count == 0)
+                    {
                         await WaitForProbeAsync(probe, token);
+                    }
+
                     await Assert.That(await CommittedAsync(topics.Input, 0, token)).IsNull();
                 }
+
                 await Assert.That(probe.HasExited).IsFalse();
             }
             finally
@@ -150,9 +190,15 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
             transactionalId: topics.Input + KafkaTransactionProbe.TransactionalIdSuffix))
         {
             await host.StartAsync(token);
-            while (await CommittedAsync(topics.Input, 0, token) != 2) await Task.Delay(50, token);
+
+            while (await CommittedAsync(topics.Input, 0, token) != 2)
+            {
+                await Task.Delay(50, token);
+            }
+
             await host.StopAsync(token);
         }
+
         await Assert.That(recovered.Handled.Order()).IsEquivalentTo(committed ? new[] { 1 } : [0, 1]);
         await Assert.That(await ReadOutputAsync(topics.Output, 1, token)).IsEquivalentTo([0, 1]);
     }
@@ -167,6 +213,7 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
 
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var stopping = new ExactlyOnceControl { Block = entered };
+
         using (var host = BuildHost(topics, stopping, TimeSpan.FromMinutes(5)))
         {
             await host.StartAsync(token);
@@ -175,6 +222,7 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
             await Assert.That(() => host.StopAsync(token)).Throws<InvalidOperationException>()
                 .WithMessageContaining("stopped before completing the records it read");
         }
+
         await Assert.That(stopping.Handled).IsEmpty();
         await Assert.That(await CommittedAsync(topics.Input, 0, token)).IsNull();
         await Assert.That(await ReadOutputAsync(topics.Output, 1, token)).IsEmpty();
@@ -182,16 +230,25 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
         using (var host = BuildHost(topics, new(), TimeSpan.FromMilliseconds(200)))
         {
             await host.StartAsync(token);
-            while (await CommittedAsync(topics.Input, 0, token) != 1) await Task.Delay(50, token);
+
+            while (await CommittedAsync(topics.Input, 0, token) != 1)
+            {
+                await Task.Delay(50, token);
+            }
+
             await host.StopAsync(token);
         }
+
         await Assert.That(await ReadOutputAsync(topics.Output, 1, token)).IsEquivalentTo([0]);
     }
 
     private static Task WaitForProbeAsync(Process probe, CancellationToken token)
     {
         if (probe.HasExited)
+        {
             throw new InvalidOperationException($"Kafka crash probe exited early with code {probe.ExitCode}.");
+        }
+
         return Task.Delay(50, token);
     }
 
@@ -199,13 +256,17 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
     {
         var assembly = typeof(KafkaExactlyOnceTests).Assembly.Location;
         var start = new ProcessStartInfo("dotnet") { UseShellExecute = false, CreateNoWindow = true };
+
         foreach (var arg in new[]
         {
             "exec", "--runtimeconfig", Path.ChangeExtension(assembly, ".runtimeconfig.json"),
             "--depsfile", Path.ChangeExtension(assembly, ".deps.json"), typeof(CrashProbeMarker).Assembly.Location,
             "kafka-transaction", broker.Bootstrap, topics.Input, topics.Output, committed.ToString(),
         })
+        {
             start.ArgumentList.Add(arg);
+        }
+
         return Process.Start(start) ?? throw new InvalidOperationException("Could not start the Kafka crash probe.");
     }
 
@@ -253,11 +314,17 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
                     };
                     consumer.Failures(new()
                     {
-                        RetryDelays = [], Jitter = 0,
+                        RetryDelays = [],
+                        Jitter = 0,
                         DeadLetterEndpoint = missingDeadLetter ? topics.Input + ".missing" : topics.DeadLetter,
                         CopyTimeout = missingDeadLetter ? TimeSpan.FromSeconds(2) : new FailureOptions().CopyTimeout,
                     });
-                    if (inbox) consumer.ConfigurePipeline(pipeline => pipeline.Use(new InboxBoundary()));
+
+                    if (inbox)
+                    {
+                        consumer.ConfigurePipeline(pipeline => pipeline.Use(new InboxBoundary()));
+                    }
+
                     consumer.Handler<ExactlyOnceHandler>();
                 });
             });
@@ -285,28 +352,40 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
         await reader.InitializeAsync(token);
         var numbers = new List<int>();
         var ended = new HashSet<int>();
+
         await foreach (var record in reader.ConsumeAsync(token))
         {
             if (record.IsPartitionEof)
             {
-                if (ended.Add(record.Partition) && ended.Count == partitions) break;
+                if (ended.Add(record.Partition) && ended.Count == partitions)
+                {
+                    break;
+                }
+
                 continue;
             }
+
             numbers.Add(int.Parse(Encoding.UTF8.GetString(record.Value).Split(':')[1].TrimEnd('}')));
         }
+
         return numbers;
     }
 
     private async Task ProduceAsync(string topic, int partitions, CancellationToken token, int[] numbers)
     {
         await using var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).BuildAsync(token);
+
         foreach (var number in numbers)
+        {
             await producer.ProduceAsync(new()
             {
-                Topic = topic, Partition = number % partitions, Key = BitConverter.GetBytes(number),
+                Topic = topic,
+                Partition = number % partitions,
+                Key = BitConverter.GetBytes(number),
                 Value = Encoding.UTF8.GetBytes($"{{\"Number\":{number}}}"),
                 Headers = new Dekaf.Serialization.Headers().Add("ce_id", "input-" + number).Add("ce_type", KafkaTransactionProbe.InputName + ";v=1"),
             }, token);
+        }
     }
 
     private async Task<Topics> TopicsAsync(string name, int partitions, CancellationToken token)
@@ -323,40 +402,76 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
 
     private sealed class Topics(string input, IAdminClient admin) : IAsyncDisposable
     {
-        internal string Input { get; } = input;
-        internal string Output { get; } = input + ".output";
-        internal string DeadLetter { get; } = input + ".dead-letter";
+        internal string Input
+        {
+            get;
+        } = input;
+
+        internal string Output
+        {
+            get;
+        } = input + ".output";
+
+        internal string DeadLetter
+        {
+            get;
+        } = input + ".dead-letter";
+
         public async ValueTask DisposeAsync()
         {
-            try { await admin.DeleteTopicsAsync([Input, Output, DeadLetter]); }
-            finally { await admin.DisposeAsync(); }
+            try
+            {
+                await admin.DeleteTopicsAsync([Input, Output, DeadLetter]);
+            }
+            finally
+            {
+                await admin.DisposeAsync();
+            }
         }
     }
 }
 
 [Message(KafkaTransactionProbe.InputName)]
 public sealed record ExactlyOnceInput(int Number);
+
 [Message("tests.kafka.eos.output")]
 public sealed record ExactlyOnceOutput(int Number);
 
 public sealed class ExactlyOnceControl
 {
-    internal int? Poison { get; init; }
-    internal TaskCompletionSource? Block { get; init; }
-    internal ConcurrentQueue<int> Handled { get; } = new();
+    internal int? Poison
+    {
+        get; init;
+    }
+
+    internal TaskCompletionSource? Block
+    {
+        get; init;
+    }
+
+    internal ConcurrentQueue<int> Handled
+    {
+        get;
+    } = new();
 }
 
 public sealed class ExactlyOnceHandler(ExactlyOnceControl control, ISender sender) : IHandler<ExactlyOnceInput>
 {
     public async ValueTask HandleAsync(ExactlyOnceInput message, MessageContext context, CancellationToken cancellationToken)
     {
-        if (message.Number == control.Poison) throw new InvalidOperationException("poison record");
+        if (message.Number == control.Poison)
+        {
+            throw new InvalidOperationException("poison record");
+        }
+
         await sender.SendAsync(new ExactlyOnceOutput(message.Number), cancellationToken);
+
         if (control.Block is { } entered)
         {
             entered.SetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
+
         control.Handled.Enqueue(message.Number);
     }
 }
@@ -370,5 +485,8 @@ internal sealed class InboxBoundary : IConsumeTransactionMiddleware, IConsumeInb
 {
     public bool Inbox => true;
 
-    public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next) => next(context);
+    public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
+    {
+        return next(context);
+    }
 }

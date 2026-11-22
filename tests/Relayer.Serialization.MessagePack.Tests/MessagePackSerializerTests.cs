@@ -1,10 +1,10 @@
-using Relayer.Transports;
 using System.Buffers;
 using MessagePack;
 using MessagePack.Formatters;
 using MessagePack.Resolvers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Relayer.Transports;
 
 namespace Relayer.Serialization.MessagePack.Tests;
 
@@ -38,7 +38,12 @@ public class MessagePackSerializerTests
         var bytes = MessagePackSerializer.Serialize(message, Options);
         var first = new Segment(bytes.AsMemory(0, 1));
         var last = first;
-        for (var i = 1; i < bytes.Length; i++) last = last.Append(bytes.AsMemory(i, 1));
+
+        for (var i = 1; i < bytes.Length; i++)
+        {
+            last = last.Append(bytes.AsMemory(i, 1));
+        }
+
         var result = new MessagePackMessageSerializer(Options).Deserialize<TestMessage>(new(first, 0, last, 1));
         await Assert.That(result.Text).IsEqualTo(message.Text);
         await Assert.That(result.Number).IsEqualTo(message.Number);
@@ -135,7 +140,11 @@ public class MessagePackSerializerTests
 
     private sealed class Segment : ReadOnlySequenceSegment<byte>
     {
-        public Segment(ReadOnlyMemory<byte> memory) => Memory = memory;
+        public Segment(ReadOnlyMemory<byte> memory)
+        {
+            Memory = memory;
+        }
+
         public Segment Append(ReadOnlyMemory<byte> memory)
         {
             var next = new Segment(memory) { RunningIndex = RunningIndex + Memory.Length };
@@ -147,39 +156,70 @@ public class MessagePackSerializerTests
     private sealed class SegmentedBuffer : IBufferWriter<byte>
     {
         private byte[] _buffer = new byte[8];
-        public List<byte> Bytes { get; } = [];
-        public int Advances { get; private set; }
+
+        public List<byte> Bytes
+        {
+            get;
+        } = [];
+
+        public int Advances
+        {
+            get; private set;
+        }
+
         public void Advance(int count)
         {
             Bytes.AddRange(_buffer.AsSpan(0, count));
             Advances++;
         }
+
         public Memory<byte> GetMemory(int sizeHint = 0)
         {
             _buffer = new byte[Math.Max(8, sizeHint)];
             return _buffer;
         }
-        public Span<byte> GetSpan(int sizeHint = 0) => GetMemory(sizeHint).Span;
+
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            return GetMemory(sizeHint).Span;
+        }
     }
 }
 
 [MessagePackObject]
 public sealed class TestMessage
 {
-    [Key(0)] public string Text { get; set; } = "";
-    [Key(1)] public int Number { get; set; }
+    [Key(0)]
+    public string Text
+    {
+        get; set;
+    } = "";
+
+    [Key(1)]
+    public int Number
+    {
+        get; set;
+    }
 }
 
 [MessagePackObject]
 public sealed class SecondMessage
 {
-    [Key(0)] public bool Flag { get; set; }
+    [Key(0)]
+    public bool Flag
+    {
+        get; set;
+    }
 }
 
 [MessagePackObject]
 public sealed class NestedMessage
 {
-    [Key(0)] public TestMessage? Message { get; set; }
+    [Key(0)]
+    public TestMessage? Message
+    {
+        get; set;
+    }
 }
 
 public sealed class UnregisteredMessage;

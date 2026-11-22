@@ -1,4 +1,5 @@
 using Relayer.Transports;
+
 namespace Relayer;
 
 /// <summary>Configures a message route and its portable send settings.</summary>
@@ -12,16 +13,27 @@ public sealed class RouteBuilder<TMessage>
     private Type? _nativeTransportOptions;
     private bool _built;
 
-    internal RouteBuilder(string destination) => _destination = destination;
+    internal RouteBuilder(string destination)
+    {
+        _destination = destination;
+    }
 
     /// <summary>Portable send settings captured when the route declaration is frozen.</summary>
     public SendRouteOptions SendOptions
     {
-        get => _sendOptions;
+        get
+        {
+            return _sendOptions;
+        }
         set
         {
             ArgumentNullException.ThrowIfNull(value);
-            if (_built) throw new InvalidOperationException("The route declaration is frozen.");
+
+            if (_built)
+            {
+                throw new InvalidOperationException("The route declaration is frozen.");
+            }
+
             _sendOptions = value;
         }
     }
@@ -46,7 +58,12 @@ public sealed class RouteBuilder<TMessage>
     private RouteBuilder<TMessage> SetOrderingKey(Delegate selector)
     {
         ArgumentNullException.ThrowIfNull(selector);
-        if (_built) throw new InvalidOperationException("The route declaration is frozen.");
+
+        if (_built)
+        {
+            throw new InvalidOperationException("The route declaration is frozen.");
+        }
+
         _orderingKey = selector;
         return this;
     }
@@ -55,9 +72,17 @@ public sealed class RouteBuilder<TMessage>
     internal RouteBuilder<TMessage> ConfigureNative(Type transportOptionsType, Delegate configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        if (_built) throw new InvalidOperationException("The route declaration is frozen.");
+
+        if (_built)
+        {
+            throw new InvalidOperationException("The route declaration is frozen.");
+        }
+
         if (_nativeConfigurator is not null)
+        {
             throw new InvalidOperationException("This route already has a native callback. Set every native property in one callback.");
+        }
+
         _nativeConfigurator = configure;
         _nativeTransportOptions = transportOptionsType;
         return this;
@@ -78,12 +103,16 @@ public sealed class RouteBuilder<TMessage>
         _built = true;
         var group = new DestinationGroup<TMessage>(destinations, selector);
         var routes = new IRouteDefinition[destinations.Length];
+
         for (var i = 0; i < routes.Length; i++)
+        {
             routes[i] = new RouteDefinition<TMessage>(destinations[i], _orderingKey, _sendOrderingKey, _sendOptions, group)
             {
                 NativeConfigurator = _nativeConfigurator,
                 NativeTransportOptionsType = _nativeTransportOptions,
             };
+        }
+
         return routes;
     }
 }

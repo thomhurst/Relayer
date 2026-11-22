@@ -6,13 +6,21 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 // including the database used by its external crash/recovery processes.
 public sealed class PostgreSqlLocalSessionFixture
 {
-    public Database CreateDatabase() => new(TestContext.Current!.Isolation.GetIsolatedName("local"));
+    public Database CreateDatabase()
+    {
+        return new(TestContext.Current!.Isolation.GetIsolatedName("local"));
+    }
 
     public sealed class Database(string name) : IAsyncDisposable
     {
         private string _adminConnectionString = "";
         private bool _created;
-        public string ConnectionString { get; private set; } = "";
+
+        public string ConnectionString
+        {
+            get; private set;
+        } = "";
+
         public async Task StartAsync()
         {
             _adminConnectionString = (await PostgreSqlSession.Current).Server.ConnectionString;
@@ -22,6 +30,7 @@ public sealed class PostgreSqlLocalSessionFixture
             _created = true;
             ConnectionString = new NpgsqlConnectionStringBuilder(_adminConnectionString) { Database = name }.ConnectionString;
         }
+
         public async Task DisconnectAsync(CancellationToken cancellationToken)
         {
             await SetAllowConnectionsAsync(false, cancellationToken);
@@ -34,12 +43,17 @@ public sealed class PostgreSqlLocalSessionFixture
                 WHERE datname = @database
                 """);
             command.Parameters.AddWithValue("database", name);
+
             if (await command.ExecuteScalarAsync(cancellationToken) is not true)
+            {
                 throw new InvalidOperationException("PostgreSQL did not terminate all sessions on the test database.");
+            }
         }
 
-        public Task ReconnectAsync(CancellationToken cancellationToken) =>
-            SetAllowConnectionsAsync(true, cancellationToken);
+        public Task ReconnectAsync(CancellationToken cancellationToken)
+        {
+            return SetAllowConnectionsAsync(true, cancellationToken);
+        }
 
         private async Task SetAllowConnectionsAsync(bool allow, CancellationToken cancellationToken)
         {
@@ -51,7 +65,11 @@ public sealed class PostgreSqlLocalSessionFixture
 
         public async ValueTask DisposeAsync()
         {
-            if (!_created) return;
+            if (!_created)
+            {
+                return;
+            }
+
             _created = false;
             await using var admin = NpgsqlDataSource.Create(_adminConnectionString);
             await using var command = admin.CreateCommand("DROP DATABASE " + PostgreSqlOutboxSchema.QuoteIdentifier(name) + " WITH (FORCE)");

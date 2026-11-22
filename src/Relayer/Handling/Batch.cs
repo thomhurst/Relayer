@@ -21,7 +21,10 @@ public readonly record struct BatchItem<TMessage>(TMessage Message, MessageConte
     private readonly int _index;
 
     internal BatchItem(TMessage message, MessageContext context, IBatchItemFailureTarget failures, long generation, int index)
-        : this(message, context) => (_failures, _generation, _index) = (failures, generation, index);
+        : this(message, context)
+    {
+        (_failures, _generation, _index) = (failures, generation, index);
+    }
 
     /// <summary>Marks this delivery as failed. Other items can still succeed.</summary>
     /// <remarks>Valid only during the handler invocation that supplied this item. Do not retain items or use them after returning.</remarks>
@@ -29,8 +32,12 @@ public readonly record struct BatchItem<TMessage>(TMessage Message, MessageConte
     public void Fail(Exception exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
+
         if (_failures is null)
+        {
             throw new InvalidOperationException("Only items supplied to an active batch handler can be marked as failed.");
+        }
+
         _failures.Fail(_generation, _index, exception);
     }
 }
@@ -43,13 +50,22 @@ internal interface IBatchItemFailureTarget
 /// <summary>The outcome of handling a batch.</summary>
 public sealed class BatchResult
 {
-    private BatchResult(Exception? error) => Error = error;
+    private BatchResult(Exception? error)
+    {
+        Error = error;
+    }
 
     /// <summary>All items not explicitly marked with <c>item.Fail(exception)</c> succeeded.</summary>
-    public static BatchResult Success { get; } = new(null);
+    public static BatchResult Success
+    {
+        get;
+    } = new(null);
 
     /// <summary>The exception that fails every item, or null when only explicitly marked items failed.</summary>
-    public Exception? Error { get; }
+    public Exception? Error
+    {
+        get;
+    }
 
     /// <summary>Reports that every item in the invocation failed.</summary>
     public static BatchResult Failure(Exception exception)

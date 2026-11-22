@@ -39,8 +39,10 @@ public readonly struct ServiceBusMessageContext
 
     /// <summary>The unchanged native non-session callback. For sessions, use SessionCallback.</summary>
     public ProcessMessageEventArgs Callback => _delivery.Callback;
+
     /// <summary>The unchanged native session callback, including session state and lock operations.</summary>
     public ProcessSessionMessageEventArgs SessionCallback => _delivery.SessionCallback;
+
     /// <summary>The unchanged native received message, including lock, session and sequence metadata.</summary>
     public ServiceBusReceivedMessage Message => _delivery.Message;
 
@@ -86,15 +88,23 @@ public readonly struct ServiceBusMessageContext
     }
 
     private ValueTask ExecuteAsync(ServiceBusDisposition operation, IDictionary<string, object>? properties = null,
-        string? reason = null, string? description = null) => _settlement is { } settlement
-        ? settlement.ExecuteAsync(_delivery, operation, properties, reason, description, _cancellationToken)
-        : new(_delivery.ExecuteAsync(operation, properties, reason, description, _cancellationToken));
+        string? reason = null, string? description = null)
+    {
+        return _settlement is { } settlement
+                ? settlement.ExecuteAsync(_delivery, operation, properties, reason, description, _cancellationToken)
+                : new(_delivery.ExecuteAsync(operation, properties, reason, description, _cancellationToken));
+    }
 
     private void EnsureUnsettled()
     {
         if (_request?.RequestedDisposition is not null)
+        {
             throw new InvalidOperationException("This delivery already has a settlement request. Do not combine native and portable settlement.");
+        }
+
         if (_delivery.Disposition.Kind == DispositionKind.SettledByHandler)
+        {
             throw new InvalidOperationException("This Service Bus delivery has already been settled by the handler.");
+        }
     }
 }

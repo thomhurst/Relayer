@@ -1,16 +1,16 @@
-using Relayer.Transports;
 using System.Buffers;
 using System.Data.Common;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
-using Microsoft.Extensions.Options;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Relayer.AzureServiceBus;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -42,26 +42,38 @@ public class ServiceBusSendBenchmarks
     private MeterListener? _metrics;
 
     [Params(false, true)]
-    public bool Metrics { get; set; }
+    public bool Metrics
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
     {
         _instrumentation = new();
         _tracing = new(Options.Create(new TracingOptions()), [], instrumentation: _instrumentation);
+
         if (Metrics)
         {
             _metrics = new()
             {
                 InstrumentPublished = (instrument, listener) =>
                 {
-                    if (ReferenceEquals(instrument.Meter.Scope, _instrumentation)) listener.EnableMeasurementEvents(instrument);
+                    if (ReferenceEquals(instrument.Meter.Scope, _instrumentation))
+                    {
+                        listener.EnableMeasurementEvents(instrument);
+                    }
                 },
             };
-            _metrics.SetMeasurementEventCallback<long>(static (_, _, _, _) => { });
-            _metrics.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
+            _metrics.SetMeasurementEventCallback<long>(static (_, _, _, _) =>
+            {
+            });
+            _metrics.SetMeasurementEventCallback<double>(static (_, _, _, _) =>
+            {
+            });
             _metrics.Start();
         }
+
         var connection = Environment.GetEnvironmentVariable("RELAYER_SERVICEBUS_CONNECTION_STRING")
             ?? throw new InvalidOperationException("Set RELAYER_SERVICEBUS_CONNECTION_STRING to a test Service Bus namespace.");
         var administration = Environment.GetEnvironmentVariable("RELAYER_SERVICEBUS_ADMIN_CONNECTION_STRING") ?? connection;
@@ -74,9 +86,13 @@ public class ServiceBusSendBenchmarks
         };
         // The SDK's parsed emulator flag is internal; inspect the explicit connection-string option.
         var connectionOptions = new DbConnectionStringBuilder { ConnectionString = administration };
+
         if (connectionOptions.TryGetValue("UseDevelopmentEmulator", out var emulatorOption)
             && bool.TryParse(emulatorOption.ToString(), out var useEmulator) && useEmulator)
+        {
             queueOptions.MaxSizeInMegabytes = 100;
+        }
+
         await _admin.CreateQueueAsync(queueOptions);
         _client = new(connection);
         _raw = _client.CreateSender(_queue);
@@ -97,7 +113,11 @@ public class ServiceBusSendBenchmarks
             builder.ServiceBus("benchmark-json", bus =>
             {
                 bus.TopologyMode = TopologyMode.None;
-                bus.Options.Configure(options => { options.Client = _client; options.Queues.Add(new(_queue)); });
+                bus.Options.Configure(options =>
+                {
+                    options.Client = _client;
+                    options.Queues.Add(new(_queue));
+                });
                 bus.Send<ServiceBusJsonOrder>(_queue);
             });
         });
@@ -114,15 +134,26 @@ public class ServiceBusSendBenchmarks
     private ServiceBusMessage NativeMessage()
     {
         var message = new ServiceBusMessage(_body);
-        foreach (var header in _headers) message.ApplicationProperties[header.Key] = header.Value.ToString();
+
+        foreach (var header in _headers)
+        {
+            message.ApplicationProperties[header.Key] = header.Value.ToString();
+        }
+
         return message;
     }
 
     [Benchmark(Baseline = true), BenchmarkCategory("Single")]
-    public Task RawSingle() => _raw.SendMessageAsync(NativeMessage());
+    public Task RawSingle()
+    {
+        return _raw.SendMessageAsync(NativeMessage());
+    }
 
     [Benchmark, BenchmarkCategory("Single")]
-    public ValueTask RelayerSingle() => _transport.SendAsync(_message, default);
+    public ValueTask RelayerSingle()
+    {
+        return _transport.SendAsync(_message, default);
+    }
 
     // Both paths serialize the same model and create a fresh CloudEvents envelope per send.
     // The raw path writes directly to SDK strings, without the transport-neutral UTF-8 buffer.
@@ -138,30 +169,70 @@ public class ServiceBusSendBenchmarks
     }
 
     [Benchmark, BenchmarkCategory("DefaultJson")]
-    public ValueTask RelayerJsonSingle() => _sender.SendAsync(_order);
+    public ValueTask RelayerJsonSingle()
+    {
+        return _sender.SendAsync(_order);
+    }
 
     [Benchmark(Baseline = true, OperationsPerInvoke = 32), BenchmarkCategory("Batch")]
     public async Task RawBatch()
     {
         using var batch = await _raw.CreateMessageBatchAsync();
+
         for (var i = 0; i < 32; i++)
-            if (!batch.TryAddMessage(NativeMessage())) throw new InvalidOperationException("The benchmark batch exceeds the native byte limit.");
+        {
+            if (!batch.TryAddMessage(NativeMessage()))
+            {
+                throw new InvalidOperationException("The benchmark batch exceeds the native byte limit.");
+            }
+        }
+
         await _raw.SendMessagesAsync(batch);
     }
 
     [Benchmark(OperationsPerInvoke = 32), BenchmarkCategory("Batch")]
-    public ValueTask RelayerBatch() => _transport.SendBatchAsync(_batch, default);
+    public ValueTask RelayerBatch()
+    {
+        return _transport.SendBatchAsync(_batch, default);
+    }
 
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        if (_scope is IAsyncDisposable asyncScope) await asyncScope.DisposeAsync();
-        else _scope?.Dispose();
-        if (_provider is not null) await _provider.DisposeAsync();
-        if (_transport is not null) await _transport.DisposeAsync();
-        if (_raw is not null) await _raw.DisposeAsync();
-        if (_client is not null) await _client.DisposeAsync();
-        if (_admin is not null && _queue is not null) await _admin.DeleteQueueAsync(_queue);
+        if (_scope is IAsyncDisposable asyncScope)
+        {
+            await asyncScope.DisposeAsync();
+        }
+        else
+        {
+            _scope?.Dispose();
+        }
+
+        if (_provider is not null)
+        {
+            await _provider.DisposeAsync();
+        }
+
+        if (_transport is not null)
+        {
+            await _transport.DisposeAsync();
+        }
+
+        if (_raw is not null)
+        {
+            await _raw.DisposeAsync();
+        }
+
+        if (_client is not null)
+        {
+            await _client.DisposeAsync();
+        }
+
+        if (_admin is not null && _queue is not null)
+        {
+            await _admin.DeleteQueueAsync(_queue);
+        }
+
         _metrics?.Dispose();
         _tracing?.Dispose();
         _instrumentation?.Dispose();
@@ -169,9 +240,15 @@ public class ServiceBusSendBenchmarks
 
     private sealed class NativeHeaders : IMessageHeaderWriter<ServiceBusMessage>
     {
-        public static void SetHeader(ServiceBusMessage message, string name, ReadOnlySpan<char> value) =>
+        public static void SetHeader(ServiceBusMessage message, string name, ReadOnlySpan<char> value)
+        {
             message.ApplicationProperties[name] = value.ToString();
-        public static void RemoveHeader(ServiceBusMessage message, string name) => message.ApplicationProperties.Remove(name);
+        }
+
+        public static void RemoveHeader(ServiceBusMessage message, string name)
+        {
+            message.ApplicationProperties.Remove(name);
+        }
     }
 }
 

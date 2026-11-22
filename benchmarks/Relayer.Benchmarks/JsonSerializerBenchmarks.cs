@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Buffers;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -6,6 +5,7 @@ using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -25,7 +25,10 @@ public class JsonSerializerBenchmarks
     private JsonTypeInfo<JsonOrder> _typeInfo = null!;
 
     [Params(1, 100)]
-    public int MessageTypeCount { get; set; }
+    public int MessageTypeCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -41,6 +44,7 @@ public class JsonSerializerBenchmarks
             {
                 builder.Infrastructure().MessageTypes.Add<JsonOrder>("bench.json-order");
             }
+
             builder.UseJsonSerializer(context);
         }).BuildServiceProvider();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();
@@ -82,11 +86,17 @@ public class JsonSerializerBenchmarks
 
     [Benchmark]
     [BenchmarkCategory("Read")]
-    public JsonOrder RelayerDeserialize() => _serializer.Deserialize<JsonOrder>(_source);
+    public JsonOrder RelayerDeserialize()
+    {
+        return _serializer.Deserialize<JsonOrder>(_source);
+    }
 
     [Benchmark]
     [BenchmarkCategory("Read")]
-    public JsonOrder ComposedDeserialize() => _read(_source);
+    public JsonOrder ComposedDeserialize()
+    {
+        return _read(_source);
+    }
 
     [GlobalCleanup]
     public void Cleanup()

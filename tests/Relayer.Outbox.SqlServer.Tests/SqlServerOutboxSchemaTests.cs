@@ -8,7 +8,10 @@ public sealed class SqlServerOutboxSchemaTests
     public async Task Invalid_identifiers_fail_before_database_access()
     {
         foreach (var schema in new[] { "", "bad\0name", new string('x', 129) })
+        {
             await Assert.ThrowsAsync<ArgumentException>(() => Task.FromResult(SqlServerOutboxSchema.CreateScript(new() { Schema = schema })));
+        }
+
         await Assert.ThrowsAsync<ArgumentException>(() => Task.FromResult(SqlServerOutboxSchema.CreateScript(new() { TablePrefix = new string('x', 128) })));
         await Assert.ThrowsAsync<ArgumentNullException>(() => Task.FromResult(SqlServerOutboxSchema.CreateScript(new() { TablePrefix = null! })));
     }

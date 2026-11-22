@@ -42,7 +42,9 @@ public class GooglePubSubTests
     public async Task Registration_rejects_missing_native_clients_before_connecting()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(relayer => relayer.GooglePubSub("events", _ => { }));
+        services.AddRelayer(relayer => relayer.GooglePubSub("events", _ =>
+        {
+        }));
         await using var provider = services.BuildServiceProvider();
         await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<InvalidOperationException>().WithMessageContaining("prepared native");
     }
@@ -66,7 +68,11 @@ public class GooglePubSubTests
         var count = 0;
         fixture.RegisterConsumer((incoming, _) =>
         {
-            if (Interlocked.Increment(ref count) == 1) return new(Disposition.Redeliver(TimeSpan.Zero));
+            if (Interlocked.Increment(ref count) == 1)
+            {
+                return new(Disposition.Redeliver(TimeSpan.Zero));
+            }
+
             redelivered.TrySetResult(incoming.Message.Clone());
             return new(Disposition.Complete);
         });
@@ -95,7 +101,11 @@ public class GooglePubSubTests
         await using var lease = await PubSubFixture.CreateAsync(tracing, token);
         var fixture = (PubSubFixture)lease;
         var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        fixture.RegisterConsumer((_, _) => { delivered.TrySetResult(); return new(Disposition.Complete); });
+        fixture.RegisterConsumer((_, _) =>
+        {
+            delivered.TrySetResult();
+            return new(Disposition.Complete);
+        });
         // Success selects the HTTP/2 handshake failure; Shutdown is Unix EPIPE (broken pipe).
         var failure = socketError == System.Net.Sockets.SocketError.Success
             ? new System.Net.Http.HttpIOException(System.Net.Http.HttpRequestError.InvalidResponse,
@@ -105,17 +115,37 @@ public class GooglePubSubTests
                 new System.Net.Sockets.SocketException((int)socketError));
         fixture.InjectInitialWriteFailure(failure);
         var original = fixture.Transport;
-        if (reconnectWhileRunning) await fixture.DisconnectBeforeStartAsync(token);
+
+        if (reconnectWhileRunning)
+        {
+            await fixture.DisconnectBeforeStartAsync(token);
+        }
+
         await original.StartAsync(token);
         await Assert.That(async () => await fixture.ConsumerCompletion.WaitAsync(token)).Throws<IOException>();
-        if (!reconnectWhileRunning) await Assert.That(fixture.IsExpectedOutageFailure(failure)).IsTrue();
+
+        if (!reconnectWhileRunning)
+        {
+            await Assert.That(fixture.IsExpectedOutageFailure(failure)).IsTrue();
+        }
+
         await Assert.That(fixture.IsExpectedOutageFailure(new IOException("Unrelated failure"))).IsFalse();
         await Assert.That(fixture.IsExpectedOutageFailure(new System.Net.Http.HttpIOException(
             System.Net.Http.HttpRequestError.InvalidResponse, "A different connection failed."))).IsFalse();
-        if (!reconnectWhileRunning) await Assert.That(async () => await original.StopAsync(token)).Throws<AggregateException>();
+
+        if (!reconnectWhileRunning)
+        {
+            await Assert.That(async () => await original.StopAsync(token)).Throws<AggregateException>();
+        }
+
         await fixture.ReconnectAsync(token);
         await Assert.That(ReferenceEquals(original, fixture.Transport)).IsFalse();
-        if (!reconnectWhileRunning) await fixture.Transport.StartAsync(token);
+
+        if (!reconnectWhileRunning)
+        {
+            await fixture.Transport.StartAsync(token);
+        }
+
         await fixture.Transport.SendAsync(new(fixture.Destination, "recovered"u8.ToArray()), token);
         await delivered.Task.WaitAsync(token);
         await fixture.Transport.StopAsync(token);
@@ -134,9 +164,15 @@ public class GooglePubSubTests
         {
             entered.TrySetResult();
             await release.Task.WaitAsync(cancellation);
-            if (incoming.Message.Data.ToStringUtf8() != "durable") throw new InvalidOperationException("Borrowed body changed.");
+
+            if (incoming.Message.Data.ToStringUtf8() != "durable")
+            {
+                throw new InvalidOperationException("Borrowed body changed.");
+            }
+
             return Disposition.Complete;
         });
+
         try
         {
             await fixture.Transport.StartAsync(token);
@@ -147,7 +183,10 @@ public class GooglePubSubTests
             release.TrySetResult();
             await stopping;
         }
-        finally { release.TrySetResult(); }
+        finally
+        {
+            release.TrySetResult();
+        }
     }
 
     [Test]
@@ -176,31 +215,56 @@ public class GooglePubSubTests
                 {
                     options.Publisher = broker.Publisher;
                     options.Subscriber = broker.Subscriber;
-                    options.PublisherSettings = new() { EnableMessageOrdering = true };
+                    options.PublisherSettings = new()
+                    {
+                        EnableMessageOrdering = true
+                    };
                     options.Topics.Add(TopicName.Parse(topic));
                     options.Topics.Add(TopicName.Parse(deadLetter));
-                    options.Subscriptions.Add(new() { Name = subscription, Topic = topic, AckDeadlineSeconds = 10 });
-                    options.Subscriptions.Add(new() { Name = deadSubscription, Topic = deadLetter, AckDeadlineSeconds = 10 });
+                    options.Subscriptions.Add(new()
+                    {
+                        Name = subscription,
+                        Topic = topic,
+                        AckDeadlineSeconds = 10
+                    });
+                    options.Subscriptions.Add(new()
+                    {
+                        Name = deadSubscription,
+                        Topic = deadLetter,
+                        AckDeadlineSeconds = 10
+                    });
                 });
                 transport.Send<PubSubOrder>(topic);
                 transport.Consume(subscription, consumer =>
                 {
-                    consumer.Failures(new() { DeadLetterEndpoint = deadLetter, RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = deadLetter,
+                        RetryDelays = new[] { TimeSpan.Zero },
+                        Jitter = 0
+                    });
                     consumer.Handler<PubSubHandler>();
                 });
             });
         });
         using var host = builder.Build();
         await host.StartAsync(token);
+
         using (var scope = host.Services.CreateScope())
         {
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
             await sender.SendWithoutOutboxAsync(new PubSubOrder(-1), static options => options.GooglePubSub(static message => message.OrderingKey = "external-key"), cancellationToken: token);
             await sender.SendWithoutOutboxAsync(new PubSubOrder(42), cancellationToken: token);
         }
+
         await Assert.That(await handled.Values.Reader.ReadAsync(token)).IsEqualTo(42);
         var dead = await broker.Subscriber.PullAsync(deadSubscription, 1, token);
-        while (dead.ReceivedMessages.Count == 0) dead = await broker.Subscriber.PullAsync(deadSubscription, 1, token);
+
+        while (dead.ReceivedMessages.Count == 0)
+        {
+            dead = await broker.Subscriber.PullAsync(deadSubscription, 1, token);
+        }
+
         var poison = dead.ReceivedMessages[0].Message;
         await Assert.That(poison.Data.ToStringUtf8()).Contains("-1");
         await Assert.That(poison.OrderingKey).IsEqualTo("external-key");
@@ -215,26 +279,47 @@ public class GooglePubSubTests
         // Existing subscriptions are never rewritten to satisfy a changed declaration.
         var native = await broker.Subscriber.GetSubscriptionAsync(subscription, token);
         native.AckDeadlineSeconds = 20;
-        await broker.Subscriber.UpdateSubscriptionAsync(new() { Subscription = native, UpdateMask = new() { Paths = { "ack_deadline_seconds" } } }, token);
+        await broker.Subscriber.UpdateSubscriptionAsync(new()
+        {
+            Subscription = native,
+            UpdateMask = new()
+            {
+                Paths = { "ack_deadline_seconds" }
+            }
+        }, token);
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Single()).Contains("AckDeadlineSeconds");
     }
 }
 
 [Message("tests.pubsub.order")]
 public sealed record PubSubOrder(int Value);
+
 public sealed class PubSubControl
 {
-    internal Channel<int> Values { get; } = Channel.CreateUnbounded<int>();
+    internal Channel<int> Values
+    {
+        get;
+    } = Channel.CreateUnbounded<int>();
 }
+
 public sealed class PubSubHandler(PubSubControl control) : IHandler<PubSubOrder>
 {
     public ValueTask HandleAsync(PubSubOrder message, MessageContext context, CancellationToken cancellationToken)
     {
-        if (message.Value < 0) throw new InvalidOperationException("poison");
-        if (context.GooglePubSub().Message.Data.IsEmpty) throw new InvalidOperationException("Native message is missing.");
+        if (message.Value < 0)
+        {
+            throw new InvalidOperationException("poison");
+        }
+
+        if (context.GooglePubSub().Message.Data.IsEmpty)
+        {
+            throw new InvalidOperationException("Native message is missing.");
+        }
+
         control.Values.Writer.TryWrite(message.Value);
         return default;
     }
 }
+
 [JsonSerializable(typeof(PubSubOrder))]
 internal partial class PubSubJson : JsonSerializerContext;

@@ -36,13 +36,58 @@ public class PooledBuilderCompletionBenchmarks
     }
 
     private PooledBuilderCompletionFixture _fixture = null!;
-    [Params(1, 64)] public int Concurrency { get; set; }
-    [Params(false, true)] public bool Asynchronous { get; set; }
-    [Params(false, true)] public bool AmbientContext { get; set; }
-    [GlobalSetup] public void Setup() => _fixture = new(Concurrency, Asynchronous, AmbientContext);
-    [Benchmark(Baseline = true)] public long Native() => _fixture.Run(PooledBuilderCompletionFixture.Mode.Native);
-    [Benchmark] public long OwnedCompletion() => _fixture.Run(PooledBuilderCompletionFixture.Mode.Owned);
-    [Benchmark] public long PooledVoid() => _fixture.Run(PooledBuilderCompletionFixture.Mode.PooledVoid);
-    [Benchmark] public long PooledResult() => _fixture.Run(PooledBuilderCompletionFixture.Mode.PooledResult);
-    [GlobalCleanup] public void Cleanup() => _fixture.Dispose();
+
+    [Params(1, 64)]
+    public int Concurrency
+    {
+        get; set;
+    }
+
+    [Params(false, true)]
+    public bool Asynchronous
+    {
+        get; set;
+    }
+
+    [Params(false, true)]
+    public bool AmbientContext
+    {
+        get; set;
+    }
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _fixture = new(Concurrency, Asynchronous, AmbientContext);
+    }
+
+    [Benchmark(Baseline = true)]
+    public long Native()
+    {
+        return _fixture.Run(PooledBuilderCompletionFixture.Mode.Native);
+    }
+
+    [Benchmark]
+    public long OwnedCompletion()
+    {
+        return _fixture.Run(PooledBuilderCompletionFixture.Mode.Owned);
+    }
+
+    [Benchmark]
+    public long PooledVoid()
+    {
+        return _fixture.Run(PooledBuilderCompletionFixture.Mode.PooledVoid);
+    }
+
+    [Benchmark]
+    public long PooledResult()
+    {
+        return _fixture.Run(PooledBuilderCompletionFixture.Mode.PooledResult);
+    }
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        _fixture.Dispose();
+    }
 }

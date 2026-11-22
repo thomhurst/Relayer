@@ -8,7 +8,10 @@ public class KafkaTopologyConfigurationTests
     public async Task None_skips_native_admin_calls_even_with_explicit_topics()
     {
         var options = new KafkaTransportOptions { ConfigureAdmin = _ => throw new InvalidOperationException("Unexpected admin client.") };
-        options.Topics.Add(new() { Name = "orders" });
+        options.Topics.Add(new()
+        {
+            Name = "orders"
+        });
         await Assert.That((await KafkaTopology.ApplyAsync("events", options, ["orders"], TopologyMode.None, default))
             .Differences.Count).IsEqualTo(0);
     }

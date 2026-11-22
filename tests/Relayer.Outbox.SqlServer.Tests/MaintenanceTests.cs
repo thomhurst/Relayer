@@ -1,7 +1,7 @@
-using Microsoft.Data.SqlClient;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Text;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -50,31 +50,52 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         var logger = new FailureLogger();
         using var worker = new SqlServerMaintenanceWorker(
             new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString, new()
-        {
-            TablePrefix = data.Options.TablePrefix, RecoveryDelay = TimeSpan.Zero,
-            SweepInterval = TimeSpan.FromMilliseconds(1)
-        }, [new Transport()], logger);
+            {
+                TablePrefix = data.Options.TablePrefix,
+                RecoveryDelay = TimeSpan.Zero,
+                SweepInterval = TimeSpan.FromMilliseconds(1)
+            }, [new Transport()], logger);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await worker.StartAsync(timeout.Token);
+
         try
         {
             // The second sweep error proves the first iteration has finished its cleanup attempt.
             await logger.SecondFailure.Task.WaitAsync(timeout.Token);
             await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {inbox}")).IsEqualTo(0L);
         }
-        finally { await worker.StopAsync(timeout.Token); }
+        finally
+        {
+            await worker.StopAsync(timeout.Token);
+        }
     }
 
     private sealed class FailureLogger : ILogger<SqlServerMaintenanceWorker>
     {
         private int _failures;
-        public TaskCompletionSource SecondFailure { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public TaskCompletionSource SecondFailure
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (eventId.Id == 1 && Interlocked.Increment(ref _failures) == 2) SecondFailure.TrySetResult();
+            if (eventId.Id == 1 && Interlocked.Increment(ref _failures) == 2)
+            {
+                SecondFailure.TrySetResult();
+            }
         }
     }
 
@@ -86,17 +107,26 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var transport = new Transport(async token => { entered.TrySetResult(); await release.Task.WaitAsync(token); });
+        var transport = new Transport(async token =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(token);
+        });
         using var first = Worker(data, transport);
         using var rival = Worker(data, new());
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var pass = first.SweepAsync(timeout.Token).AsTask();
+
         try
         {
             await entered.Task.WaitAsync(timeout.Token);
             await Assert.That(await rival.SweepAsync(timeout.Token)).IsEqualTo(0);
         }
-        finally { release.TrySetResult(); }
+        finally
+        {
+            release.TrySetResult();
+        }
+
         await Assert.That(await pass).IsEqualTo(1);
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
         await Assert.That(await rival.SweepAsync(timeout.Token)).IsEqualTo(0);
@@ -112,7 +142,11 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow.AddDays(-1));
         using var timeout = new CancellationTokenSource();
-        var transport = new Transport(token => { timeout.Cancel(); return ValueTask.FromCanceled(token); });
+        var transport = new Transport(token =>
+        {
+            timeout.Cancel();
+            return ValueTask.FromCanceled(token);
+        });
         using var first = Worker(data, transport);
         await Assert.ThrowsAsync<OperationCanceledException>(() => first.SweepAsync(timeout.Token).AsTask());
         var rows = new OutboxRecord[1];
@@ -134,7 +168,10 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
-            if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "relayer.outbox.pending") meterListener.EnableMeasurementEvents(instrument);
+            if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "relayer.outbox.pending")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((_, value, _, _) => delta += value);
         listener.Start();
@@ -143,12 +180,22 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         var transport = new Transport(token =>
         {
             // MaxBatchSize=1: the first completion has executed before the second send.
-            if (++sends == 2) { cancellation.Cancel(); return ValueTask.FromCanceled(token); }
+            if (++sends == 2)
+            {
+                cancellation.Cancel();
+                return ValueTask.FromCanceled(token);
+            }
+
             return ValueTask.CompletedTask;
         });
         using var worker = new SqlServerMaintenanceWorker(
             new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString,
-            new() { TablePrefix = data.Options.TablePrefix, BatchSize = 4, RecoveryDelay = TimeSpan.Zero },
+            new()
+            {
+                TablePrefix = data.Options.TablePrefix,
+                BatchSize = 4,
+                RecoveryDelay = TimeSpan.Zero
+            },
             [transport], NullLogger<SqlServerMaintenanceWorker>.Instance, instrumentation: instrumentation);
         await Assert.ThrowsAsync<OperationCanceledException>(() => worker.SweepAsync(cancellation.Token).AsTask());
         await Assert.That(delta).IsEqualTo(0L);
@@ -171,14 +218,21 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
             if (instrument == instrumentation.OutboxPending || instrument == instrumentation.OutboxPoison)
+            {
                 meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((instrument, value, _, _) =>
             Interlocked.Add(ref instrument == instrumentation.OutboxPending ? ref pending : ref poisoned, value));
         listener.Start();
         using var worker = new SqlServerMaintenanceWorker(
             new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString,
-            new() { TablePrefix = data.Options.TablePrefix, BatchSize = 4, RecoveryDelay = TimeSpan.Zero },
+            new()
+            {
+                TablePrefix = data.Options.TablePrefix,
+                BatchSize = 4,
+                RecoveryDelay = TimeSpan.Zero
+            },
             [new Transport()], NullLogger<SqlServerMaintenanceWorker>.Instance, instrumentation: instrumentation);
         await Assert.That(await worker.SweepAsync()).IsEqualTo(1);
         await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {data.Table}")).IsEqualTo(0L);
@@ -195,33 +249,56 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow.AddDays(-1));
         using var headers = new MemoryStream();
+
         using (var writer = new BinaryWriter(headers, Encoding.UTF8, leaveOpen: true))
         {
-            writer.Write(1); writer.Write(1); writer.Write(5); writer.Write(Encoding.UTF8.GetBytes("ce_id"));
-            var value = Encoding.UTF8.GetBytes(id.ToString()); writer.Write(value.Length); writer.Write(value);
+            writer.Write(1);
+            writer.Write(1);
+            writer.Write(5);
+            writer.Write(Encoding.UTF8.GetBytes("ce_id"));
+            var value = Encoding.UTF8.GetBytes(id.ToString());
+            writer.Write(value.Length);
+            writer.Write(value);
         }
+
         var acceptances = $"[dbo].[{data.Options.TablePrefix}acceptances]";
         await data.Execute($"UPDATE {data.Table} SET headers=0x{Convert.ToHexString(headers.ToArray())}; CREATE TABLE {acceptances} (id uniqueidentifier NOT NULL)");
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+
         foreach (var argument in new[] { "exec", "--runtimeconfig", Path.ChangeExtension(typeof(MaintenanceTests).Assembly.Location, ".runtimeconfig.json"),
             "--depsfile", Path.ChangeExtension(typeof(MaintenanceTests).Assembly.Location, ".deps.json"), typeof(CrashProbeMarker).Assembly.Location,
             "sqlserver", new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString, data.Options.TablePrefix })
+        {
             start.ArgumentList.Add(argument);
+        }
+
         using var child = Process.Start(start)!;
         var errors = child.StandardError.ReadToEndAsync();
+
         try
         {
             var signal = await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
             if (signal != "BROKER_ACCEPTED")
             {
-                if (!child.HasExited) { child.Kill(entireProcessTree: true); await child.WaitForExitAsync(); }
+                if (!child.HasExited)
+                {
+                    child.Kill(entireProcessTree: true);
+                    await child.WaitForExitAsync();
+                }
+
                 throw new InvalidOperationException($"Crash probe did not reach send: {signal}; {await errors}");
             }
         }
         finally
         {
-            if (!child.HasExited) { child.Kill(entireProcessTree: true); await child.WaitForExitAsync(); }
+            if (!child.HasExited)
+            {
+                child.Kill(entireProcessTree: true);
+                await child.WaitForExitAsync();
+            }
         }
+
         await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {acceptances} WHERE id='{id}'")).IsEqualTo(1L);
         var rows = new OutboxRecord[1];
         await Assert.That(await data.Store().ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default)).IsEqualTo(1);
@@ -235,7 +312,11 @@ public sealed class MaintenanceTests(SqlServerFixture database)
     [Test]
     public async Task Failure_threshold_transfers_unordered_rows_and_fences_stale_tokens()
     {
-        var data = new StoreData(database, new() { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("poison") + "_", MaxDispatchAttempts = 2 });
+        var data = new StoreData(database, new()
+        {
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("poison") + "_",
+            MaxDispatchAttempts = 2
+        });
         await data.Create();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow);
@@ -255,7 +336,11 @@ public sealed class MaintenanceTests(SqlServerFixture database)
     [Test]
     public async Task Exhausted_ordered_row_parks_and_cleanup_preserves_its_dead_barrier()
     {
-        var data = new StoreData(database, new() { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("park") + "_", MaxDispatchAttempts = 1 });
+        var data = new StoreData(database, new()
+        {
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("park") + "_",
+            MaxDispatchAttempts = 1
+        });
         await data.Create();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow, lane: 3);
@@ -275,7 +360,11 @@ public sealed class MaintenanceTests(SqlServerFixture database)
     [Test]
     public async Task Unregistered_transport_consumes_recovery_attempts_without_stalling_other_groups()
     {
-        var data = new StoreData(database, new() { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("missing") + "_", MaxDispatchAttempts = 2 });
+        var data = new StoreData(database, new()
+        {
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("missing") + "_",
+            MaxDispatchAttempts = 2
+        });
         await data.Create();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow.AddDays(-1));
@@ -290,10 +379,19 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {SqlServerOutboxSchema.DeadTable(data.Options)} WHERE last_error LIKE '%missing%'")).IsEqualTo(1L);
     }
 
-    private SqlServerMaintenanceWorker Worker(StoreData data, Transport transport) => new(
-        new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master", MaxPoolSize = 2 }.ConnectionString,
-        new() { TablePrefix = data.Options.TablePrefix, MaxDispatchAttempts = data.Options.MaxDispatchAttempts, BatchSize = 4, RecoveryDelay = TimeSpan.Zero },
-        [transport], NullLogger<SqlServerMaintenanceWorker>.Instance);
+    private SqlServerMaintenanceWorker Worker(StoreData data, Transport transport)
+    {
+        return new(
+                new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master", MaxPoolSize = 2 }.ConnectionString,
+                new()
+                {
+                    TablePrefix = data.Options.TablePrefix,
+                    MaxDispatchAttempts = data.Options.MaxDispatchAttempts,
+                    BatchSize = 4,
+                    RecoveryDelay = TimeSpan.Zero
+                },
+                [transport], NullLogger<SqlServerMaintenanceWorker>.Instance);
+    }
 
     private async Task<long> Scalar(string sql)
     {
@@ -305,22 +403,58 @@ public sealed class MaintenanceTests(SqlServerFixture database)
 
     private sealed class Transport(Func<CancellationToken, ValueTask>? send = null) : ITransport
     {
-        public int Sent { get; private set; }
+        public int Sent
+        {
+            get; private set;
+        }
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = 1 };
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = 1
+            };
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (send is not null) await send(cancellationToken);
+            if (send is not null)
+            {
+                await send(cancellationToken);
+            }
+
             Sent++;
         }
+
         public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
         {
-            for (var i = 0; i < messages.Length; i++) await SendAsync(messages.Span[i], cancellationToken);
+            for (var i = 0; i < messages.Length; i++)
+            {
+                await SendAsync(messages.Span[i], cancellationToken);
+            }
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }
 
@@ -331,7 +465,10 @@ public sealed class MaintenanceRegistrationTests
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["BatchSize"] = "7", ["CleanupBatchLimit"] = "3", ["DeadRetention"] = "infinite", ["InboxRetention"] = "2.00:00:00"
+            ["BatchSize"] = "7",
+            ["CleanupBatchLimit"] = "3",
+            ["DeadRetention"] = "infinite",
+            ["InboxRetention"] = "2.00:00:00"
         }).Build();
         var services = new ServiceCollection().AddLogging();
         services.AddRelayerSqlServerMaintenance("a", "Server=unused;Database=orders", config);

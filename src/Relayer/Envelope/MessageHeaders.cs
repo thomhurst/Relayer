@@ -5,7 +5,10 @@ public readonly struct MessageHeaders<TIncoming, TReader>(TIncoming message, Hea
     where TReader : IMessageHeaderReader<TIncoming>
 {
     /// <summary>Looks up one native header on demand.</summary>
-    public bool TryGetValue(string name, out WireString value) => TReader.TryGetHeader(message, name, out value);
+    public bool TryGetValue(string name, out WireString value)
+    {
+        return TReader.TryGetHeader(message, name, out value);
+    }
 
     /// <summary>Gets the CloudEvents wire type, or the caller's explicit mapping in raw mode.</summary>
     /// <remarks>Raw mode does not inspect CloudEvents headers, even when the native message contains them.</remarks>

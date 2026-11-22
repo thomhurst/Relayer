@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using System.Text;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -37,6 +37,7 @@ public class OutboxSequenceTests
     {
         internal int Reads;
         internal WireString Value = value;
+
         public override bool TryGetValue(string name, out WireString result)
         {
             Reads++;
@@ -48,11 +49,20 @@ public class OutboxSequenceTests
     private sealed class Context(MessageHeaders headers) : MessageContext
     {
         public override string MessageId => "unused";
+
         public override MessageType MessageType => default;
+
         public override MessageHeaders Headers => headers;
+
         public override int Attempt => 1;
+
         public override IServiceProvider Services => throw new NotSupportedException();
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

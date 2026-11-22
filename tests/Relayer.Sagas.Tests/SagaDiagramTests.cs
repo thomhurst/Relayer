@@ -40,6 +40,7 @@ public sealed class SagaDiagramTests
         var first = new SagaDiagramBuilder().State("i", initial: true).State("I", final: true)
             .Transition("i", "I", "z").Transition("i", "I", "a").Build().ToMermaid();
         var previous = CultureInfo.CurrentCulture;
+
         try
         {
             CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("tr-TR");
@@ -47,7 +48,10 @@ public sealed class SagaDiagramTests
                 .Transition("i", "I", "a").Transition("i", "I", "z").Build();
             await Assert.That(second.ToMermaid()).IsEqualTo(first);
         }
-        finally { CultureInfo.CurrentCulture = previous; }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
     }
 
     [Test]
@@ -67,14 +71,14 @@ public sealed class SagaDiagramTests
     [Test]
     public async Task Labels_cannot_add_syntax_comments_html_or_entity_escapes()
     {
-        const string label = "A\"\n[*] --> injected: <script>&#quot; %% direction LR 雪😀";
-        var diagram = new SagaDiagramBuilder().State(label, initial: true)
-            .Transition(label, label, label).Build();
+        const string Label = "A\"\n[*] --> injected: <script>&#quot; %% direction LR 雪😀";
+        var diagram = new SagaDiagramBuilder().State(Label, initial: true)
+            .Transition(Label, Label, Label).Build();
         var text = diagram.ToMermaid();
-        const string encoded = "A#34;#10;#91;#42;#93;#32;--#62;#32;injected#58;#32;#60;script#62;#38;#35;quot#59;#32;#37;#37;#32;direction#32;LR#32;#38634;#128512;";
-        await Assert.That(text).IsEqualTo($"stateDiagram-v2\n    state \"{encoded}\" as s0\n    [*] --> s0\n    s0 --> s0 : {encoded}\n");
-        await Assert.That(diagram.States[0].Name).IsEqualTo(label);
-        await Assert.That(diagram.Transitions[0].Trigger).IsEqualTo(label);
+        const string Encoded = "A#34;#10;#91;#42;#93;#32;--#62;#32;injected#58;#32;#60;script#62;#38;#35;quot#59;#32;#37;#37;#32;direction#32;LR#32;#38634;#128512;";
+        await Assert.That(text).IsEqualTo($"stateDiagram-v2\n    state \"{Encoded}\" as s0\n    [*] --> s0\n    s0 --> s0 : {Encoded}\n");
+        await Assert.That(diagram.States[0].Name).IsEqualTo(Label);
+        await Assert.That(diagram.Transitions[0].Trigger).IsEqualTo(Label);
     }
 
     [Test]

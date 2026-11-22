@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -5,7 +6,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Diagnostics.CodeAnalysis;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer;
@@ -25,9 +25,15 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
         _ = SqlServerDirectDispatcher.ValidateConnectionString(connectionString);
         options ??= new();
         _ = options.Validate();
+
         foreach (var descriptor in services)
+        {
             if (descriptor.ServiceType == typeof(SqlServerMaintenanceWorker) && Equals(descriptor.ServiceKey, name))
+            {
                 throw new InvalidOperationException($"SQL Server maintenance worker '{name}' is already registered.");
+            }
+        }
+
         services.AddOptions<SqlServerMaintenanceOptions>(name);
         services.AddSingleton(new MaintenanceRegistration(name, options));
         services.TryAddSingleton<IOptionsFactory<SqlServerMaintenanceOptions>>(provider => new MaintenanceOptionsFactory(
@@ -68,13 +74,25 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
         T ReadValue<T>(string key, T fallback) where T : IParsable<T>
         {
             var value = configuration[key];
-            if (value is null) return fallback;
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var result)) return result;
+
+            if (value is null)
+            {
+                return fallback;
+            }
+
+            if (T.TryParse(value, CultureInfo.InvariantCulture, out var result))
+            {
+                return result;
+            }
+
             throw new ArgumentException($"Maintenance {key}: '{value}' is invalid.", nameof(configuration));
         }
-        TimeSpan? ReadRetention(string key, TimeSpan? fallback) =>
-            string.Equals(configuration[key], "infinite", StringComparison.OrdinalIgnoreCase)
-                ? null : ReadValue(key, fallback!.Value);
+
+        TimeSpan? ReadRetention(string key, TimeSpan? fallback)
+        {
+            return string.Equals(configuration[key], "infinite", StringComparison.OrdinalIgnoreCase)
+                            ? null : ReadValue(key, fallback!.Value);
+        }
     }
 
     private sealed record MaintenanceRegistration(string Name, SqlServerMaintenanceOptions Options);
@@ -88,7 +106,13 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
         protected override SqlServerMaintenanceOptions CreateInstance(string name)
         {
             foreach (var registration in registrations)
-                if (registration.Name == name) return registration.Options;
+            {
+                if (registration.Name == name)
+                {
+                    return registration.Options;
+                }
+            }
+
             return new();
         }
     }

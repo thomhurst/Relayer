@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Runtime.CompilerServices;
 using Npgsql;
 using NpgsqlTypes;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
 
@@ -15,6 +15,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly NpgsqlDataSource _dataSource;
     private NpgsqlConnection? _dispatchConnection;
     private NpgsqlTransaction? _dispatchTransaction;
+
     internal NpgsqlTransaction? DispatchTransaction => _dispatchTransaction;
     private readonly string _read;
     private readonly string _claim;
@@ -55,21 +56,41 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxDispatchAttempts);
         var dead = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_dead");
-        static string Eligible(string now) => $"status = 'pending' AND (deliver_at IS NULL OR deliver_at <= {now}) AND (claim_expires_at IS NULL OR claim_expires_at <= {now})";
-        static string Fenced(string now) => $"id = @id AND claim_token = @token AND claim_expires_at > {now}";
+
+        static string Eligible(string now)
+        {
+            return $"status = 'pending' AND (deliver_at IS NULL OR deliver_at <= {now}) AND (claim_expires_at IS NULL OR claim_expires_at <= {now})";
+        }
+
+        static string Fenced(string now)
+        {
+            return $"id = @id AND claim_token = @token AND claim_expires_at > {now}";
+        }
+
         var eligible = Eligible("@now");
         var fenced = Fenced("@now");
         _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id, seq FROM {table} WHERE {eligible} AND lane IS NOT DISTINCT FROM @lane AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit";
         _claim = $"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible} RETURNING true";
-        string ClaimBatch(string now, string expires) => $"UPDATE {table} AS row SET claim_token = claims.token, claim_expires_at = {expires} FROM unnest(@ids, @tokens) WITH ORDINALITY AS claims(id, token, ordinal) WHERE row.id = claims.id AND {Eligible(now)} AND lane IS NULL RETURNING claims.ordinal";
+
+        string ClaimBatch(string now, string expires)
+        {
+            return $"UPDATE {table} AS row SET claim_token = claims.token, claim_expires_at = {expires} FROM unnest(@ids, @tokens) WITH ORDINALITY AS claims(id, token, ordinal) WHERE row.id = claims.id AND {Eligible(now)} AND lane IS NULL RETURNING claims.ordinal";
+        }
+
         _claimBatch = ClaimBatch("@now", "@expires");
         _claimDirectBatch = ClaimBatch("clock_timestamp()", "clock_timestamp() + @duration");
         _renew = $"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced} RETURNING true";
         _complete = $"DELETE FROM {table} WHERE {fenced} RETURNING true";
         _completeInTransaction = $"DELETE FROM {table} WHERE id = @id AND claim_token = @token AND claim_expires_at > clock_timestamp() RETURNING true";
-        string CompleteBatchDelete(string now) => $"DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > {now}";
+
+        string CompleteBatchDelete(string now)
+        {
+            return $"DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > {now}";
+        }
+
         _completeBatch = $"WITH deleted AS ({CompleteBatchDelete("@now")} RETURNING row.id) SELECT count(*) FROM deleted";
         _completeDirectBatch = $"WITH deleted AS ({CompleteBatchDelete("clock_timestamp()")} RETURNING row.id) SELECT count(*) FROM deleted";
+
         if (options.RetainSentMessages)
         {
             var sent = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
@@ -79,6 +100,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             _completeBatch = PostgreSqlSentSql.Complete(CompleteBatchDelete("@now"), sent, "@now", true);
             _completeDirectBatch = PostgreSqlSentSql.Complete(CompleteBatchDelete("clock_timestamp()"), sent, "clock_timestamp()", true);
         }
+
         _retry = PostgreSqlPoisonSql.Retry(table, fenced, "@now");
         _fail = PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts);
         _failImmediately = PostgreSqlPoisonSql.Failure(table, dead, fenced, 1);
@@ -97,9 +119,18 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     public async ValueTask<int> ReadPendingAsync(OutboxReadRequest request, Memory<OutboxRecord> destination,
         CancellationToken cancellationToken)
     {
-        if (request.Lane < 0) throw new ArgumentOutOfRangeException(nameof(request), "Lane must not be negative.");
+        if (request.Lane < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request), "Lane must not be negative.");
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
-        if (destination.IsEmpty) return 0;
+
+        if (destination.IsEmpty)
+        {
+            return 0;
+        }
+
         using var command = CreateCommand(_read);
         Add(command, "now", NpgsqlDbType.TimestampTz, request.Now.ToUniversalTime());
         Add(command, "lane", NpgsqlDbType.Integer, request.Lane);
@@ -115,14 +146,23 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     {
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var count = 0;
+
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (_headers.Count == count) _headers.Add(new());
+            if (_headers.Count == count)
+            {
+                _headers.Add(new());
+            }
+
             var slot = _headers[count];
             var headers = OutboxHeaderCodec.Read(reader.GetFieldValue<byte[]>(5), ref slot.Entries);
             var sequence = reader.GetInt64(13);
+
             if (includeOrderedSequence && !reader.IsDBNull(9))
+            {
                 headers = OrderedSequenceHeader.Add(headers.Span, ref slot.OrderedEntries, slot.Sequence, sequence);
+            }
+
             var message = new OutgoingMessage(reader.GetString(3), reader.GetFieldValue<byte[]>(4), headers,
                 reader.IsDBNull(6) ? null : new WireString(reader.GetString(6)),
                 reader.IsDBNull(7) ? null : reader.GetFieldValue<DateTimeOffset>(7));
@@ -130,6 +170,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
                 reader.GetFieldValue<DateTimeOffset>(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt32(10),
                 reader.IsDBNull(11) ? null : reader.GetString(11), reader.IsDBNull(12) ? null : reader.GetString(12), sequence);
         }
+
         return count;
     }
 
@@ -147,7 +188,11 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     internal ValueTask ClaimBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
         DateTimeOffset now, DateTimeOffset expiresAt, CancellationToken cancellationToken)
     {
-        foreach (var claim in claims.Span) Validate(claim, now, expiresAt);
+        foreach (var claim in claims.Span)
+        {
+            Validate(claim, now, expiresAt);
+        }
+
         return ClaimBatchCoreAsync(claims, claimed, now, expiresAt, null, cancellationToken);
     }
 
@@ -155,7 +200,12 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         TimeSpan duration, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
-        foreach (var claim in claims.Span) Validate(claim);
+
+        foreach (var claim in claims.Span)
+        {
+            Validate(claim);
+        }
+
         return ClaimBatchCoreAsync(claims, claimed, null, default, duration, cancellationToken);
     }
 
@@ -165,15 +215,36 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         DateTimeOffset? now, DateTimeOffset expiresAt, TimeSpan? duration, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (claimed.Length != claims.Length) throw new ArgumentException("One result slot is required per claim.", nameof(claimed));
+
+        if (claimed.Length != claims.Length)
+        {
+            throw new ArgumentException("One result slot is required per claim.", nameof(claimed));
+        }
+
         claimed.Span.Clear();
-        if (claims.IsEmpty) return;
+
+        if (claims.IsEmpty)
+        {
+            return;
+        }
+
         using var command = CreateBatchMutation(duration.HasValue ? _claimDirectBatch : _claimBatch, claims, now);
-        if (duration is { } claimDuration) Add(command, "duration", NpgsqlDbType.Interval, claimDuration);
-        else Add(command, "expires", NpgsqlDbType.TimestampTz, expiresAt.ToUniversalTime());
+
+        if (duration is { } claimDuration)
+        {
+            Add(command, "duration", NpgsqlDbType.Interval, claimDuration);
+        }
+        else
+        {
+            Add(command, "expires", NpgsqlDbType.TimestampTz, expiresAt.ToUniversalTime());
+        }
+
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
             claimed.Span[(int)reader.GetInt64(0) - 1] = true;
+        }
     }
 
     /// <inheritdoc />
@@ -221,16 +292,34 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (claims.IsEmpty) return new(0L);
-        foreach (var claim in claims.Span) Validate(claim);
+
+        if (claims.IsEmpty)
+        {
+            return new(0L);
+        }
+
+        foreach (var claim in claims.Span)
+        {
+            Validate(claim);
+        }
+
         return _completedCount.Start(CreateBatchMutation(_completeBatch, claims, now), cancellationToken);
     }
 
     internal ValueTask<long> CompleteDirectBatchAsync(ReadOnlyMemory<OutboxClaim> claims, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (claims.IsEmpty) return new(0L);
-        foreach (var claim in claims.Span) Validate(claim);
+
+        if (claims.IsEmpty)
+        {
+            return new(0L);
+        }
+
+        foreach (var claim in claims.Span)
+        {
+            Validate(claim);
+        }
+
         return _completedCount.Start(CreateBatchMutation(_completeDirectBatch, claims, null), cancellationToken);
     }
 
@@ -245,15 +334,22 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     {
         _batchIds.Clear();
         _batchTokens.Clear();
+
         foreach (var claim in claims.Span)
         {
             _batchIds.Add(claim.MessageId);
             _batchTokens.Add(claim.Token);
         }
+
         var command = CreateCommand(sql);
         Add(command, "ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid, _batchIds);
         Add(command, "tokens", NpgsqlDbType.Array | NpgsqlDbType.Uuid, _batchTokens);
-        if (now is { } timestamp) Add(command, "now", NpgsqlDbType.TimestampTz, timestamp.ToUniversalTime());
+
+        if (now is { } timestamp)
+        {
+            Add(command, "now", NpgsqlDbType.TimestampTz, timestamp.ToUniversalTime());
+        }
+
         return command;
     }
 
@@ -262,7 +358,9 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<bool> RecordFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
         CancellationToken cancellationToken)
-        => await RecordDispatchFailureAsync(claim, error, now, cancellationToken).ConfigureAwait(false) != 0;
+    {
+        return await RecordDispatchFailureAsync(claim, error, now, cancellationToken).ConfigureAwait(false) != 0;
+    }
 
     internal ValueTask<int> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset? now,
         CancellationToken cancellationToken, bool permanent = false, bool retryable = false)
@@ -316,27 +414,43 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         _dispatchTransaction = transaction;
     }
 
-    private NpgsqlCommand CreateCommand(string sql) => _dispatchConnection is { } connection
-        ? new NpgsqlCommand(sql, connection, _dispatchTransaction)
-        : _dataSource.CreateCommand(sql);
+    private NpgsqlCommand CreateCommand(string sql)
+    {
+        return _dispatchConnection is { } connection
+                ? new NpgsqlCommand(sql, connection, _dispatchTransaction)
+                : _dataSource.CreateCommand(sql);
+    }
 
     private NpgsqlCommand CreateMutation(string sql, OutboxClaim claim, DateTimeOffset? now)
     {
         var command = CreateCommand(sql);
         Add(command, "id", NpgsqlDbType.Uuid, claim.MessageId);
         Add(command, "token", NpgsqlDbType.Uuid, claim.Token);
-        if (now is { } timestamp) Add(command, "now", NpgsqlDbType.TimestampTz, timestamp.ToUniversalTime());
+
+        if (now is { } timestamp)
+        {
+            Add(command, "now", NpgsqlDbType.TimestampTz, timestamp.ToUniversalTime());
+        }
+
         return command;
     }
 
-    private static void Add<T>(NpgsqlCommand command, string name, NpgsqlDbType type, T value) =>
+    private static void Add<T>(NpgsqlCommand command, string name, NpgsqlDbType type, T value)
+    {
         command.Parameters.Add(new NpgsqlParameter<T>(name, type) { TypedValue = value });
+    }
 
     private static void Validate(OutboxClaim claim, DateTimeOffset? now = null, DateTimeOffset? expiresAt = null)
     {
         if (claim.MessageId == Guid.Empty || claim.Token == Guid.Empty)
+        {
             throw new ArgumentException("Outbox message ID and claim token must not be empty.", nameof(claim));
-        if (expiresAt <= now) throw new ArgumentOutOfRangeException(nameof(expiresAt), "Claim expiry must be after now.");
+        }
+
+        if (expiresAt <= now)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expiresAt), "Claim expiry must be after now.");
+        }
     }
 
     private sealed class HeaderSlot

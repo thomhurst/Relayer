@@ -1,8 +1,8 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer;
 
@@ -15,8 +15,12 @@ public static class ConsumeBuilderExtensions
         where TMiddleware : class, IConsumeMiddleware
     {
         ArgumentNullException.ThrowIfNull(builder);
+
         if (builder.Infrastructure().MessageTypes.IsFrozen)
+        {
             throw new InvalidOperationException("Middleware cannot be registered after AddRelayer configuration completes.");
+        }
+
         builder.Services.AddSingleton<IConsumeMiddleware, TMiddleware>();
         return builder;
     }
@@ -42,7 +46,12 @@ public static class ConsumeBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(names);
         var identities = new MessageType[names.Length];
-        for (var i = 0; i < names.Length; i++) identities[i] = new(names[i], 1);
+
+        for (var i = 0; i < names.Length; i++)
+        {
+            identities[i] = new(names[i], 1);
+        }
+
         return builder.Accepts<TMessage>(identities);
     }
 

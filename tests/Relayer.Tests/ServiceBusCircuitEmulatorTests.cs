@@ -1,10 +1,10 @@
-using Relayer.Transports;
 using System.Diagnostics.Metrics;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -17,6 +17,7 @@ public sealed class ServiceBusCircuitEmulatorTests
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(4));
         var token = deadline.Token;
         await using var client = new ServiceBusClient(broker.ConnectionString);
+
         foreach (var sessions in new[] { false, true })
         {
             var queue = sessions ? "circuit-session" : "circuit-queue";
@@ -32,12 +33,32 @@ public sealed class ServiceBusCircuitEmulatorTests
                 builder.ServiceBus("circuit", bus =>
                 {
                     bus.TopologyMode = TopologyMode.None;
-                    bus.Options.Configure(options => { options.Client = client; options.Queues.Add(new(queue) { RequiresSession = sessions }); });
+                    bus.Options.Configure(options =>
+                    {
+                        options.Client = client;
+                        options.Queues.Add(new(queue)
+                        {
+                            RequiresSession = sessions
+                        });
+                    });
                     bus.Consume(queue, consumer =>
                     {
                         consumer.Failures(FailureOptions.None);
-                        consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1, FailureRatio = 1 };
-                        if (sessions) consumer.Options.SessionProcessorOptions = new() { AutoCompleteMessages = false, MaxConcurrentSessions = 1 };
+                        consumer.Options.CircuitBreaker = new()
+                        {
+                            MinimumThroughput = 1,
+                            FailureRatio = 1
+                        };
+
+                        if (sessions)
+                        {
+                            consumer.Options.SessionProcessorOptions = new()
+                            {
+                                AutoCompleteMessages = false,
+                                MaxConcurrentSessions = 1
+                            };
+                        }
+
                         consumer.Handler<Handler>();
                     });
                 });
@@ -47,7 +68,12 @@ public sealed class ServiceBusCircuitEmulatorTests
             var states = Channel.CreateUnbounded<int>();
             using var listener = new MeterListener();
             listener.InstrumentPublished = (instrument, meterListener) =>
-            { if (ReferenceEquals(instrument, metric)) meterListener.EnableMeasurementEvents(instrument); };
+            {
+                if (ReferenceEquals(instrument, metric))
+                {
+                    meterListener.EnableMeasurementEvents(instrument);
+                }
+            };
             listener.SetMeasurementEventCallback<int>((_, state, _, _) => states.Writer.TryWrite(state));
             listener.Start();
             await ServiceBusReceiveTests.Start(provider, token);
@@ -77,18 +103,27 @@ public sealed class ServiceBusCircuitEmulatorTests
 
     [Message("servicebus.circuit-emulator")]
     public sealed record Payload(int Value);
+
     public sealed class Control
     {
-        internal Channel<int> Deliveries { get; } = Channel.CreateUnbounded<int>();
+        internal Channel<int> Deliveries
+        {
+            get;
+        } = Channel.CreateUnbounded<int>();
         internal int Calls;
     }
+
     public sealed class Handler(Control control) : IHandler<Payload>
     {
         public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
         {
             var native = context.ServiceBus().Message;
+
             if (!Equals(native.ApplicationProperties["cloudEvents:id"], "circuit-original") || message.Value != 42)
+            {
                 throw new InvalidOperationException("Original message changed.");
+            }
+
             control.Deliveries.Writer.TryWrite(native.DeliveryCount);
             return Interlocked.Increment(ref control.Calls) <= 2
                 ? ValueTask.FromException(new InvalidOperationException("dependency unavailable")) : ValueTask.CompletedTask;

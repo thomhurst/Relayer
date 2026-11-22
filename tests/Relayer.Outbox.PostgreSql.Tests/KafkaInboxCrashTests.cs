@@ -21,11 +21,13 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = timeout.Token;
         await using var scenario = await Scenario.StartAsync(broker, token);
+
         await using (var child = scenario.Probe("block"))
         {
             await child.WaitForAsync(KafkaInboxProbe.Saved, token);
             await child.KillAsync();
         }
+
         await Assert.That(await scenario.CountsAsync()).IsEqualTo((0L, 0L, 0L));
         await Assert.That(await scenario.CommittedAsync(token)).IsNull();
         var replay = await scenario.ReplayAsync(token);
@@ -39,6 +41,7 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = timeout.Token;
         await using var scenario = await Scenario.StartAsync(broker, token);
+
         await using (var child = scenario.Probe("committed"))
         {
             // The probe's commit interval is an hour, so the offset is still uncommitted when it dies.
@@ -46,6 +49,7 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
             await scenario.WaitForInboxAsync(token);
             await child.KillAsync();
         }
+
         await Assert.That(await scenario.CountsAsync()).IsEqualTo((1L, 1L, 1L));
         await Assert.That(await scenario.CommittedAsync(token)).IsNull();
         var replay = await scenario.ReplayAsync(token);
@@ -71,7 +75,11 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
         var token = timeout.Token;
         await using var scenario = await Scenario.StartAsync(broker, token);
         var blocked = new KafkaInboxSettings(broker.Bootstrap, scenario.ConnectionString, scenario.Topic,
-            TimeSpan.FromMilliseconds(100)) { Block = true };
+            TimeSpan.FromMilliseconds(100))
+        {
+            Block = true
+        };
+
         using (var host = scenario.Host(blocked))
         {
             await host.StartAsync(token);
@@ -79,6 +87,7 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
             // StopTimeout (1 s) cancels the handler inside its open transaction.
             await host.StopAsync(token);
         }
+
         await Assert.That(await scenario.CountsAsync()).IsEqualTo((0L, 0L, 0L));
         await Assert.That(await scenario.CommittedAsync(token)).IsNull();
         var replay = await scenario.ReplayAsync(token);
@@ -98,12 +107,17 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
             Topic = TestContext.Current!.Isolation.GetIsolatedName("kafka-inbox").ToLowerInvariant();
         }
 
-        internal string Topic { get; }
+        internal string Topic
+        {
+            get;
+        }
+
         internal string ConnectionString => _database.ConnectionString;
 
         internal static async Task<Scenario> StartAsync(KafkaInboxBroker broker, CancellationToken token)
         {
             var scenario = new Scenario(broker);
+
             try
             {
                 await broker.Started.WaitAsync(token);
@@ -121,8 +135,12 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
                 await using var provider = sending.BuildServiceProvider();
                 var transport = provider.GetRequiredService<Relayer.Transports.ITransport>();
                 await transport.StartAsync(token);
+
                 await using (var scope = provider.CreateAsyncScope())
+                {
                     await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new KafkaInboxWork(7), token);
+                }
+
                 await transport.StopAsync(token);
                 return scenario;
             }
@@ -144,10 +162,17 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
         internal async Task<KafkaInboxSettings> ReplayAsync(CancellationToken token, bool failFirst = false)
         {
             var settings = new KafkaInboxSettings(_broker.Bootstrap, ConnectionString, Topic, TimeSpan.FromMilliseconds(100))
-            { FailFirst = failFirst };
+            {
+                FailFirst = failFirst
+            };
             using var host = Host(settings);
             await host.StartAsync(token);
-            while (await CommittedAsync(token) != 1) await Task.Delay(50, token);
+
+            while (await CommittedAsync(token) != 1)
+            {
+                await Task.Delay(50, token);
+            }
+
             await host.StopAsync(token);
             return settings;
         }
@@ -178,13 +203,18 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
             return offset is null or < 0 ? null : offset;
         }
 
-        internal async Task<(long Orders, long Inbox, long Outbox)> CountsAsync() =>
-            (await ScalarAsync("SELECT count(*) FROM kafka_orders"), await ScalarAsync("SELECT count(*) FROM relayer_inbox"),
-                await ScalarAsync("SELECT count(*) FROM relayer_outbox"));
+        internal async Task<(long Orders, long Inbox, long Outbox)> CountsAsync()
+        {
+            return (await ScalarAsync("SELECT count(*) FROM kafka_orders"), await ScalarAsync("SELECT count(*) FROM relayer_inbox"),
+                            await ScalarAsync("SELECT count(*) FROM relayer_outbox"));
+        }
 
         internal async Task WaitForInboxAsync(CancellationToken token)
         {
-            while (await ScalarAsync("SELECT count(*) FROM relayer_inbox") == 0) await Task.Delay(20, token);
+            while (await ScalarAsync("SELECT count(*) FROM relayer_inbox") == 0)
+            {
+                await Task.Delay(20, token);
+            }
         }
 
         private async Task<long> ScalarAsync(string sql)
@@ -207,9 +237,16 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
         {
             if (_admin is not null)
             {
-                try { await _admin.DeleteTopicsAsync([Topic]); }
-                finally { await _admin.DisposeAsync(); }
+                try
+                {
+                    await _admin.DeleteTopicsAsync([Topic]);
+                }
+                finally
+                {
+                    await _admin.DisposeAsync();
+                }
             }
+
             await _database.DisposeAsync();
         }
     }
@@ -223,9 +260,16 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
             while (true)
             {
                 var line = await process.StandardOutput.ReadLineAsync(token);
-                if (line == signal) return;
+
+                if (line == signal)
+                {
+                    return;
+                }
+
                 if (line is null)
+                {
                     throw new InvalidOperationException($"Kafka crash probe exited before {signal}: {await _errors}");
+                }
             }
         }
 
@@ -237,7 +281,11 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
 
         public async ValueTask DisposeAsync()
         {
-            if (!process.HasExited) await KillAsync();
+            if (!process.HasExited)
+            {
+                await KillAsync();
+            }
+
             process.Dispose();
         }
     }
@@ -247,8 +295,21 @@ public sealed class KafkaInboxBroker : IAsyncDisposable
 {
     private readonly KafkaContainer _broker = new KafkaBuilder("apache/kafka:4.0.2")
         .WithVendor(KafkaVendor.ApacheSoftwareFoundation).AfterStartupCopy().Build();
-    public Task Started { get; }
+
+    public Task Started
+    {
+        get;
+    }
+
     public string Bootstrap => _broker.GetBootstrapAddress();
-    public KafkaInboxBroker() => Started = _broker.StartAsync();
-    public ValueTask DisposeAsync() => _broker.DisposeAsync();
+
+    public KafkaInboxBroker()
+    {
+        Started = _broker.StartAsync();
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        return _broker.DisposeAsync();
+    }
 }

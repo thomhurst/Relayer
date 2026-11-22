@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using System.Buffers;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
@@ -12,24 +12,33 @@ public class OrderedSequenceHeaderTests
     public async Task Warmed_row_decode_and_sequence_write_allocate_nothing(int reservedCount)
     {
         var persisted = new KeyValuePair<string, WireString>[reservedCount + 1];
-        for (var i = 0; i < reservedCount; i++) persisted[i] = new(OutboxHeaders.Sequence, new("fake"));
+
+        for (var i = 0; i < reservedCount; i++)
+        {
+            persisted[i] = new(OutboxHeaders.Sequence, new("fake"));
+        }
+
         persisted[reservedCount] = new("ce_id", new("original"));
         var encoded = new ArrayBufferWriter<byte>();
         OutboxHeaderCodec.Write(encoded, persisted);
         KeyValuePair<string, WireString>[] decoded = [];
         KeyValuePair<string, WireString>[] outgoing = [];
         var buffer = new byte[20];
+
         for (var i = 0; i < 100; i++)
         {
             var headers = OutboxHeaderCodec.Read(encoded.WrittenMemory, ref decoded);
             OrderedSequenceHeader.Add(headers.Span, ref outgoing, buffer, i + 1);
         }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < 1000; i++)
         {
             var headers = OutboxHeaderCodec.Read(encoded.WrittenMemory, ref decoded);
             OrderedSequenceHeader.Add(headers.Span, ref outgoing, buffer, i + 1);
         }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
     }

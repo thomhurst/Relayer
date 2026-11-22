@@ -13,11 +13,17 @@ public abstract class OutboxShutdownContractTests
     protected abstract class ShutdownFixture : IAsyncDisposable
     {
         public abstract Task StartAsync();
+
         public abstract Task VerifyInFlightAsync();
+
         public abstract Task StopAsync(CancellationToken token);
+
         public abstract Task VerifyDurableStateAsync();
+
         public abstract ValueTask DisposeHostAsync();
+
         public abstract Task VerifyClosedAsync();
+
         public abstract ValueTask DisposeAsync();
     }
 
@@ -31,6 +37,7 @@ public abstract class OutboxShutdownContractTests
         var transport = new ShutdownTransport(worker != "direct");
         await using var fixture = await CreateFixtureAsync(worker, transport, logs);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
         try
         {
             await fixture.StartAsync();
@@ -52,60 +59,138 @@ public abstract class OutboxShutdownContractTests
             await Assert.That(transport.SendsAfterClose).IsEqualTo(0);
             await Assert.That(logs.Failures.ToArray()).IsEmpty();
         }
-        finally { transport.Release.TrySetResult(); }
+        finally
+        {
+            transport.Release.TrySetResult();
+        }
     }
 
     public sealed class ShutdownLogs : ILoggerProvider
     {
-        public ConcurrentQueue<string> Failures { get; } = new();
-        public ConcurrentQueue<string> DatabaseCommands { get; } = new();
-        public bool DatabaseClosed { get; set; }
-        public string? DatabaseCommandCategory { get; set; }
-        public ILogger CreateLogger(string categoryName) => new Capture(this, categoryName);
-        public void Dispose() { }
+        public ConcurrentQueue<string> Failures
+        {
+            get;
+        } = new();
+
+        public ConcurrentQueue<string> DatabaseCommands
+        {
+            get;
+        } = new();
+
+        public bool DatabaseClosed
+        {
+            get; set;
+        }
+
+        public string? DatabaseCommandCategory
+        {
+            get; set;
+        }
+
+        public ILogger CreateLogger(string categoryName)
+        {
+            return new Capture(this, categoryName);
+        }
+
+        public void Dispose()
+        {
+        }
 
         private sealed class Capture(ShutdownLogs owner, string category) : ILogger
         {
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-            public bool IsEnabled(LogLevel logLevel) => true;
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+            {
+                return null;
+            }
+
+            public bool IsEnabled(LogLevel logLevel)
+            {
+                return true;
+            }
+
             public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error,
                 Func<TState, Exception?, string> format)
             {
                 var text = format(state, error);
+
                 if (owner.DatabaseCommandCategory is { } databaseCategory && category.StartsWith(databaseCategory, StringComparison.Ordinal))
                 {
                     owner.DatabaseCommands.Enqueue(text);
-                    if (owner.DatabaseClosed) owner.Failures.Enqueue("Database command after disposal: " + text);
+
+                    if (owner.DatabaseClosed)
+                    {
+                        owner.Failures.Enqueue("Database command after disposal: " + text);
+                    }
                 }
+
                 if (level >= LogLevel.Error || level >= LogLevel.Warning &&
                     (error is OperationCanceledException || text.Contains("cancel", StringComparison.OrdinalIgnoreCase)))
+                {
                     owner.Failures.Enqueue($"{category}: {level}: {text} {error}");
+                }
             }
         }
     }
 
     public sealed class ShutdownTransport(bool cancelSend) : ITransport
     {
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Stopping { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public bool Closed { get; private set; }
-        public bool Disposed { get; private set; }
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Stopping
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool Closed
+        {
+            get; private set;
+        }
+
+        public bool Disposed
+        {
+            get; private set;
+        }
         public int Active;
         public int SendsAfterClose;
         public int Delivered;
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true, MaxBatchSize = 100 };
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true,
+                MaxBatchSize = 100
+            };
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
         {
-            if (Closed) Interlocked.Increment(ref SendsAfterClose);
+            if (Closed)
+            {
+                Interlocked.Increment(ref SendsAfterClose);
+            }
+
             Interlocked.Increment(ref Active);
             Entered.TrySetResult();
+
             try
             {
                 if (cancelSend)
                 {
-                    try { await Task.Delay(Timeout.InfiniteTimeSpan, token); }
+                    try
+                    {
+                        await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    }
                     catch (OperationCanceledException) when (token.IsCancellationRequested)
                     {
                         Stopping.TrySetResult();
@@ -113,28 +198,57 @@ public abstract class OutboxShutdownContractTests
                         throw;
                     }
                 }
-                else await Release.Task;
+                else
+                {
+                    await Release.Task;
+                }
+
                 Interlocked.Increment(ref Delivered);
             }
-            finally { Interlocked.Decrement(ref Active); }
+            finally
+            {
+                Interlocked.Decrement(ref Active);
+            }
         }
+
         public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
         {
-            for (var i = 0; i < messages.Length; i++) await SendAsync(messages.Span[i], token);
+            for (var i = 0; i < messages.Length; i++)
+            {
+                await SendAsync(messages.Span[i], token);
+            }
         }
-        public Task StartAsync(CancellationToken token) => Task.CompletedTask;
+
+        public Task StartAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
         public Task StopAsync(CancellationToken token)
         {
-            if (Active != 0) throw new InvalidOperationException("Sender closed before native send completed.");
+            if (Active != 0)
+            {
+                throw new InvalidOperationException("Sender closed before native send completed.");
+            }
+
             Closed = true;
             return Task.CompletedTask;
         }
+
         public ValueTask DisposeAsync()
         {
-            if (!Closed || Active != 0) throw new InvalidOperationException("Sender disposed before graceful stop.");
+            if (!Closed || Active != 0)
+            {
+                throw new InvalidOperationException("Sender disposed before graceful stop.");
+            }
+
             Disposed = true;
             return default;
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => new(new TopologyReport([]));
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token)
+        {
+            return new(new TopologyReport([]));
+        }
     }
 }

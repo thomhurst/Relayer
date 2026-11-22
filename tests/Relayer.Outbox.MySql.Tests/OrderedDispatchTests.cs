@@ -1,8 +1,8 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Data;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
@@ -19,7 +19,9 @@ public sealed class OrderedDispatchTests
         var services = new ServiceCollection().AddLogging();
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["TablePrefix"] = "orders_", ["Lanes"] = "8", ["BatchSize"] = "16"
+            ["TablePrefix"] = "orders_",
+            ["Lanes"] = "8",
+            ["BatchSize"] = "16"
         }).Build();
         services.AddRelayerMySqlOrderedDispatch("orders", source, configuration);
         services.AddRelayerMySqlOrderedDispatch("other", source, new MySqlOrderedDispatchOptions { Lanes = 2 });
@@ -43,17 +45,20 @@ public sealed class OrderedDispatchTests
         await using var scope = provider.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
         var ids = new[] { Id(3), Id(2), Id(1) };
+
         await using (var transaction = await outbox.BeginTransactionAsync(database.Source))
         {
             await outbox.EnlistAsync(Record(ids[0]), default);
             await outbox.EnlistAsync(Record(ids[1]), default);
             await transaction.CommitAsync();
         }
+
         await using (var transaction = await outbox.BeginTransactionAsync(database.Source))
         {
             await outbox.EnlistAsync(Record(ids[2]), default);
             await transaction.CommitAsync();
         }
+
         var sequences = new List<long>();
         var transport = new RecordingTransport((message, _) =>
         {
@@ -75,7 +80,11 @@ public sealed class OrderedDispatchTests
         await Insert(database, Id(1));
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var transport = new RecordingTransport(async (_, _) => { entered.TrySetResult(); await release.Task; });
+        var transport = new RecordingTransport(async (_, _) =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+        });
         using var first = Worker(database.Source, transport);
         var otherTransport = new RecordingTransport();
         using var second = Worker(database.Source, otherTransport);
@@ -83,14 +92,22 @@ public sealed class OrderedDispatchTests
         var pending = first.DispatchLaneAsync(0, timeout.Token).AsTask();
         await entered.Task.WaitAsync(timeout.Token);
         var rival = second.DispatchLaneAsync(0, timeout.Token).AsTask();
+
         try
         {
             // Observe the actual database wait, rather than relying on a scheduling delay.
             while (await Scalar(database, "SELECT count(*) FROM performance_schema.data_lock_waits w JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID WHERE l.OBJECT_SCHEMA = DATABASE()") == 0)
+            {
                 await Task.Delay(10, timeout.Token);
+            }
+
             await Assert.That(rival.IsCompleted).IsFalse();
         }
-        finally { release.TrySetResult(); }
+        finally
+        {
+            release.TrySetResult();
+        }
+
         await Assert.That(await pending).IsEqualTo(1);
         await Assert.That(await rival).IsEqualTo(0);
         await Insert(database, Id(2));
@@ -108,7 +125,9 @@ public sealed class OrderedDispatchTests
         var options = new MySqlOrderedDispatchOptions { Lanes = 8 };
         using var a = new MySqlLaneCoordinator(database.Source, options);
         using var b = new MySqlLaneCoordinator(database.Source, options);
-        await a.RebalanceAsync(default); await b.RebalanceAsync(default); await a.RebalanceAsync(default);
+        await a.RebalanceAsync(default);
+        await b.RebalanceAsync(default);
+        await a.RebalanceAsync(default);
         await Assert.That(a.Assigned.Count(x => x)).IsEqualTo(4);
         await Assert.That(b.Assigned.Count(x => x)).IsEqualTo(4);
         await a.ReleaseAsync(default);
@@ -144,12 +163,14 @@ public sealed class OrderedDispatchTests
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         var claim = new OutboxClaim(Id(1), Guid.NewGuid());
         await Assert.That(await lane.ClaimAsync(connection, transaction, claim, default)).IsTrue();
+
         await using (var command = connection.CreateCommand())
         {
             command.Transaction = transaction;
             command.CommandText = replace ? "UPDATE relayer_outbox SET claim_token = UUID_TO_BIN(UUID())" : "UPDATE relayer_outbox SET claim_expires_at = TIMESTAMPADD(SECOND, -1, UTC_TIMESTAMP(6))";
             await command.ExecuteNonQueryAsync();
         }
+
         await Assert.That(await lane.CompleteAsync(connection, transaction, claim, default)).IsFalse();
         await Assert.That(await lane.FailAsync(connection, transaction, claim, "stale", default)).IsFalse();
     }
@@ -159,10 +180,16 @@ public sealed class OrderedDispatchTests
     {
         await using var database = new MySqlFixture();
         await database.StartAsync();
-        await Insert(database, Id(3)); await Insert(database, Id(2)); await Insert(database, Id(1), "other");
+        await Insert(database, Id(3));
+        await Insert(database, Id(2));
+        await Insert(database, Id(1), "other");
         await database.Execute($"UPDATE relayer_outbox SET transport='missing' WHERE id=UNHEX('{Id(3):N}')");
         var transport = new RecordingTransport();
-        using var worker = new MySqlOrderedDispatcher(database.Source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], NullLogger<MySqlOrderedDispatcher>.Instance);
+        using var worker = new MySqlOrderedDispatcher(database.Source, new()
+        {
+            Lanes = 1,
+            MaxDispatchAttempts = 1
+        }, [transport], NullLogger<MySqlOrderedDispatcher>.Instance);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
@@ -177,7 +204,8 @@ public sealed class OrderedDispatchTests
         await using var database = new MySqlFixture();
         await database.StartAsync();
         await database.Execute("ALTER TABLE relayer_outbox DROP INDEX unordered_idx, DROP INDEX pending_idx, DROP COLUMN seq, ADD INDEX pending_idx (status, lane, id)");
-        await Insert(database, Id(3)); await Insert(database, Id(2));
+        await Insert(database, Id(3));
+        await Insert(database, Id(2));
         await database.Execute(MySqlOutboxSchema.UpgradeOrderedScript());
         await Insert(database, Id(1));
         var transport = new RecordingTransport();
@@ -191,10 +219,22 @@ public sealed class OrderedDispatchTests
     {
         await using var database = new MySqlFixture();
         await database.StartAsync();
-        for (var number = 1; number <= 9; number++) await Insert(database, Id(number));
+
+        for (var number = 1; number <= 9; number++)
+        {
+            await Insert(database, Id(number));
+        }
+
         var clock = new BudgetClock();
-        var transport = new RecordingTransport((_, _) => { clock.Advance(); return ValueTask.CompletedTask; });
-        using var worker = new MySqlOrderedDispatcher(database.Source, new() { Lanes = 1 }, [transport],
+        var transport = new RecordingTransport((_, _) =>
+        {
+            clock.Advance();
+            return ValueTask.CompletedTask;
+        });
+        using var worker = new MySqlOrderedDispatcher(database.Source, new()
+        {
+            Lanes = 1
+        }, [transport],
             NullLogger<MySqlOrderedDispatcher>.Instance, clock);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(8);
         await Assert.That(await Scalar(database, "SELECT count(*) FROM relayer_outbox")).IsEqualTo(1L);
@@ -212,6 +252,7 @@ public sealed class OrderedDispatchTests
         ordered.Committed(Rows(Id(1)), 1);
         await Assert.That(ordered.Wake.Signalled).IsFalse();
         await ((IOrderedLaneWorker)ordered).RebalanceAsync(default);
+
         try
         {
             ordered.Committed(Rows(Id(2), deliverAt: DateTimeOffset.UtcNow.AddMinutes(1)), 1);
@@ -220,7 +261,10 @@ public sealed class OrderedDispatchTests
             ordered.Committed(Rows(Id(4)), 1);
             await Assert.That(ordered.Wake.Signalled).IsTrue();
         }
-        finally { await ((IOrderedLaneWorker)ordered).ReleaseAsync(default); }
+        finally
+        {
+            await ((IOrderedLaneWorker)ordered).ReleaseAsync(default);
+        }
     }
 
     [Test]
@@ -230,13 +274,24 @@ public sealed class OrderedDispatchTests
         await database.StartAsync();
         var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var clock = new PollClock();
-        var transport = new RecordingTransport((_, _) => { delivered.TrySetResult(); return ValueTask.CompletedTask; });
-        using var ordered = new MySqlOrderedDispatcher(database.Source, new() { Lanes = 1 }, [transport],
+        var transport = new RecordingTransport((_, _) =>
+        {
+            delivered.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+        using var ordered = new MySqlOrderedDispatcher(database.Source, new()
+        {
+            Lanes = 1
+        }, [transport],
             NullLogger<MySqlOrderedDispatcher>.Instance, clock);
-        using var direct = new MySqlDirectDispatcher(database.Source, new() { Lanes = 1 }, new(), [transport],
+        using var direct = new MySqlDirectDispatcher(database.Source, new()
+        {
+            Lanes = 1
+        }, new(), [transport],
             NullLogger<MySqlDirectDispatcher>.Instance, ordered: ordered);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await ordered.StartAsync(timeout.Token);
+
         try
         {
             // The poll timer never fires, so only the commit handoff can start the next scan.
@@ -245,7 +300,11 @@ public sealed class OrderedDispatchTests
             direct.Committed(Rows(Id(1)), 1);
             await delivered.Task.WaitAsync(timeout.Token);
         }
-        finally { await ordered.StopAsync(timeout.Token); }
+        finally
+        {
+            await ordered.StopAsync(timeout.Token);
+        }
+
         await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
     }
 
@@ -259,33 +318,71 @@ public sealed class OrderedDispatchTests
 
     private sealed class PollClock : TimeProvider
     {
-        internal TaskCompletionSource FirstPoll { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource FirstPoll
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             FirstPoll.TrySetResult();
             return new SilentTimer();
         }
+
         private sealed class SilentTimer : ITimer
         {
-            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-            public void Dispose() { }
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                return true;
+            }
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return ValueTask.CompletedTask;
+            }
         }
     }
 
     private sealed class BudgetClock : TimeProvider
     {
         private long _timestamp;
+
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-        public override long GetTimestamp() => _timestamp;
-        internal void Advance() => _timestamp += TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp()
+        {
+            return _timestamp;
+        }
+
+        internal void Advance()
+        {
+            _timestamp += TimeSpan.TicksPerSecond;
+        }
     }
 
-    private static MySqlOrderedDispatcher Worker(MySqlDataSource source, RecordingTransport transport) =>
-        new(source, new() { Lanes = 1 }, [transport], NullLogger<MySqlOrderedDispatcher>.Instance);
-    private static Guid Id(int value) => Guid.Parse($"01900000-0000-7000-8000-{value:x12}");
-    private static OutboxRecord Record(Guid id, string key = "key") => new(id, "events", "event;v=1",
-        new OutgoingMessage("orders", new byte[] { 1 }, new KeyValuePair<string, WireString>[] { new("ce_id", new(id.ToString())) }, new WireString(key)), DateTimeOffset.UtcNow);
+    private static MySqlOrderedDispatcher Worker(MySqlDataSource source, RecordingTransport transport)
+    {
+        return new(source, new()
+        {
+            Lanes = 1
+        }, [transport], NullLogger<MySqlOrderedDispatcher>.Instance);
+    }
+
+    private static Guid Id(int value)
+    {
+        return Guid.Parse($"01900000-0000-7000-8000-{value:x12}");
+    }
+
+    private static OutboxRecord Record(Guid id, string key = "key")
+    {
+        return new(id, "events", "event;v=1",
+                new OutgoingMessage("orders", new byte[] { 1 }, new KeyValuePair<string, WireString>[] { new("ce_id", new(id.ToString())) }, new WireString(key)), DateTimeOffset.UtcNow);
+    }
+
     private static async Task Insert(MySqlFixture database, Guid id, string key = "key")
     {
         var record = Record(id, key);
@@ -300,25 +397,63 @@ public sealed class OrderedDispatchTests
         command.Parameters.AddWithValue("body", record.Message.Body);
         await command.ExecuteNonQueryAsync();
     }
+
     private static async Task<long> Scalar(MySqlFixture database, string sql)
     {
         await using var command = database.Source.CreateCommand(sql);
         return Convert.ToInt64(await command.ExecuteScalarAsync());
     }
+
     private sealed class RecordingTransport(Func<OutgoingMessage, CancellationToken, ValueTask>? send = null) : ITransport
     {
         public string Name => "events";
-        internal ConcurrentQueue<Guid> Ids { get; } = new();
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
+
+        internal ConcurrentQueue<Guid> Ids
+        {
+            get;
+        } = new();
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true
+            };
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (send is not null) await send(message, cancellationToken);
+            if (send is not null)
+            {
+                await send(message, cancellationToken);
+            }
+
             Ids.Enqueue(Guid.Parse(message.Headers.Span[0].Value.ToString()));
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

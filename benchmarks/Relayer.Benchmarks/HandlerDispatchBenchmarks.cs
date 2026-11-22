@@ -16,7 +16,7 @@ public class HandlerDispatchBenchmarks
     private IHandlerMarker _handler = null!;
     private IHandler<int> _direct = null!;
     private MessageContext _context = null!;
-    private int _message = 42;
+    private readonly int _message = 42;
 
     [GlobalSetup]
     public void Setup()
@@ -32,10 +32,16 @@ public class HandlerDispatchBenchmarks
     }
 
     [Benchmark(Baseline = true)]
-    public ValueTask Direct() => _direct.HandleAsync(_message, _context, default);
+    public ValueTask Direct()
+    {
+        return _direct.HandleAsync(_message, _context, default);
+    }
 
     [Benchmark]
-    public ValueTask Generated() => _descriptor.DispatchAsync(_handler, _message, _context, default);
+    public ValueTask Generated()
+    {
+        return _descriptor.DispatchAsync(_handler, _message, _context, default);
+    }
 
     [GlobalCleanup]
     public void Cleanup()
@@ -46,7 +52,10 @@ public class HandlerDispatchBenchmarks
 
     public sealed class Handler : IHandler<int>
     {
-        public int LastMessage { get; private set; }
+        public int LastMessage
+        {
+            get; private set;
+        }
 
         public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken)
         {
@@ -58,11 +67,23 @@ public class HandlerDispatchBenchmarks
     private sealed class Context(IServiceProvider services) : MessageContext
     {
         public override string MessageId => "benchmark";
+
         public override MessageType MessageType => new("benchmark", 1);
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
-        public override IServiceProvider Services { get; } = services;
-        public override MessageFeatures Features { get; } = new();
+
+        public override IServiceProvider Services
+        {
+            get;
+        } = services;
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

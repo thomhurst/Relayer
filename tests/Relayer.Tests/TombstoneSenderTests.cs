@@ -80,35 +80,86 @@ public class TombstoneSenderTests
 
     [Message("tests.tombstone-send", Version = 7)]
     public sealed record Payload(int Id);
+
     public sealed class Options;
+
     private sealed class Outbox : IOutboxEnlistment
     {
-        public bool IsActive { get; set; }
+        public bool IsActive
+        {
+            get; set;
+        }
         internal bool Enlisted;
-        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken token) { Enlisted = true; return default; }
+
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken token)
+        {
+            Enlisted = true;
+            return default;
+        }
     }
+
     private sealed class Sink : ITransport
     {
         internal bool SupportsTombstones = true;
         internal int Sends;
         internal string? Key;
         internal string? WireType;
+
         public string Name => "sink";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { Tombstones = SupportsTombstones, OrderedByKey = true };
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                Tombstones = SupportsTombstones,
+                OrderedByKey = true
+            };
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
         {
             if (!message.IsTombstone || !message.Body.IsEmpty || message.OrderingKey is null)
+            {
                 throw new InvalidOperationException("Typed tombstone lost native state.");
+            }
+
             Sends++;
             Key = message.OrderingKey.Value.ToString();
+
             foreach (var header in message.Headers.Span)
-                if (header.Key == "ce_type") WireType = header.Value.ToString();
+            {
+                if (header.Key == "ce_type")
+                {
+                    WireType = header.Value.ToString();
+                }
+            }
+
             return default;
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken token) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken token) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

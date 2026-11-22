@@ -1,5 +1,5 @@
-using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 
 namespace Relayer.Tests;
 
@@ -17,7 +17,12 @@ public class BatchReceiveExecutorTests
             (destination, wait, _) =>
             {
                 calls++;
-                if (destination.Length != expected || wait != TimeSpan.FromSeconds(10)) throw new Exception("Configuration not honored");
+
+                if (destination.Length != expected || wait != TimeSpan.FromSeconds(10))
+                {
+                    throw new Exception("Configuration not honored");
+                }
+
                 destination.Span.Fill(42);
                 return new(expected - 1); // a native byte limit may produce fewer messages
             }, (_, _, _) => throw new Exception("Native batching must take precedence"));
@@ -43,7 +48,11 @@ public class BatchReceiveExecutorTests
             offerNative ? (_, _, _) => throw new Exception("Capability alone cannot select native batching") : null,
             (destination, _, _) =>
             {
-                if (destination.Length != 1) throw new Exception("Single receiver must receive one slot");
+                if (destination.Length != 1)
+                {
+                    throw new Exception("Single receiver must receive one slot");
+                }
+
                 destination.Span[0] = ++calls;
                 return new(1);
             });
@@ -59,8 +68,7 @@ public class BatchReceiveExecutorTests
         await using var provider = BatchPipelineTests.Provider(4, 1);
         var clock = new ManualTime();
         var waits = new List<TimeSpan>();
-        var executor = new BatchReceiveExecutor<int>(provider, "test", BatchPipelineTests.Definition(provider), "audit", singleReceive:
-            (destination, wait, _) =>
+        var executor = new BatchReceiveExecutor<int>(provider, "test", BatchPipelineTests.Definition(provider), "audit", singleReceive: (destination, wait, _) =>
             {
                 waits.Add(wait);
                 destination.Span[0] = waits.Count;
@@ -78,8 +86,18 @@ public class BatchReceiveExecutorTests
     {
         await using var provider = BatchPipelineTests.Provider(4, 1);
         var calls = 0;
-        var executor = new BatchReceiveExecutor<int>(provider, "test", BatchPipelineTests.Definition(provider), "audit", singleReceive:
-            (destination, _, _) => { calls++; if (calls == 1) { destination.Span[0] = 42; return new(1); } return new(0); });
+        var executor = new BatchReceiveExecutor<int>(provider, "test", BatchPipelineTests.Definition(provider), "audit", singleReceive: (destination, _, _) =>
+        {
+            calls++;
+
+            if (calls == 1)
+            {
+                destination.Span[0] = 42;
+                return new(1);
+            }
+
+            return new(0);
+        });
         var output = new int[4];
         await Assert.That(await executor.ReceiveAsync(output)).IsEqualTo(1);
         await Assert.That(calls).IsEqualTo(2);
@@ -95,9 +113,12 @@ public class BatchReceiveExecutorTests
         await using var provider = BatchPipelineTests.Provider(4, nativeLimit);
         await Assert.That(() => new BatchReceiveExecutor<int>(provider, "test", BatchPipelineTests.Definition(provider), "audit"))
             .Throws<InvalidOperationException>().WithMessageContaining("Consumer 'audit' from 'source' on transport 'test'");
+
         if (nativeLimit == 1)
+        {
             await Assert.That(() => new BatchReceiveExecutor<int>(provider, "test", BatchPipelineTests.Definition(provider), "audit", (_, _, _) => new(1)))
                 .Throws<InvalidOperationException>().WithMessageContaining("has no executor");
+        }
     }
 
     [Test]
@@ -118,7 +139,12 @@ public class BatchReceiveExecutorTests
         await using var provider = BatchPipelineTests.Provider(3);
         using var cancellation = new CancellationTokenSource();
         var calls = 0;
-        BatchReceiveDelegate<int> receive = (_, _, _) => { calls++; cancellation.Cancel(); return new(1); };
+        BatchReceiveDelegate<int> receive = (_, _, _) =>
+        {
+            calls++;
+            cancellation.Cancel();
+            return new(1);
+        };
         var executor = new BatchReceiveExecutor<int>(provider, "test", BatchPipelineTests.Definition(provider), "audit",
             native ? receive : null, native ? null : receive);
         await Assert.That(async () => await executor.ReceiveAsync(new int[3], cancellation.Token)).Throws<OperationCanceledException>();
@@ -130,8 +156,17 @@ public class BatchReceiveExecutorTests
     private sealed class ManualTime : TimeProvider
     {
         private long _timestamp;
+
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-        public override long GetTimestamp() => _timestamp;
-        internal void Advance(TimeSpan elapsed) => _timestamp += elapsed.Ticks;
+
+        public override long GetTimestamp()
+        {
+            return _timestamp;
+        }
+
+        internal void Advance(TimeSpan elapsed)
+        {
+            _timestamp += elapsed.Ticks;
+        }
     }
 }

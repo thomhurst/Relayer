@@ -4,18 +4,29 @@ namespace Relayer.Transports;
 /// <remarks>Do not retain this feature or its message beyond processing. Native access does not copy or box the message.</remarks>
 public sealed class NativeMessage<TIncoming>
 {
-    internal NativeMessage() { }
+    internal NativeMessage()
+    {
+    }
 
     /// <summary>Creates a feature for a native message, for example to set on a test context's features.</summary>
     /// <remarks>Transports reuse pooled instances; this constructor is for tests and custom transports.</remarks>
-    public NativeMessage(TIncoming message) => Message = message;
+    public NativeMessage(TIncoming message)
+    {
+        Message = message;
+    }
 
     /// <summary>The untouched object or value supplied by the native receive callback.</summary>
-    public TIncoming Message { get; internal set; } = default!;
+    public TIncoming Message
+    {
+        get; internal set;
+    } = default!;
 
     /// <summary>The resolved native settlement. Set only after durable failure handling or successful manual settlement.</summary>
     /// <remarks>Defaults to Complete. A native transport extension sets SettledByHandler after manual settlement succeeds.</remarks>
-    public Disposition Disposition { get; set; } = Disposition.Complete;
+    public Disposition Disposition
+    {
+        get; set;
+    } = Disposition.Complete;
 
     internal void Clear()
     {

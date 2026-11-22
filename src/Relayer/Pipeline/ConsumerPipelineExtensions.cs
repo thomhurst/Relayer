@@ -13,8 +13,17 @@ public static class ConsumerPipelineExtensions
         ArgumentNullException.ThrowIfNull(pipeline);
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(consumer);
-        foreach (var configure in consumer.PipelineConfiguration) configure(pipeline);
-        foreach (var middleware in services.GetServices<IConsumeMiddleware>()) pipeline.Use(middleware);
+
+        foreach (var configure in consumer.PipelineConfiguration)
+        {
+            configure(pipeline);
+        }
+
+        foreach (var middleware in services.GetServices<IConsumeMiddleware>())
+        {
+            pipeline.Use(middleware);
+        }
+
         return pipeline;
     }
 }

@@ -60,21 +60,33 @@ public partial class ServiceBusMessageBindingTests
                 await Settle(context.ServiceBus(), operation, properties);
             };
             var args = new ProcessMessageEventArgs(incoming, receiver, "emulator", token);
+
             if (nativeOnly)
             {
                 // Run the same sequence without invoking the adapter or pipeline.
                 switch (operation)
                 {
-                    case "complete": await receiver.CompleteMessageAsync(incoming, token); break;
-                    case "abandon": await receiver.AbandonMessageAsync(incoming, properties, token); break;
-                    case "defer": await receiver.DeferMessageAsync(incoming, properties, token); break;
-                    case "dead_letter": await receiver.DeadLetterMessageAsync(incoming, properties, "poison", "details", token); break;
+                    case "complete":
+                        await receiver.CompleteMessageAsync(incoming, token);
+                        break;
+                    case "abandon":
+                        await receiver.AbandonMessageAsync(incoming, properties, token);
+                        break;
+                    case "defer":
+                        await receiver.DeferMessageAsync(incoming, properties, token);
+                        break;
+                    case "dead_letter":
+                        await receiver.DeadLetterMessageAsync(incoming, properties, "poison", "details", token);
+                        break;
                 }
             }
             else
+            {
                 await Assert.That((await pipeline.ProcessAsync(args, token)).Kind).IsEqualTo(DispositionKind.SettledByHandler);
+            }
 
             ServiceBusReceivedMessage? result = null;
+
             if (operation == "abandon")
             {
                 result = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
@@ -82,7 +94,9 @@ public partial class ServiceBusMessageBindingTests
                 await Assert.That(result.DeliveryCount).IsEqualTo(2);
             }
             else if (operation == "defer")
+            {
                 result = await receiver.ReceiveDeferredMessageAsync(incoming.SequenceNumber, token);
+            }
             else if (operation == "dead_letter")
             {
                 result = await deadLetters.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
@@ -90,18 +104,24 @@ public partial class ServiceBusMessageBindingTests
                 await Assert.That(result.DeadLetterReason).IsEqualTo("poison");
                 await Assert.That(result.DeadLetterErrorDescription).IsEqualTo("details");
             }
+
             if (result is not null)
             {
                 await Assert.That(result.MessageId).IsEqualTo(operation);
                 await Assert.That(result.ApplicationProperties["settlement-test"]).IsEqualTo("preserved");
                 await Assert.That(result.ApplicationProperties["traceparent"]).IsEqualTo(outgoing.ApplicationProperties["traceparent"]);
                 var resultReceiver = operation == "dead_letter" ? deadLetters : receiver;
-                try { await resultReceiver.CompleteMessageAsync(result, token); }
+
+                try
+                {
+                    await resultReceiver.CompleteMessageAsync(result, token);
+                }
                 catch
                 {
                     Console.Error.WriteLine($"Final completion after {operation} failed: nativeOnly={nativeOnly}, now={DateTimeOffset.UtcNow:O}");
                     Console.Error.WriteLine($"Original: {Describe(incoming, receiver)}");
                     Console.Error.WriteLine($"Result: {Describe(result, resultReceiver)}");
+
                     try
                     {
                         var logs = await emulator.GetLogsAsync(ct: token);
@@ -112,16 +132,20 @@ public partial class ServiceBusMessageBindingTests
                     {
                         Console.Error.WriteLine($"Could not read emulator logs: {loggingError}");
                     }
+
                     throw;
                 }
             }
         }
+
         await Assert.That(await receiver.PeekMessageAsync(cancellationToken: token)).IsNull();
         await Assert.That(await deadLetters.PeekMessageAsync(cancellationToken: token)).IsNull();
     }
 
-    private static string Describe(ServiceBusReceivedMessage message, ServiceBusReceiver receiver) =>
-        $"receiver={receiver.Identifier}, entity={receiver.EntityPath}, mode={receiver.ReceiveMode}, message={message.MessageId}, " +
-        $"sequence={message.SequenceNumber}, delivery={message.DeliveryCount}, lock={message.LockToken}, " +
-        $"lockedUntil={message.LockedUntil:O}, state={message.State}";
+    private static string Describe(ServiceBusReceivedMessage message, ServiceBusReceiver receiver)
+    {
+        return $"receiver={receiver.Identifier}, entity={receiver.EntityPath}, mode={receiver.ReceiveMode}, message={message.MessageId}, " +
+                $"sequence={message.SequenceNumber}, delivery={message.DeliveryCount}, lock={message.LockToken}, " +
+                $"lockedUntil={message.LockedUntil:O}, state={message.State}";
+    }
 }

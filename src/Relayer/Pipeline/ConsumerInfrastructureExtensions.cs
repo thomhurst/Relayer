@@ -14,8 +14,12 @@ public static class ConsumerInfrastructureExtensions
     public static void AddHandler(this IConsumerBuilder builder, HandlerDescriptor descriptor)
     {
         ArgumentNullException.ThrowIfNull(builder);
+
         if (builder is not IConsumerInfrastructure infrastructure)
+        {
             throw new ArgumentException("The builder must implement IConsumerInfrastructure to support generated handlers.", nameof(builder));
+        }
+
         infrastructure.AddHandler(descriptor);
     }
 }

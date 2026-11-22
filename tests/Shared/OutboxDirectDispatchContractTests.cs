@@ -7,26 +7,38 @@ namespace Relayer.TestFixtures;
 public abstract class OutboxDirectDispatchContractTests
 {
 
-
     protected abstract Task<DispatchFixture> CreateFixtureAsync(RecordingTransport transport, int batchSize = 100,
         int queueCapacity = 256);
 
     protected abstract class DispatchFixture : IAsyncDisposable
     {
         public abstract Task<DispatchSession> OpenSessionAsync();
+
         public abstract Task<Row[]> ReadRowsAsync();
+
         // Drain committed work before returning. Tests release blocked native sends first.
         public abstract Task StopAsync();
+
         public abstract ValueTask RecoverAsync(OutboxRecord[] records, CancellationToken cancellationToken = default);
+
         // The instrumentation the store's outbox and dispatcher report committed and settled rows through.
-        public abstract RelayerInstrumentation Instrumentation { get; }
+        public abstract RelayerInstrumentation Instrumentation
+        {
+            get;
+        }
+
         public abstract ValueTask DisposeAsync();
 
         public async Task CommitAsync(params OutboxRecord[] records)
         {
             await using var session = await OpenSessionAsync();
             await session.BeginTransactionAsync();
-            foreach (var record in records) await session.EnlistAsync(record);
+
+            foreach (var record in records)
+            {
+                await session.EnlistAsync(record);
+            }
+
             await session.SaveAsync();
             await session.CommitAsync();
         }
@@ -36,10 +48,15 @@ public abstract class OutboxDirectDispatchContractTests
     protected abstract class DispatchSession : IAsyncDisposable
     {
         public abstract Task BeginTransactionAsync();
+
         public abstract ValueTask EnlistAsync(OutboxRecord record);
+
         public abstract Task SaveAsync();
+
         public abstract Task CommitAsync();
+
         public abstract Task RollbackAsync();
+
         public abstract ValueTask DisposeAsync();
     }
 
@@ -51,6 +68,7 @@ public abstract class OutboxDirectDispatchContractTests
         var transport = new RecordingTransport { Block = true };
         await using var fixture = await CreateFixtureAsync(transport);
         var committed = Record(2);
+
         await using (var session = await fixture.OpenSessionAsync())
         {
             await session.BeginTransactionAsync();
@@ -82,6 +100,7 @@ public abstract class OutboxDirectDispatchContractTests
         var body = new byte[] { 1, 255, 0 };
         var header = new byte[] { 0xff, 0, 0xfe };
         var first = Record(1, headers: [new("same", new(header)), new("same", new("second"))], body: body);
+
         await using (var session = await fixture.OpenSessionAsync())
         {
             await session.BeginTransactionAsync();
@@ -98,6 +117,7 @@ public abstract class OutboxDirectDispatchContractTests
             await session.SaveAsync();
             await session.CommitAsync();
         }
+
         transport.Release.TrySetResult();
         await fixture.StopAsync();
         var sent = transport.Received.Single(message => Identity(message) == first.Id);
@@ -118,7 +138,7 @@ public abstract class OutboxDirectDispatchContractTests
             Record(5, "alpha"), Record(6, "beta"), Record(7, "single"));
         await fixture.StopAsync();
         await Assert.That(transport.Calls.Select(call => $"{call.Destination}:{call.Count}")).IsEquivalentTo(new[]
-            { "alpha:2", "alpha:1", "beta:2", "single:1", "single:1" });
+        { "alpha:2", "alpha:1", "beta:2", "single:1", "single:1" });
         await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 1, 2, 3, 4, 5, 6, 7 });
         await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(0);
     }
@@ -131,6 +151,7 @@ public abstract class OutboxDirectDispatchContractTests
         // Hold the first send so all following commits are immediately available to the reader.
         await fixture.CommitAsync(Record(0));
         await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
         await using (var session = await fixture.OpenSessionAsync())
         {
             foreach (var record in new[] { Record(1, "alpha"), Record(2, "beta"), Record(3, "alpha"), Record(4, "beta"), Record(5, "alpha") })
@@ -141,10 +162,11 @@ public abstract class OutboxDirectDispatchContractTests
                 await session.CommitAsync();
             }
         }
+
         transport.Release.TrySetResult();
         await fixture.StopAsync();
         await Assert.That(transport.Calls.Select(call => $"{call.Destination}:{call.Count}")).IsEquivalentTo(new[]
-            { "destination:1", "alpha:2", "beta:2", "alpha:1" });
+        { "destination:1", "alpha:2", "beta:2", "alpha:1" });
         await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 0, 1, 2, 3, 4, 5 });
         await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(0);
     }
@@ -162,7 +184,7 @@ public abstract class OutboxDirectDispatchContractTests
         await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 3 });
         await Assert.That(Identity(transport.Received.Single())).IsEqualTo(due.Id);
         await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
-            { new Row(ordered.Id, 0, null, false, false), new Row(future.Id, 0, null, false, false) });
+        { new Row(ordered.Id, 0, null, false, false), new Row(future.Id, 0, null, false, false) });
     }
 
     [Test]
@@ -178,7 +200,7 @@ public abstract class OutboxDirectDispatchContractTests
         await Assert.That(transport.Calls.Count).IsEqualTo(2);
         await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 2 });
         await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
-            { new Row(failed.Id, 1, "System.InvalidOperationException: native send failed", false, false) });
+        { new Row(failed.Id, 1, "System.InvalidOperationException: native send failed", false, false) });
     }
 
     [Test]
@@ -210,17 +232,29 @@ public abstract class OutboxDirectDispatchContractTests
         var transport = new RecordingTransport { RejectValue = rejectedFirst ? (byte)1 : (byte)2, ConfirmPartial = confirmed };
         await using var fixture = await CreateFixtureAsync(transport);
         // Recovery exercises the same store dispatcher after losing the commit notification.
-        if (recovery) await fixture.StopAsync();
+        if (recovery)
+        {
+            await fixture.StopAsync();
+        }
+
         var first = Record(1);
         var second = Record(2);
         var rejected = rejectedFirst ? first : second;
         await fixture.CommitAsync(first, second);
-        if (recovery) await fixture.RecoverAsync([first, second]);
-        else await fixture.StopAsync();
+
+        if (recovery)
+        {
+            await fixture.RecoverAsync([first, second]);
+        }
+        else
+        {
+            await fixture.StopAsync();
+        }
+
         await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { rejectedFirst ? (byte)2 : (byte)1 });
         await Assert.That(transport.Calls.Select(call => call.Count)).IsEquivalentTo(confirmed ? new[] { 2, 1 } : new[] { 2, 1, 1 });
         await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
-            { new Row(rejected.Id, 1, "System.InvalidOperationException: native send rejected", false, false) });
+        { new Row(rejected.Id, 1, "System.InvalidOperationException: native send rejected", false, false) });
     }
 
     [Test]
@@ -288,7 +322,7 @@ public abstract class OutboxDirectDispatchContractTests
         await fixture.CommitAsync(failed);
         await fixture.StopAsync();
         await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
-            { new Row(failed.Id, 1, "System.InvalidOperationException: native send failed", false, false) });
+        { new Row(failed.Id, 1, "System.InvalidOperationException: native send failed", false, false) });
         await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsFalse();
     }
 
@@ -302,45 +336,112 @@ public abstract class OutboxDirectDispatchContractTests
             DateTimeOffset.UtcNow);
     }
 
-    private static Guid Identity(Sent message) => Guid.Parse(System.Text.Encoding.UTF8.GetString(
-        message.Headers.Single(header => header.Key == "ce_id").Value));
+    private static Guid Identity(Sent message)
+    {
+        return Guid.Parse(System.Text.Encoding.UTF8.GetString(
+                message.Headers.Single(header => header.Key == "ce_id").Value));
+    }
 
     public sealed record Sent(byte[] Body, KeyValuePair<string, byte[]>[] Headers);
+
     public sealed record NativeCall(string Destination, int Count);
 
     public sealed class RecordingTransport : ITransport
     {
-        public bool Block { get; init; }
-        public CancellationTokenSource? CancelAfterSingle { get; init; }
-        public string? CapabilityFailure { get; init; }
-        public byte? RejectValue { get; init; }
-        public bool ConfirmPartial { get; init; }
+        public bool Block
+        {
+            get; init;
+        }
+
+        public CancellationTokenSource? CancelAfterSingle
+        {
+            get; init;
+        }
+
+        public string? CapabilityFailure
+        {
+            get; init;
+        }
+
+        public byte? RejectValue
+        {
+            get; init;
+        }
+
+        public bool ConfirmPartial
+        {
+            get; init;
+        }
         public int FailFirst;
         public int PartialFirst;
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public ConcurrentQueue<Sent> Received { get; } = new();
-        public ConcurrentQueue<NativeCall> Calls { get; } = new();
+
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ConcurrentQueue<Sent> Received
+        {
+            get;
+        } = new();
+
+        public ConcurrentQueue<NativeCall> Calls
+        {
+            get;
+        } = new();
+
         public string Name => "events";
 
         public TransportCapabilities GetCapabilities(string endpoint)
         {
             if (endpoint == "alpha")
             {
-                if (CapabilityFailure == "throw") throw new InvalidOperationException("invalid destination");
+                if (CapabilityFailure == "throw")
+                {
+                    throw new InvalidOperationException("invalid destination");
+                }
+
                 if (CapabilityFailure is "zero" or "negative")
-                    return new() { MaxBatchSize = CapabilityFailure == "zero" ? 0 : -1 };
+                {
+                    return new()
+                    {
+                        MaxBatchSize = CapabilityFailure == "zero" ? 0 : -1
+                    };
+                }
             }
-            return new() { OrderedByKey = true, MaxBatchSize = endpoint == "single" ? 1 : 2 };
+
+            return new()
+            {
+                OrderedByKey = true,
+                MaxBatchSize = endpoint == "single" ? 1 : 2
+            };
         }
 
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Calls.Enqueue(new(message.Destination, 1));
             Entered.TrySetResult();
-            if (Block) await Release.Task.WaitAsync(cancellationToken);
-            if (Interlocked.Exchange(ref FailFirst, 0) != 0) throw new InvalidOperationException("native send failed");
-            if (message.Body.Span[0] == RejectValue) throw new InvalidOperationException("native send rejected");
+
+            if (Block)
+            {
+                await Release.Task.WaitAsync(cancellationToken);
+            }
+
+            if (Interlocked.Exchange(ref FailFirst, 0) != 0)
+            {
+                throw new InvalidOperationException("native send failed");
+            }
+
+            if (message.Body.Span[0] == RejectValue)
+            {
+                throw new InvalidOperationException("native send rejected");
+            }
+
             Record(message);
             CancelAfterSingle?.Cancel();
         }
@@ -349,43 +450,85 @@ public abstract class OutboxDirectDispatchContractTests
         {
             Calls.Enqueue(new(messages.Span[0].Destination, messages.Length));
             Entered.TrySetResult();
-            if (Block) await Release.Task.WaitAsync(cancellationToken);
+
+            if (Block)
+            {
+                await Release.Task.WaitAsync(cancellationToken);
+            }
+
             if (RejectValue.HasValue)
             {
-                if (ConfirmPartial) Record(messages.Span[0]);
+                if (ConfirmPartial)
+                {
+                    Record(messages.Span[0]);
+                }
+
                 throw ConfirmPartial ? new PartialFailure() : new InvalidOperationException("native batch rejected");
             }
+
             if (Interlocked.Exchange(ref PartialFirst, 0) != 0)
             {
                 Record(messages.Span[0]);
                 throw new InvalidOperationException("native send failed");
             }
-            if (Interlocked.Exchange(ref FailFirst, 0) != 0) throw new InvalidOperationException("native send failed");
-            for (var i = 0; i < messages.Length; i++) Record(messages.Span[i]);
+
+            if (Interlocked.Exchange(ref FailFirst, 0) != 0)
+            {
+                throw new InvalidOperationException("native send failed");
+            }
+
+            for (var i = 0; i < messages.Length; i++)
+            {
+                Record(messages.Span[i]);
+            }
         }
 
         private sealed class PartialFailure : Exception, IBatchSendFailure
         {
-            public bool IsConfirmed(int messageIndex) => messageIndex == 0;
+            public bool IsConfirmed(int messageIndex)
+            {
+                return messageIndex == 0;
+            }
         }
 
         private void Record(OutgoingMessage message)
         {
             // Due scheduling is handled by the outbox, not this native endpoint.
-            if (message.DeliverAt is not null) throw new NotSupportedException("Native scheduling is unavailable.");
+            if (message.DeliverAt is not null)
+            {
+                throw new NotSupportedException("Native scheduling is unavailable.");
+            }
+
             var headers = new KeyValuePair<string, byte[]>[message.Headers.Length];
+
             for (var i = 0; i < headers.Length; i++)
             {
                 var header = message.Headers.Span[i];
                 headers[i] = new(header.Key, header.Value.Text is { } text
                     ? System.Text.Encoding.UTF8.GetBytes(text) : header.Value.Utf8.ToArray());
             }
+
             Received.Enqueue(new(message.Body.ToArray(), headers));
         }
 
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

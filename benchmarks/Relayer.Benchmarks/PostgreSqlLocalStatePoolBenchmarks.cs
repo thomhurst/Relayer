@@ -10,7 +10,10 @@ namespace Relayer.Benchmarks;
 public class PostgreSqlLocalStatePoolBenchmarks
 {
     [Params(16, 65, 193)]
-    public int Concurrency { get; set; }
+    public int Concurrency
+    {
+        get; set;
+    }
     private NpgsqlDataSource _source = null!;
     private PostgreSqlLocalStatePool<PostgreSqlLocalTransport.SendState> _sends = null!;
     private PostgreSqlLocalStatePool<PostgreSqlOutboxStore> _completions = null!;
@@ -33,15 +36,29 @@ public class PostgreSqlLocalStatePoolBenchmarks
     [Benchmark]
     public void SendStates()
     {
-        for (var i = 0; i < Concurrency; i++) _sendWave[i] = _sends.Rent();
-        for (var i = 0; i < Concurrency; i++) _sends.Return(_sendWave[i]);
+        for (var i = 0; i < Concurrency; i++)
+        {
+            _sendWave[i] = _sends.Rent();
+        }
+
+        for (var i = 0; i < Concurrency; i++)
+        {
+            _sends.Return(_sendWave[i]);
+        }
     }
 
     [Benchmark]
     public void CompletionStates()
     {
-        for (var i = 0; i < Concurrency; i++) _completionWave[i] = _completions.Rent();
-        for (var i = 0; i < Concurrency; i++) _completions.Return(_completionWave[i]);
+        for (var i = 0; i < Concurrency; i++)
+        {
+            _completionWave[i] = _completions.Rent();
+        }
+
+        for (var i = 0; i < Concurrency; i++)
+        {
+            _completions.Return(_completionWave[i]);
+        }
     }
 
     [GlobalCleanup]

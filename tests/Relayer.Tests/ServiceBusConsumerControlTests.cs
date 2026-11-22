@@ -139,8 +139,12 @@ public sealed class ServiceBusConsumerControlTests
         message.ApplicationProperties["cloudEvents:id"] = Guid.NewGuid().ToString("N");
         message.ApplicationProperties["cloudEvents:type"] = "servicebus.deferred-start;v=1";
         await sender.SendMessageAsync(message, token);
+
         await using (var receiver = client.CreateReceiver(queue))
+        {
             await Assert.That((await receiver.PeekMessageAsync(cancellationToken: token))?.DeliveryCount).IsEqualTo(0);
+        }
+
         await Assert.That(received.Reader.TryRead(out _)).IsFalse();
 
         await provider.GetRequiredKeyedService<IConsumerControl>("bus").StartAsync(token);

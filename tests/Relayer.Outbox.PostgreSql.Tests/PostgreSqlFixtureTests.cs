@@ -19,6 +19,7 @@ public class PostgreSqlFixtureTests
         await Assert.That(exception!.Message).Contains($"docker {command} owned-container");
         var ids = File.ReadAllLines(shim.PidFile).Select(int.Parse).ToArray();
         await Assert.That(ids.Length).IsEqualTo(2);
+
         foreach (var id in ids)
         {
             try
@@ -26,7 +27,9 @@ public class PostgreSqlFixtureTests
                 using var process = Process.GetProcessById(id);
                 await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             }
-            catch (ArgumentException) { } // Already reaped.
+            catch (ArgumentException)
+            {
+            } // Already reaped.
         }
     }
 
@@ -42,13 +45,21 @@ public class PostgreSqlFixtureTests
         var fixture = new PostgreSqlServer(args =>
         {
             calls.Add(args);
-            if (args[0] == "rm") return Task.FromException<string>(cleanup);
+
+            if (args[0] == "rm")
+            {
+                return Task.FromException<string>(cleanup);
+            }
+
             return args[0] == blockedCommand ? Task.FromException<string>(primary) : Task.FromResult("container-id");
         }, failures.Add);
 
         var observed = await Assert.ThrowsAsync<TimeoutException>(async () =>
         {
-            await using (fixture) await fixture.StartAsync();
+            await using (fixture)
+            {
+                await fixture.StartAsync();
+            }
         });
 
         await Assert.That(observed).IsSameReferenceAs(primary);
@@ -74,7 +85,10 @@ public class PostgreSqlFixtureTests
         await Assert.ThrowsAsync<TimeoutException>(() => fixture.StartAsync());
         var observed = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
         {
-            await using (fixture) throw primary;
+            await using (fixture)
+            {
+                throw primary;
+            }
         });
         await Assert.That(observed).IsSameReferenceAs(primary);
         await Assert.That(failures.Count).IsEqualTo(1);
@@ -86,7 +100,12 @@ public class PostgreSqlFixtureTests
         var fixture = new PostgreSqlFixture();
         await fixture.StartAsync();
         var admin = (await PostgreSqlSession.Current).Admin;
-        await using (var create = admin.CreateCommand($"CREATE DATABASE {fixture.Database}_tenant")) await create.ExecuteNonQueryAsync();
+
+        await using (var create = admin.CreateCommand($"CREATE DATABASE {fixture.Database}_tenant"))
+        {
+            await create.ExecuteNonQueryAsync();
+        }
+
         await using var count = admin.CreateCommand("SELECT count(*) FROM pg_database WHERE starts_with(datname, $1)");
         count.Parameters.AddWithValue(fixture.Database);
         await Assert.That((long)(await count.ExecuteScalarAsync())!).IsEqualTo(2L);
@@ -99,7 +118,9 @@ public class PostgreSqlFixtureTests
     [Test]
     public async Task Disposing_an_unused_fixture_does_not_invoke_Docker()
     {
-        await using var fixture = new PostgreSqlServer(_ => throw new InvalidOperationException("Unexpected Docker invocation"), _ => { });
+        await using var fixture = new PostgreSqlServer(_ => throw new InvalidOperationException("Unexpected Docker invocation"), _ =>
+        {
+        });
     }
 
     [Test]
@@ -123,6 +144,7 @@ public class PostgreSqlFixtureTests
         var context = TestContext.Current!;
         var failure = new TimeoutException("docker rm --force owned-container");
         context.StateBag.GetOrAdd("PostgreSqlFixture.CleanupFailures", static _ => new List<Exception>()).Add(failure);
+
         try
         {
             var observed = Assert.Throws<AggregateException>(() => PostgreSqlFixtureCleanup.ReportFailures(context));
@@ -133,6 +155,7 @@ public class PostgreSqlFixtureTests
             context.StateBag.TryRemove("PostgreSqlFixture.CleanupFailures", out _);
         }
     }
+
     [Test]
     [Arguments(0)]
     [Arguments(17)]
@@ -141,6 +164,7 @@ public class PostgreSqlFixtureTests
         var docker = new DockerCommand(createStartInfo: _ =>
         {
             var start = new ProcessStartInfo(OperatingSystem.IsWindows() ? "powershell.exe" : "/bin/sh");
+
             if (OperatingSystem.IsWindows())
             {
                 start.ArgumentList.Add("-NoProfile");
@@ -153,26 +177,36 @@ public class PostgreSqlFixtureTests
                 start.ArgumentList.Add("-c");
                 start.ArgumentList.Add($"printf command-output; printf command-error >&2; exit {exitCode}");
             }
+
             return start;
         });
+
         if (exitCode == 0)
+        {
             await Assert.That(await docker.RunAsync(["port", "owned-container", "5432/tcp"])).IsEqualTo("command-output");
+        }
         else
         {
             var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => docker.RunAsync(["port", "owned-container", "5432/tcp"]));
             await Assert.That(failure!.Message).Contains("docker port owned-container 5432/tcp failed (17): command-error");
         }
     }
+
     private sealed class BlockingCommandShim : IDisposable
     {
         private readonly string _directory = Path.Combine(Path.GetTempPath(), "relayer-docker-shim-" + Guid.NewGuid().ToString("N"));
+
         internal string PidFile => Path.Combine(_directory, "pids");
 
-        internal BlockingCommandShim() => Directory.CreateDirectory(_directory);
+        internal BlockingCommandShim()
+        {
+            Directory.CreateDirectory(_directory);
+        }
 
         internal ProcessStartInfo StartInfo()
         {
             var start = new ProcessStartInfo(OperatingSystem.IsWindows() ? "powershell.exe" : "/bin/sh");
+
             if (OperatingSystem.IsWindows())
             {
                 start.ArgumentList.Add("-NoProfile");
@@ -185,6 +219,7 @@ public class PostgreSqlFixtureTests
                 start.ArgumentList.Add("-c");
                 start.ArgumentList.Add("sleep 600 & child=$!; printf '%s\\n%s\\n' $$ $child > \"$RELAYER_SHIM_PIDS\"; echo output; echo error >&2; wait");
             }
+
             start.Environment["RELAYER_SHIM_PIDS"] = PidFile;
             return start;
         }
@@ -200,10 +235,15 @@ public class PostgreSqlFixtureTests
                         using var process = Process.GetProcessById(int.Parse(line));
                         process.Kill(entireProcessTree: true);
                     }
-                    catch (ArgumentException) { }
-                    catch (InvalidOperationException) { }
+                    catch (ArgumentException)
+                    {
+                    }
+                    catch (InvalidOperationException)
+                    {
+                    }
                 }
             }
+
             Directory.Delete(_directory, recursive: true);
         }
     }

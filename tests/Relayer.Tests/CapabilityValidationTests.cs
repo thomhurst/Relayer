@@ -17,18 +17,30 @@ public class CapabilityValidationTests
         var transport = new TestTransport("events", _ => new() { OrderedByKey = ordered });
         await using var provider = Create(transport, route =>
         {
-            if (scalar) route.OrderingKey(message => message.OrderId);
-            else route.OrderingKey(_ => "customer");
+            if (scalar)
+            {
+                route.OrderingKey(message => message.OrderId);
+            }
+            else
+            {
+                route.OrderingKey(_ => "customer");
+            }
         });
 
         var failure = await Start(provider);
 
-        if (ordered) await Assert.That(failure).IsNull();
+        if (ordered)
+        {
+            await Assert.That(failure).IsNull();
+        }
         else
         {
             await Assert.That(failure).IsNotNull();
+
             foreach (var expected in new[] { "events", "orders", nameof(OrderPlaced), "OrderedByKey", "ordering" })
+            {
                 await Assert.That(failure!.Message).Contains(expected);
+            }
         }
     }
 
@@ -100,8 +112,11 @@ public class CapabilityValidationTests
         await using var provider = Create(new TestTransport("events", _ => capabilities));
         var failure = await Start(provider);
         await Assert.That(failure).IsNotNull();
+
         foreach (var expected in new[] { "events", "orders", property })
+        {
             await Assert.That(failure!.Message).Contains(expected);
+        }
     }
 
     [Test]
@@ -153,8 +168,12 @@ public class CapabilityValidationTests
         }, receiver: receiver);
         var failure = await Start(provider);
         await Assert.That(failure).IsNotNull();
+
         foreach (var expected in new[] { "events", "orders", "Endpoint not declared.", "credentials required", "concurrency" })
+        {
             await Assert.That(failure!.Message).Contains(expected);
+        }
+
         await Assert.That(receiver.Started).IsFalse();
         await Assert.That(transport.Lookups["orders"]).IsEqualTo(1);
     }
@@ -179,8 +198,11 @@ public class CapabilityValidationTests
             : throw new ArgumentException("Endpoint unavailable.")));
         var failure = await Start(provider);
         await Assert.That(failure).IsNotNull();
+
         foreach (var expected in new[] { "events", "orders", "Endpoint unavailable." })
+        {
             await Assert.That(failure!.Message).Contains(expected);
+        }
     }
 
     [Test]
@@ -204,8 +226,11 @@ public class CapabilityValidationTests
 
         var failure = await Start(provider);
         await Assert.That(failure).IsNotNull();
+
         foreach (var expected in new[] { "events", "credentials required", "concurrency", "handler" })
+        {
             await Assert.That(failure!.Message).Contains(expected);
+        }
     }
 
     [Test]
@@ -293,18 +318,31 @@ public class CapabilityValidationTests
     {
         var transport = new TestTransport("events", _ => new()
         {
-            MaxDeliveryDelay = nativeTicks < 0 ? null : TimeSpan.FromTicks(nativeTicks), OrderedByKey = ordered
+            MaxDeliveryDelay = nativeTicks < 0 ? null : TimeSpan.FromTicks(nativeTicks),
+            OrderedByKey = ordered
         });
         await using var provider = Create(transport, route =>
         {
-            route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromTicks(requiredTicks) };
-            if (ordered) route.OrderingKey(_ => "key");
+            route.SendOptions = new()
+            {
+                RequiredDeliveryDelay = TimeSpan.FromTicks(requiredTicks)
+            };
+
+            if (ordered)
+            {
+                route.OrderingKey(_ => "key");
+            }
         }, outbox: hasOutbox ? new SchedulingOutbox(scheduler) : null);
         var failure = await Start(provider);
         await Assert.That(failure is null).IsEqualTo(valid);
+
         if (!valid)
+        {
             foreach (var part in new[] { nameof(OrderPlaced), "orders", "events", "RequiredDeliveryDelay", "dispatch worker" })
+            {
                 await Assert.That(failure!.Message).Contains(part);
+            }
+        }
     }
 
     [Test]
@@ -322,17 +360,25 @@ public class CapabilityValidationTests
             outbox: outbox ? new SchedulingOutbox(false) : null);
         var failure = await Start(provider);
         await Assert.That(failure is null).IsEqualTo(valid);
+
         if (!valid)
+        {
             foreach (var part in new[] { nameof(OrderPlaced), "events", "Transaction" })
+            {
                 await Assert.That(failure!.Message).Contains(part);
+            }
+        }
     }
 
     [Test]
     public async Task Native_transactions_cannot_use_a_database_scheduler_fallback()
     {
         await using var provider = Create(new TestTransport("events", _ => new() { Transactions = true }),
-            route => route.SendOptions = new() { TransactionRequirement = SendTransactionRequirement.Native,
-                RequiredDeliveryDelay = TimeSpan.FromSeconds(1) }, outbox: new SchedulingOutbox(true));
+            route => route.SendOptions = new()
+            {
+                TransactionRequirement = SendTransactionRequirement.Native,
+                RequiredDeliveryDelay = TimeSpan.FromSeconds(1)
+            }, outbox: new SchedulingOutbox(true));
         await Assert.That(await Start(provider)).IsNotNull();
     }
 
@@ -352,7 +398,10 @@ public class CapabilityValidationTests
         await using var provider = Create(new TestTransport("events", _ => new() { OrderedByKey = true }), route =>
         {
             route.OrderingKey(_ => "key");
-            route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromDays(1) };
+            route.SendOptions = new()
+            {
+                RequiredDeliveryDelay = TimeSpan.FromDays(1)
+            };
         }, outbox: new SchedulingOutbox(true, ordered: true));
         await Assert.That(await Start(provider)).IsNull();
     }
@@ -361,17 +410,26 @@ public class CapabilityValidationTests
     public async Task Required_outbox_scheduling_cannot_use_native_delay_instead_of_a_due_worker()
     {
         await using var provider = Create(new TestTransport("events", _ => new() { MaxDeliveryDelay = TimeSpan.MaxValue }),
-            route => route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromSeconds(1),
-                TransactionRequirement = SendTransactionRequirement.Outbox }, outbox: new SchedulingOutbox(false));
+            route => route.SendOptions = new()
+            {
+                RequiredDeliveryDelay = TimeSpan.FromSeconds(1),
+                TransactionRequirement = SendTransactionRequirement.Outbox
+            }, outbox: new SchedulingOutbox(false));
         await Assert.That(await Start(provider)).IsNotNull();
     }
 
     private sealed class SchedulingOutbox(bool scheduled, bool ordered = false) : IOutboxEnlistment
     {
         public bool IsActive => false;
+
         public bool SupportsScheduling => scheduled;
+
         public bool SupportsOrderedScheduling => ordered;
-        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private static ServiceProvider Create(TestTransport? transport,
@@ -380,9 +438,22 @@ public class CapabilityValidationTests
         TestTransport? extra = null, Receiver? receiver = null, IOutboxEnlistment? outbox = null)
     {
         var services = new ServiceCollection();
-        if (outbox is not null) services.AddScoped<IOutboxEnlistment>(_ => outbox);
-        if (transport is not null) services.AddSingleton<ITransport>(transport);
-        if (extra is not null) services.AddSingleton<ITransport>(extra);
+
+        if (outbox is not null)
+        {
+            services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        }
+
+        if (transport is not null)
+        {
+            services.AddSingleton<ITransport>(transport);
+        }
+
+        if (extra is not null)
+        {
+            services.AddSingleton<ITransport>(extra);
+        }
+
         services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
@@ -390,7 +461,11 @@ public class CapabilityValidationTests
             {
                 broker.Send("orders", route);
                 additional?.Invoke(broker);
-                if (receiver is not null) services.AddSingleton<IHostedService>(receiver);
+
+                if (receiver is not null)
+                {
+                    services.AddSingleton<IHostedService>(receiver);
+                }
             });
         });
         return services.BuildServiceProvider();
@@ -401,37 +476,86 @@ public class CapabilityValidationTests
         try
         {
             foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+            {
                 await service.StartingAsync(CancellationToken.None);
+            }
+
             foreach (var service in provider.GetServices<IHostedService>())
+            {
                 await service.StartAsync(CancellationToken.None);
+            }
+
             return null;
         }
-        catch (OptionsValidationException error) { return error; }
+        catch (OptionsValidationException error)
+        {
+            return error;
+        }
     }
 
     private sealed class Receiver : IHostedService
     {
-        public bool Started { get; private set; }
-        public Task StartAsync(CancellationToken cancellationToken) { Started = true; return Task.CompletedTask; }
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public bool Started
+        {
+            get; private set;
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            Started = true;
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class TestTransport(string name, Func<string, TransportCapabilities> resolve) : ITransport
     {
         public string Name => name;
-        public Dictionary<string, int> Lookups { get; } = new(StringComparer.Ordinal);
+
+        public Dictionary<string, int> Lookups
+        {
+            get;
+        } = new(StringComparer.Ordinal);
+
         public TransportCapabilities GetCapabilities(string endpoint)
         {
             Lookups.TryGetValue(endpoint, out var count);
             Lookups[endpoint] = count + 1;
             return resolve(endpoint);
         }
+
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new TopologyReport([]));
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

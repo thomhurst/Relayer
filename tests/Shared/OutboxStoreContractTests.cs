@@ -1,4 +1,5 @@
 using Relayer.Transports;
+
 namespace Relayer.TestFixtures;
 
 // Shared durable-store behaviours. Providers own setup and seeding; tests use only the portable contract.
@@ -9,8 +10,10 @@ public abstract class OutboxStoreContractTests
     protected abstract class StoreFixture : IAsyncDisposable
     {
         public abstract IOutboxStore Store();
+
         public abstract Task Insert(Guid id, DateTimeOffset now, int? lane = null, DateTimeOffset? deliverAt = null,
             string status = "pending", DateTimeOffset? expires = null);
+
         public abstract ValueTask DisposeAsync();
     }
 
@@ -57,6 +60,7 @@ public abstract class OutboxStoreContractTests
         var store = fixture.Store();
         var now = new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var id = Guid.CreateVersion7();
+
         if (state != "missing")
         {
             var expiry = state switch
@@ -73,7 +77,12 @@ public abstract class OutboxStoreContractTests
         var rows = new OutboxRecord[1];
         await Assert.That(await store.ReadPendingAsync(new(null, queryTime), rows, default)).IsEqualTo(eligible ? 1 : 0);
         await Assert.That(await store.GetPendingCountAsync(queryTime, default)).IsEqualTo(eligible ? 1L : 0L);
-        if (eligible) await Assert.That(rows[0].Id).IsEqualTo(id);
+
+        if (eligible)
+        {
+            await Assert.That(rows[0].Id).IsEqualTo(id);
+        }
+
         await Assert.That(await store.TryClaimAsync(new(id, Guid.NewGuid()), queryTime, queryTime.AddMinutes(1), default))
             .IsEqualTo(eligible);
         await Assert.That(await store.GetPendingCountAsync(queryTime, default)).IsEqualTo(0L);
@@ -88,14 +97,19 @@ public abstract class OutboxStoreContractTests
         await fixture.Insert(Guid.CreateVersion7(), now, deliverAt: now.AddSeconds(1));
         await fixture.Insert(Guid.CreateVersion7(), now, expires: now.AddSeconds(1));
         await fixture.Insert(Guid.CreateVersion7(), now, status: "parked");
+
         for (var count = 0; count <= 5; count++)
         {
             await Assert.That(await store.GetPendingCountAsync(now, 3, default)).IsEqualTo(Math.Min(count, 3));
             await Assert.That(await store.GetPendingCountAsync(now, default)).IsEqualTo((long)count);
+
             if (count < 5)
+            {
                 await fixture.Insert(Guid.CreateVersion7(), now, lane: count % 2 == 0 ? null : 1,
                     deliverAt: now, expires: now);
+            }
         }
+
         await Assert.That(await store.GetPendingCountAsync(now, long.MaxValue, default)).IsEqualTo(5L);
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () => await store.GetPendingCountAsync(now, 0, default));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () => await store.GetPendingCountAsync(now, -1, default));

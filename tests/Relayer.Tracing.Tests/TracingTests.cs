@@ -1,17 +1,21 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
 public class TracingTests
 {
-    private static readonly MessagingEndpoint Endpoint = new()
+    private static readonly MessagingEndpoint s_endpoint = new()
     {
-        System = "kafka", Destination = "orders", ServerAddress = "broker", ServerPort = 9092,
-        ConsumerGroup = "billing", ClientId = "client",
+        System = "kafka",
+        Destination = "orders",
+        ServerAddress = "broker",
+        ServerPort = 9092,
+        ConsumerGroup = "billing",
+        ClientId = "client",
     };
 
     [Test]
@@ -37,9 +41,15 @@ public class TracingTests
     public async Task Operations_have_native_names_kinds_and_sampling_attributes(MessagingOperation operation, ActivityKind kind, string name)
     {
         using var capture = new Capture();
-        var endpoint = new MessageOperationTracing(capture.Tracing, Endpoint, operation,
+        var endpoint = new MessageOperationTracing(capture.Tracing, s_endpoint, operation,
             operation == MessagingOperation.Settle ? name : null);
-        using var activity = endpoint.Start(new() { MessageId = "id", EventType = "orders;v=1", EventSource = "/shop", PartitionId = "3" });
+        using var activity = endpoint.Start(new()
+        {
+            MessageId = "id",
+            EventType = "orders;v=1",
+            EventSource = "/shop",
+            PartitionId = "3"
+        });
         await Assert.That(activity!.DisplayName).IsEqualTo(name + " orders");
         await Assert.That(activity.Kind).IsEqualTo(kind);
         await Assert.That(capture.SampleTags["messaging.system"]).IsEqualTo("kafka");
@@ -58,7 +68,9 @@ public class TracingTests
         using var capture = new Capture();
         var endpoint = new MessageOperationTracing(capture.Tracing, new()
         {
-            System = "gcp_pubsub", Destination = "orders", Subscription = "billing",
+            System = "gcp_pubsub",
+            Destination = "orders",
+            Subscription = "billing",
         }, MessagingOperation.Settle, "ack");
         using var activity = endpoint.Start();
         await Assert.That(capture.SampleTags["messaging.destination.subscription.name"]).IsEqualTo("billing");
@@ -70,8 +82,11 @@ public class TracingTests
     {
         using var capture = new Capture();
         var creation = RemoteContext();
-        using var process = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Process)
-            .Start(new() { CreationContext = creation });
+        using var process = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Process)
+            .Start(new()
+            {
+                CreationContext = creation
+            });
         await Assert.That(process!.ParentSpanId).IsEqualTo(creation.SpanId);
         await Assert.That(process.TraceId).IsEqualTo(creation.TraceId);
         await Assert.That(process.Links.Single().Context).IsEqualTo(creation);
@@ -83,9 +98,12 @@ public class TracingTests
         using var capture = new Capture();
         using var ambient = new Activity("request").Start();
         var creation = RemoteContext();
-        using var process = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Process)
-            .Start(new() { CreationContext = creation });
-        using var settle = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "commit").Start();
+        using var process = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Process)
+            .Start(new()
+            {
+                CreationContext = creation
+            });
+        using var settle = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Settle, "commit").Start();
         await Assert.That(process!.ParentSpanId).IsEqualTo(ambient.SpanId);
         await Assert.That(process.Links.Single().Context).IsEqualTo(creation);
         await Assert.That(settle!.ParentSpanId).IsEqualTo(process.SpanId);
@@ -94,10 +112,16 @@ public class TracingTests
     [Test]
     public async Task Creation_parent_can_be_disabled()
     {
-        using var capture = new Capture(new() { CreationContextAsParent = false });
+        using var capture = new Capture(new()
+        {
+            CreationContextAsParent = false
+        });
         var creation = RemoteContext();
-        using var process = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Process)
-            .Start(new() { CreationContext = creation });
+        using var process = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Process)
+            .Start(new()
+            {
+                CreationContext = creation
+            });
         await Assert.That(process!.ParentSpanId).IsEqualTo(default(ActivitySpanId));
         await Assert.That(process.Links.Single().Context).IsEqualTo(creation);
     }
@@ -109,9 +133,13 @@ public class TracingTests
     {
         using var capture = new Capture();
         var links = new[] { new ActivityLink(RemoteContext()), new ActivityLink(RemoteContext()) };
-        using var activity = new MessageOperationTracing(capture.Tracing, Endpoint, operation).Start(new()
+        using var activity = new MessageOperationTracing(capture.Tracing, s_endpoint, operation).Start(new()
         {
-            Links = links, BatchCount = 2, MessageId = "omit", PartitionId = "omit", CreationContext = links[0].Context,
+            Links = links,
+            BatchCount = 2,
+            MessageId = "omit",
+            PartitionId = "omit",
+            CreationContext = links[0].Context,
         });
         await Assert.That(activity!.Kind).IsEqualTo(kind);
         await Assert.That(activity.ParentSpanId).IsEqualTo(default(ActivitySpanId));
@@ -124,8 +152,14 @@ public class TracingTests
     [Test]
     public async Task Batch_without_create_spans_uses_send_as_producer()
     {
-        using var capture = new Capture(new() { CreateSpansForBatches = false });
-        using var send = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start(new() { BatchCount = 2 });
+        using var capture = new Capture(new()
+        {
+            CreateSpansForBatches = false
+        });
+        using var send = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Send).Start(new()
+        {
+            BatchCount = 2
+        });
         await Assert.That(capture.Tracing.Options.CreateSpansForBatches).IsFalse();
         await Assert.That(send!.Kind).IsEqualTo(ActivityKind.Producer);
         await Assert.That(send.Links).IsEmpty();
@@ -136,8 +170,14 @@ public class TracingTests
     {
         using var capture = new Capture();
         var creation = RemoteContext();
-        using var create = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Create).Start(new() { CreationContext = creation });
-        using var send = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start(new() { CreationContext = creation });
+        using var create = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Create).Start(new()
+        {
+            CreationContext = creation
+        });
+        using var send = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Send).Start(new()
+        {
+            CreationContext = creation
+        });
         await Assert.That(create).IsNull();
         await Assert.That(send!.Kind).IsEqualTo(ActivityKind.Client);
         await Assert.That(send.Links.Single().Context).IsEqualTo(creation);
@@ -147,7 +187,7 @@ public class TracingTests
     public async Task Failure_sets_status_and_type_without_exception_events()
     {
         using var capture = new Capture();
-        using var activity = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start();
+        using var activity = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Send).Start();
         MessageOperationTracing.Fail(activity, "broker_unavailable");
         await Assert.That(activity!.Status).IsEqualTo(ActivityStatusCode.Error);
         await Assert.That(activity.GetTagItem("error.type")).IsEqualTo("broker_unavailable");
@@ -163,20 +203,34 @@ public class TracingTests
     {
         var enricher = new Enricher();
         using var capture = new Capture(sampling: sampling, enrichers: [enricher]);
-        using var activity = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start();
+        using var activity = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Send).Start();
         await Assert.That(enricher.Calls).IsEqualTo(expected);
-        if (expected != 0) await Assert.That(activity!.DisplayName).IsEqualTo("custom send");
+
+        if (expected != 0)
+        {
+            await Assert.That(activity!.DisplayName).IsEqualTo("custom send");
+        }
     }
 
     [Test]
     public async Task No_listener_start_allocates_nothing()
     {
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var operation = new MessageOperationTracing(tracing, Endpoint, MessagingOperation.Process);
+        var operation = new MessageOperationTracing(tracing, s_endpoint, MessagingOperation.Process);
         var data = new MessageTraceData { CreationContext = RemoteContext() };
-        for (var i = 0; i < 1000; i++) operation.Start(data)?.Dispose();
+
+        for (var i = 0; i < 1000; i++)
+        {
+            operation.Start(data)?.Dispose();
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) operation.Start(data)?.Dispose();
+
+        for (var i = 0; i < 1000; i++)
+        {
+            operation.Start(data)?.Dispose();
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
     }
@@ -193,18 +247,32 @@ public class TracingTests
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.None,
         };
         ActivitySource.AddActivityListener(listener);
-        var operation = new MessageOperationTracing(tracing, Endpoint, MessagingOperation.Process);
+        var operation = new MessageOperationTracing(tracing, s_endpoint, MessagingOperation.Process);
         // Exclude ActivitySource's root trace ID string allocation from Relayer's sampling preparation.
         using var ambient = new Activity("request").Start();
         var links = new[] { new ActivityLink(RemoteContext()), new ActivityLink(RemoteContext()), new ActivityLink(RemoteContext()) };
         var data = new MessageTraceData
         {
-            CreationContext = links[0].Context, PartitionId = "3", MessageId = "id", BodySize = 42,
-            BatchCount = batch ? 2 : null, Links = batch ? links.AsMemory(1, 2) : default,
+            CreationContext = links[0].Context,
+            PartitionId = "3",
+            MessageId = "id",
+            BodySize = 42,
+            BatchCount = batch ? 2 : null,
+            Links = batch ? links.AsMemory(1, 2) : default,
         };
-        for (var i = 0; i < 1000; i++) operation.Start(data)?.Dispose();
+
+        for (var i = 0; i < 1000; i++)
+        {
+            operation.Start(data)?.Dispose();
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) operation.Start(data)?.Dispose();
+
+        for (var i = 0; i < 1000; i++)
+        {
+            operation.Start(data)?.Dispose();
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
     }
@@ -213,7 +281,7 @@ public class TracingTests
     public async Task Sampling_links_and_partition_survive_reentrant_starts_and_borrowed_buffer_reuse()
     {
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var operation = new MessageOperationTracing(tracing, Endpoint, MessagingOperation.Process);
+        var operation = new MessageOperationTracing(tracing, s_endpoint, MessagingOperation.Process);
         var first = RemoteContext();
         var second = RemoteContext();
         var nested = false;
@@ -224,25 +292,50 @@ public class TracingTests
             Sample = (ref ActivityCreationOptions<ActivityContext> creation) =>
             {
                 var expected = nested ? second : first;
-                if (!creation.Links!.Single().Context.Equals(expected)) throw new InvalidOperationException("Wrong sampling link.");
+
+                if (!creation.Links!.Single().Context.Equals(expected))
+                {
+                    throw new InvalidOperationException("Wrong sampling link.");
+                }
+
                 if (!nested)
                 {
                     nested = true;
-                    using var inner = operation.Start(new() { CreationContext = second, PartitionId = "inner" });
+                    using var inner = operation.Start(new()
+                    {
+                        CreationContext = second,
+                        PartitionId = "inner"
+                    });
                     nested = false;
-                    if (!creation.Links!.Single().Context.Equals(first)) throw new InvalidOperationException("Link overwritten by reentrancy.");
+
+                    if (!creation.Links!.Single().Context.Equals(first))
+                    {
+                        throw new InvalidOperationException("Link overwritten by reentrancy.");
+                    }
+
                     if (!Equals(creation.Tags!.Single(tag => tag.Key == "messaging.destination.partition.id").Value, "outer"))
+                    {
                         throw new InvalidOperationException("Partition overwritten by reentrancy.");
+                    }
                 }
+
                 samples++;
                 return ActivitySamplingResult.AllDataAndRecorded;
             },
         };
         ActivitySource.AddActivityListener(listener);
         var borrowed = new[] { new ActivityLink(second), new ActivityLink(first), new ActivityLink(second) };
-        using var activity = operation.Start(new() { Links = borrowed.AsMemory(1, 1), PartitionId = "outer" });
+        using var activity = operation.Start(new()
+        {
+            Links = borrowed.AsMemory(1, 1),
+            PartitionId = "outer"
+        });
         borrowed[1] = new ActivityLink(second);
-        using var reused = operation.Start(new() { CreationContext = first, PartitionId = "outer" });
+        using var reused = operation.Start(new()
+        {
+            CreationContext = first,
+            PartitionId = "outer"
+        });
         await Assert.That(samples).IsEqualTo(4);
         await Assert.That(activity!.Links.Single().Context).IsEqualTo(first);
         await Assert.That(activity.GetTagItem("messaging.destination.partition.id")).IsEqualTo("outer");
@@ -252,7 +345,7 @@ public class TracingTests
     public async Task Concurrent_starts_do_not_share_sampling_state()
     {
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var operation = new MessageOperationTracing(tracing, Endpoint, MessagingOperation.Process);
+        var operation = new MessageOperationTracing(tracing, s_endpoint, MessagingOperation.Process);
         using var barrier = new Barrier(8);
         using var listener = new ActivityListener
         {
@@ -261,19 +354,31 @@ public class TracingTests
             {
                 barrier.SignalAndWait();
                 var partition = creation.Tags!.Single(tag => tag.Key == "messaging.destination.partition.id").Value;
+
                 if (!Equals(partition, creation.Links!.Single().Context.SpanId.ToHexString()))
+                {
                     throw new InvalidOperationException("Concurrent sampling state overwritten.");
+                }
+
                 return ActivitySamplingResult.AllDataAndRecorded;
             },
         };
         ActivitySource.AddActivityListener(listener);
         var tasks = new Task[8];
+
         for (var i = 0; i < tasks.Length; i++)
+        {
             tasks[i] = Task.Factory.StartNew(() =>
             {
                 var context = RemoteContext();
-                using var activity = operation.Start(new() { CreationContext = context, PartitionId = context.SpanId.ToHexString() });
+                using var activity = operation.Start(new()
+                {
+                    CreationContext = context,
+                    PartitionId = context.SpanId.ToHexString()
+                });
             }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
+
         await Task.WhenAll(tasks);
     }
 
@@ -282,12 +387,13 @@ public class TracingTests
     [Arguments(true)]
     public async Task Context_parser_matches_framework_for_valid_and_invalid_inputs(bool utf8)
     {
-        const string valid = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
-        string[] inputs = [valid, "01" + valid[2..], "fe" + valid[2..], "ff" + valid[2..],
-            valid[..53] + "ff", valid[..53] + "00", valid.ToUpperInvariant(), valid + "-extra", valid[..54], "",
-            valid[..3] + new string('0', 32) + valid[35..], valid[..36] + new string('0', 16) + valid[52..],
-            valid[..10] + "g" + valid[11..], valid[..53] + "0G", valid.Replace('-', '_'), valid.Replace('-', 'é')];
+        const string Valid = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        string[] inputs = [Valid, "01" + Valid[2..], "fe" + Valid[2..], "ff" + Valid[2..],
+            Valid[..53] + "ff", Valid[..53] + "00", Valid.ToUpperInvariant(), Valid + "-extra", Valid[..54], "",
+            Valid[..3] + new string('0', 32) + Valid[35..], Valid[..36] + new string('0', 16) + Valid[52..],
+            Valid[..10] + "g" + Valid[11..], Valid[..53] + "0G", Valid.Replace('-', '_'), Valid.Replace('-', 'é')];
         var names = new HeaderNames();
+
         foreach (var input in inputs)
         {
             var headers = new Dictionary<string, WireString>
@@ -303,20 +409,32 @@ public class TracingTests
     [Test]
     public async Task Utf8_context_parsing_allocates_only_framework_context_storage()
     {
-        const string parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        const string Parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
         var names = new HeaderNames();
-        var utf8 = new Dictionary<string, WireString> { [names.TraceParent] = new(Encoding.UTF8.GetBytes(parent)) };
-        var text = new Dictionary<string, WireString> { [names.TraceParent] = new(parent) };
+        var utf8 = new Dictionary<string, WireString> { [names.TraceParent] = new(Encoding.UTF8.GetBytes(Parent)) };
+        var text = new Dictionary<string, WireString> { [names.TraceParent] = new(Parent) };
+
         for (var i = 0; i < 1000; i++)
         {
             MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(utf8, names);
             MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(text, names);
         }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(text, names);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(text, names);
+        }
+
         var textBytes = GC.GetAllocatedBytesForCurrentThread() - before;
         before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(utf8, names);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(utf8, names);
+        }
+
         var utf8Bytes = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(utf8Bytes).IsEqualTo(textBytes);
     }
@@ -325,11 +443,26 @@ public class TracingTests
     public async Task Temporary_names_omit_destination_and_template_takes_precedence()
     {
         using var capture = new Capture();
+
         using (var temporary = new MessageOperationTracing(capture.Tracing,
-            new() { System = "servicebus", Destination = "random", Temporary = true }, MessagingOperation.Send).Start())
+            new()
+            {
+                System = "servicebus",
+                Destination = "random",
+                Temporary = true
+            }, MessagingOperation.Send).Start())
+        {
             await Assert.That(temporary!.DisplayName).IsEqualTo("send");
+        }
+
         using var templated = new MessageOperationTracing(capture.Tracing,
-            new() { System = "servicebus", Destination = "reply-123", Anonymous = true, DestinationTemplate = "reply-{id}" }, MessagingOperation.Send).Start();
+            new()
+            {
+                System = "servicebus",
+                Destination = "reply-123",
+                Anonymous = true,
+                DestinationTemplate = "reply-{id}"
+            }, MessagingOperation.Send).Start();
         await Assert.That(templated!.DisplayName).IsEqualTo("send reply-{id}");
     }
 
@@ -338,8 +471,14 @@ public class TracingTests
     [Arguments(true)]
     public async Task Body_size_is_opt_in(bool enabled)
     {
-        using var capture = new Capture(new() { IncludeBodySize = enabled });
-        using var activity = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start(new() { BodySize = 42 });
+        using var capture = new Capture(new()
+        {
+            IncludeBodySize = enabled
+        });
+        using var activity = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Send).Start(new()
+        {
+            BodySize = 42
+        });
         await Assert.That(activity!.GetTagItem("messaging.message.body.size")).IsEqualTo(enabled ? (object)42L : null);
     }
 
@@ -383,26 +522,43 @@ public class TracingTests
         await Assert.That(MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(utf8, names).TraceFlags).IsEqualTo(original.TraceFlags);
     }
 
-    private static ActivityContext RemoteContext() => new(ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(), ActivityTraceFlags.Recorded, "vendor=value", true);
+    private static ActivityContext RemoteContext()
+    {
+        return new(ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(), ActivityTraceFlags.Recorded, "vendor=value", true);
+    }
 
     [Test]
     public async Task Batch_send_links_to_each_create_span_and_consumer_links_to_the_same_context()
     {
         using var capture = new Capture();
-        var create = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Create);
+        var create = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Create);
         ActivityContext first;
         ActivityContext second;
-        using (var activity = create.Start()) first = activity!.Context;
-        using (var activity = create.Start()) second = activity!.Context;
-        using (var send = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start(new()
+
+        using (var activity = create.Start())
         {
-            BatchCount = 2, Links = new[] { new ActivityLink(first), new ActivityLink(second) },
+            first = activity!.Context;
+        }
+
+        using (var activity = create.Start())
+        {
+            second = activity!.Context;
+        }
+
+        using (var send = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Send).Start(new()
+        {
+            BatchCount = 2,
+            Links = new[] { new ActivityLink(first), new ActivityLink(second) },
         }))
         {
             await Assert.That(send!.Kind).IsEqualTo(ActivityKind.Client);
             await Assert.That(send.Links.Select(link => link.Context)).IsEquivalentTo(new[] { first, second });
         }
-        using var process = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Process).Start(new() { CreationContext = first });
+
+        using var process = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Process).Start(new()
+        {
+            CreationContext = first
+        });
         await Assert.That(process!.ParentSpanId).IsEqualTo(first.SpanId);
         await Assert.That(process.Links.Single().Context).IsEqualTo(first);
     }
@@ -411,11 +567,11 @@ public class TracingTests
     public async Task Invalid_operation_metadata_fails_at_composition()
     {
         using var capture = new Capture();
-        await Assert.That(() => new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle))
+        await Assert.That(() => new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Settle))
             .Throws<ArgumentException>();
-        await Assert.That(() => new MessageOperationTracing(capture.Tracing, Endpoint, (MessagingOperation)99))
+        await Assert.That(() => new MessageOperationTracing(capture.Tracing, s_endpoint, (MessagingOperation)99))
             .Throws<ArgumentOutOfRangeException>();
-        await Assert.That(() => new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Process, "receive"))
+        await Assert.That(() => new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Process, "receive"))
             .Throws<ArgumentException>();
     }
 
@@ -428,7 +584,7 @@ public class TracingTests
     {
         using var capture = listener ? new Capture() : null;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var operation = new MessageOperationTracing(capture?.Tracing ?? tracing, Endpoint, MessagingOperation.Send);
+        var operation = new MessageOperationTracing(capture?.Tracing ?? tracing, s_endpoint, MessagingOperation.Send);
         await Assert.That(() => operation.Start(new() { BatchCount = count })).Throws<ArgumentOutOfRangeException>();
     }
 
@@ -441,7 +597,7 @@ public class TracingTests
     {
         using var capture = listener ? new Capture() : null;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var operation = new MessageOperationTracing(capture?.Tracing ?? tracing, Endpoint, MessagingOperation.Create);
+        var operation = new MessageOperationTracing(capture?.Tracing ?? tracing, s_endpoint, MessagingOperation.Create);
         var data = new MessageTraceData { BatchCount = 1, CreationContext = existingContext ? RemoteContext() : default };
         await Assert.That(() => operation.Start(data)).Throws<ArgumentException>();
     }
@@ -453,7 +609,7 @@ public class TracingTests
     public async Task Failure_with_missing_error_type_uses_fallback(string? errorType)
     {
         using var capture = new Capture();
-        using var activity = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start();
+        using var activity = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Send).Start();
         MessageOperationTracing.Fail(activity, errorType!);
         await Assert.That(activity!.Status).IsEqualTo(ActivityStatusCode.Error);
         await Assert.That(activity.GetTagItem("error.type")).IsEqualTo("_OTHER");
@@ -466,38 +622,67 @@ public class TracingTests
         var enricher = new Enricher();
         using var capture = new Capture(enrichers: [new ThrowingEnricher(), enricher]);
         using var ambient = new Activity("request").Start();
-        using (var activity = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start())
+
+        using (var activity = new MessageOperationTracing(capture.Tracing, s_endpoint, MessagingOperation.Send).Start())
         {
             await Assert.That(activity).IsNotNull();
             await Assert.That(Activity.Current).IsSameReferenceAs(activity);
         }
+
         await Assert.That(Activity.Current).IsSameReferenceAs(ambient);
         await Assert.That(enricher.Calls).IsEqualTo(1);
     }
 
     private sealed class ThrowingEnricher : IActivityEnricher
     {
-        public void Enrich(Activity activity) => throw new InvalidOperationException("Enricher failed.");
+        public void Enrich(Activity activity)
+        {
+            throw new InvalidOperationException("Enricher failed.");
+        }
     }
 
     private sealed class Binding : IMessageHeaderReader<Dictionary<string, WireString>>, IMessageHeaderWriter<Dictionary<string, WireString>>
     {
-        public static bool TryGetHeader(Dictionary<string, WireString> message, string name, out WireString value) => message.TryGetValue(name, out value);
-        public static void SetHeader(Dictionary<string, WireString> message, string name, ReadOnlySpan<char> value) => message[name] = new(value.ToString());
-        public static void RemoveHeader(Dictionary<string, WireString> message, string name) => message.Remove(name);
+        public static bool TryGetHeader(Dictionary<string, WireString> message, string name, out WireString value)
+        {
+            return message.TryGetValue(name, out value);
+        }
+
+        public static void SetHeader(Dictionary<string, WireString> message, string name, ReadOnlySpan<char> value)
+        {
+            message[name] = new(value.ToString());
+        }
+
+        public static void RemoveHeader(Dictionary<string, WireString> message, string name)
+        {
+            message.Remove(name);
+        }
     }
 
     private sealed class Enricher : IActivityEnricher
     {
         internal int Calls;
-        public void Enrich(Activity activity) { Calls++; activity.DisplayName = "custom send"; }
+
+        public void Enrich(Activity activity)
+        {
+            Calls++;
+            activity.DisplayName = "custom send";
+        }
     }
 
     private sealed class Capture : IDisposable
     {
-        internal MessageTracing Tracing { get; }
-        internal Dictionary<string, object?> SampleTags { get; } = [];
+        internal MessageTracing Tracing
+        {
+            get;
+        }
+
+        internal Dictionary<string, object?> SampleTags
+        {
+            get;
+        } = [];
         private readonly ActivityListener _listener;
+
         internal Capture(TracingOptions? options = null, ActivitySamplingResult sampling = ActivitySamplingResult.AllDataAndRecorded, IActivityEnricher[]? enrichers = null)
         {
             Tracing = new(Options.Create(options ?? new()), enrichers ?? []);
@@ -507,12 +692,22 @@ public class TracingTests
                 Sample = (ref ActivityCreationOptions<ActivityContext> creation) =>
                 {
                     SampleTags.Clear();
-                    foreach (var tag in creation.Tags!) SampleTags[tag.Key] = tag.Value;
+
+                    foreach (var tag in creation.Tags!)
+                    {
+                        SampleTags[tag.Key] = tag.Value;
+                    }
+
                     return sampling;
                 },
             };
             ActivitySource.AddActivityListener(_listener);
         }
-        public void Dispose() { _listener.Dispose(); Tracing.Dispose(); }
+
+        public void Dispose()
+        {
+            _listener.Dispose();
+            Tracing.Dispose();
+        }
     }
 }

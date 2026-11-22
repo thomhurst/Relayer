@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer;
 

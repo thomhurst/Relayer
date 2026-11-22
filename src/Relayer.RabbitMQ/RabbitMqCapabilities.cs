@@ -5,7 +5,7 @@ namespace Relayer.RabbitMQ;
 /// <summary>Shared conservative capabilities used by the native RabbitMQ adapter.</summary>
 internal static class RabbitMqCapabilities
 {
-    private static readonly TransportCapabilities Defaults = new()
+    private static readonly TransportCapabilities s_defaults = new()
     {
         MaxRedeliveryDelay = TimeSpan.Zero,
         PauseResume = true,
@@ -20,6 +20,6 @@ internal static class RabbitMqCapabilities
     public static TransportCapabilities GetCapabilities(string endpoint)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
-        return Defaults;
+        return s_defaults;
     }
 }

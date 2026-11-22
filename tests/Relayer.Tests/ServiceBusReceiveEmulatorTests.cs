@@ -1,12 +1,11 @@
-using Relayer.Transports;
-using Azure.Messaging.ServiceBus.Administration;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
-using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Azure.Messaging.ServiceBus;
+using Azure.Messaging.ServiceBus.Administration;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -15,6 +14,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
 using Relayer.AzureServiceBus;
 using Relayer.HealthChecks;
+using Relayer.Transports;
 using Testcontainers.MsSql;
 using Testcontainers.ServiceBus;
 
@@ -50,7 +50,10 @@ public sealed class ServiceBusReceiveEmulatorTests
                 {
                     options.Client = client;
                     options.Queues.Add(new("receive-orders"));
-                    options.Queues.Add(new("receive-sessions") { RequiresSession = true });
+                    options.Queues.Add(new("receive-sessions")
+                    {
+                        RequiresSession = true
+                    });
                     options.Topics.Add(new("receive-events"));
                     options.Subscriptions.Add(new("receive-events", "audit"));
                 });
@@ -62,7 +65,11 @@ public sealed class ServiceBusReceiveEmulatorTests
                 });
                 bus.Consume("receive-sessions", consumer =>
                 {
-                    consumer.Options.SessionProcessorOptions = new() { AutoCompleteMessages = false, MaxConcurrentSessions = 1 };
+                    consumer.Options.SessionProcessorOptions = new()
+                    {
+                        AutoCompleteMessages = false,
+                        MaxConcurrentSessions = 1
+                    };
                     consumer.Handler<EmulatorHandler>();
                 });
             });
@@ -81,8 +88,11 @@ public sealed class ServiceBusReceiveEmulatorTests
         var probe = provider.GetRequiredKeyedService<ITransportHealthProbe>("bus");
         var liveness = provider.GetRequiredKeyedService<IConsumerHealthProvider>("bus");
         var declarations = provider.GetRequiredService<RelayerConfiguration>().Transports.Single().Consumers;
+
         foreach (var declaration in declarations)
+        {
             await Assert.That((await liveness.GetStateAsync(declaration, token))!.Value.IsIdle).IsTrue();
+        }
 
         await using var queue = client.CreateSender("receive-orders");
         await using var topic = client.CreateSender("receive-events");
@@ -91,7 +101,12 @@ public sealed class ServiceBusReceiveEmulatorTests
         await topic.SendMessageAsync(Message(10), token);
         await sessions.SendMessagesAsync([Message(20, "customer"), Message(21, "customer")], token);
         var delivered = new List<int>();
-        for (var i = 0; i < 4; i++) delivered.Add(await control.Received.Reader.ReadAsync(token));
+
+        for (var i = 0; i < 4; i++)
+        {
+            delivered.Add(await control.Received.Reader.ReadAsync(token));
+        }
+
         await Assert.That(delivered.Order().ToArray()).IsEquivalentTo(new[] { 1, 10, 20, 21 });
         await Assert.That(control.SessionValues.ToArray()).IsEquivalentTo(new[] { 20, 21 });
         // Real deliveries establish AMQP readiness before the native connectivity assertion.
@@ -108,10 +123,16 @@ public sealed class ServiceBusReceiveEmulatorTests
         await Assert.That(drain.IsCompleted).IsFalse();
         control.Release.SetResult();
         await drain;
+
         await using (var receiver = client.CreateReceiver("receive-orders"))
         {
             var remaining = await receiver.PeekMessageAsync(cancellationToken: token);
-            if (remaining is not null) Console.WriteLine($"Remaining after drain: {remaining.Body}, state={remaining.State}, delivery={remaining.DeliveryCount}");
+
+            if (remaining is not null)
+            {
+                Console.WriteLine($"Remaining after drain: {remaining.Body}, state={remaining.State}, delivery={remaining.DeliveryCount}");
+            }
+
             await Assert.That(remaining).IsNull();
         }
 
@@ -127,7 +148,11 @@ public sealed class ServiceBusReceiveEmulatorTests
         var administration = new Azure.Messaging.ServiceBus.Administration.ServiceBusAdministrationClient(administrationConnectionString);
         await Assert.That((await administration.QueueExistsAsync("receive-orders", token)).Value).IsTrue();
         await queue.SendMessageAsync(Message(40), token);
-        while (await control.Received.Reader.ReadAsync(token) != 40) { }
+
+        while (await control.Received.Reader.ReadAsync(token) != 40)
+        {
+        }
+
         await Assert.That((await probe.CheckAsync(token)).Status).IsEqualTo(HealthStatus.Healthy);
         await ServiceBusReceiveTests.Stop(provider, token);
         var captured = spans.ToArray();
@@ -154,9 +179,20 @@ public sealed class ServiceBusReceiveEmulatorTests
 
     public sealed class EmulatorControl
     {
-        internal Channel<int> Received { get; } = Channel.CreateUnbounded<int>();
-        internal ConcurrentQueue<int> SessionValues { get; } = new();
-        internal TaskCompletionSource Blocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal Channel<int> Received
+        {
+            get;
+        } = Channel.CreateUnbounded<int>();
+
+        internal ConcurrentQueue<int> SessionValues
+        {
+            get;
+        } = new();
+
+        internal TaskCompletionSource Blocked
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource? Release;
     }
 
@@ -165,19 +201,29 @@ public sealed class ServiceBusReceiveEmulatorTests
         public async ValueTask HandleAsync(EmulatorPayload message, MessageContext context, CancellationToken cancellationToken)
         {
             var native = context.ServiceBus();
+
             if (message.Value is 20 or 21)
             {
-                if (native.Message.SessionId != "customer") throw new InvalidOperationException("Session ID changed.");
+                if (native.Message.SessionId != "customer")
+                {
+                    throw new InvalidOperationException("Session ID changed.");
+                }
+
                 control.SessionValues.Enqueue(message.Value);
                 await native.CompleteAsync();
             }
+
             if (message.Value == 30)
             {
                 control.Blocked.SetResult();
                 await control.Release!.Task.WaitAsync(cancellationToken);
             }
+
             if (!Equals(native.Message.ApplicationProperties["traceparent"], "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"))
+            {
                 throw new InvalidOperationException("Native instrumentation changed creation context.");
+            }
+
             control.Received.Writer.TryWrite(message.Value);
         }
     }
@@ -194,17 +240,31 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
     private readonly string? _configurationPath;
     private readonly List<string> _queues = [];
     private bool _topic;
+
     internal string ConnectionString => ThroughProxy(_emulator.GetConnectionString(), ServiceBusBuilder.ServiceBusPort);
+
     internal string AdministrationConnectionString => ThroughProxy(_emulator.GetHttpConnectionString(), ServiceBusBuilder.ServiceBusHttpPort);
 
-    private ServiceBusReceiveBroker(ServiceBusContainer emulator) => _emulator = emulator;
+    private ServiceBusReceiveBroker(ServiceBusContainer emulator)
+    {
+        _emulator = emulator;
+    }
 
     private ServiceBusReceiveBroker(INetwork network, MsSqlContainer database, ServiceBusContainer emulator, IContainer proxy, string configurationPath)
-    { _network = network; _database = database; _emulator = emulator; _proxy = proxy; _configurationPath = configurationPath; }
+    {
+        _network = network;
+        _database = database;
+        _emulator = emulator;
+        _proxy = proxy;
+        _configurationPath = configurationPath;
+    }
 
-    private string ThroughProxy(string connectionString, int port) => _proxy is null ? connectionString : connectionString.Replace(
-        new UriBuilder("sb", _emulator.Hostname, _emulator.GetMappedPublicPort(port)).ToString(),
-        new UriBuilder("sb", _proxy.Hostname, _proxy.GetMappedPublicPort(port)).ToString(), StringComparison.Ordinal);
+    private string ThroughProxy(string connectionString, int port)
+    {
+        return _proxy is null ? connectionString : connectionString.Replace(
+                new UriBuilder("sb", _emulator.Hostname, _emulator.GetMappedPublicPort(port)).ToString(),
+                new UriBuilder("sb", _proxy.Hostname, _proxy.GetMappedPublicPort(port)).ToString(), StringComparison.Ordinal);
+    }
 
     internal static async Task<ServiceBusReceiveBroker> StartAsync(string[]? queues = null,
         string[]? sessions = null, bool includeTopic = false, bool dedicated = false)
@@ -214,28 +274,48 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
             using var creation = new CancellationTokenSource(TimeSpan.FromMinutes(16));
             var stack = await SharedBrokers.ServiceBus.Value.WaitAsync(creation.Token);
             var shared = new ServiceBusReceiveBroker(stack.Emulator);
+
             try
             {
-                foreach (var name in queues ?? []) { await stack.CreateQueueAsync(name, false, creation.Token); shared._queues.Add(name); }
-                foreach (var name in sessions ?? []) { await stack.CreateQueueAsync(name, true, creation.Token); shared._queues.Add(name); }
+                foreach (var name in queues ?? [])
+                {
+                    await stack.CreateQueueAsync(name, false, creation.Token);
+                    shared._queues.Add(name);
+                }
+
+                foreach (var name in sessions ?? [])
+                {
+                    await stack.CreateQueueAsync(name, true, creation.Token);
+                    shared._queues.Add(name);
+                }
+
                 if (includeTopic)
                 {
                     var admin = new ServiceBusAdministrationClient(shared.AdministrationConnectionString);
                     await admin.CreateTopicAsync(new CreateTopicOptions("receive-events")
                     {
-                        DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
+                        DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+                        MaxSizeInMegabytes = 100,
                         DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
                     }, creation.Token);
                     shared._topic = true;
                     await admin.CreateSubscriptionAsync(new CreateSubscriptionOptions("receive-events", "audit")
                     {
-                        DefaultMessageTimeToLive = TimeSpan.FromHours(1), LockDuration = TimeSpan.FromMinutes(1), MaxDeliveryCount = 10
+                        DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+                        LockDuration = TimeSpan.FromMinutes(1),
+                        MaxDeliveryCount = 10
                     }, creation.Token);
                 }
+
                 return shared;
             }
-            catch { await shared.DisposeAsync(); throw; }
+            catch
+            {
+                await shared.DisposeAsync();
+                throw;
+            }
         }
+
         using var provisioning = new CancellationTokenSource(TimeSpan.FromMinutes(15));
         var token = provisioning.Token;
         var network = new NetworkBuilder().Build();
@@ -246,8 +326,17 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
         var nativeNamespace = configuration["UserConfig"]!["Namespaces"]![0]!;
         var nativeQueues = nativeNamespace["Queues"]!.AsArray();
         var template = nativeQueues[0]!.DeepClone();
-        foreach (var name in queues ?? []) AddQueue(name, false);
-        foreach (var name in sessions ?? []) AddQueue(name, true);
+
+        foreach (var name in queues ?? [])
+        {
+            AddQueue(name, false);
+        }
+
+        foreach (var name in sessions ?? [])
+        {
+            AddQueue(name, true);
+        }
+
         if (includeTopic)
         {
             nativeNamespace["Topics"]!.AsArray().Add(JsonNode.Parse("""
@@ -259,6 +348,7 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
                     "LockDuration": "PT1M", "MaxDeliveryCount": 10, "RequiresSession": false } }] }
                 """));
         }
+
         await File.WriteAllTextAsync(configurationPath, configuration.ToJsonString(), token);
         var emulatorBuilder = new ServiceBusBuilder("mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.0")
             .WithAcceptLicenseAgreement(true).WithConfig(configurationPath).WithNetworkAliases("servicebus");
@@ -274,16 +364,19 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
                 """), FilePath.Of("/proxies.json"))
             .WithCommand("-config", "/proxies.json")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Populated proxies from file"));
+
         if (OperatingSystem.IsLinux())
         {
             databaseBuilder = databaseBuilder.WithPortBinding("20000-29999", "1433");
             emulatorBuilder = emulatorBuilder.WithPortBinding("20000-29999", "5672").WithPortBinding("20000-29999", "5300");
             proxyBuilder = proxyBuilder.WithPortBinding("20000-29999", "5672").WithPortBinding("20000-29999", "5300");
         }
+
         var database = databaseBuilder.Build();
         var emulator = emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
         var proxy = proxyBuilder.Build();
         var broker = new ServiceBusReceiveBroker(network, database, emulator, proxy, configurationPath);
+
         try
         {
             await ServiceBusStartupDiagnostics.StartAsync(async ct =>
@@ -298,15 +391,27 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
             await CleanupFailedStartupAsync();
             throw new TimeoutException("Service Bus emulator provisioning exceeded 15 minutes (image pulls and container readiness).", error);
         }
-        catch { await CleanupFailedStartupAsync(); throw; }
+        catch
+        {
+            await CleanupFailedStartupAsync();
+            throw;
+        }
 
         async Task CleanupFailedStartupAsync()
         {
-            try { await broker.DisposeAsync(); }
+            try
+            {
+                await broker.DisposeAsync();
+            }
             catch (Exception cleanupError)
             {
-                try { Console.Error.WriteLine($"Service Bus startup cleanup failed: {cleanupError}"); }
-                catch (Exception) { /* Preserve the startup failure even if output is unavailable. */ }
+                try
+                {
+                    Console.Error.WriteLine($"Service Bus startup cleanup failed: {cleanupError}");
+                }
+                catch (Exception)
+                { /* Preserve the startup failure even if output is unavailable. */
+                }
             }
         }
 
@@ -319,10 +424,21 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
         }
     }
 
-    internal Task DisconnectAsync(CancellationToken token) => Dedicated().StopAsync(token);
-    internal Task ReconnectAsync(CancellationToken token) => Dedicated().StartAsync(token);
-    private ServiceBusContainer Dedicated() => _proxy is not null ? _emulator
-        : throw new InvalidOperationException("Stopping the emulator needs StartAsync(dedicated: true); other tests share this one.");
+    internal Task DisconnectAsync(CancellationToken token)
+    {
+        return Dedicated().StopAsync(token);
+    }
+
+    internal Task ReconnectAsync(CancellationToken token)
+    {
+        return Dedicated().StartAsync(token);
+    }
+
+    private ServiceBusContainer Dedicated()
+    {
+        return _proxy is not null ? _emulator
+                : throw new InvalidOperationException("Stopping the emulator needs StartAsync(dedicated: true); other tests share this one.");
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -332,23 +448,58 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
             try
             {
                 var admin = new ServiceBusAdministrationClient(AdministrationConnectionString);
-                foreach (var queue in _queues) await admin.DeleteQueueAsync(queue);
-                if (_topic) await admin.DeleteTopicAsync("receive-events");
+
+                foreach (var queue in _queues)
+                {
+                    await admin.DeleteQueueAsync(queue);
+                }
+
+                if (_topic)
+                {
+                    await admin.DeleteTopicAsync("receive-events");
+                }
             }
-            catch (Exception exception) { Console.Error.WriteLine($"Could not delete Service Bus test entities: {exception}"); }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"Could not delete Service Bus test entities: {exception}");
+            }
+
             return;
         }
-        try { await _proxy.DisposeAsync(); }
-        finally { await DisposeBrokerAsync(); }
+
+        try
+        {
+            await _proxy.DisposeAsync();
+        }
+        finally
+        {
+            await DisposeBrokerAsync();
+        }
     }
 
     private async ValueTask DisposeBrokerAsync()
     {
-        try { await _emulator.DisposeAsync(); }
+        try
+        {
+            await _emulator.DisposeAsync();
+        }
         finally
         {
-            try { await _database!.DisposeAsync(); }
-            finally { try { await _network!.DisposeAsync(); } finally { File.Delete(_configurationPath!); } }
+            try
+            {
+                await _database!.DisposeAsync();
+            }
+            finally
+            {
+                try
+                {
+                    await _network!.DisposeAsync();
+                }
+                finally
+                {
+                    File.Delete(_configurationPath!);
+                }
+            }
         }
     }
 }

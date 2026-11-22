@@ -50,7 +50,10 @@ public class TransportCapabilitiesTests
     public async Task Immediate_redelivery_is_distinct_from_no_native_redelivery()
     {
         var none = new TransportCapabilities();
-        var immediate = none with { MaxRedeliveryDelay = TimeSpan.Zero };
+        var immediate = none with
+        {
+            MaxRedeliveryDelay = TimeSpan.Zero
+        };
 
         await Assert.That(none.MaxRedeliveryDelay).IsNull();
         await Assert.That(immediate.MaxRedeliveryDelay).IsEqualTo(TimeSpan.Zero);
@@ -61,7 +64,10 @@ public class TransportCapabilitiesTests
     public async Task Endpoint_records_can_be_specialized_without_mutating_the_original()
     {
         var standard = new TransportCapabilities { MaxBatchSize = 10 };
-        var ordered = standard with { OrderedByKey = true };
+        var ordered = standard with
+        {
+            OrderedByKey = true
+        };
 
         await Assert.That(standard.OrderedByKey).IsFalse();
         await Assert.That(ordered.OrderedByKey).IsTrue();
@@ -73,35 +79,58 @@ public class TransportCapabilitiesTests
     {
         public string Name => "declared";
 
-        public TransportCapabilities GetCapabilities(string endpoint) => endpoint switch
+        public TransportCapabilities GetCapabilities(string endpoint)
         {
-            "orders" => new()
+            return endpoint switch
             {
-                MaxDeliveryDelay = TimeSpan.FromMinutes(15),
-                MaxRedeliveryDelay = TimeSpan.FromHours(12),
-                DeadLetter = true,
-                MaxBatchSize = 10,
-                MaxMessageBytes = 262_144,
-            },
-            "events" => new()
-            {
-                OrderedByKey = true,
-                Transactions = true,
-                PauseResume = true,
-                Replay = true,
-                ConsumptionModel = ConsumptionModel.Log,
-            },
-            _ => throw new ArgumentException("Unknown endpoint.", nameof(endpoint)),
-        };
+                "orders" => new()
+                {
+                    MaxDeliveryDelay = TimeSpan.FromMinutes(15),
+                    MaxRedeliveryDelay = TimeSpan.FromHours(12),
+                    DeadLetter = true,
+                    MaxBatchSize = 10,
+                    MaxMessageBytes = 262_144,
+                },
+                "events" => new()
+                {
+                    OrderedByKey = true,
+                    Transactions = true,
+                    PauseResume = true,
+                    Replay = true,
+                    ConsumptionModel = ConsumptionModel.Log,
+                },
+                _ => throw new ArgumentException("Unknown endpoint.", nameof(endpoint)),
+            };
+        }
 
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new TopologyReport([]));
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
             throw new NotSupportedException();
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) =>
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
             throw new NotSupportedException();
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

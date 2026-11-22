@@ -1,13 +1,13 @@
-using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Relayer.HealthChecks;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
 public class OutboxStoreHealthTests
 {
-    private static readonly DateTimeOffset Now = new(2026, 11, 1, 12, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset s_now = new(2026, 11, 1, 12, 0, 0, TimeSpan.Zero);
 
     [Test]
     [Arguments(0L, HealthStatus.Healthy)]
@@ -27,7 +27,8 @@ public class OutboxStoreHealthTests
         var entry = (await Check(provider)).Entries["relayer.outbox"];
 
         await Assert.That(entry.Status).IsEqualTo(expected);
-        await Assert.That(store.ObservedNow).IsEqualTo(Now);
+        await Assert.That(store.ObservedNow).IsEqualTo(s_now);
+
         if (count >= 0)
         {
             var detail = (HealthCheckResult)entry.Data["orders"];
@@ -58,7 +59,7 @@ public class OutboxStoreHealthTests
         await Assert.That((bool)detail.Data["pending_count_is_lower_bound"]).IsEqualTo(lowerBound);
         await Assert.That(detail.Description!).IsEqualTo($"{(lowerBound ? "At least " : "")}{Math.Min(count, 21)} pending rows eligible for dispatch.");
         await Assert.That(store.Limit).IsEqualTo(21L);
-        await Assert.That(store.ObservedNow).IsEqualTo(Now);
+        await Assert.That(store.ObservedNow).IsEqualTo(s_now);
         await Assert.That(((HealthCheckResult)entry.Data["billing"]).Status).IsEqualTo(HealthStatus.Healthy);
     }
 
@@ -68,10 +69,13 @@ public class OutboxStoreHealthTests
         var store = new BoundedStore { Count = long.MaxValue };
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddRelayer(_ => { });
+        services.AddRelayer(_ =>
+        {
+        });
         services.AddRelayerHealthChecks(new RelayerHealthCheckOptions
         {
-            OutboxNames = ["orders"], OutboxDegradedThreshold = long.MaxValue - 1,
+            OutboxNames = ["orders"],
+            OutboxDegradedThreshold = long.MaxValue - 1,
             OutboxUnhealthyThreshold = long.MaxValue
         });
         services.AddKeyedScoped<IOutboxStore>("orders", (_, _) => store);
@@ -87,7 +91,7 @@ public class OutboxStoreHealthTests
     public async Task Adapter_reads_current_time_and_forwards_the_callers_token()
     {
         var store = new TestStore();
-        var clock = new TestClock { Now = Now };
+        var clock = new TestClock { Now = s_now };
         var services = new ServiceCollection();
         services.AddSingleton<TimeProvider>(clock);
         services.AddKeyedScoped<IOutboxStore>("orders", (_, _) => store);
@@ -98,9 +102,9 @@ public class OutboxStoreHealthTests
         using var cancellation = new CancellationTokenSource();
 
         await adapter.GetPendingCountAsync(cancellation.Token);
-        await Assert.That(store.ObservedNow).IsEqualTo(Now);
+        await Assert.That(store.ObservedNow).IsEqualTo(s_now);
         await Assert.That(store.ObservedToken).IsEqualTo(cancellation.Token);
-        clock.Now = Now.AddMinutes(1);
+        clock.Now = s_now.AddMinutes(1);
         await adapter.GetPendingCountAsync(cancellation.Token);
         await Assert.That(store.ObservedNow).IsEqualTo(clock.Now);
     }
@@ -110,6 +114,7 @@ public class OutboxStoreHealthTests
     {
         var stores = new List<TestStore>();
         var services = CreateServices("orders", "billing");
+
         foreach (var name in new[] { "orders", "billing" })
         {
             services.AddKeyedScoped<IOutboxStore>(name, (_, _) =>
@@ -120,6 +125,7 @@ public class OutboxStoreHealthTests
             });
             services.AddRelayerOutboxHealthProvider(name);
         }
+
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
 
         for (var poll = 0; poll < 2; poll++)
@@ -130,7 +136,11 @@ public class OutboxStoreHealthTests
         }
 
         await Assert.That(stores.Count).IsEqualTo(4);
-        foreach (var store in stores) await Assert.That(store.Disposed).IsTrue();
+
+        foreach (var store in stores)
+        {
+            await Assert.That(store.Disposed).IsTrue();
+        }
     }
 
     [Test]
@@ -160,19 +170,24 @@ public class OutboxStoreHealthTests
         services.AddKeyedScoped<IOutboxStore>("orders", (_, _) => new TestStore());
         services.AddRelayerOutboxHealthProvider("orders");
         services.AddRelayerOutboxHealthProvider("orders");
+
         if (includeOtherStore)
         {
             services.AddKeyedScoped<IOutboxStore>("billing", (_, _) => new TestStore());
             services.AddRelayerOutboxHealthProvider("billing");
         }
+
         await using var provider = services.BuildServiceProvider();
 
         var entry = (await Check(provider)).Entries["relayer.outbox"];
 
         await Assert.That(entry.Status).IsEqualTo(HealthStatus.Unhealthy);
         await Assert.That(((HealthCheckResult)entry.Data["orders"]).Description!).Contains("OutboxNames");
+
         if (includeOtherStore)
+        {
             await Assert.That(((HealthCheckResult)entry.Data["billing"]).Status).IsEqualTo(HealthStatus.Healthy);
+        }
     }
 
     [Test]
@@ -267,40 +282,63 @@ public class OutboxStoreHealthTests
     {
         await Assert.That(() => OutboxHealthServiceCollectionExtensions.AddRelayerOutboxHealthProvider(null!, "orders"))
             .Throws<ArgumentNullException>();
+
         foreach (var name in new[] { null, "", " " })
+        {
             await Assert.That(() => new ServiceCollection().AddRelayerOutboxHealthProvider(name!)).Throws<ArgumentException>();
+        }
     }
 
     private static ServiceCollection CreateServices(params string[] names)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton<TimeProvider>(new TestClock { Now = Now });
-        services.AddRelayer(_ => { });
+        services.AddSingleton<TimeProvider>(new TestClock { Now = s_now });
+        services.AddRelayer(_ =>
+        {
+        });
         services.AddRelayerHealthChecks(new RelayerHealthCheckOptions
         {
-            OutboxNames = names, OutboxDegradedThreshold = 10, OutboxUnhealthyThreshold = 20
+            OutboxNames = names,
+            OutboxDegradedThreshold = 10,
+            OutboxUnhealthyThreshold = 20
         });
         return services;
     }
 
-    private static Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthReport> Check(IServiceProvider services) =>
-        services.GetRequiredService<HealthCheckService>().CheckHealthAsync();
+    private static Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthReport> Check(IServiceProvider services)
+    {
+        return services.GetRequiredService<HealthCheckService>().CheckHealthAsync();
+    }
 
     private sealed class TestClock : TimeProvider
     {
-        public DateTimeOffset Now { get; set; }
-        public override DateTimeOffset GetUtcNow() => Now;
+        public DateTimeOffset Now
+        {
+            get; set;
+        }
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            return Now;
+        }
     }
 
     private sealed class CustomProvider : IOutboxHealthProvider
     {
-        public ValueTask<long?> GetPendingCountAsync(CancellationToken cancellationToken) => ValueTask.FromResult<long?>(7);
+        public ValueTask<long?> GetPendingCountAsync(CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult<long?>(7);
+        }
     }
 
     private sealed class BoundedStore : TestStore, IOutboxStore
     {
-        public long Limit { get; private set; }
+        public long Limit
+        {
+            get; private set;
+        }
+
         public async ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, long countLimit, CancellationToken cancellationToken)
         {
             Limit = countLimit;
@@ -311,33 +349,88 @@ public class OutboxStoreHealthTests
 
     private class TestStore : IOutboxStore, IDisposable
     {
-        public long? Count { get; init; } = 0;
-        public Exception? Error { get; init; }
-        public Func<CancellationToken, ValueTask<long?>>? Query { get; init; }
-        public DateTimeOffset ObservedNow { get; private set; }
-        public CancellationToken ObservedToken { get; private set; }
-        public int Calls { get; private set; }
-        public bool Disposed { get; private set; }
+        public long? Count
+        {
+            get; init;
+        } = 0;
+
+        public Exception? Error
+        {
+            get; init;
+        }
+
+        public Func<CancellationToken, ValueTask<long?>>? Query
+        {
+            get; init;
+        }
+
+        public DateTimeOffset ObservedNow
+        {
+            get; private set;
+        }
+
+        public CancellationToken ObservedToken
+        {
+            get; private set;
+        }
+
+        public int Calls
+        {
+            get; private set;
+        }
+
+        public bool Disposed
+        {
+            get; private set;
+        }
 
         public ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, CancellationToken cancellationToken)
         {
             Calls++;
             ObservedNow = now;
             ObservedToken = cancellationToken;
-            if (Error is not null) return ValueTask.FromException<long?>(Error);
+
+            if (Error is not null)
+            {
+                return ValueTask.FromException<long?>(Error);
+            }
+
             return Query?.Invoke(cancellationToken) ?? ValueTask.FromResult(Count);
         }
 
-        public void Dispose() => Disposed = true;
+        public void Dispose()
+        {
+            Disposed = true;
+        }
+
         public ValueTask<int> ReadPendingAsync(OutboxReadRequest request, Memory<OutboxRecord> destination,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public ValueTask<bool> TryClaimAsync(OutboxClaim claim, DateTimeOffset now, DateTimeOffset expiresAt,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public ValueTask<bool> RenewClaimAsync(OutboxClaim claim, DateTimeOffset now, DateTimeOffset expiresAt,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public ValueTask<bool> CompleteAsync(OutboxClaim claim, DateTimeOffset now,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public ValueTask<bool> RecordFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

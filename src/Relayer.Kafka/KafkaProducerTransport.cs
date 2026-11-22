@@ -18,8 +18,12 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     private readonly MessageTracing? _tracing;
     private readonly ILoggerFactory? _loggerFactory;
     private bool _disposed;
-    internal List<KafkaConsumer> Consumers { get; } = [];
-    private static readonly TransportCapabilities Capabilities = new()
+
+    internal List<KafkaConsumer> Consumers
+    {
+        get;
+    } = [];
+    private static readonly TransportCapabilities s_capabilities = new()
     {
         OrderedByKey = true,
         Tombstones = true,
@@ -36,23 +40,35 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         _loggerFactory = loggerFactory;
         _producer = producer;
         var endpoints = new Dictionary<string, SendTracing?>(StringComparer.Ordinal);
+
         foreach (var destination in destinations)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(destination);
             endpoints.TryAdd(destination, tracing is null ? null : new(tracing,
-                new() { System = "kafka", Destination = destination }, SendCoreAsync, SendBatchCoreAsync,
+                new()
+                {
+                    System = "kafka",
+                    Destination = destination
+                }, SendCoreAsync, SendBatchCoreAsync,
                 loggerFactory?.CreateLogger<KafkaProducerTransport>()));
         }
+
         _endpoints = endpoints.ToFrozenDictionary(StringComparer.Ordinal);
         _topics = endpoints.Keys.ToFrozenDictionary(static topic => topic, topic => producer.ForTopic(topic), StringComparer.Ordinal);
     }
 
-    public string Name { get; }
+    public string Name
+    {
+        get;
+    }
+
     internal IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> Producer => _producer;
 
     // A transport with the same name, topics and send telemetry over another native producer.
-    internal KafkaProducerTransport WithProducer(IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> producer) =>
-        new(Name, producer, _endpoints.Keys, _tracing, _loggerFactory, _options);
+    internal KafkaProducerTransport WithProducer(IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> producer)
+    {
+        return new(Name, producer, _endpoints.Keys, _tracing, _loggerFactory, _options);
+    }
 
     // The transport's native producer configuration, shared by the transactional producers of exactly-once consumers.
     internal static ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> CreateProducerBuilder(
@@ -66,17 +82,33 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         options.ConfigureProducer?.Invoke(native);
         return native;
     }
-    public TransportCapabilities GetCapabilities(string endpoint) { Endpoint(endpoint); return Capabilities; }
-    public SendTracing? GetSendTracing(string destination) => Endpoint(destination);
 
-    private SendTracing? Endpoint(string destination) => _endpoints.TryGetValue(destination, out var tracing) ? tracing
-        : throw new InvalidOperationException($"Kafka transport '{Name}': undeclared topic '{destination}'. Declare a send route first.");
+    public TransportCapabilities GetCapabilities(string endpoint)
+    {
+        Endpoint(endpoint);
+        return s_capabilities;
+    }
 
-    public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) =>
-        KafkaTopology.ApplyAsync(Name, _options, _endpoints.Keys, mode, cancellationToken);
+    public SendTracing? GetSendTracing(string destination)
+    {
+        return Endpoint(destination);
+    }
 
-    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
-        Endpoint(message.Destination) is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
+    private SendTracing? Endpoint(string destination)
+    {
+        return _endpoints.TryGetValue(destination, out var tracing) ? tracing
+                : throw new InvalidOperationException($"Kafka transport '{Name}': undeclared topic '{destination}'. Declare a send route first.");
+    }
+
+    public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+    {
+        return KafkaTopology.ApplyAsync(Name, _options, _endpoints.Keys, mode, cancellationToken);
+    }
+
+    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    {
+        return Endpoint(message.Destination) is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
+    }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -84,6 +116,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     {
         var tracing = Validate(message, cancellationToken);
         var operation = _operations.Rent(1);
+
         try
         {
             operation.States[0].Prepare(message);
@@ -91,27 +124,52 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             tracing?.RecordNativeSend();
             var duration = tracing?.StartNativeSend() ?? default;
             var failed = true;
+
             try
             {
                 if (state.Record is { } record)
+                {
                     await _producer.ProduceAsync(record, cancellationToken).ConfigureAwait(false);
+                }
                 else if (state.Tombstone)
+                {
                     await _topics[message.Destination].ProduceAsync(state.Key, null, state.Headers, cancellationToken).ConfigureAwait(false);
+                }
                 else
+                {
                     await _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), cancellationToken).ConfigureAwait(false);
+                }
+
                 failed = false;
             }
-            finally { duration.Complete(failed); }
+            finally
+            {
+                duration.Complete(failed);
+            }
         }
-        finally { _operations.Return(operation); }
+        finally
+        {
+            _operations.Return(operation);
+        }
     }
 
     public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
-        if (messages.IsEmpty) return SendBatchCoreAsync(messages, cancellationToken);
+        if (messages.IsEmpty)
+        {
+            return SendBatchCoreAsync(messages, cancellationToken);
+        }
+
         var destination = messages.Span[0].Destination;
+
         for (var i = 1; i < messages.Length; i++)
-            if (messages.Span[i].Destination != destination) return SendMixedBatchAsync(messages, cancellationToken);
+        {
+            if (messages.Span[i].Destination != destination)
+            {
+                return SendMixedBatchAsync(messages, cancellationToken);
+            }
+        }
+
         return Endpoint(destination) is { } tracing ? tracing.SendBatchAsync(messages, cancellationToken) : SendBatchCoreAsync(messages, cancellationToken);
     }
 
@@ -121,12 +179,23 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        for (var i = 0; i < messages.Length; i++) Validate(messages.Span[i], cancellationToken);
-        if (messages.IsEmpty) return;
+
+        for (var i = 0; i < messages.Length; i++)
+        {
+            Validate(messages.Span[i], cancellationToken);
+        }
+
+        if (messages.IsEmpty)
+        {
+            return;
+        }
+
         var operation = _operations.Rent(messages.Length);
+
         try
         {
             var needsIndividualSends = false;
+
             for (var i = 0; i < messages.Length; i++)
             {
                 operation.States[i].Prepare(messages.Span[i]);
@@ -137,22 +206,31 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             // Admit these batches through native sends and drain every admitted operation
             // before returning borrowed storage, including after cancellation or failure.
             if (needsIndividualSends)
+            {
                 await SendIndividualBatchAsync(messages, operation, cancellationToken).ConfigureAwait(false);
+            }
             else
             {
                 var tracing = Endpoint(messages.Span[0].Destination);
                 tracing?.RecordNativeSend(messages.Length);
                 var duration = tracing?.StartNativeSend() ?? default;
                 var failed = true;
+
                 try
                 {
                     await _producer.ProduceAllAsync(messages.Span[0].Destination, operation.Messages, cancellationToken).ConfigureAwait(false);
                     failed = false;
                 }
-                finally { duration.Complete(failed); }
+                finally
+                {
+                    duration.Complete(failed);
+                }
             }
         }
-        finally { _operations.Return(operation); }
+        finally
+        {
+            _operations.Return(operation);
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -163,6 +241,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         var tracing = Endpoint(messages.Span[0].Destination);
         var count = 0;
         System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure = null;
+
         try
         {
             for (; count < messages.Length; count++)
@@ -173,18 +252,30 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
                 operation.Pending[count] = ProduceAsync(message, state, token);
             }
         }
-        catch (Exception error) { failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error); }
+        catch (Exception error)
+        {
+            failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error);
+        }
+
         for (var i = 0; i < count; i++)
         {
-            try { await operation.Pending[i].ConfigureAwait(false); }
-            catch (Exception error) { failure ??= System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error); }
+            try
+            {
+                await operation.Pending[i].ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                failure ??= System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error);
+            }
         }
+
         failure?.Throw();
     }
 
     private ValueTask<RecordMetadata> ProduceAsync(OutgoingMessage message, KafkaSendState state, CancellationToken token)
     {
         var duration = Endpoint(message.Destination)?.StartNativeSend() ?? default;
+
         try
         {
             // Preserve synchronous admission failures: stop admitting and drain earlier calls.
@@ -206,9 +297,15 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendMixedBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
-        for (var i = 0; i < messages.Length; i++) Validate(messages.Span[i], cancellationToken);
         for (var i = 0; i < messages.Length; i++)
+        {
+            Validate(messages.Span[i], cancellationToken);
+        }
+
+        for (var i = 0; i < messages.Length; i++)
+        {
             await SendAsync(messages.Span[i], cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private SendTracing? Validate(OutgoingMessage message, CancellationToken cancellationToken)
@@ -216,18 +313,27 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
         var tracing = Endpoint(message.Destination);
+
         if (message.DeliverAt is not null)
+        {
             throw new NotSupportedException("Kafka has no native scheduled send. Use a durable scheduler before dispatch.");
+        }
+
         return tracing;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
         try
         {
             await _producer.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            foreach (var consumer in Consumers) await consumer.StartAsync(cancellationToken).ConfigureAwait(false);
+
+            foreach (var consumer in Consumers)
+            {
+                await consumer.StartAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
         catch
         {
@@ -235,10 +341,17 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             throw;
         }
     }
+
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        try { await StopConsumersAsync(cancellationToken).ConfigureAwait(false); }
-        finally { await FlushAsync(cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            await StopConsumersAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     internal ValueTask InitializeProducerAsync(CancellationToken cancellationToken)
@@ -252,6 +365,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     internal async Task StartConsumersAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
         try
         {
             foreach (var consumer in Consumers)
@@ -264,23 +378,48 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         }
         catch
         {
-            try { await StopConsumersAsync(CancellationToken.None).ConfigureAwait(false); }
-            catch (Exception) { /* The start failure is the one to report. */ }
+            try
+            {
+                await StopConsumersAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception)
+            { /* The start failure is the one to report. */
+            }
+
             throw;
         }
     }
 
     // Signal every receiver before awaiting any failure or a slow batch drain.
-    internal Task StopConsumersAsync(CancellationToken cancellationToken) =>
-        Task.WhenAll(Consumers.Select(consumer => consumer.StopAsync(cancellationToken)));
-
-    internal Task FlushAsync(CancellationToken cancellationToken) => _producer.FlushAsync(cancellationToken).AsTask();
-    public async ValueTask DisposeAsync()
+    internal Task StopConsumersAsync(CancellationToken cancellationToken)
     {
-        if (_disposed) return;
-        _disposed = true;
-        try { foreach (var consumer in Consumers) await consumer.DisposeAsync().ConfigureAwait(false); }
-        finally { await _producer.DisposeAsync().ConfigureAwait(false); }
+        return Task.WhenAll(Consumers.Select(consumer => consumer.StopAsync(cancellationToken)));
     }
 
+    internal Task FlushAsync(CancellationToken cancellationToken)
+    {
+        return _producer.FlushAsync(cancellationToken).AsTask();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+
+        try
+        {
+            foreach (var consumer in Consumers)
+            {
+                await consumer.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            await _producer.DisposeAsync().ConfigureAwait(false);
+        }
+    }
 }

@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using System.Globalization;
 using MySqlConnector;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
 
@@ -20,11 +20,18 @@ internal sealed class MySqlStoreParameters
     private readonly MySqlParameter _limitParameter;
     private readonly MySqlParameter _laneParameter;
     private readonly MySqlParameter _afterParameter;
-    internal MySqlCommand Command { get; }
+
+    internal MySqlCommand Command
+    {
+        get;
+    }
 
     internal MySqlStoreParameters(string sql)
     {
-        Command = new() { CommandText = sql };
+        Command = new()
+        {
+            CommandText = sql
+        };
         Add("now", MySqlDbType.VarChar, (ReadOnlyMemory<char>)_now);
         Add("expires", MySqlDbType.VarChar, (ReadOnlyMemory<char>)_expires);
         _laneView = (ReadOnlyMemory<char>)_lane;
@@ -43,8 +50,16 @@ internal sealed class MySqlStoreParameters
         return parameter;
     }
 
-    internal void Now(DateTimeOffset value) => Timestamp(value, _now);
-    internal void Expires(DateTimeOffset value) => Timestamp(value, _expires);
+    internal void Now(DateTimeOffset value)
+    {
+        Timestamp(value, _now);
+    }
+
+    internal void Expires(DateTimeOffset value)
+    {
+        Timestamp(value, _expires);
+    }
+
     internal void Claim(OutboxClaim value)
     {
         value.MessageId.TryWriteBytes(_id, bigEndian: true, out _);
@@ -58,12 +73,27 @@ internal sealed class MySqlStoreParameters
             lane.Value.TryFormat(_lane, out _, "D10", CultureInfo.InvariantCulture);
             _laneParameter.Value = _laneView;
         }
-        else _laneParameter.Value = DBNull.Value;
+        else
+        {
+            _laneParameter.Value = DBNull.Value;
+        }
+
         _afterParameter.Value = after.HasValue ? _after : DBNull.Value;
-        if (after.HasValue) after.Value.TryWriteBytes(_after, bigEndian: true, out _);
-        if (_limit != limit) { _limitParameter.Value = limit; _limit = limit; }
+
+        if (after.HasValue)
+        {
+            after.Value.TryWriteBytes(_after, bigEndian: true, out _);
+        }
+
+        if (_limit != limit)
+        {
+            _limitParameter.Value = limit;
+            _limit = limit;
+        }
     }
 
-    private static void Timestamp(DateTimeOffset value, Span<char> destination) =>
+    private static void Timestamp(DateTimeOffset value, Span<char> destination)
+    {
         value.UtcDateTime.TryFormat(destination, out _, "yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture);
+    }
 }

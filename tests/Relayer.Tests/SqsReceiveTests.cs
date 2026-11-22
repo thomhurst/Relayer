@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Threading.Channels;
@@ -10,6 +9,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Relayer.AmazonSqs;
 using Relayer.HealthChecks;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -21,7 +21,11 @@ public sealed class SqsReceiveTests
         using var client = new ReceiveClient();
         using var delivery = new SqsDelivery(client, "url");
         var native = Message("{\"Value\":1}", 3);
-        native.MessageAttributes[FailureHeaders.Redeliveries] = new() { DataType = "Number", StringValue = "2" };
+        native.MessageAttributes[FailureHeaders.Redeliveries] = new()
+        {
+            DataType = "Number",
+            StringValue = "2"
+        };
         delivery.Prepare(native, TimeProvider.System.GetTimestamp(), "request");
         await Assert.That(Encoding.UTF8.GetString(SqsMessageBinding.GetBody(delivery).FirstSpan)).IsEqualTo(native.Body);
         await Assert.That(delivery.Message).IsSameReferenceAs(native);
@@ -65,11 +69,20 @@ public sealed class SqsReceiveTests
     private sealed class NativeContext : MessageContext
     {
         public override string MessageId => "id";
+
         public override MessageType MessageType => default;
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
+
         public override IServiceProvider Services => throw new NotSupportedException();
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 
@@ -79,7 +92,10 @@ public sealed class SqsReceiveTests
         using var client = new ReceiveClient { PollFailure = new AmazonSQSException("temporarily denied") };
         var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var consumer = new SqsConsumer(Declaration(), client, "url", (_, _) =>
-        { handled.TrySetResult(); return default; });
+        {
+            handled.TrySetResult();
+            return default;
+        });
         await consumer.StartAsync(default);
         await client.Deliveries.Writer.WriteAsync(Message("body", 1));
         await handled.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -95,7 +111,11 @@ public sealed class SqsReceiveTests
         using var delivery = new SqsDelivery(client, "url", time);
         delivery.Prepare(Message("body", 1), time.GetTimestamp(), "request");
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var settlement = new SqsSettlement(tracing, new() { System = "aws_sqs", Destination = "orders" });
+        var settlement = new SqsSettlement(tracing, new()
+        {
+            System = "aws_sqs",
+            Destination = "orders"
+        });
         time.Advance(TimeSpan.FromHours(11));
         await settlement.SettleAsync(delivery, Disposition.Redeliver(TimeSpan.FromSeconds(1.1)), default);
         await Assert.That(client.Visibility.ToArray()).IsEquivalentTo(new[] { 2 });
@@ -119,9 +139,21 @@ public sealed class SqsReceiveTests
         await using var receiver = new SqsConsumer(Declaration(2), client, "url", async (_, token) =>
         {
             var current = Interlocked.Increment(ref count);
-            if (current == 1) { first.SetResult(); await releaseFirst.Task.WaitAsync(token); }
-            else { second.SetResult(); await releaseSecond.Task.WaitAsync(token); }
-        }, time) { TrackHealth = true };
+
+            if (current == 1)
+            {
+                first.SetResult();
+                await releaseFirst.Task.WaitAsync(token);
+            }
+            else
+            {
+                second.SetResult();
+                await releaseSecond.Task.WaitAsync(token);
+            }
+        }, time)
+        {
+            TrackHealth = true
+        };
         await receiver.StartAsync(default);
         await client.Deliveries.Writer.WriteAsync(Message("one", 1));
         await first.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -152,7 +184,11 @@ public sealed class SqsReceiveTests
         services.AddRelayerAmazonSqsHealthProviders("ExactSqs");
         services.AddRelayer(builder => builder.AmazonSqs("ExactSqs", sqs =>
         {
-            sqs.Options.Configure(options => { options.SqsClient = client; options.Queues.Add(new("orders")); });
+            sqs.Options.Configure(options =>
+            {
+                options.SqsClient = client;
+                options.Queues.Add(new("orders"));
+            });
         }));
         await using var provider = services.BuildServiceProvider();
         var probe = provider.GetRequiredKeyedService<ITransportHealthProbe>("ExactSqs");
@@ -163,7 +199,8 @@ public sealed class SqsReceiveTests
         var failed = await probe.CheckAsync(default);
         await Assert.That(failed.Status).IsEqualTo(HealthStatus.Unhealthy);
         await Assert.That(failed.Exception).IsSameReferenceAs(failure);
-        using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
         await Assert.That(async () => await probe.CheckAsync(cancellation.Token)).Throws<OperationCanceledException>();
         await Assert.That(client.Deletes).IsEqualTo(0);
         await Assert.That(client.Polls).IsEqualTo(0);
@@ -178,7 +215,10 @@ public sealed class SqsReceiveTests
         await using var transport = new SqsSendTransport("sqs", client, false, options);
         await transport.ResolveUrlsAsync(default);
         client.Redrive = "{\"maxReceiveCount\":\"1\",\"deadLetterTargetArn\":\"arn\"}";
-        var declaration = new ConsumerDefinition<AmazonSqsConsumerOptions>("orders", new(), [], 1, 1, default, failure: new() { RedeliveryDelays = new[] { TimeSpan.Zero } });
+        var declaration = new ConsumerDefinition<AmazonSqsConsumerOptions>("orders", new(), [], 1, 1, default, failure: new()
+        {
+            RedeliveryDelays = new[] { TimeSpan.Zero }
+        });
         await Assert.That(async () => await transport.ValidateRedriveAsync(declaration, default)).Throws<InvalidOperationException>();
         client.Redrive = "{\"maxReceiveCount\":2,\"deadLetterTargetArn\":\"arn\"}";
         await transport.ValidateRedriveAsync(declaration, default);
@@ -189,9 +229,15 @@ public sealed class SqsReceiveTests
     {
         using var client = new ReceiveClient();
         var invalid = new ConsumerDefinition<AmazonSqsConsumerOptions>("orders", new()
-            { ConfigureReceive = request => request.MaxNumberOfMessages = 11 }, [], 1, 1, default);
+        {
+            ConfigureReceive = request => request.MaxNumberOfMessages = 11
+        }, [], 1, 1, default);
+
         await using (var receiver = new SqsConsumer(invalid, client, "url", static (_, _) => default))
+        {
             await Assert.That(async () => await receiver.StartAsync(default)).Throws<InvalidOperationException>();
+        }
+
         await Assert.That(client.Polls).IsEqualTo(0);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -199,7 +245,11 @@ public sealed class SqsReceiveTests
         await using var consumer = new SqsConsumer(Declaration(), client, "url", async (_, token) =>
         {
             entered.SetResult();
-            try { await Task.Delay(Timeout.InfiniteTimeSpan, token); }
+
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }
             finally
             {
                 canceled.SetResult();
@@ -211,33 +261,79 @@ public sealed class SqsReceiveTests
         await consumer.StartAsync(default);
         await client.Deliveries.Writer.WriteAsync(Message("body", 1));
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        using var deadline = new CancellationTokenSource(); deadline.Cancel();
+        using var deadline = new CancellationTokenSource();
+        deadline.Cancel();
+
         try
         {
             await Assert.That(async () => await consumer.StopAsync(deadline.Token)).Throws<OperationCanceledException>();
         }
-        finally { release.SetResult(); }
+        finally
+        {
+            release.SetResult();
+        }
+
         await canceled.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(async () => await consumer.StartAsync(default)).Throws<InvalidOperationException>();
         await Assert.That(client.Deletes).IsEqualTo(0);
     }
 
-    internal static ConsumerDefinition<AmazonSqsConsumerOptions> Declaration(int concurrency = 1) =>
-        new("orders", new(), [], concurrency, 1, default, failure: new() { DeadLetterEndpoint = "dead" });
-    internal static Message Message(string body, int count) => new()
+    internal static ConsumerDefinition<AmazonSqsConsumerOptions> Declaration(int concurrency = 1)
     {
-        Body = body, ReceiptHandle = Guid.NewGuid().ToString(),
-        Attributes = new() { ["ApproximateReceiveCount"] = count.ToString(System.Globalization.CultureInfo.InvariantCulture) },
-        MessageAttributes = new() { ["ce_id"] = new() { DataType = "String", StringValue = "id" }, ["ce_type"] = new() { DataType = "String", StringValue = "sqs.receive;v=1" } },
-    };
+        return new("orders", new(), [], concurrency, 1, default, failure: new()
+        {
+            DeadLetterEndpoint = "dead"
+        });
+    }
+
+    internal static Message Message(string body, int count)
+    {
+        return new()
+        {
+            Body = body,
+            ReceiptHandle = Guid.NewGuid().ToString(),
+            Attributes = new()
+            {
+                ["ApproximateReceiveCount"] = count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            },
+            MessageAttributes = new()
+            {
+                ["ce_id"] = new()
+                {
+                    DataType = "String",
+                    StringValue = "id"
+                },
+                ["ce_type"] = new()
+                {
+                    DataType = "String",
+                    StringValue = "sqs.receive;v=1"
+                }
+            },
+        };
+    }
+
     internal sealed class ManualTime : TimeProvider
     {
         private long _ticks = DateTimeOffset.UtcNow.UtcTicks;
+
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-        public override long GetTimestamp() => _ticks;
-        public override DateTimeOffset GetUtcNow() => new(_ticks, TimeSpan.Zero);
-        internal void Advance(TimeSpan span) => _ticks += span.Ticks;
+
+        public override long GetTimestamp()
+        {
+            return _ticks;
+        }
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            return new(_ticks, TimeSpan.Zero);
+        }
+
+        internal void Advance(TimeSpan span)
+        {
+            _ticks += span.Ticks;
+        }
     }
+
     internal sealed class ReceiveClient() : AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = "http://localhost", AuthenticationRegion = "us-east-1" })
     {
         internal readonly Channel<Message> Deliveries = Channel.CreateUnbounded<Message>();
@@ -250,27 +346,58 @@ public sealed class SqsReceiveTests
         internal string? Redrive;
         internal Exception? SendFailure;
         internal readonly TaskCompletionSource NextPoll = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public override Task<SendMessageResponse> SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref Sends);
             return SendFailure is { } error ? Task.FromException<SendMessageResponse>(error) : Task.FromResult(new SendMessageResponse());
         }
+
         public override async Task<ReceiveMessageResponse> ReceiveMessageAsync(ReceiveMessageRequest request, CancellationToken cancellationToken = default)
         {
-            if (Interlocked.Increment(ref Polls) == 2) NextPoll.TrySetResult();
-            if (Interlocked.Exchange(ref PollFailure, null) is { } failure) throw failure;
-            return new() { Messages = [await Deliveries.Reader.ReadAsync(cancellationToken)] };
+            if (Interlocked.Increment(ref Polls) == 2)
+            {
+                NextPoll.TrySetResult();
+            }
+
+            if (Interlocked.Exchange(ref PollFailure, null) is { } failure)
+            {
+                throw failure;
+            }
+
+            return new()
+            {
+                Messages = [await Deliveries.Reader.ReadAsync(cancellationToken)]
+            };
         }
+
         public override Task<DeleteMessageResponse> DeleteMessageAsync(DeleteMessageRequest request, CancellationToken cancellationToken = default)
-        { Interlocked.Increment(ref Deletes); return Task.FromResult(new DeleteMessageResponse()); }
+        {
+            Interlocked.Increment(ref Deletes);
+            return Task.FromResult(new DeleteMessageResponse());
+        }
+
         public override Task<ChangeMessageVisibilityResponse> ChangeMessageVisibilityAsync(ChangeMessageVisibilityRequest request, CancellationToken cancellationToken = default)
-        { Visibility.Enqueue(request.VisibilityTimeout!.Value); return Task.FromResult(new ChangeMessageVisibilityResponse()); }
+        {
+            Visibility.Enqueue(request.VisibilityTimeout!.Value);
+            return Task.FromResult(new ChangeMessageVisibilityResponse());
+        }
+
         public override Task<GetQueueUrlResponse> GetQueueUrlAsync(string name, CancellationToken cancellationToken = default)
-        { cancellationToken.ThrowIfCancellationRequested(); return Task.FromResult(new GetQueueUrlResponse { QueueUrl = "http://localhost/" + name }); }
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new GetQueueUrlResponse { QueueUrl = "http://localhost/" + name });
+        }
+
         public override Task<GetQueueAttributesResponse> GetQueueAttributesAsync(GetQueueAttributesRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (ConnectivityFailure is { } failure) throw failure;
+
+            if (ConnectivityFailure is { } failure)
+            {
+                throw failure;
+            }
+
             return Task.FromResult(new GetQueueAttributesResponse { Attributes = Redrive is { } policy ? new() { ["RedrivePolicy"] = policy } : [] });
         }
     }

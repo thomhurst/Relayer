@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using Npgsql;
 using NpgsqlTypes;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -15,10 +15,16 @@ public class OrderedDispatchCommandBenchmarks
     private readonly string _sql = "UPDATE outbox SET claim_token = @token, claim_expires_at = clock_timestamp() + @duration WHERE id = @id";
 
     [GlobalSetup]
-    public void Setup() => _command = CreateCommand();
+    public void Setup()
+    {
+        _command = CreateCommand();
+    }
 
     [GlobalCleanup]
-    public void Cleanup() => _command.Dispose();
+    public void Cleanup()
+    {
+        _command.Dispose();
+    }
 
     [Benchmark(Baseline = true)]
     public Guid ConstructAndBind()
@@ -29,7 +35,10 @@ public class OrderedDispatchCommandBenchmarks
     }
 
     [Benchmark]
-    public NpgsqlCommand Rebind() => PostgreSqlOrderedLane.SetClaim(_command, _claim);
+    public NpgsqlCommand Rebind()
+    {
+        return PostgreSqlOrderedLane.SetClaim(_command, _claim);
+    }
 
     private NpgsqlCommand CreateCommand()
     {

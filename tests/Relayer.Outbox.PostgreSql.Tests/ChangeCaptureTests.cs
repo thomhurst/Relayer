@@ -23,7 +23,9 @@ public class ChangeCaptureTests
         services.AddRelayerPostgreSqlChangeCapture("orders", source, () => new("Host=unused"), Options());
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["BatchSize"] = "7", ["ReconnectDelay"] = "00:00:02", ["Schema"] = "custom"
+            ["BatchSize"] = "7",
+            ["ReconnectDelay"] = "00:00:02",
+            ["Schema"] = "custom"
         }).Build();
         var native = new PgOutputReplicationOptions("other", PgOutputProtocolVersion.V1);
         services.AddRelayerPostgreSqlChangeCapture("other", source, () => new("Host=unused"), new("other"), native, configuration);
@@ -38,7 +40,8 @@ public class ChangeCaptureTests
         await Assert.That(() => services.AddRelayerPostgreSqlChangeCapture("orders", source, () => new(), Options())).Throws<InvalidOperationException>();
         await Assert.That(() => new PostgreSqlChangeCaptureOptions
         {
-            Slot = new("orders"), Replication = new("orders", PgOutputProtocolVersion.V2)
+            Slot = new("orders"),
+            Replication = new("orders", PgOutputProtocolVersion.V2)
         }.Validate()).Throws<ArgumentException>();
         await Assert.That(() => Options(batchSize: 0).Validate()).Throws<ArgumentOutOfRangeException>();
     }
@@ -65,7 +68,12 @@ public class ChangeCaptureTests
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        for (var i = 1; i <= 5; i++) await Insert(source, Id(i));
+
+        for (var i = 1; i <= 5; i++)
+        {
+            await Insert(source, Id(i));
+        }
+
         await Insert(source, Id(6), lane: 0);
         await Insert(source, Id(7), future: true);
         await Provision(source, fixture.ConnectionString);
@@ -73,6 +81,7 @@ public class ChangeCaptureTests
         using var worker = Worker(source, fixture.ConnectionString, transport, retainSentMessages: true);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await worker.StartAsync(timeout.Token);
+
         try
         {
             await Until(async () => await Count(source) == 2, timeout.Token);
@@ -87,7 +96,10 @@ public class ChangeCaptureTests
             await using var sent = source.CreateCommand("SELECT count(*) FROM relayer_outbox_sent");
             await Assert.That((long)(await sent.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(6L);
         }
-        finally { await worker.StopAsync(timeout.Token); }
+        finally
+        {
+            await worker.StopAsync(timeout.Token);
+        }
     }
 
     [Test]
@@ -106,22 +118,29 @@ public class ChangeCaptureTests
         });
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         NpgsqlLogSequenceNumber position;
+
         using (var first = Worker(source, fixture.ConnectionString, transport))
         {
             await first.StartAsync(timeout.Token);
+
             try
             {
                 await Streaming(source, timeout.Token);
                 position = await Insert(source, Id(1));
                 await accepted.Task.WaitAsync(timeout.Token);
             }
-            finally { await first.StopAsync(timeout.Token); }
+            finally
+            {
+                await first.StopAsync(timeout.Token);
+            }
         }
+
         await Assert.That(await Count(source)).IsEqualTo(1L);
         // No new insert wakes the replacement. Its startup scan recovers the rolled-back dispatch.
         var replay = new RecordingTransport();
         using var second = Worker(source, fixture.ConnectionString, replay);
         await second.StartAsync(timeout.Token);
+
         try
         {
             await Acknowledged(source, position, timeout.Token);
@@ -130,7 +149,10 @@ public class ChangeCaptureTests
             await Assert.That(replay.Ids.SequenceEqual([Id(1)])).IsTrue();
             await Assert.That(transport.Bodies.Single().SequenceEqual(replay.Bodies.Single())).IsTrue();
         }
-        finally { await second.StopAsync(timeout.Token); }
+        finally
+        {
+            await second.StopAsync(timeout.Token);
+        }
     }
 
     [Test]
@@ -143,9 +165,11 @@ public class ChangeCaptureTests
         await Provision(source, fixture.ConnectionString);
         var transport = new RecordingTransport((_, _) => throw new InvalidOperationException("Broker unavailable"));
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
         using (var first = Worker(source, fixture.ConnectionString, transport))
         {
             await first.StartAsync(timeout.Token);
+
             try
             {
                 await Streaming(source, timeout.Token);
@@ -154,30 +178,46 @@ public class ChangeCaptureTests
                 await using var attempts = source.CreateCommand("SELECT attempts FROM relayer_outbox");
                 await Assert.That((int)(await attempts.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(1);
             }
-            finally { await first.StopAsync(timeout.Token); }
+            finally
+            {
+                await first.StopAsync(timeout.Token);
+            }
         }
         // Startup recovery must honor the persisted deadline. Simulate a later
         // restart explicitly; a quiet INSERT-only stream does not wake on UPDATE.
         await using (var retry = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = clock_timestamp() - interval '1 second'"))
+        {
             await retry.ExecuteNonQueryAsync(timeout.Token);
+        }
+
         var replay = new RecordingTransport();
         using var second = Worker(source, fixture.ConnectionString, replay);
         await second.StartAsync(timeout.Token);
+
         try
         {
             await Until(async () => await Count(source) == 0, timeout.Token);
             await Assert.That(replay.Ids.SequenceEqual([Id(1)])).IsTrue();
         }
-        finally { await second.StopAsync(timeout.Token); }
+        finally
+        {
+            await second.StopAsync(timeout.Token);
+        }
     }
 
     // Replication slot names are unique per server, which every test shares.
     private static string Slot => TestContext.Current!.Isolation.GetIsolatedName("orders");
 
-    private static PostgreSqlChangeCaptureOptions Options(int batchSize = 3, bool retainSentMessages = false) => new()
+    private static PostgreSqlChangeCaptureOptions Options(int batchSize = 3, bool retainSentMessages = false)
     {
-        Slot = new(Slot), Replication = new("orders", PgOutputProtocolVersion.V1), BatchSize = batchSize, RetainSentMessages = retainSentMessages
-    };
+        return new()
+        {
+            Slot = new(Slot),
+            Replication = new("orders", PgOutputProtocolVersion.V1),
+            BatchSize = batchSize,
+            RetainSentMessages = retainSentMessages
+        };
+    }
 
     [Test]
     [Arguments("claim")]
@@ -201,9 +241,11 @@ public class ChangeCaptureTests
             : new RecordingTransport();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         NpgsqlLogSequenceNumber position;
+
         using (var first = Worker(source, fixture.ConnectionString, transport))
         {
             await first.StartAsync(timeout.Token);
+
             try
             {
                 await Streaming(source, timeout.Token);
@@ -214,8 +256,15 @@ public class ChangeCaptureTests
                 var acknowledged = Acknowledged(source, position, observed.Token);
                 await Task.WhenAny(first.ExecuteTask!, acknowledged).WaitAsync(timeout.Token);
                 await observed.CancelAsync();
-                try { await acknowledged; }
-                catch (OperationCanceledException) when (observed.IsCancellationRequested) { }
+
+                try
+                {
+                    await acknowledged;
+                }
+                catch (OperationCanceledException) when (observed.IsCancellationRequested)
+                {
+                }
+
                 await Assert.That(first.ExecuteTask!.IsFaulted).IsTrue();
                 await Assert.That(async () => await first.ExecuteTask!).Throws<PostgresException>();
                 await using var checkpoint = source.CreateCommand($"SELECT confirmed_flush_lsn < @position FROM pg_replication_slots WHERE slot_name = '{Slot}'");
@@ -223,19 +272,27 @@ public class ChangeCaptureTests
                 await Assert.That(await checkpoint.ExecuteScalarAsync(timeout.Token) is true).IsTrue();
                 await Assert.That(await Count(source)).IsEqualTo(1L);
             }
-            finally { await first.StopAsync(timeout.Token); }
+            finally
+            {
+                await first.StopAsync(timeout.Token);
+            }
         }
+
         await Sql(source, "DROP TRIGGER fail_dispatch ON relayer_outbox");
         var replay = new RecordingTransport();
         using var second = Worker(source, fixture.ConnectionString, replay);
         await second.StartAsync(timeout.Token);
+
         try
         {
             await Acknowledged(source, position, timeout.Token);
             await Assert.That(await Count(source)).IsEqualTo(0L);
             await Assert.That(replay.Ids.SequenceEqual([Id(1)])).IsTrue();
         }
-        finally { await second.StopAsync(timeout.Token); }
+        finally
+        {
+            await second.StopAsync(timeout.Token);
+        }
     }
 
     [Test]
@@ -254,6 +311,7 @@ public class ChangeCaptureTests
         var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var registration = host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.Register(() => stopped.TrySetResult());
         await host.StartAsync(timeout.Token);
+
         try
         {
             await stopped.Task.WaitAsync(timeout.Token);
@@ -284,35 +342,51 @@ public class ChangeCaptureTests
         var transport = new RecordingTransport();
         using var worker = new PostgreSqlChangeCaptureWorker(source,
             () => new(fixture.ConnectionString) { WalReceiverStatusInterval = TimeSpan.FromMilliseconds(25) },
-            new() { Slot = new(Slot), Replication = new("orders", PgOutputProtocolVersion.V1), ReconnectDelay = TimeSpan.FromMilliseconds(20) },
+            new()
+            {
+                Slot = new(Slot),
+                Replication = new("orders", PgOutputProtocolVersion.V1),
+                ReconnectDelay = TimeSpan.FromMilliseconds(20)
+            },
             [transport], NullLogger<PostgreSqlChangeCaptureWorker>.Instance, NullLogger<PostgreSqlMaintenanceWorker>.Instance,
             NullLogger<PostgreSqlDirectDispatcher>.Instance);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await worker.StartAsync(timeout.Token);
+
         try
         {
             await Streaming(source, timeout.Token);
             int previous;
+
             await using (var command = source.CreateCommand($"SELECT active_pid FROM pg_replication_slots WHERE slot_name = '{Slot}'"))
+            {
                 previous = (int)(await command.ExecuteScalarAsync(timeout.Token))!;
+            }
+
             await using (var kill = source.CreateCommand("SELECT pg_terminate_backend(@pid)"))
             {
                 kill.Parameters.AddWithValue("pid", previous);
                 await kill.ExecuteScalarAsync(timeout.Token);
             }
+
             var position = await Insert(source, Id(1));
             await Acknowledged(source, position, timeout.Token);
             await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
             await using var current = source.CreateCommand($"SELECT active_pid FROM pg_replication_slots WHERE slot_name = '{Slot}'");
             await Assert.That((int)(await current.ExecuteScalarAsync(timeout.Token))!).IsNotEqualTo(previous);
         }
-        finally { await worker.StopAsync(timeout.Token); }
+        finally
+        {
+            await worker.StopAsync(timeout.Token);
+        }
     }
 
-    private static PostgreSqlChangeCaptureWorker Worker(NpgsqlDataSource source, string connectionString, RecordingTransport transport, bool retainSentMessages = false) =>
-        new(source, () => new(connectionString) { WalReceiverStatusInterval = TimeSpan.FromMilliseconds(25) }, Options(retainSentMessages: retainSentMessages), [transport],
-            NullLogger<PostgreSqlChangeCaptureWorker>.Instance, NullLogger<PostgreSqlMaintenanceWorker>.Instance,
-            NullLogger<PostgreSqlDirectDispatcher>.Instance);
+    private static PostgreSqlChangeCaptureWorker Worker(NpgsqlDataSource source, string connectionString, RecordingTransport transport, bool retainSentMessages = false)
+    {
+        return new(source, () => new(connectionString) { WalReceiverStatusInterval = TimeSpan.FromMilliseconds(25) }, Options(retainSentMessages: retainSentMessages), [transport],
+                    NullLogger<PostgreSqlChangeCaptureWorker>.Instance, NullLogger<PostgreSqlMaintenanceWorker>.Instance,
+                    NullLogger<PostgreSqlDirectDispatcher>.Instance);
+    }
 
     private static async Task Provision(NpgsqlDataSource source, string connectionString, string publish = "insert")
     {
@@ -336,7 +410,12 @@ public class ChangeCaptureTests
         command.Parameters.Add(new NpgsqlParameter<int?>("lane", NpgsqlDbType.Integer) { TypedValue = lane });
         command.Parameters.Add(new NpgsqlParameter<DateTimeOffset?>("due", NpgsqlDbType.TimestampTz) { TypedValue = future ? DateTimeOffset.UtcNow.AddDays(1) : null });
         var position = (NpgsqlLogSequenceNumber)(await command.ExecuteScalarAsync())!;
-        if (commit) await transaction.CommitAsync();
+
+        if (commit)
+        {
+            await transaction.CommitAsync();
+        }
+
         return position;
     }
 
@@ -366,12 +445,17 @@ public class ChangeCaptureTests
         }
     }
 
-    private static Guid Id(int i) => Guid.Parse($"01900000-0000-7000-8000-{i:D12}");
+    private static Guid Id(int i)
+    {
+        return Guid.Parse($"01900000-0000-7000-8000-{i:D12}");
+    }
+
     private static async Task Sql(NpgsqlDataSource source, string sql)
     {
         await using var command = source.CreateCommand(sql);
         await command.ExecuteNonQueryAsync();
     }
+
     private static async Task<long> Count(NpgsqlDataSource source)
     {
         await using var command = source.CreateCommand("SELECT count(*) FROM relayer_outbox");
@@ -381,24 +465,69 @@ public class ChangeCaptureTests
     private sealed class RecordingTransport(Func<OutgoingMessage, CancellationToken, ValueTask>? send = null) : ITransport
     {
         public string Name => "events";
-        internal ConcurrentQueue<Guid> Ids { get; } = new();
-        internal ConcurrentQueue<byte[]> Bodies { get; } = new();
-        internal ConcurrentQueue<int> BatchSizes { get; } = new();
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = 2 };
+
+        internal ConcurrentQueue<Guid> Ids
+        {
+            get;
+        } = new();
+
+        internal ConcurrentQueue<byte[]> Bodies
+        {
+            get;
+        } = new();
+
+        internal ConcurrentQueue<int> BatchSizes
+        {
+            get;
+        } = new();
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = 2
+            };
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Ids.Enqueue(Guid.Parse(message.Headers.Span[0].Value.ToString()));
             Bodies.Enqueue(message.Body.ToArray());
-            if (send is not null) await send(message, cancellationToken);
+
+            if (send is not null)
+            {
+                await send(message, cancellationToken);
+            }
         }
+
         public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
         {
             BatchSizes.Enqueue(messages.Length);
-            for (var i = 0; i < messages.Length; i++) await SendAsync(messages.Span[i], cancellationToken);
+
+            for (var i = 0; i < messages.Length; i++)
+            {
+                await SendAsync(messages.Span[i], cancellationToken);
+            }
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

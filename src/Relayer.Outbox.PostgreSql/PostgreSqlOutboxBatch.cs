@@ -8,7 +8,9 @@ namespace Relayer.Outbox.PostgreSql;
 // Column storage is reused across commits. Parameter count is fixed, including large transactions.
 internal sealed class PostgreSqlOutboxBatch : IOutboxBatch
 {
-    internal static string CreateInsertSql(string table) => $"""
+    internal static string CreateInsertSql(string table)
+    {
+        return $"""
         INSERT INTO {table}
             (id, lane, ordering_key, transport, destination, message_type, headers, body, created_at, deliver_at, tenant_id)
         SELECT id, lane, convert_from(key, 'UTF8'), transport, destination, type, headers, body, created, delivery, tenant
@@ -16,6 +18,7 @@ internal sealed class PostgreSqlOutboxBatch : IOutboxBatch
             WITH ORDINALITY AS rows(id, lane, key, transport, destination, type, headers, body, created, delivery, tenant, position)
         ORDER BY position
         """;
+    }
 
     private readonly List<Guid> _ids = [];
     private readonly List<int?> _lanes = [];
@@ -55,7 +58,10 @@ internal sealed class PostgreSqlOutboxBatch : IOutboxBatch
 
     public void AddRange(ReadOnlySpan<BufferedOutboxMessage> rows)
     {
-        foreach (var row in rows) Add(row);
+        foreach (var row in rows)
+        {
+            Add(row);
+        }
     }
 
     internal void Add(BufferedOutboxMessage row)
@@ -75,16 +81,28 @@ internal sealed class PostgreSqlOutboxBatch : IOutboxBatch
 
     public void Execute()
     {
-        try { _command.ExecuteNonQuery(); }
-        finally { Clear(); }
+        try
+        {
+            _command.ExecuteNonQuery();
+        }
+        finally
+        {
+            Clear();
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask ExecuteAsync(CancellationToken cancellationToken)
     {
-        try { await _command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
-        finally { Clear(); }
+        try
+        {
+            await _command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Clear();
+        }
     }
 
     private void Clear()
@@ -104,5 +122,8 @@ internal sealed class PostgreSqlOutboxBatch : IOutboxBatch
         _command.Connection = null;
     }
 
-    public void Dispose() => _command.Dispose();
+    public void Dispose()
+    {
+        _command.Dispose();
+    }
 }

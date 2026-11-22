@@ -15,6 +15,7 @@ public sealed class ServiceBusStartupDiagnosticsTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         Exception? failure = null;
         Exception? startupError = null;
+
         try
         {
             await ServiceBusStartupDiagnostics.StartAsync(async token =>
@@ -33,7 +34,10 @@ public sealed class ServiceBusStartupDiagnosticsTests
                 }
             }, database, emulator, timeout.Token);
         }
-        catch (Exception error) { failure = error; }
+        catch (Exception error)
+        {
+            failure = error;
+        }
 
         await Assert.That(failure).IsNotNull();
         await Assert.That(ReferenceEquals(failure, startupError)).IsTrue();
@@ -43,6 +47,7 @@ public sealed class ServiceBusStartupDiagnosticsTests
         await Assert.That(evidence).Contains("exitCode=137, oomKilled=False");
         await Assert.That(evidence).Contains("controlled stdout");
         await Assert.That(evidence).Contains("controlled stderr");
+
         if (!failDatabase)
         {
             await Assert.That(evidence).Contains("running=True");
@@ -60,22 +65,36 @@ public sealed class ServiceBusStartupDiagnosticsTests
         using var cancelled = new CancellationTokenSource();
         await cancelled.CancelAsync();
         Exception? failure = null;
-        try { await ServiceBusStartupDiagnostics.StartAsync(FailAsync, database, emulator, cancelled.Token); }
-        catch (Exception error) { failure = error; }
+
+        try
+        {
+            await ServiceBusStartupDiagnostics.StartAsync(FailAsync, database, emulator, cancelled.Token);
+        }
+        catch (Exception error)
+        {
+            failure = error;
+        }
+
         await Assert.That(ReferenceEquals(failure, original)).IsTrue();
         await Assert.That(failure!.StackTrace!).Contains(nameof(FailAsync));
         var evidence = (string)failure.Data[ServiceBusStartupDiagnostics.EvidenceKey]!;
         await Assert.That(evidence).Contains("Docker state unavailable:");
         await Assert.That(evidence).Contains("Startup logs unavailable:");
 
-        Task FailAsync(CancellationToken _) => throw original;
+        Task FailAsync(CancellationToken _)
+        {
+            throw original;
+        }
     }
 
-    private static IContainer Container(bool fail) => new ContainerBuilder("alpine:3.22")
-        .WithEntrypoint("/bin/sh")
-        .WithCommand("-c", fail
-            ? "echo 'controlled stdout'; echo 'controlled stderr' >&2; exit 137"
-            : "echo 'healthy dependency'; exec sleep infinity")
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged(fail ? "never ready" : "healthy dependency"))
-        .Build();
+    private static IContainer Container(bool fail)
+    {
+        return new ContainerBuilder("alpine:3.22")
+                .WithEntrypoint("/bin/sh")
+                .WithCommand("-c", fail
+                    ? "echo 'controlled stdout'; echo 'controlled stderr' >&2; exit 137"
+                    : "echo 'healthy dependency'; exec sleep infinity")
+                .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged(fail ? "never ready" : "healthy dependency"))
+                .Build();
+    }
 }

@@ -19,7 +19,11 @@ public class MaintenanceTests
         await using var source = NpgsqlDataSource.Create("Host=unused");
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["BatchSize"] = "7", ["CleanupBatchLimit"] = "3", ["Schema"] = "custom", ["DeadRetention"] = "infinite", ["InboxRetention"] = "2.00:00:00"
+            ["BatchSize"] = "7",
+            ["CleanupBatchLimit"] = "3",
+            ["Schema"] = "custom",
+            ["DeadRetention"] = "infinite",
+            ["InboxRetention"] = "2.00:00:00"
         }).Build();
         var services = new ServiceCollection().AddLogging();
         services.AddRelayerPostgreSqlMaintenance("a", source, configuration);
@@ -59,7 +63,11 @@ public class MaintenanceTests
         await Insert(source, Id(1));
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var firstTransport = new RecordingTransport(async (_, token) => { entered.TrySetResult(); await release.Task.WaitAsync(token); });
+        var firstTransport = new RecordingTransport(async (_, token) =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(token);
+        });
         var secondTransport = new RecordingTransport();
         using var first = Worker(source, firstTransport);
         using var second = Worker(source, secondTransport);
@@ -67,18 +75,30 @@ public class MaintenanceTests
         var firstPass = first.SweepAsync(timeout.Token).AsTask();
         await entered.Task.WaitAsync(timeout.Token);
         var secondPass = second.SweepAsync(timeout.Token).AsTask();
+
         try
         {
             await using var observer = NpgsqlDataSource.Create(fixture.ConnectionString);
+
             while (true)
             {
                 await using var waiting = observer.CreateCommand("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO %leases%' AND datname = current_database()");
-                if ((long)(await waiting.ExecuteScalarAsync(timeout.Token))! > 0) break;
+
+                if ((long)(await waiting.ExecuteScalarAsync(timeout.Token))! > 0)
+                {
+                    break;
+                }
+
                 await Task.Yield();
             }
+
             await Assert.That(secondPass.IsCompleted).IsFalse();
         }
-        finally { release.TrySetResult(); }
+        finally
+        {
+            release.TrySetResult();
+        }
+
         await Assert.That(await firstPass).IsEqualTo(1);
         await Assert.That(await secondPass).IsEqualTo(0);
         await Assert.That(secondTransport.Ids.Count).IsEqualTo(0);
@@ -96,7 +116,12 @@ public class MaintenanceTests
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await Sql(source, "CREATE TABLE crash_deliveries (id uuid NOT NULL, body bytea NOT NULL)");
-        for (var i = 1; i <= 3; i++) await Insert(source, Id(i));
+
+        for (var i = 1; i <= 3; i++)
+        {
+            await Insert(source, Id(i));
+        }
+
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
         start.ArgumentList.Add("exec");
         start.ArgumentList.Add("--runtimeconfig");
@@ -107,20 +132,32 @@ public class MaintenanceTests
         start.ArgumentList.Add(fixture.ConnectionString);
         using var child = Process.Start(start)!;
         var errors = child.StandardError.ReadToEndAsync();
+
         try
         {
             var signal = await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
             if (signal != "BROKER_ACCEPTED")
             {
-                if (!child.HasExited) { child.Kill(entireProcessTree: true); await child.WaitForExitAsync(); }
+                if (!child.HasExited)
+                {
+                    child.Kill(entireProcessTree: true);
+                    await child.WaitForExitAsync();
+                }
+
                 throw new InvalidOperationException($"Crash probe did not reach send: {signal}; {await errors}");
             }
+
             child.Kill(entireProcessTree: true);
             await child.WaitForExitAsync();
         }
         finally
         {
-            if (!child.HasExited) { child.Kill(entireProcessTree: true); await child.WaitForExitAsync(); }
+            if (!child.HasExited)
+            {
+                child.Kill(entireProcessTree: true);
+                await child.WaitForExitAsync();
+            }
         }
         // Advance durable expiry explicitly rather than relying on a timing race or sleeping.
         await Sql(source, "UPDATE relayer_outbox SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE claim_token IS NOT NULL; UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second'");
@@ -131,8 +168,16 @@ public class MaintenanceTests
             delivered.Parameters.AddWithValue("body", message.Body.ToArray());
             await delivered.ExecuteNonQueryAsync(token);
         });
-        using var survivor = Worker(source, transport, new() { BatchSize = 1 });
-        for (var i = 0; i < 3; i++) await survivor.SweepAsync(default);
+        using var survivor = Worker(source, transport, new()
+        {
+            BatchSize = 1
+        });
+
+        for (var i = 0; i < 3; i++)
+        {
+            await survivor.SweepAsync(default);
+        }
+
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
         await using var result = source.CreateCommand("SELECT count(*), count(DISTINCT id), bool_and(body = decode('070809', 'hex')) FROM crash_deliveries");
         await using var reader = await result.ExecuteReaderAsync();
@@ -152,6 +197,7 @@ public class MaintenanceTests
         var options = new PostgreSqlMaintenanceOptions { Schema = "Order\";--", TablePrefix = "a.\"_", RecoveryDelay = TimeSpan.Zero, BatchSize = 3 };
         await PostgreSqlOutboxStoreTests.CreateSchema(source, options.Validate());
         var table = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema!) + "." + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox");
+
         for (var i = 1; i <= 3; i++)
         {
             var headers = new ArrayBufferWriter<byte>();
@@ -162,6 +208,7 @@ public class MaintenanceTests
             insert.Parameters.AddWithValue("body", new byte[] { 7, 8, 9 });
             await insert.ExecuteNonQueryAsync();
         }
+
         var transport = new RecordingTransport { MaxBatchSize = 2 };
         using var worker = Worker(source, transport, options);
         await Assert.That(await worker.SweepAsync(default)).IsEqualTo(3);
@@ -191,8 +238,16 @@ public class MaintenanceTests
         using var worker = Worker(source, transport);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await worker.StartAsync(timeout.Token);
-        try { await entered.Task.WaitAsync(timeout.Token); }
-        finally { await worker.StopAsync(timeout.Token); }
+
+        try
+        {
+            await entered.Task.WaitAsync(timeout.Token);
+        }
+        finally
+        {
+            await worker.StopAsync(timeout.Token);
+        }
+
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(1L);
         await Assert.That(await Count(source, "relayer_leases")).IsEqualTo(1L);
         await using var row = source.CreateCommand("SELECT attempts, claim_token IS NOT NULL FROM relayer_outbox");
@@ -202,10 +257,21 @@ public class MaintenanceTests
         await Assert.That(reader.GetBoolean(1)).IsFalse();
     }
 
-    private static PostgreSqlMaintenanceWorker Worker(NpgsqlDataSource source, ITransport transport, PostgreSqlMaintenanceOptions? options = null) =>
-        new(source, options ?? new(), [transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
-    private static Guid Id(int i) => Guid.Parse($"01900000-0000-7000-8000-{i:D12}");
-    private static Guid HeaderId(OutgoingMessage message) => Guid.Parse(message.Headers.Span[0].Value.ToString());
+    private static PostgreSqlMaintenanceWorker Worker(NpgsqlDataSource source, ITransport transport, PostgreSqlMaintenanceOptions? options = null)
+    {
+        return new(source, options ?? new(), [transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+    }
+
+    private static Guid Id(int i)
+    {
+        return Guid.Parse($"01900000-0000-7000-8000-{i:D12}");
+    }
+
+    private static Guid HeaderId(OutgoingMessage message)
+    {
+        return Guid.Parse(message.Headers.Span[0].Value.ToString());
+    }
+
     private static async Task Insert(NpgsqlDataSource source, Guid id)
     {
         var headers = new ArrayBufferWriter<byte>();
@@ -216,36 +282,84 @@ public class MaintenanceTests
         command.Parameters.AddWithValue("body", new byte[] { 7, 8, 9 });
         await command.ExecuteNonQueryAsync();
     }
+
     private static async Task Sql(NpgsqlDataSource source, string sql)
     {
         await using var command = source.CreateCommand(sql);
         await command.ExecuteNonQueryAsync();
     }
+
     private static async Task<long> Count(NpgsqlDataSource source, string table)
     {
         await using var command = source.CreateCommand($"SELECT count(*) FROM {table}");
         return (long)(await command.ExecuteScalarAsync())!;
     }
+
     private sealed class RecordingTransport(Func<OutgoingMessage, CancellationToken, ValueTask>? send = null) : ITransport
     {
         public string Name => "events";
-        internal ConcurrentQueue<Guid> Ids { get; } = new();
-        internal int MaxBatchSize { get; init; } = 1;
-        internal ConcurrentQueue<int> BatchSizes { get; } = new();
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = MaxBatchSize };
+
+        internal ConcurrentQueue<Guid> Ids
+        {
+            get;
+        } = new();
+
+        internal int MaxBatchSize
+        {
+            get; init;
+        } = 1;
+
+        internal ConcurrentQueue<int> BatchSizes
+        {
+            get;
+        } = new();
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = MaxBatchSize
+            };
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (send is not null) await send(message, cancellationToken);
+            if (send is not null)
+            {
+                await send(message, cancellationToken);
+            }
+
             Ids.Enqueue(HeaderId(message));
         }
+
         public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
         {
             BatchSizes.Enqueue(messages.Length);
-            for (var i = 0; i < messages.Length; i++) await SendAsync(messages.Span[i], cancellationToken);
+
+            for (var i = 0; i < messages.Length; i++)
+            {
+                await SendAsync(messages.Span[i], cancellationToken);
+            }
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

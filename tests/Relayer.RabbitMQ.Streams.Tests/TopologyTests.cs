@@ -29,8 +29,14 @@ public class TopologyTests
             streams.Options.Configure(options =>
             {
                 options.Configuration = configuration;
-                options.Streams.Add(new("existing") { Configuration = spec });
-                options.Streams.Add(new("created") { Configuration = new("created") });
+                options.Streams.Add(new("existing")
+                {
+                    Configuration = spec
+                });
+                options.Streams.Add(new("created")
+                {
+                    Configuration = new("created")
+                });
             });
         }))).Build();
         await using var hostLifetime = (IAsyncDisposable)host;
@@ -44,8 +50,17 @@ public class TopologyTests
         await using var drift = ConfigurationTests.Provider(options =>
         {
             options.Configuration = broker.Configuration();
-            options.Streams.Add(new("existing") { Configuration = new("existing") { MaxLengthBytes = 999 } });
-            options.Streams.Add(new("after-error") { Configuration = new("after-error") });
+            options.Streams.Add(new("existing")
+            {
+                Configuration = new("existing")
+                {
+                    MaxLengthBytes = 999
+                }
+            });
+            options.Streams.Add(new("after-error")
+            {
+                Configuration = new("after-error")
+            });
         });
         var report = await drift.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Provision, token);
         await Assert.That(report.Differences.Count).IsEqualTo(1);
@@ -83,7 +98,10 @@ public class TopologyTests
             options.Configuration = broker.Configuration();
             options.Streams.Add(new("existing"));
             options.Streams.Add(new("missing"));
-            options.Streams.Add(new("existing-settings") { Configuration = new("existing-settings") });
+            options.Streams.Add(new("existing-settings")
+            {
+                Configuration = new("existing-settings")
+            });
         });
         var differences = (await missing.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Validate, token)).Differences;
         await Assert.That(differences.Count).IsEqualTo(2);
@@ -95,7 +113,10 @@ public class TopologyTests
         await using var settings = ConfigurationTests.Provider(options =>
         {
             options.Configuration = broker.Configuration();
-            options.Streams.Add(new("existing") { Configuration = new("existing") });
+            options.Streams.Add(new("existing")
+            {
+                Configuration = new("existing")
+            });
         });
         var unverified = (await settings.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Validate, token)).Differences;
         await Assert.That(unverified.Count).IsEqualTo(1);
@@ -120,7 +141,10 @@ public class TopologyTests
         await using var provider = ConfigurationTests.Provider(options =>
         {
             options.Configuration = broker.Configuration();
-            options.Streams.Add(new("recovery") { Configuration = new("recovery") });
+            options.Streams.Add(new("recovery")
+            {
+                Configuration = new("recovery")
+            });
         });
         var transport = provider.GetRequiredService<ITransport>();
         await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
@@ -137,7 +161,12 @@ public class TopologyTests
         // observed the close. Native recovery checks IsClosed, and ServerProperties
         // otherwise returns cached data. Wait for that precondition without retrying RPCs.
         using var observation = new PeriodicTimer(TimeSpan.FromMilliseconds(10));
-        while (!native.IsClosed) await observation.WaitForNextTickAsync(token);
+
+        while (!native.IsClosed)
+        {
+            await observation.WaitForNextTickAsync(token);
+        }
+
         await transport.StartAsync(token);
         await Assert.That(native.IsClosed).IsFalse();
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
@@ -154,26 +183,52 @@ public class TopologyTests
                 .WithEnvironment("RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS", "+S 2:2 +A 2")
                 .WithPortBinding(5552, true)
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Server startup complete"));
-            if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "5552");
+
+            if (OperatingSystem.IsLinux())
+            {
+                builder = builder.WithPortBinding("20000-29999", "5552");
+            }
+
             var container = builder.Build();
-            try { await container.StartAsync(token); return new(container); }
-            catch { await container.DisposeAsync(); throw; }
+
+            try
+            {
+                await container.StartAsync(token);
+                return new(container);
+            }
+            catch
+            {
+                await container.DisposeAsync();
+                throw;
+            }
         }
 
-        internal StreamSystemConfig Configuration(string username = "relayer") => new()
+        internal StreamSystemConfig Configuration(string username = "relayer")
         {
-            UserName = username, Password = username,
-            Endpoints = [new DnsEndPoint(container.Hostname, container.GetMappedPublicPort(5552))],
-            RpcTimeOut = TimeSpan.FromSeconds(5),
-        };
+            return new()
+            {
+                UserName = username,
+                Password = username,
+                Endpoints = [new DnsEndPoint(container.Hostname, container.GetMappedPublicPort(5552))],
+                RpcTimeOut = TimeSpan.FromSeconds(5),
+            };
+        }
 
         internal async Task<string> CommandAsync(string[] command, CancellationToken token)
         {
             var result = await container.ExecAsync(command, token);
-            if (result.ExitCode != 0) throw new InvalidOperationException(result.Stderr + result.Stdout);
+
+            if (result.ExitCode != 0)
+            {
+                throw new InvalidOperationException(result.Stderr + result.Stdout);
+            }
+
             return result.Stdout;
         }
 
-        public ValueTask DisposeAsync() => container.DisposeAsync();
+        public ValueTask DisposeAsync()
+        {
+            return container.DisposeAsync();
+        }
     }
 }

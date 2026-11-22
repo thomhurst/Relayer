@@ -9,8 +9,10 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 
 public sealed class TopologyCommandTests
 {
-    private static string[] Command(Type factory, params string[] options) =>
-        ["topology", "export", "--assembly", typeof(TopologyCommandTests).Assembly.Location, "--type", factory.FullName!, .. options];
+    private static string[] Command(Type factory, params string[] options)
+    {
+        return ["topology", "export", "--assembly", typeof(TopologyCommandTests).Assembly.Location, "--type", factory.FullName!, .. options];
+    }
 
     [Test]
     [Arguments("json")]
@@ -19,12 +21,25 @@ public sealed class TopologyCommandTests
     public async Task Service_bus_command_preserves_exporter_output_and_is_deterministic(string format)
     {
         var args = Command(typeof(ServiceBusDeclarations), "--format", format);
-        if (format != "json") args = [.. args, "--transport", "events"];
+
+        if (format != "json")
+        {
+            args = [.. args, "--transport", "events"];
+        }
+
         using var provider = (ServiceProvider)ServiceBusDeclarations.CreateTopologyServices();
         using var expected = new MemoryStream();
-        if (format == "json") provider.GetRequiredService<ITopology>().ExportJson(expected);
-        else provider.GetRequiredService<ServiceBusTopologyExporter>().Export("events", expected,
+
+        if (format == "json")
+        {
+            provider.GetRequiredService<ITopology>().ExportJson(expected);
+        }
+        else
+        {
+            provider.GetRequiredService<ServiceBusTopologyExporter>().Export("events", expected,
             format == "bicep" ? ServiceBusTopologyFormat.Bicep : ServiceBusTopologyFormat.Terraform);
+        }
+
         for (var i = 0; i < 2; i++)
         {
             using var output = new StringWriter();
@@ -42,7 +57,11 @@ public sealed class TopologyCommandTests
         using var provider = (ServiceProvider)AwsDeclarations.CreateTopologyServices();
         using var expected = new MemoryStream();
         provider.GetRequiredService<ITopology>().ExportAmazonTerraform(provider, expected,
-            new() { AccountId = "123456789012", Region = "eu-west-1" });
+            new()
+            {
+                AccountId = "123456789012",
+                Region = "eu-west-1"
+            });
         using var output = new StringWriter();
         using var error = new StringWriter();
         var result = RelayerCommand.Run(Command(typeof(AwsDeclarations), "--format", "terraform", "--account-id", "123456789012", "--region", "eu-west-1"), output, error);
@@ -62,8 +81,12 @@ public sealed class TopologyCommandTests
             ["--format", "terraform", "--transport", "events", "--region", "eu-west-1", "--account-id", "123456789012"],
             ["--format", "json", "--unknown", "x"], ["--format", "--type"], ["--format", ""],
             ["--format", "json", "--assembly", "repeated.dll"]];
+
         foreach (var options in cases)
+        {
             await Failure(Command(typeof(ServiceBusDeclarations), options));
+        }
+
         await Failure(["topology", "export", "--format", "json"]);
     }
 
@@ -89,7 +112,12 @@ public sealed class TopologyCommandTests
     {
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true };
         start.ArgumentList.Add(typeof(RelayerCommand).Assembly.Location);
-        foreach (var arg in Command(typeof(ServiceBusDeclarations), "--format", "bicep", "--transport", "events")) start.ArgumentList.Add(arg);
+
+        foreach (var arg in Command(typeof(ServiceBusDeclarations), "--format", "bicep", "--transport", "events"))
+        {
+            start.ArgumentList.Add(arg);
+        }
+
         using var process = Process.Start(start)!;
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
@@ -106,14 +134,22 @@ public sealed class TopologyCommandTests
         await Assert.That(RelayerCommand.Run(args, output, error)).IsEqualTo(1);
         await Assert.That(output.ToString()).IsEqualTo("");
         await Assert.That(error.ToString().Length).IsGreaterThan(0);
-        if (message is not null) await Assert.That(error.ToString()).Contains(message);
+
+        if (message is not null)
+        {
+            await Assert.That(error.ToString()).Contains(message);
+        }
     }
 }
 
 // No factory starts a host or resolves a broker client. Invalid connection settings make accidental use fail.
 public static class ServiceBusDeclarations
 {
-    public static IServiceProvider CreateTopologyServices() => Create(false);
+    public static IServiceProvider CreateTopologyServices()
+    {
+        return Create(false);
+    }
+
     internal static ServiceProvider Create(bool invalid)
     {
         var services = new ServiceCollection();
@@ -121,13 +157,22 @@ public static class ServiceBusDeclarations
         {
             o.ConnectionString = "not a connection string";
             o.Queues.Add(new("orders"));
-            if (invalid) o.Queues.Add(new("orders"));
+
+            if (invalid)
+            {
+                o.Queues.Add(new("orders"));
+            }
+
             o.Topics.Add(new("order-events"));
-            o.Subscriptions.Add(new("order-events", "billing") { MaxDeliveryCount = 5 });
+            o.Subscriptions.Add(new("order-events", "billing")
+            {
+                MaxDeliveryCount = 5
+            });
         })));
         return services.BuildServiceProvider();
     }
 }
+
 public static class AwsDeclarations
 {
     public static IServiceProvider CreateTopologyServices()
@@ -138,32 +183,89 @@ public static class AwsDeclarations
             // Match the declared topology independently of the host's AWS region.
             o.Sns.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
             o.QueueTopology.Sqs.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
-            o.QueueTopology.Queues.Add(new() { QueueName = "orders" });
-            o.Topics.Add(new() { Name = "order-events" });
+            o.QueueTopology.Queues.Add(new()
+            {
+                QueueName = "orders"
+            });
+            o.Topics.Add(new()
+            {
+                Name = "order-events"
+            });
             o.Subscriptions.Add(new()
             {
-                TopicArn = "arn:aws:sns:eu-west-1:123456789012:order-events", Protocol = "sqs",
+                TopicArn = "arn:aws:sns:eu-west-1:123456789012:order-events",
+                Protocol = "sqs",
                 Endpoint = "arn:aws:sqs:eu-west-1:123456789012:orders",
-                Attributes = new() { ["RawMessageDelivery"] = "true" }
+                Attributes = new()
+                {
+                    ["RawMessageDelivery"] = "true"
+                }
             });
         })));
         return services.BuildServiceProvider();
     }
 }
-public static class InvalidDeclarations { public static IServiceProvider CreateTopologyServices() => ServiceBusDeclarations.Create(true); }
-public static class ThrowingDeclarations { public static IServiceProvider CreateTopologyServices() => throw new InvalidOperationException("factory failed"); }
-public static class MissingFactory { }
-public static class NullDeclarations { public static IServiceProvider CreateTopologyServices() => null!; }
-public static class EmptyDeclarations { public static IServiceProvider CreateTopologyServices() => new ServiceCollection().BuildServiceProvider(); }
 
-public static class WrongFactory { public static ServiceProvider CreateTopologyServices() => new ServiceCollection().BuildServiceProvider(); }
+public static class InvalidDeclarations
+{
+    public static IServiceProvider CreateTopologyServices()
+    {
+        return ServiceBusDeclarations.Create(true);
+    }
+}
+
+public static class ThrowingDeclarations
+{
+    public static IServiceProvider CreateTopologyServices()
+    {
+        throw new InvalidOperationException("factory failed");
+    }
+}
+
+public static class MissingFactory
+{
+}
+
+public static class NullDeclarations
+{
+    public static IServiceProvider CreateTopologyServices()
+    {
+        return null!;
+    }
+}
+
+public static class EmptyDeclarations
+{
+    public static IServiceProvider CreateTopologyServices()
+    {
+        return new ServiceCollection().BuildServiceProvider();
+    }
+}
+
+public static class WrongFactory
+{
+    public static ServiceProvider CreateTopologyServices()
+    {
+        return new ServiceCollection().BuildServiceProvider();
+    }
+}
+
 public static class DisposalFailureDeclarations
 {
-    public static IServiceProvider CreateTopologyServices() => new FailingProvider();
+    public static IServiceProvider CreateTopologyServices()
+    {
+        return new FailingProvider();
+    }
+
     private sealed class FailingProvider : IServiceProvider, IDisposable
     {
         private readonly IServiceProvider _inner = ServiceBusDeclarations.CreateTopologyServices();
-        public object? GetService(Type serviceType) => _inner.GetService(serviceType);
+
+        public object? GetService(Type serviceType)
+        {
+            return _inner.GetService(serviceType);
+        }
+
         public void Dispose()
         {
             ((IDisposable)_inner).Dispose();

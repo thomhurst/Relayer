@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -13,10 +13,16 @@ public class PostgreSqlEnqueueBufferBenchmarks
     private OutboxTenantBinding? _tenant;
 
     [Params(false, true)]
-    public bool BoundTenant { get; set; }
+    public bool BoundTenant
+    {
+        get; set;
+    }
 
     [Params(256, 4096)]
-    public int BodySize { get; set; }
+    public int BodySize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -27,6 +33,7 @@ public class PostgreSqlEnqueueBufferBenchmarks
             new("ce_type", new WireString("benchmark.order;v=1")),
             new("traceparent", new WireString("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"))
         ];
+
         if (BoundTenant)
         {
             var context = new TenantContextPool(1).Rent();
@@ -34,6 +41,7 @@ public class PostgreSqlEnqueueBufferBenchmarks
             _tenant = new(context, "tenant-42");
             headers = [.. headers, new(TenantContext.HeaderName, context.Id)];
         }
+
         _record = new(Guid.CreateVersion7(), "events", "benchmark.order;v=1",
             new OutgoingMessage("orders", new byte[BodySize], headers, new WireString("customer-42"u8.ToArray())), DateTimeOffset.UtcNow);
         CopyAndRelease(); // Warm the reusable byte buffer.

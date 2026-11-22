@@ -12,12 +12,15 @@ internal sealed class MySqlOutboxBatch(string insertSql) : IDisposable
     private readonly List<Row> _rows = [];
     private int _count;
 
-    internal static string CreateInsertSql(string table) => $"""
+    internal static string CreateInsertSql(string table)
+    {
+        return $"""
         INSERT INTO {table}
             (id, lane, ordering_key, transport, destination, message_type, headers, body, created_at, deliver_at, tenant_id)
         VALUES (@id, CAST(@lane AS SIGNED), CONVERT(@key USING utf8mb4), @transport, @destination, @type,
             @headers, @body, @created, @delivery, @tenant)
         """;
+    }
 
     internal void Prepare(MySqlTransaction transaction)
     {
@@ -27,7 +30,11 @@ internal sealed class MySqlOutboxBatch(string insertSql) : IDisposable
 
     internal void Add(BufferedOutboxMessage message)
     {
-        if (_count == _rows.Count) _rows.Add(new(insertSql));
+        if (_count == _rows.Count)
+        {
+            _rows.Add(new(insertSql));
+        }
+
         var row = _rows[_count++];
         row.Set(message);
         _batch.BatchCommands.Add(row.Command);
@@ -35,28 +42,48 @@ internal sealed class MySqlOutboxBatch(string insertSql) : IDisposable
 
     internal void Execute()
     {
-        try { _batch.ExecuteNonQuery(); }
-        finally { Clear(); }
+        try
+        {
+            _batch.ExecuteNonQuery();
+        }
+        finally
+        {
+            Clear();
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ExecuteAsync(CancellationToken cancellationToken)
     {
-        try { await _batch.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
-        finally { Clear(); }
+        try
+        {
+            await _batch.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Clear();
+        }
     }
 
     private void Clear()
     {
-        for (var i = 0; i < _count; i++) _rows[i].Clear();
+        for (var i = 0; i < _count; i++)
+        {
+            _rows[i].Clear();
+        }
+
         _count = 0;
         _batch.BatchCommands.Clear();
         _batch.Transaction = null;
         _batch.Connection = null;
     }
 
-    public void Dispose() { Clear(); _batch.Dispose(); }
+    public void Dispose()
+    {
+        Clear();
+        _batch.Dispose();
+    }
 
     internal sealed class Row
     {
@@ -69,7 +96,11 @@ internal sealed class MySqlOutboxBatch(string insertSql) : IDisposable
         private readonly MemoryParameter _body;
         private readonly MemoryParameter _headers;
         private readonly MemoryParameter _key;
-        internal MySqlBatchCommand Command { get; }
+
+        internal MySqlBatchCommand Command
+        {
+            get;
+        }
 
         internal Row(string sql)
         {
@@ -100,9 +131,19 @@ internal sealed class MySqlOutboxBatch(string insertSql) : IDisposable
         {
             row.Id.TryWriteBytes(_id, bigEndian: true, out _);
             Timestamp(row.CreatedAt, _created);
-            if (row.DeliverAt is { } delivery) Timestamp(delivery, _delivery);
+
+            if (row.DeliverAt is { } delivery)
+            {
+                Timestamp(delivery, _delivery);
+            }
+
             Command.Parameters["delivery"].Value = row.DeliverAt.HasValue ? _deliveryView : DBNull.Value;
-            if (row.Lane is { } lane) lane.TryFormat(_lane, out _, "D10", CultureInfo.InvariantCulture);
+
+            if (row.Lane is { } lane)
+            {
+                lane.TryFormat(_lane, out _, "D10", CultureInfo.InvariantCulture);
+            }
+
             Command.Parameters["lane"].Value = row.Lane.HasValue ? _laneView : DBNull.Value;
             Command.Parameters["transport"].Value = row.Transport;
             Command.Parameters["destination"].Value = row.Destination;
@@ -124,23 +165,35 @@ internal sealed class MySqlOutboxBatch(string insertSql) : IDisposable
             _key.Release();
         }
 
-        private static void Timestamp(DateTimeOffset value, Span<char> buffer) =>
+        private static void Timestamp(DateTimeOffset value, Span<char> buffer)
+        {
             value.UtcDateTime.TryFormat(buffer, out _, "yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture);
+        }
 
         // MySqlParameter serializes MemoryStream through TryGetBuffer. A reference-valued
         // slice avoids boxing ReadOnlyMemory<byte> when payload lengths change, without copying.
         private sealed class MemoryParameter(MySqlParameter parameter) : MemoryStream
         {
             private ReadOnlyMemory<byte> _memory;
+
             public override long Length => _memory.Length;
-            public override bool TryGetBuffer(out ArraySegment<byte> buffer) => MemoryMarshal.TryGetArray(_memory, out buffer);
-            public override byte[] ToArray() => _memory.ToArray();
+
+            public override bool TryGetBuffer(out ArraySegment<byte> buffer)
+            {
+                return MemoryMarshal.TryGetArray(_memory, out buffer);
+            }
+
+            public override byte[] ToArray()
+            {
+                return _memory.ToArray();
+            }
 
             internal void Set(ReadOnlyMemory<byte>? memory)
             {
                 _memory = memory.GetValueOrDefault();
                 parameter.Value = memory.HasValue ? this : DBNull.Value;
             }
+
             internal void Release()
             {
                 parameter.Value = DBNull.Value;

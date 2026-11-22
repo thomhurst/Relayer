@@ -30,11 +30,22 @@ public readonly struct DeadLetterInfo
     }
 
     /// <summary>The actionable failure reason.</summary>
-    public string Reason { get; }
+    public string Reason
+    {
+        get;
+    }
+
     /// <summary>Optional error detail.</summary>
-    public string? Description { get; }
+    public string? Description
+    {
+        get;
+    }
+
     /// <summary>Native header names and error metadata values.</summary>
-    public ReadOnlyMemory<KeyValuePair<string, WireString>> Headers { get; }
+    public ReadOnlyMemory<KeyValuePair<string, WireString>> Headers
+    {
+        get;
+    }
 }
 
 /// <summary>A core decision that the adapter maps to native settlement. The default value is unset and must never acknowledge a delivery.</summary>
@@ -50,16 +61,33 @@ public readonly struct Disposition
     }
 
     /// <summary>The native operation to perform.</summary>
-    public DispositionKind Kind { get; }
+    public DispositionKind Kind
+    {
+        get;
+    }
+
     /// <summary>Failure metadata to persist with native redelivery before releasing the delivery.</summary>
     /// <remarks>Adapters must preserve these headers through native redelivery, including when its delay is zero.</remarks>
-    public ReadOnlyMemory<KeyValuePair<string, WireString>> Headers { get; }
+    public ReadOnlyMemory<KeyValuePair<string, WireString>> Headers
+    {
+        get;
+    }
+
     /// <summary>The native redelivery delay, used only for Redeliver.</summary>
-    public TimeSpan Delay { get; }
+    public TimeSpan Delay
+    {
+        get;
+    }
+
     /// <summary>The error metadata, used only for DeadLetter.</summary>
-    public DeadLetterInfo DeadLetter { get; }
+    public DeadLetterInfo DeadLetter
+    {
+        get;
+    }
+
     /// <summary>Acknowledge the delivery after durable processing.</summary>
     public static Disposition Complete => new(DispositionKind.Complete);
+
     /// <summary>Do not settle again after a handler uses native settlement.</summary>
     public static Disposition SettledByHandler => new(DispositionKind.SettledByHandler);
 

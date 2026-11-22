@@ -6,7 +6,10 @@ internal static partial class SqlServerSendFailure
 {
     internal static bool IsRetryable(Func<Exception, bool>? classify, Exception error, ILogger logger)
     {
-        try { return classify?.Invoke(error) == true; }
+        try
+        {
+            return classify?.Invoke(error) == true;
+        }
         catch (Exception classificationError)
         {
             ClassificationFailed(logger, classificationError);

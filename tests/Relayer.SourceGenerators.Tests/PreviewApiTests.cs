@@ -53,6 +53,7 @@ public class PreviewApiTests
         var type = compilation.GetTypeByMetadataName("Relayer.Outbox.PostgreSql.PostgreSqlOutboxServiceCollectionExtensions")!;
         var overloads = type.GetMembers(method).OfType<IMethodSymbol>().ToArray();
         await Assert.That(overloads.Length).IsEqualTo(2);
+
         foreach (var overload in overloads)
         {
             var attribute = overload.GetAttributes().Single(a => a.AttributeClass!.Name == "ExperimentalAttribute");

@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Outbox.EntityFrameworkCore;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -19,7 +19,10 @@ public class OutboxEnlistmentBenchmarks
     private OutboxRecord _record;
 
     [Params(256, 4096)]
-    public int BodySize { get; set; }
+    public int BodySize
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -47,7 +50,11 @@ public class OutboxEnlistmentBenchmarks
     [Benchmark]
     public async ValueTask<int> EnlistAndRelease()
     {
-        if (!_outbox.IsActive) throw new InvalidOperationException("No selected outbox context.");
+        if (!_outbox.IsActive)
+        {
+            throw new InvalidOperationException("No selected outbox context.");
+        }
+
         await _outbox.EnlistAsync(_record, default).ConfigureAwait(false);
         var row = _state.Rows[0];
         var length = row.Body.Length + row.Headers.Length;
@@ -72,13 +79,21 @@ public class SharedTransactionSendOrderBenchmarks
     private BufferedOutboxMessage[] _rows = null!;
 
     [Params(2, 32, 256)]
-    public int Count { get; set; }
+    public int Count
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
     {
         _rows = new BufferedOutboxMessage[Count];
-        for (var i = 0; i < Count; i++) _rows[i] = new();
+
+        for (var i = 0; i < Count; i++)
+        {
+            _rows[i] = new();
+        }
+
         OrderInterleavedRows();
     }
 
@@ -86,7 +101,11 @@ public class SharedTransactionSendOrderBenchmarks
     public long OrderInterleavedRows()
     {
         // Two contexts each append in send order; concatenating them groups even and odd positions.
-        for (var i = 0; i < Count; i++) _rows[i].EnqueueOrder = i < Count / 2 ? i * 2 : (i - Count / 2) * 2 + 1;
+        for (var i = 0; i < Count; i++)
+        {
+            _rows[i].EnqueueOrder = i < Count / 2 ? i * 2 : (i - Count / 2) * 2 + 1;
+        }
+
         EntityFrameworkCoreOutbox.SortSendOrder(_rows);
         return _rows[^1].EnqueueOrder;
     }

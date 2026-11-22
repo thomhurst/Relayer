@@ -11,20 +11,24 @@ public class OutboxHeaderCodecTests
         KeyValuePair<string, WireString>[] headers = [new("type", new("order.v1")), new(new string('é', 300), new(new byte[] { 255, 0, 254 })), new("empty", new(""))];
         var buffer = new ArrayBufferWriter<byte>(2048);
         KeyValuePair<string, WireString>[] entries = [];
+
         for (var i = 0; i < 100; i++)
         {
             buffer.Clear();
             OutboxHeaderCodec.Write(buffer, headers);
             OutboxHeaderCodec.Read(buffer.WrittenMemory, ref entries);
         }
+
         var decodedName = entries[1].Key;
         var before = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < 100; i++)
         {
             buffer.Clear();
             OutboxHeaderCodec.Write(buffer, headers);
             OutboxHeaderCodec.Read(buffer.WrittenMemory, ref entries);
         }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
         await Assert.That(entries[1].Key).IsSameReferenceAs(decodedName);

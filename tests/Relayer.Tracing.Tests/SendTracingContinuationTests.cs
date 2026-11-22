@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -21,29 +21,49 @@ public class SendTracingContinuationTests
         var completion = new TaskCompletionSource();
         var error = new InvalidOperationException("native failure");
         var logger = new ProbeLogger(local);
+
         ValueTask Native()
         {
             local.Value = "native";
             return suspend ? new(completion.Task) : ValueTask.FromException(error);
         }
-        var send = new SendTracing(tracing, new() { System = "test.native", Destination = "orders" },
+
+        var send = new SendTracing(tracing, new()
+        {
+            System = "test.native",
+            Destination = "orders"
+        },
             (_, _) => Native(), (_, _) => Native(), logger);
         OutgoingMessage[] messages = [new("orders", new byte[] { 1 })];
         var pending = batch ? send.SendBatchAsync(messages) : send.SendAsync(messages[0]);
         await Assert.That(local.Value).IsEqualTo("caller");
         await Assert.That(Activity.Current).IsSameReferenceAs(ambient);
+
         if (suspend)
         {
             await Task.Run(() =>
             {
                 local.Value = "completion";
                 completion.SetException(error);
-                if (local.Value != "completion") throw new InvalidOperationException("Completion context leaked.");
+
+                if (local.Value != "completion")
+                {
+                    throw new InvalidOperationException("Completion context leaked.");
+                }
             });
         }
+
         Exception? observed = null;
-        try { await pending; }
-        catch (Exception exception) { observed = exception; }
+
+        try
+        {
+            await pending;
+        }
+        catch (Exception exception)
+        {
+            observed = exception;
+        }
+
         await Assert.That(observed).IsSameReferenceAs(error);
         await Assert.That(logger.Count).IsEqualTo(1);
         await Assert.That(logger.Local).IsEqualTo("native");
@@ -59,7 +79,11 @@ public class SendTracingContinuationTests
     {
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
         var completion = new TaskCompletionSource();
-        var send = new SendTracing(tracing, new() { System = "test.native", Destination = "orders" },
+        var send = new SendTracing(tracing, new()
+        {
+            System = "test.native",
+            Destination = "orders"
+        },
             (_, _) => new(completion.Task), (_, _) => new(completion.Task));
         OutgoingMessage[] messages = [new("orders", new byte[] { 1 })];
         var first = batch ? send.SendBatchAsync(messages) : send.SendAsync(messages[0]);
@@ -85,17 +109,34 @@ public class SendTracingContinuationTests
         var logger = new ProbeLogger(new());
         using var cancellation = new CancellationTokenSource();
         var error = new OperationCanceledException(cancellation.Token);
-        var send = new SendTracing(tracing, new() { System = "test.native", Destination = "orders" },
+        var send = new SendTracing(tracing, new()
+        {
+            System = "test.native",
+            Destination = "orders"
+        },
             (_, _) => suspend ? new(completion.Task) : ValueTask.FromException(error),
             (_, _) => suspend ? new(completion.Task) : ValueTask.FromException(error), logger);
         OutgoingMessage[] messages = [new("orders", new byte[] { 1 })];
         var pending = batch ? send.SendBatchAsync(messages, cancellation.Token) : send.SendAsync(messages[0], cancellation.Token);
         cancellation.Cancel();
-        if (suspend) completion.SetException(error);
+
+        if (suspend)
+        {
+            completion.SetException(error);
+        }
+
         await Assert.That(pending.IsCanceled).IsTrue();
         Exception? observed = null;
-        try { await pending; }
-        catch (Exception exception) { observed = exception; }
+
+        try
+        {
+            await pending;
+        }
+        catch (Exception exception)
+        {
+            observed = exception;
+        }
+
         await Assert.That(observed).IsSameReferenceAs(error);
         await Assert.That(((OperationCanceledException)observed!).CancellationToken).IsEqualTo(cancellation.Token);
         await Assert.That(logger.Count).IsEqualTo(1);
@@ -108,7 +149,11 @@ public class SendTracingContinuationTests
     {
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
         var completion = new TaskCompletionSource();
-        var send = new SendTracing(tracing, new() { System = "test.native", Destination = "orders" },
+        var send = new SendTracing(tracing, new()
+        {
+            System = "test.native",
+            Destination = "orders"
+        },
             (_, _) => new(completion.Task), (_, _) => new(completion.Task));
         var caller = RegisterCaller(send, completion, batch);
         GC.Collect();
@@ -126,13 +171,19 @@ public class SendTracingContinuationTests
         var caller = new ConsumingCaller(pending);
         pending.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(caller.Complete);
         completion.SetResult();
-        if (!caller.Consumed) throw new InvalidOperationException("The caller continuation must run inline.");
+
+        if (!caller.Consumed)
+        {
+            throw new InvalidOperationException("The caller continuation must run inline.");
+        }
+
         return new(caller);
     }
 
     private sealed class ConsumingCaller(ValueTask pending)
     {
         internal bool Consumed;
+
         internal void Complete()
         {
             pending.GetAwaiter().GetResult();
@@ -145,8 +196,17 @@ public class SendTracingContinuationTests
         internal int Count;
         internal string? Local;
         internal Activity? Activity;
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {

@@ -1,4 +1,5 @@
 using Relayer.Pipeline;
+
 namespace Relayer;
 
 /// <summary>Composes typed exception rules once, in registration order, for a consumer's failure classifier.</summary>
@@ -16,7 +17,12 @@ public sealed class FailureClassifierBuilder
         Func<TException, MessageContext, bool>? predicate = null) where TException : Exception
     {
         EnsureMutable();
-        if (!Enum.IsDefined(action)) throw new ArgumentOutOfRangeException(nameof(action));
+
+        if (!Enum.IsDefined(action))
+        {
+            throw new ArgumentOutOfRangeException(nameof(action));
+        }
+
         _rules.Add(new TypedRule<TException>(action, predicate));
         return this;
     }
@@ -32,7 +38,10 @@ public sealed class FailureClassifierBuilder
 
     private void EnsureMutable()
     {
-        if (_built) throw new InvalidOperationException("The failure classifier has already been built. Compose each classifier once at startup.");
+        if (_built)
+        {
+            throw new InvalidOperationException("The failure classifier has already been built. Compose each classifier once at startup.");
+        }
     }
 
     private abstract class Rule
@@ -56,8 +65,15 @@ public sealed class FailureClassifierBuilder
         {
             ArgumentNullException.ThrowIfNull(exception);
             ArgumentNullException.ThrowIfNull(context);
+
             foreach (var rule in rules)
-                if (rule.TryClassify(exception, context, out var action)) return action;
+            {
+                if (rule.TryClassify(exception, context, out var action))
+                {
+                    return action;
+                }
+            }
+
             return fallback.Classify(exception, context);
         }
     }

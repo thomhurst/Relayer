@@ -6,5 +6,8 @@ namespace Relayer;
 public sealed class GenerateMessageTypesAttribute(string methodName) : Attribute
 {
     /// <summary>The public extension method name, in the Relayer namespace.</summary>
-    public string MethodName { get; } = methodName;
+    public string MethodName
+    {
+        get;
+    } = methodName;
 }

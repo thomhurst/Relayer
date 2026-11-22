@@ -40,12 +40,27 @@ public class ConsumerHostedServiceTests
 
     private sealed class BlockingStartService() : ConsumerHostedService("test")
     {
-        public TaskCompletionSource<CancellationToken> Starting { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public int Stops { get; private set; }
+        public TaskCompletionSource<CancellationToken> Starting
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int Stops
+        {
+            get; private set;
+        }
 
         protected override bool AutoStartConsumers => false;
-        protected override Task ComposeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        protected override Task ComposeAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
 
         protected override Task StartConsumersAsync(CancellationToken cancellationToken)
         {

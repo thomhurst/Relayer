@@ -9,12 +9,34 @@ namespace Relayer.Benchmarks;
 public class ConcurrentReceiveBenchmarks
 {
     private ConcurrentReceiveFixture _fixture = null!;
-    [GlobalSetup] public void Setup() => _fixture = new();
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _fixture = new();
+    }
+
     [Benchmark(Baseline = true, OperationsPerInvoke = ConcurrentReceiveFixture.Count)]
-    public long DirectScoped() => _fixture.Run(ConcurrentReceiveFixture.Mode.Scoped);
+    public long DirectScoped()
+    {
+        return _fixture.Run(ConcurrentReceiveFixture.Mode.Scoped);
+    }
+
     [Benchmark(OperationsPerInvoke = ConcurrentReceiveFixture.Count)]
-    public long DirectConsumer() => _fixture.Run(ConcurrentReceiveFixture.Mode.Consumer);
+    public long DirectConsumer()
+    {
+        return _fixture.Run(ConcurrentReceiveFixture.Mode.Consumer);
+    }
+
     [Benchmark(OperationsPerInvoke = ConcurrentReceiveFixture.Count)]
-    public long NativeReceive() => _fixture.Run(ConcurrentReceiveFixture.Mode.Receive);
-    [GlobalCleanup] public void Cleanup() => _fixture.Dispose();
+    public long NativeReceive()
+    {
+        return _fixture.Run(ConcurrentReceiveFixture.Mode.Receive);
+    }
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        _fixture.Dispose();
+    }
 }

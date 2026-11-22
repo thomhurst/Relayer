@@ -1,8 +1,8 @@
-using Relayer.Transports;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
@@ -24,13 +24,19 @@ public class OutboxTenantBindingTests
         var record = new OutboxRecord(Guid.CreateVersion7(), "events", "probe;v=1",
             new OutgoingMessage("orders", new byte[] { 1 }, new[] { header }), DateTimeOffset.UtcNow);
         await Assert.That(binding.Bind(record).TenantId).IsEqualTo("ténant");
-        await Assert.That(binding.Bind(record with { TenantId = "ténant" }).TenantId).IsEqualTo("ténant");
+        await Assert.That(binding.Bind(record with
+        {
+            TenantId = "ténant"
+        }).TenantId).IsEqualTo("ténant");
         await Assert.That(() => binding.Bind(record with { TenantId = "other" })).Throws<InvalidOperationException>();
         await Assert.That(() => binding.Bind(record with { Message = new("orders", new byte[] { 1 }) })).Throws<InvalidOperationException>();
         await Assert.That(() => binding.Bind(record with { Message = new("orders", new byte[] { 1 }, new[] { header, header }) }))
             .Throws<InvalidOperationException>();
-        await Assert.That(() => binding.Bind(record with { Message = new("orders", new byte[] { 1 },
-            new[] { new KeyValuePair<string, WireString>(TenantContext.HeaderName, new("other")) }) }))
+        await Assert.That(() => binding.Bind(record with
+        {
+            Message = new("orders", new byte[] { 1 },
+            new[] { new KeyValuePair<string, WireString>(TenantContext.HeaderName, new("other")) })
+        }))
             .Throws<InvalidOperationException>();
         tenant.Id = new("other");
         await Assert.That(() => binding.Bind(record)).Throws<InvalidOperationException>();
@@ -44,15 +50,29 @@ public class OutboxTenantBindingTests
     {
         var services = new ServiceCollection();
         services.AddRelayerTenancy();
-        if (ef) services.AddRelayerEntityFrameworkCoreOutbox();
-        else services.AddRelayerPostgreSqlOutbox();
+
+        if (ef)
+        {
+            services.AddRelayerEntityFrameworkCoreOutbox();
+        }
+        else
+        {
+            services.AddRelayerPostgreSqlOutbox();
+        }
+
         await using var provider = services.BuildServiceProvider();
         await using var scope = provider.CreateAsyncScope();
         await Assert.That(() =>
         {
-            if (ef) new DbContextOptionsBuilder().UseNpgsql("Host=localhost")
-                .AddRelayerOutbox(scope.ServiceProvider);
-            else scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+            if (ef)
+            {
+                new DbContextOptionsBuilder().UseNpgsql("Host=localhost")
+                    .AddRelayerOutbox(scope.ServiceProvider);
+            }
+            else
+            {
+                scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+            }
         }).Throws<InvalidOperationException>().WithMessageContaining("TenantBinding");
     }
 

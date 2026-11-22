@@ -15,16 +15,31 @@ public class SendRetentionTests
         var sink = new Sink();
         var route = Route(sink);
         var pending = new ValueTask[256];
-        for (var i = 0; i < pending.Length; i++) pending[i] = route.SendAsync(i + 1, null, null, default, null);
+
+        for (var i = 0; i < pending.Length; i++)
+        {
+            pending[i] = route.SendAsync(i + 1, null, null, default, null);
+        }
+
         await Assert.That(Stored(route).Count).IsEqualTo(0);
         await Assert.That(sink.Messages.Select(message => message.Body.Length).Distinct().Count()).IsEqualTo(256);
         sink.Completion.SetResult();
         // Native completion must not return an operation before the caller consumes its ValueTask.
         await Assert.That(Stored(route).Count).IsEqualTo(0);
-        foreach (var send in pending) await send;
+
+        foreach (var send in pending)
+        {
+            await send;
+        }
+
         await Assert.That(Stored(route).Count).IsEqualTo(64);
         sink.Messages.Clear();
-        for (var i = 0; i < 256; i++) await route.SendAsync(1, null, null, default, null);
+
+        for (var i = 0; i < 256; i++)
+        {
+            await route.SendAsync(1, null, null, default, null);
+        }
+
         await Assert.That(Stored(route).Count).IsEqualTo(64);
     }
 
@@ -41,9 +56,25 @@ public class SendRetentionTests
         var route = Route(sink, storage == "key" ? new LargeKey() : null);
         Action<SendOptions>? configure = storage switch
         {
-            "headers" => options => { for (var i = 0; i < 100; i++) options.Headers.Add(i.ToString(), "v"); },
+            "headers" => (options =>
+            {
+                for (var i = 0; i < 100; i++)
+                {
+                    options.Headers.Add(i.ToString(), "v");
+                }
+            }),
+
             "options" => options => options.Headers.EnsureCapacity(1000),
-            "callbacks" => options => { for (var i = 0; i < 32; i++) options.ConfigureNative<object>(static _ => { }); },
+            "callbacks" => (options =>
+            {
+                for (var i = 0; i < 32; i++)
+                {
+                    options.ConfigureNative<object>(static _ =>
+                    {
+                    });
+                }
+            }),
+
             _ => null,
         };
         // Exercise retained UTF-8 envelope values, not caller-owned header strings.
@@ -92,25 +123,42 @@ public class SendRetentionTests
         var pool = new SenderPool(null!);
         pool.Enable();
         var rented = Enumerable.Range(0, 256).Select(_ => pool.Rent(null, new TenantContext(null!))).ToArray();
-        foreach (var sender in rented) sender.EndAttempt();
+
+        foreach (var sender in rented)
+        {
+            sender.EndAttempt();
+        }
+
         var reused = Enumerable.Range(0, 256).Select(_ => pool.Rent(null)).ToArray();
         await Assert.That(reused.Count(sender => rented.Contains(sender))).IsEqualTo(64);
         await Assert.That(reused.All(sender => sender.Tenant is null && sender.Outbox is null && sender.AttemptBuffer is null)).IsTrue();
-        foreach (var sender in reused) sender.EndAttempt();
+
+        foreach (var sender in reused)
+        {
+            sender.EndAttempt();
+        }
     }
 
     private static List<object> Stored(SendRoute<int> route)
     {
-        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        var pool = typeof(SendRoute<int>).GetField("_operations", flags)!.GetValue(route)!;
-        var page = pool.GetType().GetField("_first", flags)!.GetValue(pool)!;
-        var slots = (object?[])page.GetType().GetField("Slots", flags)!.GetValue(page)!;
+        const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var pool = typeof(SendRoute<int>).GetField("_operations", Flags)!.GetValue(route)!;
+        var page = pool.GetType().GetField("_first", Flags)!.GetValue(pool)!;
+        var slots = (object?[])page.GetType().GetField("Slots", Flags)!.GetValue(page)!;
         return slots.Where(item => item is not null).Cast<object>().ToList();
     }
 
-    private static SendRoute<int> Route(Sink sink, IOrderingKeySelector<int>? key = null, string source = "/tests") =>
-        new(sink, "orders", new("test.retention", 1), new() { Source = source }, key, new SizedSerializer(),
-            static context => ((ISendOperation)context).DispatchAsync(), new() { OrderedByKey = true });
+    private static SendRoute<int> Route(Sink sink, IOrderingKeySelector<int>? key = null, string source = "/tests")
+    {
+        return new(sink, "orders", new("test.retention", 1), new()
+        {
+            Source = source
+        }, key, new SizedSerializer(),
+                    static context => ((ISendOperation)context).DispatchAsync(), new()
+                    {
+                        OrderedByKey = true
+                    });
+    }
 
     private sealed class LargeKey : IOrderingKeySelector<int>
     {
@@ -125,30 +173,61 @@ public class SendRetentionTests
     private sealed class SizedSerializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
         {
             var size = (int)(object)message!;
             destination.GetSpan(size).Slice(0, size).Clear();
             destination.Advance(size);
         }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private sealed class Sink : ITransport
     {
         public TaskCompletionSource Completion = new();
         public readonly List<OutgoingMessage> Messages = [];
+
         public string Name => "sink";
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Messages.Add(message);
             return new(Completion.Task);
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

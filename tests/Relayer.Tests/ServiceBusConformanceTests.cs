@@ -1,6 +1,6 @@
+using System.Diagnostics;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
-using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Relayer.AzureServiceBus;
 using Relayer.Testing;
@@ -20,8 +20,12 @@ public sealed class ServiceBusConformanceTests
         await using var client = new ServiceBusClient(broker.ConnectionString);
         var admin = new ServiceBusAdministrationClient(broker.AdministrationConnectionString);
         var options = new ServiceBusTransportOptions { Client = client };
-        options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1),
-            MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
+        options.Queues.Add(new(queue)
+        {
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
+        });
         await using var transport = new ServiceBusSendTransport("reprovision", client, false, options,
             [queue], TopologyMode.Provision, admin);
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
@@ -56,17 +60,23 @@ public sealed class ServiceBusConformanceTests
         var queues = new TransportConformanceSuite<ProcessMessageEventArgs, ServiceBusMessageBinding>(
             (tracing, cancellation) => ServiceBusConformanceFixture<ProcessMessageEventArgs>.CreateAsync(broker, tracing, false, destination, cancellation),
             TimeSpan.FromMinutes(2));
+
         foreach (var scenario in destinations.Keys)
         {
             destination = destinations[scenario];
             var result = await queues.RunAsync(scenario, token);
+
             if (scenario == TransportConformanceCase.RedeliveryDelay)
             {
                 await Assert.That(result.Skipped).IsTrue();
                 await Assert.That(result.SkipReason).IsEqualTo("No positive native redelivery delay.");
             }
-            else await Assert.That(result.Skipped).IsFalse();
+            else
+            {
+                await Assert.That(result.Skipped).IsFalse();
+            }
         }
+
         var sessions = new TransportConformanceSuite<ProcessSessionMessageEventArgs, ServiceBusSessionMessageBinding>(
             (tracing, cancellation) => ServiceBusConformanceFixture<ProcessSessionMessageEventArgs>.CreateAsync(broker, tracing, true, sessionDestination, cancellation),
             TimeSpan.FromMinutes(2));
@@ -81,6 +91,7 @@ public sealed class ServiceBusConformanceTests
         var destination = "conformance-shutdown-" + Guid.NewGuid().ToString("N");
         await using var broker = await ServiceBusReceiveBroker.StartAsync(
             sessions ? [] : [destination], sessions ? [destination] : []);
+
         if (sessions)
         {
             var suite = new TransportConformanceSuite<ProcessSessionMessageEventArgs, ServiceBusSessionMessageBinding>(
@@ -108,17 +119,37 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
     private readonly ConsumerDefinition<ServiceBusConsumerOptions> _declaration;
     private readonly bool _sessions;
     private readonly ActivityListener _nativeInstrumentation;
+
     public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(5);
-    public bool IsExpectedOutageFailure(Exception error) => error is ServiceBusException { IsTransient: true };
+
+    public bool IsExpectedOutageFailure(Exception error)
+    {
+        return error is ServiceBusException { IsTransient: true };
+    }
     private readonly ILoggerFactory _logs;
     private readonly ServiceBusShutdownEvents _events;
     private bool _verifyShutdown;
-    public ConformanceLogCapture Logs { get; } = new();
-    public string Destination { get; }
+
+    public ConformanceLogCapture Logs
+    {
+        get;
+    } = new();
+
+    public string Destination
+    {
+        get;
+    }
+
     public ITransport Transport => _transport;
+
     public string MessagingSystem => "servicebus";
+
     public string SettlementOperation => "complete";
-    public HeaderNames HeaderNames { get; } = new("cloudEvents:");
+
+    public HeaderNames HeaderNames
+    {
+        get;
+    } = new("cloudEvents:");
 
     private ServiceBusConformanceFixture(ServiceBusReceiveBroker broker, MessageTracing tracing, bool sessions, string destination)
     {
@@ -136,13 +167,30 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
         _client = new(broker.ConnectionString, new ServiceBusClientOptions { Identifier = Destination });
         _admin = new(broker.AdministrationConnectionString);
         var options = new ServiceBusConsumerOptions();
-        if (sessions) options.SessionProcessorOptions = new() { AutoCompleteMessages = false, MaxConcurrentSessions = 1 };
+
+        if (sessions)
+        {
+            options.SessionProcessorOptions = new()
+            {
+                AutoCompleteMessages = false,
+                MaxConcurrentSessions = 1
+            };
+        }
+
         _declaration = new(Destination, options, [], 1, 1, TimeSpan.FromMilliseconds(100));
         var native = new ServiceBusTransportOptions { Client = _client };
-        native.Queues.Add(new(Destination) { RequiresSession = sessions, DefaultMessageTimeToLive = TimeSpan.FromHours(1) });
+        native.Queues.Add(new(Destination)
+        {
+            RequiresSession = sessions,
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1)
+        });
         _transport = new("conformance", _client, true, native, [Destination], TopologyMode.Provision, _admin, tracing, _logs,
             consumers: [_declaration]);
-        _settlement = new(tracing, new() { System = "servicebus", Destination = Destination });
+        _settlement = new(tracing, new()
+        {
+            System = "servicebus",
+            Destination = Destination
+        });
     }
 
     internal static ValueTask<ITransportConformanceFixture<TIncoming>> CreateAsync(ServiceBusReceiveBroker broker,
@@ -170,9 +218,11 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
         }
     }
 
-    public ValueTask SettleAsync(TIncoming incoming, Disposition disposition, CancellationToken cancellationToken) =>
-        _sessions ? _settlement.SettleAsync((ProcessSessionMessageEventArgs)(object)incoming!, disposition, cancellationToken)
-            : _settlement.SettleAsync((ProcessMessageEventArgs)(object)incoming!, disposition, cancellationToken);
+    public ValueTask SettleAsync(TIncoming incoming, Disposition disposition, CancellationToken cancellationToken)
+    {
+        return _sessions ? _settlement.SettleAsync((ProcessSessionMessageEventArgs)(object)incoming!, disposition, cancellationToken)
+                    : _settlement.SettleAsync((ProcessMessageEventArgs)(object)incoming!, disposition, cancellationToken);
+    }
 
     public async ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken)
     {
@@ -186,8 +236,16 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
         return result;
     }
 
-    public Task DisconnectAsync(CancellationToken cancellationToken) => _broker.DisconnectAsync(cancellationToken);
-    public Task ReconnectAsync(CancellationToken cancellationToken) => _broker.ReconnectAsync(cancellationToken);
+    public Task DisconnectAsync(CancellationToken cancellationToken)
+    {
+        return _broker.DisconnectAsync(cancellationToken);
+    }
+
+    public Task ReconnectAsync(CancellationToken cancellationToken)
+    {
+        return _broker.ReconnectAsync(cancellationToken);
+    }
+
     public ValueTask VerifyShutdownAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -199,13 +257,21 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
 
     public async ValueTask DisposeAsync()
     {
-        try { await _transport.DisposeAsync(); await _admin.DeleteQueueAsync(Destination); }
+        try
+        {
+            await _transport.DisposeAsync();
+            await _admin.DeleteQueueAsync(Destination);
+        }
         finally
         {
             _nativeInstrumentation.Dispose();
             _events.Dispose();
             _logs.Dispose();
-            if (_verifyShutdown) _events.AssertClean(requireClosure: true);
+
+            if (_verifyShutdown)
+            {
+                _events.AssertClean(requireClosure: true);
+            }
         }
     }
 }

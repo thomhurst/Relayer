@@ -19,10 +19,18 @@ public class AsyncApiTests
         using var provider = Create();
         var topology = provider.GetRequiredService<ITopology>();
         using var output = new MemoryStream();
-        topology.ExportAsyncApi(output, new() { Title = "Orders", Version = "1.2.3" });
+        topology.ExportAsyncApi(output, new()
+        {
+            Title = "Orders",
+            Version = "1.2.3"
+        });
         using var document = JsonDocument.Parse(output.ToArray());
+
         if (Environment.GetEnvironmentVariable("RELAYER_ASYNCAPI_TEST_OUTPUT") is { } path)
+        {
             File.WriteAllBytes(path, output.ToArray());
+        }
+
         var root = document.RootElement;
         await Assert.That(root.GetProperty("asyncapi").GetString()).IsEqualTo("3.0.0");
         await Assert.That(root.GetProperty("info").GetProperty("title").GetString()).IsEqualTo("Orders");
@@ -91,22 +99,32 @@ public class AsyncApiTests
         using var second = Create();
         var expected = Export(first);
         var culture = CultureInfo.CurrentCulture;
+
         try
         {
             CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("ar-SA");
             await Assert.That(Export(first)).IsEqualTo(expected);
             await Assert.That(Export(second)).IsEqualTo(expected);
         }
-        finally { CultureInfo.CurrentCulture = culture; }
+        finally
+        {
+            CultureInfo.CurrentCulture = culture;
+        }
     }
 
     [Test]
     public async Task Empty_topology_exports_without_json_metadata()
     {
-        using var provider = new ServiceCollection().AddRelayer(_ => { }).BuildServiceProvider();
+        using var provider = new ServiceCollection().AddRelayer(_ =>
+        {
+        }).BuildServiceProvider();
         var json = Export(provider);
+
         if (Environment.GetEnvironmentVariable("RELAYER_ASYNCAPI_TEST_OUTPUT") is { } path)
+        {
             File.WriteAllText(Path.Combine(Path.GetDirectoryName(path)!, "empty.json"), json);
+        }
+
         using var document = JsonDocument.Parse(json);
         await Assert.That(document.RootElement.GetProperty("channels").EnumerateObject().Count()).IsEqualTo(0);
         await Assert.That(document.RootElement.GetProperty("components").GetProperty("messages").EnumerateObject().Count()).IsEqualTo(0);
@@ -118,7 +136,11 @@ public class AsyncApiTests
         using var provider = new ServiceCollection().AddRelayer(builder => builder.Infrastructure().MessageTypes.Add<ExportOrder>("order")).BuildServiceProvider();
         using var output = new MemoryStream();
         var failure = await Assert.That(() => provider.GetRequiredService<ITopology>().ExportAsyncApi(output,
-            new() { Title = "Orders", Version = "1" })).Throws<InvalidOperationException>();
+            new()
+            {
+                Title = "Orders",
+                Version = "1"
+            })).Throws<InvalidOperationException>();
         await Assert.That(failure!.Message).Contains("source-generated JSON metadata");
         await Assert.That(output.Length).IsEqualTo(0);
     }
@@ -142,7 +164,11 @@ public class AsyncApiTests
                 transport => transport.Send<ExportOrder>("orders"))).BuildServiceProvider();
         using var output = new MemoryStream();
         var failure = await Assert.That(() => provider.GetRequiredService<ITopology>().ExportAsyncApi(output,
-            new() { Title = "Orders", Version = "1" })).Throws<InvalidOperationException>();
+            new()
+            {
+                Title = "Orders",
+                Version = "1"
+            })).Throws<InvalidOperationException>();
         await Assert.That(failure!.Message).Contains("stable message identity");
         await Assert.That(output.Length).IsEqualTo(0);
     }
@@ -166,7 +192,11 @@ public class AsyncApiTests
     private static string Export(ServiceProvider provider)
     {
         using var output = new MemoryStream();
-        provider.GetRequiredService<ITopology>().ExportAsyncApi(output, new() { Title = "Orders", Version = "1.2.3" });
+        provider.GetRequiredService<ITopology>().ExportAsyncApi(output, new()
+        {
+            Title = "Orders",
+            Version = "1.2.3"
+        });
         return Encoding.UTF8.GetString(output.ToArray());
     }
 
@@ -190,15 +220,25 @@ public class AsyncApiTests
 }
 
 public sealed record ExportOrder(string CustomerName, int[] Items);
+
 public sealed record ExportOldOrder(string Name);
+
 public sealed record ExportTree(string Name, ExportTree? Child);
+
 public sealed class ExportHandler : IHandler<ExportOrder>
 {
-    public ValueTask HandleAsync(ExportOrder message, MessageContext context, CancellationToken cancellationToken) => default;
+    public ValueTask HandleAsync(ExportOrder message, MessageContext context, CancellationToken cancellationToken)
+    {
+        return default;
+    }
 }
+
 public sealed class ExportOtherHandler : IHandler<ExportOrder>
 {
-    public ValueTask HandleAsync(ExportOrder message, MessageContext context, CancellationToken cancellationToken) => default;
+    public ValueTask HandleAsync(ExportOrder message, MessageContext context, CancellationToken cancellationToken)
+    {
+        return default;
+    }
 }
 
 [JsonSerializable(typeof(ExportOrder))]

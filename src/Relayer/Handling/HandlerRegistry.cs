@@ -11,7 +11,10 @@ public sealed class HandlerRegistry
     private bool _isFrozen;
 
     /// <summary>Creates an empty registry.</summary>
-    public HandlerRegistry() => _view = _items.AsReadOnly();
+    public HandlerRegistry()
+    {
+        _view = _items.AsReadOnly();
+    }
 
     /// <summary>The registered single-message and batch descriptors, in registration order.</summary>
     public IReadOnlyList<HandlerDescriptor> Descriptors => _view;
@@ -20,6 +23,7 @@ public sealed class HandlerRegistry
     public void Add(HandlerDescriptor descriptor)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
+
         if (_isFrozen)
         {
             throw new InvalidOperationException("Handlers cannot be registered after AddRelayer configuration completes.");
@@ -33,18 +37,27 @@ public sealed class HandlerRegistry
 
     /// <summary>Selects a single-message dispatcher at pipeline composition time.</summary>
     public HandlerDescriptor<TMessage> GetHandler<TMessage, THandler>() where THandler : IHandler<TMessage>
-        => (HandlerDescriptor<TMessage>)Get(typeof(THandler), typeof(TMessage), false);
+    {
+        return (HandlerDescriptor<TMessage>)Get(typeof(THandler), typeof(TMessage), false);
+    }
 
     /// <summary>Selects a batch dispatcher at pipeline composition time.</summary>
     public BatchHandlerDescriptor<TMessage> GetBatchHandler<TMessage, THandler>() where THandler : IBatchHandler<TMessage>
-        => (BatchHandlerDescriptor<TMessage>)Get(typeof(THandler), typeof(TMessage), true);
+    {
+        return (BatchHandlerDescriptor<TMessage>)Get(typeof(THandler), typeof(TMessage), true);
+    }
 
-    internal void Freeze() => _isFrozen = true;
+    internal void Freeze()
+    {
+        _isFrozen = true;
+    }
 
     private HandlerDescriptor Get(Type handler, Type message, bool isBatch)
-        => _descriptors.TryGetValue((handler, message, isBatch), out var descriptor)
-            ? descriptor
-            : throw new InvalidOperationException(
-                $"Handler '{handler}' for message '{message}' (batch: {isBatch}) is not registered. " +
-                "Call consumer.Handler<THandler>() inside its consumer configuration callback.");
+    {
+        return _descriptors.TryGetValue((handler, message, isBatch), out var descriptor)
+                    ? descriptor
+                    : throw new InvalidOperationException(
+                        $"Handler '{handler}' for message '{message}' (batch: {isBatch}) is not registered. " +
+                        "Call consumer.Handler<THandler>() inside its consumer configuration callback.");
+    }
 }

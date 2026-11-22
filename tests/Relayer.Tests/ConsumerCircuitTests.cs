@@ -1,4 +1,5 @@
 using Relayer.Pipeline;
+
 namespace Relayer.Tests;
 
 public class ConsumerCircuitTests
@@ -46,7 +47,12 @@ public class ConsumerCircuitTests
     {
         var time = new Clock();
         using var circuit = new ConsumerCircuit(.75, 4, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(5), time);
-        for (var i = 0; i < 3; i++) circuit.Complete(false, true);
+
+        for (var i = 0; i < 3; i++)
+        {
+            circuit.Complete(false, true);
+        }
+
         await Assert.That(circuit.Complete(false, false)).IsTrue();
         await Assert.That(circuit.State).IsEqualTo(1);
     }
@@ -57,12 +63,24 @@ public class ConsumerCircuitTests
         var time = new Clock();
         using var circuit = new ConsumerCircuit(1, 1000, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(5), time);
         var opened = 0;
-        Parallel.For(0, 1000, _ => { if (circuit.Complete(false, true)) Interlocked.Increment(ref opened); });
+        Parallel.For(0, 1000, _ =>
+        {
+            if (circuit.Complete(false, true))
+            {
+                Interlocked.Increment(ref opened);
+            }
+        });
         await Assert.That(opened).IsEqualTo(1);
         await Assert.That(circuit.State).IsEqualTo(1);
         time.Recovery.Fire();
         var admitted = 0;
-        Parallel.For(0, 1000, _ => { if (circuit.TryEnter(out var probe) && probe) Interlocked.Increment(ref admitted); });
+        Parallel.For(0, 1000, _ =>
+        {
+            if (circuit.TryEnter(out var probe) && probe)
+            {
+                Interlocked.Increment(ref admitted);
+            }
+        });
         await Assert.That(admitted).IsEqualTo(1);
         await Assert.That(circuit.State).IsEqualTo(2);
     }
@@ -71,9 +89,21 @@ public class ConsumerCircuitTests
     public async Task Closed_admission_and_outcomes_allocate_nothing_after_construction()
     {
         using var circuit = new ConsumerCircuit(1, 10, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(5), new Clock());
-        for (var i = 0; i < 10000; i++) { circuit.TryEnter(out var probe); circuit.Complete(probe, false); }
+
+        for (var i = 0; i < 10000; i++)
+        {
+            circuit.TryEnter(out var probe);
+            circuit.Complete(probe, false);
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 10000; i++) { circuit.TryEnter(out var probe); circuit.Complete(probe, false); }
+
+        for (var i = 0; i < 10000; i++)
+        {
+            circuit.TryEnter(out var probe);
+            circuit.Complete(probe, false);
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0);
     }
@@ -115,8 +145,11 @@ public class ConsumerCircuitTests
     internal sealed class Clock : TimeProvider
     {
         private readonly List<Timer> _timers = [];
+
         internal Timer Sampling => _timers[0];
+
         internal Timer Recovery => _timers[1];
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             var timer = new Timer(callback, state);
@@ -128,11 +161,36 @@ public class ConsumerCircuitTests
 
     internal sealed class Timer(TimerCallback callback, object? state) : ITimer
     {
-        internal TimeSpan Due { get; private set; }
-        internal bool Disposed { get; private set; }
-        internal void Fire() => callback(state);
-        public bool Change(TimeSpan dueTime, TimeSpan period) { Due = dueTime; return !Disposed; }
-        public void Dispose() => Disposed = true;
-        public ValueTask DisposeAsync() { Dispose(); return default; }
+        internal TimeSpan Due
+        {
+            get; private set;
+        }
+
+        internal bool Disposed
+        {
+            get; private set;
+        }
+
+        internal void Fire()
+        {
+            callback(state);
+        }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            Due = dueTime;
+            return !Disposed;
+        }
+
+        public void Dispose()
+        {
+            Disposed = true;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return default;
+        }
     }
 }

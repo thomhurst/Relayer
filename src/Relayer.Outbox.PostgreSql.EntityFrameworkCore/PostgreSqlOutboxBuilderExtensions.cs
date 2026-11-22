@@ -30,13 +30,21 @@ public static class PostgreSqlOutboxBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(dataSource);
         options ??= new();
+
         if (options.TenantBinding is not null)
+        {
             throw new ArgumentException("Configure tenant-bound outboxes in the authorized scoped native store factory instead.", nameof(options));
+        }
+
         var name = options.DispatchStoreName ?? "default";
         var writer = new EntityFrameworkCoreOutboxOptions
         {
-            Schema = options.Schema, TablePrefix = options.TablePrefix, Lanes = options.Lanes,
-            DispatchStoreName = name, LeaseDuration = options.LeaseDuration, MaxDispatchAttempts = options.MaxDispatchAttempts
+            Schema = options.Schema,
+            TablePrefix = options.TablePrefix,
+            Lanes = options.Lanes,
+            DispatchStoreName = name,
+            LeaseDuration = options.LeaseDuration,
+            MaxDispatchAttempts = options.MaxDispatchAttempts
         };
         var orderedSettings = orderedDispatch ?? new();
         var maintenanceSettings = maintenance ?? new();
@@ -51,27 +59,47 @@ public static class PostgreSqlOutboxBuilderExtensions
         RejectStoreSetting(maintenanceSettings.TablePrefix, maintenanceDefaults.TablePrefix, writer.TablePrefix, nameof(maintenance), nameof(maintenanceSettings.TablePrefix));
         RejectStoreSetting(maintenanceSettings.MaxDispatchAttempts, maintenanceDefaults.MaxDispatchAttempts, writer.MaxDispatchAttempts, nameof(maintenance), nameof(maintenanceSettings.MaxDispatchAttempts));
         var retainSent = maintenanceSettings.RetainSentMessages;
+
         if (orderedSettings.RetainSentMessages != retainSent)
+        {
             throw new ArgumentException("Set RetainSentMessages to the same value on the ordered dispatch and maintenance options.", nameof(maintenance));
+        }
+
         var store = new PostgreSqlOutboxOptions
         {
-            Schema = writer.Schema, TablePrefix = writer.TablePrefix, Lanes = writer.Lanes,
-            LeaseDuration = writer.LeaseDuration, MaxDispatchAttempts = writer.MaxDispatchAttempts, RetainSentMessages = retainSent
+            Schema = writer.Schema,
+            TablePrefix = writer.TablePrefix,
+            Lanes = writer.Lanes,
+            LeaseDuration = writer.LeaseDuration,
+            MaxDispatchAttempts = writer.MaxDispatchAttempts,
+            RetainSentMessages = retainSent
         };
         var ordered = new PostgreSqlOrderedDispatchOptions
         {
-            Schema = writer.Schema, TablePrefix = writer.TablePrefix, Lanes = writer.Lanes,
-            LeaseDuration = writer.LeaseDuration, MaxDispatchAttempts = writer.MaxDispatchAttempts,
-            PollInterval = orderedSettings.PollInterval, BatchSize = orderedSettings.BatchSize, RetainSentMessages = retainSent
+            Schema = writer.Schema,
+            TablePrefix = writer.TablePrefix,
+            Lanes = writer.Lanes,
+            LeaseDuration = writer.LeaseDuration,
+            MaxDispatchAttempts = writer.MaxDispatchAttempts,
+            PollInterval = orderedSettings.PollInterval,
+            BatchSize = orderedSettings.BatchSize,
+            RetainSentMessages = retainSent
         };
         var recovery = new PostgreSqlMaintenanceOptions
         {
-            Schema = writer.Schema, TablePrefix = writer.TablePrefix, MaxDispatchAttempts = writer.MaxDispatchAttempts,
-            RetainSentMessages = retainSent, BatchSize = maintenanceSettings.BatchSize,
-            CleanupBatchLimit = maintenanceSettings.CleanupBatchLimit, RecoveryDelay = maintenanceSettings.RecoveryDelay,
-            SweepInterval = maintenanceSettings.SweepInterval, LeaseDuration = maintenanceSettings.LeaseDuration,
-            ClaimDuration = maintenanceSettings.ClaimDuration, CleanupInterval = maintenanceSettings.CleanupInterval,
-            DeadRetention = maintenanceSettings.DeadRetention, InboxRetention = maintenanceSettings.InboxRetention,
+            Schema = writer.Schema,
+            TablePrefix = writer.TablePrefix,
+            MaxDispatchAttempts = writer.MaxDispatchAttempts,
+            RetainSentMessages = retainSent,
+            BatchSize = maintenanceSettings.BatchSize,
+            CleanupBatchLimit = maintenanceSettings.CleanupBatchLimit,
+            RecoveryDelay = maintenanceSettings.RecoveryDelay,
+            SweepInterval = maintenanceSettings.SweepInterval,
+            LeaseDuration = maintenanceSettings.LeaseDuration,
+            ClaimDuration = maintenanceSettings.ClaimDuration,
+            CleanupInterval = maintenanceSettings.CleanupInterval,
+            DeadRetention = maintenanceSettings.DeadRetention,
+            InboxRetention = maintenanceSettings.InboxRetention,
             SentRetention = maintenanceSettings.SentRetention
         };
         // Validate before mutating the service collection.
@@ -81,15 +109,24 @@ public static class PostgreSqlOutboxBuilderExtensions
         var services = builder.Services;
         var composed = new ComposedStore(name, dataSource, writer.Schema, writer.TablePrefix, writer.Lanes,
             writer.LeaseDuration, writer.MaxDispatchAttempts, directDispatch, orderedDispatch, maintenance);
+
         foreach (var descriptor in services)
         {
-            if (descriptor.ImplementationInstance is not ComposedStore existing || existing.Name != name) continue;
+            if (descriptor.ImplementationInstance is not ComposedStore existing || existing.Name != name)
+            {
+                continue;
+            }
+
             if (existing != composed)
+            {
                 throw new InvalidOperationException($"PostgreSQL outbox store '{name}' is already composed with a different NpgsqlDataSource or options. " +
                     "Pass the same data source and options to share the store, or set a distinct DispatchStoreName and separate store tables.");
+            }
+
             services.AddDbContext<TContext>((provider, native) => native.AddRelayerOutbox(provider, writer));
             return builder;
         }
+
         services.AddSingleton(composed);
         services.AddRelayerEntityFrameworkCoreOutbox();
         // A selected context always uses its own settings. The first composed registration supplies
@@ -109,7 +146,9 @@ public static class PostgreSqlOutboxBuilderExtensions
     private static void RejectStoreSetting<T>(T value, T unset, T store, string parameter, string property)
     {
         if (!EqualityComparer<T>.Default.Equals(value, unset) && !EqualityComparer<T>.Default.Equals(value, store))
+        {
             throw new ArgumentException($"Set {property} on EntityFrameworkCoreOutboxOptions; it applies to every worker of the store.", parameter);
+        }
     }
 
     // Store identity for composed registrations; the data source and worker options compare by reference.
@@ -123,6 +162,9 @@ public static class PostgreSqlOutboxBuilderExtensions
         IEnumerable<IValidateOptions<EntityFrameworkCoreOutboxOptions>> validations)
         : OptionsFactory<EntityFrameworkCoreOutboxOptions>(setups, postConfigures, validations)
     {
-        protected override EntityFrameworkCoreOutboxOptions CreateInstance(string name) => options;
+        protected override EntityFrameworkCoreOutboxOptions CreateInstance(string name)
+        {
+            return options;
+        }
     }
 }

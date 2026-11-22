@@ -25,15 +25,25 @@ public class ServiceBusSendTests
         {
             builder.ServiceBus("first", bus =>
             {
-                bus.Options.Configure(options => { options.Client = first; options.ClientOptions = nativeOptions; options.Queues.Add(new("orders")); });
+                bus.Options.Configure(options =>
+                {
+                    options.Client = first;
+                    options.ClientOptions = nativeOptions;
+                    options.Queues.Add(new("orders"));
+                });
                 bus.Send<First>("orders");
             });
             builder.ServiceBus("second", bus =>
             {
-                bus.Options.Configure(options => { options.Client = second; options.Topics.Add(new("events")); });
+                bus.Options.Configure(options =>
+                {
+                    options.Client = second;
+                    options.Topics.Add(new("events"));
+                });
                 bus.Send<Second>("events");
             });
         });
+
         await using (var provider = services.BuildServiceProvider())
         {
             var options = provider.GetRequiredService<IOptionsMonitor<ServiceBusTransportOptions>>();
@@ -48,6 +58,7 @@ public class ServiceBusSendTests
             await Assert.That(first.Senders.Count).IsEqualTo(1);
             await Assert.That(second.Senders.Count).IsEqualTo(1);
         }
+
         await Assert.That(first.Disposals).IsEqualTo(0);
         await Assert.That(second.Disposals).IsEqualTo(0);
         await Assert.That(first.Senders[0].Disposals).IsEqualTo(1);
@@ -130,13 +141,21 @@ public class ServiceBusSendTests
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.ServiceBus("bus", bus =>
         {
-            bus.Options.Configure(options => { options.Client = client; options.Topics.Add(new("events")); });
+            bus.Options.Configure(options =>
+            {
+                options.Client = client;
+                options.Topics.Add(new("events"));
+            });
             bus.Send<First>("events", route => route.SendOptions = new() { HeaderNames = new("x-") });
         }));
         await using var provider = services.BuildServiceProvider();
         var transport = provider.GetServices<ITransport>().Single();
+
         foreach (var name in new[] { "x-id", "cloudEvents:id", "other-id" })
+        {
             await transport.SendAsync(new("events", default, new KeyValuePair<string, WireString>[] { new(name, new WireString(name + "-value")) }), default);
+        }
+
         var sent = client.Senders.Single().Sent;
         await Assert.That(sent.Select(message => message.MessageId).SequenceEqual(new string?[] { "x-id-value", "cloudEvents:id-value", null })).IsTrue();
     }
@@ -156,8 +175,18 @@ public class ServiceBusSendTests
             new("orders", new byte[] { 2 }),
             new("orders", new byte[] { 3 }, options: native),
             new("orders", new byte[] { 4 }, utf16)];
-        if (batch) await transport.SendBatchAsync(messages, default);
-        else foreach (var message in messages) await transport.SendAsync(message, default);
+
+        if (batch)
+        {
+            await transport.SendBatchAsync(messages, default);
+        }
+        else
+        {
+            foreach (var message in messages)
+            {
+                await transport.SendAsync(message, default);
+            }
+        }
 
         var sent = client.Senders[0].Sent;
         await Assert.That(sent[0].ContentType).IsEqualTo("application/x-protobuf");
@@ -180,8 +209,18 @@ public class ServiceBusSendTests
             new("events", new byte[] { 1 }, typed),
             new("events", new byte[] { 2 }, typed, options: native),
             new("events", new byte[] { 3 })];
-        if (batch) await transport.SendBatchAsync(messages, default);
-        else foreach (var message in messages) await transport.SendAsync(message, default);
+
+        if (batch)
+        {
+            await transport.SendBatchAsync(messages, default);
+        }
+        else
+        {
+            foreach (var message in messages)
+            {
+                await transport.SendAsync(message, default);
+            }
+        }
 
         var sent = client.Senders.Single(sender => sender.Entity == "events").Sent;
         await Assert.That(sent[0].Subject).IsEqualTo("orders.placed;v=1");
@@ -199,14 +238,23 @@ public class ServiceBusSendTests
             var services = new ServiceCollection();
             services.AddRelayer(builder => builder.ServiceBus("bus", bus =>
             {
-                bus.Options.Configure(options => { options.Client = client; options.Topics.Add(new("events")); options.SubjectFromMessageType = enabled; });
+                bus.Options.Configure(options =>
+                {
+                    options.Client = client;
+                    options.Topics.Add(new("events"));
+                    options.SubjectFromMessageType = enabled;
+                });
                 bus.Send<First>("events", route => route.SendOptions = new() { HeaderNames = new("x-") });
                 bus.Send<Second>("events", route => route.SendOptions = new() { HeaderNames = new("raw-"), EnvelopeMode = MessageEnvelopeMode.Raw });
             }));
             await using var provider = services.BuildServiceProvider();
             var transport = provider.GetServices<ITransport>().Single();
+
             foreach (var name in new[] { "x-type", "raw-type", "cloudEvents:type" })
+            {
                 await transport.SendAsync(new("events", default, new KeyValuePair<string, WireString>[] { new(name, new WireString("orders.placed;v=1")) }), default);
+            }
+
             return client.Senders.Single().Sent.Select(message => message.Subject).ToArray();
         }
 
@@ -223,7 +271,11 @@ public class ServiceBusSendTests
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.AddMessageTypesFromThisAssembly().ServiceBus("bus", bus =>
         {
-            bus.Options.Configure(options => { options.Client = client; options.Topics.Add(new("events")); });
+            bus.Options.Configure(options =>
+            {
+                options.Client = client;
+                options.Topics.Add(new("events"));
+            });
             bus.Send<First>("events", route => route.ServiceBus(static (outgoing, native) =>
             {
                 native.TimeToLive = TimeSpan.FromMinutes(5);
@@ -237,15 +289,28 @@ public class ServiceBusSendTests
         await using var provider = services.BuildServiceProvider();
         var transport = provider.GetServices<ITransport>().Single();
         // Outbox dispatch sends stored rows with headers only and no per-send callbacks, like these.
-        OutgoingMessage Row(string type, ReadOnlyMemory<byte> body, SendOptions? options = null) =>
-            new("events", body, new KeyValuePair<string, WireString>[] { new("cloudEvents:type", new WireString(Encoding.UTF8.GetBytes(type))) }, options: options);
+        OutgoingMessage Row(string type, ReadOnlyMemory<byte> body, SendOptions? options = null)
+        {
+            return new("events", body, new KeyValuePair<string, WireString>[] { new("cloudEvents:type", new WireString(Encoding.UTF8.GetBytes(type))) }, options: options);
+        }
+
         OutgoingMessage[] messages = [
             Row("servicebus.first;v=1", new byte[] { 1, 2 }),
             Row("servicebus.second;v=1", new byte[] { 3 }),
             Row("servicebus.first;v=1", new byte[] { 4 }, new SendOptions().ServiceBus(native => native.ReplyTo = "per-send")),
             new("events", new byte[] { 5 }, new KeyValuePair<string, WireString>[] { new("cloudEvents:type", new WireString("servicebus.first;v=1")) })];
-        if (batch) await transport.SendBatchAsync(messages, default);
-        else foreach (var message in messages) await transport.SendAsync(message, default);
+
+        if (batch)
+        {
+            await transport.SendBatchAsync(messages, default);
+        }
+        else
+        {
+            foreach (var message in messages)
+            {
+                await transport.SendAsync(message, default);
+            }
+        }
 
         var sent = client.Senders.Single(sender => sender.Entity == "events").Sent;
         await Assert.That(sent[0].TimeToLive).IsEqualTo(TimeSpan.FromMinutes(5));
@@ -267,7 +332,12 @@ public class ServiceBusSendTests
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.AddMessageTypesFromThisAssembly().ServiceBus("bus", bus =>
         {
-            bus.Options.Configure(options => { options.Client = client; options.Topics.Add(new("events-a")); options.Topics.Add(new("events-b")); });
+            bus.Options.Configure(options =>
+            {
+                options.Client = client;
+                options.Topics.Add(new("events-a"));
+                options.Topics.Add(new("events-b"));
+            });
             bus.Send<First>(["events-a", "events-b"], static _ => "events-a",
                 route => route.ServiceBus(static (_, native) => native.Subject = "route"));
         }));
@@ -289,10 +359,17 @@ public class ServiceBusSendTests
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.ServiceBus("bus", bus =>
         {
-            bus.Options.Configure(options => { options.Client = client; options.Queues.Add(new("orders")); });
+            bus.Options.Configure(options =>
+            {
+                options.Client = client;
+                options.Queues.Add(new("orders"));
+            });
             bus.Send<First>("orders", route =>
             {
-                route.SendOptions = new() { EnvelopeMode = MessageEnvelopeMode.Raw };
+                route.SendOptions = new()
+                {
+                    EnvelopeMode = MessageEnvelopeMode.Raw
+                };
                 route.ServiceBus(static (_, native) => native.TimeToLive = TimeSpan.FromMinutes(1));
             });
         }));
@@ -340,7 +417,9 @@ public class ServiceBusSendTests
     public async Task Mixed_destination_batches_trace_each_native_group_and_preserve_creation_context()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(_ => { });
+        services.AddRelayer(_ =>
+        {
+        });
         await using var provider = services.BuildServiceProvider();
         var tracing = provider.GetRequiredService<MessageTracing>();
         var spans = new List<Activity>();
@@ -354,14 +433,14 @@ public class ServiceBusSendTests
         var client = new NativeClient();
         await using var transport = new ServiceBusSendTransport("bus", client, false, Options(client),
             ["orders", "events"], TopologyMode.None, tracing: tracing);
-        const string parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
-        KeyValuePair<string, WireString>[] headers = [new("cloudEvents:id", new("original")), new("traceparent", new(parent))];
+        const string Parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        KeyValuePair<string, WireString>[] headers = [new("cloudEvents:id", new("original")), new("traceparent", new(Parent))];
         await transport.SendBatchAsync(new[] { new OutgoingMessage("orders", new byte[] { 1 }, headers),
             new OutgoingMessage("events", new byte[] { 2 }, headers) }, default);
         await Assert.That(spans.Count).IsEqualTo(2);
         await Assert.That(spans.Select(span => span.DisplayName).SequenceEqual(new[] { "send orders", "send events" })).IsTrue();
         await Assert.That(spans.All(span => Equals(span.GetTagItem("messaging.system"), "servicebus"))).IsTrue();
-        await Assert.That(client.Senders.All(sender => Equals(sender.Sent.Single().ApplicationProperties["traceparent"], parent))).IsTrue();
+        await Assert.That(client.Senders.All(sender => Equals(sender.Sent.Single().ApplicationProperties["traceparent"], Parent))).IsTrue();
     }
 
     [Test]
@@ -478,7 +557,10 @@ public class ServiceBusSendTests
                 {
                     options.Client = client;
                     options.AdministrationClient = admin;
-                    options.Queues.Add(new("orders") { RequiresSession = true });
+                    options.Queues.Add(new("orders")
+                    {
+                        RequiresSession = true
+                    });
                     options.TrustedSessionEntities.Add("orders");
                 });
                 bus.Send<First>("orders", route => route.OrderingKey(static _ => "customer"));
@@ -506,11 +588,21 @@ public class ServiceBusSendTests
     {
         var client = new NativeClient();
         var options = Options(client);
-        options.Subscriptions.Add(new("events", "audit") { RequiresSession = true });
-        options.Subscriptions.Add(new("events", "billing") { RequiresSession = true });
+        options.Subscriptions.Add(new("events", "audit")
+        {
+            RequiresSession = true
+        });
+        options.Subscriptions.Add(new("events", "billing")
+        {
+            RequiresSession = true
+        });
         options.TrustedSessionEntities.Add("events/Subscriptions/audit");
+
         await using (var partial = new ServiceBusSendTransport("bus", client, false, options, ["events"], mode))
+        {
             await Assert.That(partial.GetCapabilities("events").OrderedByKey).IsFalse();
+        }
+
         options.TrustedSessionEntities.Add("events/Subscriptions/billing");
         await using var trusted = new ServiceBusSendTransport("bus", client, false, options, ["events"], mode);
         await Assert.That(trusted.GetCapabilities("events").OrderedByKey).IsTrue();
@@ -567,7 +659,10 @@ public class ServiceBusSendTests
     {
         var client = new NativeClient();
         var options = Options(client);
-        options.Subscriptions.Add(new("events", "audit") { RequiresSession = true });
+        options.Subscriptions.Add(new("events", "audit")
+        {
+            RequiresSession = true
+        });
         options.TrustedSessionEntities.Add("events");
         var report = await new ServiceBusTopology("bus", client, options, null).ApplyAsync(TopologyMode.Validate, default);
         await Assert.That(report.Differences.Count).IsEqualTo(0);
@@ -584,7 +679,10 @@ public class ServiceBusSendTests
         var admin = new NativeAdministration();
         var options = Options(client);
         options.TrustedSessionEntities.Add("events");
-        admin.Subscriptions.Add(NativeAdministration.Properties(new("events", "audit") { RequiresSession = true }));
+        admin.Subscriptions.Add(NativeAdministration.Properties(new("events", "audit")
+        {
+            RequiresSession = true
+        }));
         admin.Subscriptions.Add(NativeAdministration.Properties(new("events", "billing")));
         var report = await new ServiceBusTopology("bus", client, options, admin).ApplyAsync(TopologyMode.Provision, default);
         await Assert.That(report.Differences.Single()).Contains("'events/Subscriptions/billing': RequiresSession expected 'True', actual 'False'");
@@ -593,7 +691,12 @@ public class ServiceBusSendTests
     private sealed class LaneEnlistment : IOutboxEnlistment
     {
         public bool IsActive => true;
-        internal BufferedOutboxMessage Message { get; } = new();
+
+        internal BufferedOutboxMessage Message
+        {
+            get;
+        } = new();
+
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
             BufferedOutboxMessage.Validate(record);
@@ -608,7 +711,10 @@ public class ServiceBusSendTests
         var client = new NativeClient();
         var admin = new NativeAdministration();
         var options = Options(client, true);
-        options.Subscriptions.Add(new("events", "audit") { RequiresSession = true });
+        options.Subscriptions.Add(new("events", "audit")
+        {
+            RequiresSession = true
+        });
         options.TrustedSessionEntities.Add("orders");
         var topology = new ServiceBusTopology("bus", client, options, admin);
         var report = await topology.ApplyAsync(TopologyMode.Provision, default);
@@ -642,6 +748,7 @@ public class ServiceBusSendTests
     public async Task Invalid_ownership_undeclared_entities_and_consumers_fail_before_client_creation()
     {
         var client = new NativeClient();
+
         foreach (var invalid in new[] { "both", "neither", "entity", "consumer" })
         {
             var services = new ServiceCollection();
@@ -649,47 +756,87 @@ public class ServiceBusSendTests
             {
                 bus.Options.Configure(options =>
                 {
-                    if (invalid != "neither") options.Client = client;
-                    if (invalid == "both") options.ConnectionString = "invalid";
+                    if (invalid != "neither")
+                    {
+                        options.Client = client;
+                    }
+
+                    if (invalid == "both")
+                    {
+                        options.ConnectionString = "invalid";
+                    }
                 });
+
 #pragma warning disable RLY004 // Deliberately invalid consumer tests fail-fast adapter construction.
-                if (invalid == "consumer") bus.Consume("orders", _ => { });
+                if (invalid == "consumer")
+                {
+                    bus.Consume("orders", _ =>
+                    {
+                    });
+                }
 #pragma warning restore RLY004
-                else bus.Send<First>("orders");
+                else
+                {
+                    bus.Send<First>("orders");
+                }
             }));
             await using var provider = services.BuildServiceProvider();
             await Assert.That(() => provider.GetServices<ITransport>().ToArray()).ThrowsException();
         }
+
         await Assert.That(client.Senders.Count).IsEqualTo(0);
     }
 
     internal static ServiceBusTransportOptions Options(ServiceBusClient client, bool sessions = false)
     {
         var options = new ServiceBusTransportOptions { Client = client };
-        options.Queues.Add(new("orders") { RequiresSession = sessions });
+        options.Queues.Add(new("orders")
+        {
+            RequiresSession = sessions
+        });
         options.Topics.Add(new("events"));
         return options;
     }
 
-    private static ServiceBusSendTransport Transport(NativeClient client, bool sessions = false, bool ownsClient = false) =>
-        new("bus", client, ownsClient, Options(client, sessions), ["orders", "events"], TopologyMode.Provision);
+    private static ServiceBusSendTransport Transport(NativeClient client, bool sessions = false, bool ownsClient = false)
+    {
+        return new("bus", client, ownsClient, Options(client, sessions), ["orders", "events"], TopologyMode.Provision);
+    }
 
     internal sealed class NativeClient : ServiceBusClient
     {
-        internal List<NativeSender> Senders { get; } = [];
-        internal NativeReceiver Receiver { get; } = new();
+        internal List<NativeSender> Senders
+        {
+            get;
+        } = [];
+
+        internal NativeReceiver Receiver
+        {
+            get;
+        } = new();
         internal int Disposals;
         internal int BatchCapacity = 2;
         internal Exception? BatchFailure;
+
         public override string FullyQualifiedNamespace => "test.servicebus.windows.net";
+
         public override ServiceBusSender CreateSender(string queueOrTopicName)
         {
             var sender = new NativeSender(queueOrTopicName) { Capacity = BatchCapacity, BatchFailure = BatchFailure };
             Senders.Add(sender);
             return sender;
         }
-        public override ServiceBusReceiver CreateReceiver(string topicName, string subscriptionName, ServiceBusReceiverOptions? options = null) => Receiver;
-        public override ValueTask DisposeAsync() { Disposals++; return ValueTask.CompletedTask; }
+
+        public override ServiceBusReceiver CreateReceiver(string topicName, string subscriptionName, ServiceBusReceiverOptions? options = null)
+        {
+            return Receiver;
+        }
+
+        public override ValueTask DisposeAsync()
+        {
+            Disposals++;
+            return ValueTask.CompletedTask;
+        }
     }
 
     internal sealed class NativeSender(string entity) : ServiceBusSender
@@ -713,99 +860,175 @@ public class ServiceBusSendTests
         {
             Token = cancellationToken;
             Borrowed = message;
-            if (Failure is { } failure) return Task.FromException(failure);
+
+            if (Failure is { } failure)
+            {
+                return Task.FromException(failure);
+            }
+
             Sent.Add(Snapshot(message));
             return Pending?.Task ?? Task.CompletedTask;
         }
+
         public override ValueTask<ServiceBusMessageBatch> CreateMessageBatchAsync(CancellationToken cancellationToken = default)
         {
             Token = cancellationToken;
             BatchCreations++;
-            if (BatchFailure is { } failure) return ValueTask.FromException<ServiceBusMessageBatch>(failure);
+
+            if (BatchFailure is { } failure)
+            {
+                return ValueTask.FromException<ServiceBusMessageBatch>(failure);
+            }
+
             var store = new List<ServiceBusMessage>();
             _batch = store;
-            return new(ServiceBusModelFactory.ServiceBusMessageBatch(128, store, new() { MaxSizeInBytes = 128 }, message =>
+            return new(ServiceBusModelFactory.ServiceBusMessageBatch(128, store, new()
             {
-                if (store.Count >= Capacity || message.Body.ToMemory().Length > 128) return false;
+                MaxSizeInBytes = 128
+            }, message =>
+            {
+                if (store.Count >= Capacity || message.Body.ToMemory().Length > 128)
+                {
+                    return false;
+                }
+
                 return true;
             }));
         }
+
         public override Task SendMessagesAsync(ServiceBusMessageBatch messageBatch, CancellationToken cancellationToken = default)
         {
             Token = cancellationToken;
-            if (Failure is { } failure) return Task.FromException(failure);
+
+            if (Failure is { } failure)
+            {
+                return Task.FromException(failure);
+            }
+
             BorrowedBatch = _batch;
             var snapshots = _batch.Select(Snapshot).ToList();
             Batches.Add(snapshots);
             Sent.AddRange(snapshots);
             return Pending?.Task ?? Task.CompletedTask;
         }
+
         public override ValueTask DisposeAsync()
         {
             Disposals++;
             return DisposeFailure is { } failure ? ValueTask.FromException(failure) : ValueTask.CompletedTask;
         }
-        private static ServiceBusMessage Snapshot(ServiceBusMessage message) =>
-            new(AmqpAnnotatedMessage.FromBytes(message.GetRawAmqpMessage().ToBytes()));
+
+        private static ServiceBusMessage Snapshot(ServiceBusMessage message)
+        {
+            return new(AmqpAnnotatedMessage.FromBytes(message.GetRawAmqpMessage().ToBytes()));
+        }
     }
 
     internal sealed class NativeReceiver : ServiceBusReceiver
     {
         internal int Peeks;
         internal int Disposals;
+
         public override Task<ServiceBusReceivedMessage> PeekMessageAsync(long? fromSequenceNumber = null, CancellationToken cancellationToken = default)
-        { Peeks++; return Task.FromResult<ServiceBusReceivedMessage>(null!); }
-        public override ValueTask DisposeAsync() { Disposals++; return ValueTask.CompletedTask; }
+        {
+            Peeks++;
+            return Task.FromResult<ServiceBusReceivedMessage>(null!);
+        }
+
+        public override ValueTask DisposeAsync()
+        {
+            Disposals++;
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class NativeAdministration : ServiceBusAdministrationClient
     {
         internal int Calls;
-        internal List<string> Created { get; } = [];
+
+        internal List<string> Created
+        {
+            get;
+        } = [];
         internal QueueProperties? Queue;
         internal TopicProperties? Topic;
         internal SubscriptionProperties? Subscription;
-        internal List<SubscriptionProperties> Subscriptions { get; } = [];
+
+        internal List<SubscriptionProperties> Subscriptions
+        {
+            get;
+        } = [];
         internal Exception? Failure;
+
         public override AsyncPageable<SubscriptionProperties> GetSubscriptionsAsync(string topicName, CancellationToken cancellationToken = default)
-        { Calls++; return AsyncPageable<SubscriptionProperties>.FromPages([Page<SubscriptionProperties>.FromValues(Subscriptions, null, null!)]); }
+        {
+            Calls++;
+            return AsyncPageable<SubscriptionProperties>.FromPages([Page<SubscriptionProperties>.FromValues(Subscriptions, null, null!)]);
+        }
+
         public override Task<Response<QueueProperties>> GetQueueAsync(string name, CancellationToken cancellationToken = default)
-        { Calls++; return Read(Queue); }
+        {
+            Calls++;
+            return Read(Queue);
+        }
+
         public override Task<Response<TopicProperties>> GetTopicAsync(string name, CancellationToken cancellationToken = default)
-        { Calls++; return Read(Topic); }
+        {
+            Calls++;
+            return Read(Topic);
+        }
+
         public override Task<Response<SubscriptionProperties>> GetSubscriptionAsync(string topicName, string subscriptionName, CancellationToken cancellationToken = default)
-        { Calls++; return Read(Subscription); }
-        private Task<Response<T>> Read<T>(T? value) where T : class => Failure is { } failure ? Task.FromException<Response<T>>(failure)
-            : value is null ? Task.FromException<Response<T>>(new ServiceBusException("missing", ServiceBusFailureReason.MessagingEntityNotFound))
-            : Task.FromResult(Response.FromValue(value, null!));
+        {
+            Calls++;
+            return Read(Subscription);
+        }
+
+        private Task<Response<T>> Read<T>(T? value) where T : class
+        {
+            return Failure is { } failure ? Task.FromException<Response<T>>(failure)
+                        : value is null ? Task.FromException<Response<T>>(new ServiceBusException("missing", ServiceBusFailureReason.MessagingEntityNotFound))
+                        : Task.FromResult(Response.FromValue(value, null!));
+        }
+
         public override Task<Response<QueueProperties>> CreateQueueAsync(CreateQueueOptions o, CancellationToken cancellationToken = default)
         {
-            Calls++; Created.Add(o.Name);
+            Calls++;
+            Created.Add(o.Name);
             Queue = ServiceBusModelFactory.QueueProperties(o.Name, o.LockDuration, o.MaxSizeInMegabytes, o.RequiresDuplicateDetection, o.RequiresSession,
                 o.DefaultMessageTimeToLive, o.AutoDeleteOnIdle, o.DeadLetteringOnMessageExpiration, o.DuplicateDetectionHistoryTimeWindow,
                 o.MaxDeliveryCount, o.EnableBatchedOperations, o.Status, o.ForwardTo, o.ForwardDeadLetteredMessagesTo, o.UserMetadata ?? "", o.EnablePartitioning);
             return Task.FromResult(Response.FromValue(Queue, null!));
         }
+
         public override Task<Response<TopicProperties>> CreateTopicAsync(CreateTopicOptions o, CancellationToken cancellationToken = default)
         {
-            Calls++; Created.Add(o.Name);
+            Calls++;
+            Created.Add(o.Name);
             Topic = ServiceBusModelFactory.TopicProperties(o.Name, o.MaxSizeInMegabytes, o.RequiresDuplicateDetection, o.DefaultMessageTimeToLive,
                 o.AutoDeleteOnIdle, o.DuplicateDetectionHistoryTimeWindow, o.EnableBatchedOperations, o.Status, o.EnablePartitioning);
             return Task.FromResult(Response.FromValue(Topic, null!));
         }
+
         public override Task<Response<SubscriptionProperties>> CreateSubscriptionAsync(CreateSubscriptionOptions o, CancellationToken cancellationToken = default)
         {
-            Calls++; Created.Add(o.TopicName + "/Subscriptions/" + o.SubscriptionName);
+            Calls++;
+            Created.Add(o.TopicName + "/Subscriptions/" + o.SubscriptionName);
             Subscription = Properties(o);
             return Task.FromResult(Response.FromValue(Subscription, null!));
         }
-        internal static SubscriptionProperties Properties(CreateSubscriptionOptions o) => ServiceBusModelFactory.SubscriptionProperties(o.TopicName, o.SubscriptionName, o.LockDuration, o.RequiresSession,
-                o.DefaultMessageTimeToLive, o.AutoDeleteOnIdle, o.DeadLetteringOnMessageExpiration, o.MaxDeliveryCount,
-                o.EnableBatchedOperations, o.Status, o.ForwardTo, o.ForwardDeadLetteredMessagesTo, o.UserMetadata ?? "");
+
+        internal static SubscriptionProperties Properties(CreateSubscriptionOptions o)
+        {
+            return ServiceBusModelFactory.SubscriptionProperties(o.TopicName, o.SubscriptionName, o.LockDuration, o.RequiresSession,
+                            o.DefaultMessageTimeToLive, o.AutoDeleteOnIdle, o.DeadLetteringOnMessageExpiration, o.MaxDeliveryCount,
+                            o.EnableBatchedOperations, o.Status, o.ForwardTo, o.ForwardDeadLetteredMessagesTo, o.UserMetadata ?? "");
+        }
     }
 
     [Message("servicebus.first")]
     public sealed record First;
+
     [Message("servicebus.second")]
     public sealed record Second;
 }

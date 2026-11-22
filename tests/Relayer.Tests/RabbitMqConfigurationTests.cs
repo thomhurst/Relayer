@@ -76,7 +76,9 @@ public class RabbitMqConfigurationTests
     [Test]
     public async Task Direct_send_requires_a_declared_destination()
     {
-        await using var provider = Provider(_ => { });
+        await using var provider = Provider(_ =>
+        {
+        });
         var transport = provider.GetRequiredService<ITransport>();
         await Assert.That(async () => await transport.SendAsync(new("orders", default), default)).Throws<InvalidOperationException>();
         await transport.SendBatchAsync(ReadOnlyMemory<OutgoingMessage>.Empty, default);
@@ -99,16 +101,43 @@ public class RabbitMqConfigurationTests
         {
             switch (scenario)
             {
-                case 0: options.ConnectionFactory = null!; break;
-                case 1: options.Exchanges.Add(new("")); break;
-                case 2: options.Queues.Add(new("")); break;
-                case 3: options.Bindings.Add(new("orders", "", "")); break;
-                case 4: options.Queues.Add(new("orders")); options.Queues.Add(new("orders")); break;
-                case 5: options.Exchanges.Add(new("orders") { Type = "" }); break;
-                case 6: options.PublisherCount = 0; break;
-                case 7: options.PublisherChannelOptions = new(false, true); break;
-                case 8: options.PublisherChannelOptions = new(true, false); break;
-                case 9: options.DelayedExchanges.Add("", new("delayed") { Type = "direct" }); break;
+                case 0:
+                    options.ConnectionFactory = null!;
+                    break;
+                case 1:
+                    options.Exchanges.Add(new(""));
+                    break;
+                case 2:
+                    options.Queues.Add(new(""));
+                    break;
+                case 3:
+                    options.Bindings.Add(new("orders", "", ""));
+                    break;
+                case 4:
+                    options.Queues.Add(new("orders"));
+                    options.Queues.Add(new("orders"));
+                    break;
+                case 5:
+                    options.Exchanges.Add(new("orders")
+                    {
+                        Type = ""
+                    });
+                    break;
+                case 6:
+                    options.PublisherCount = 0;
+                    break;
+                case 7:
+                    options.PublisherChannelOptions = new(false, true);
+                    break;
+                case 8:
+                    options.PublisherChannelOptions = new(true, false);
+                    break;
+                case 9:
+                    options.DelayedExchanges.Add("", new("delayed")
+                    {
+                        Type = "direct"
+                    });
+                    break;
             }
         });
         await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
@@ -127,9 +156,24 @@ public class RabbitMqConfigurationTests
             rabbit.Consume("orders", consumer =>
             {
                 consumer.Handler<SampleHandler>();
-                if (scenario == 0) consumer.Concurrency(2);
-                if (scenario == 1) consumer.Batch(2, TimeSpan.FromSeconds(1));
-                if (scenario == 2) consumer.Failures(new() { RedeliveryDelays = new[] { TimeSpan.Zero } });
+
+                if (scenario == 0)
+                {
+                    consumer.Concurrency(2);
+                }
+
+                if (scenario == 1)
+                {
+                    consumer.Batch(2, TimeSpan.FromSeconds(1));
+                }
+
+                if (scenario == 2)
+                {
+                    consumer.Failures(new()
+                    {
+                        RedeliveryDelays = new[] { TimeSpan.Zero }
+                    });
+                }
             });
         }));
         await using var provider = services.BuildServiceProvider();
@@ -148,6 +192,9 @@ public class RabbitMqConfigurationTests
 
     public sealed class SampleHandler : IHandler<Sample>
     {
-        public ValueTask HandleAsync(Sample message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask HandleAsync(Sample message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

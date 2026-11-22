@@ -6,7 +6,10 @@ namespace Relayer;
 internal interface IOutboxBatch : IDisposable
 {
     void Prepare(DbTransaction transaction, string insertSql);
+
     void AddRange(ReadOnlySpan<BufferedOutboxMessage> rows);
+
     void Execute();
+
     ValueTask ExecuteAsync(CancellationToken cancellationToken);
 }

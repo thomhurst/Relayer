@@ -19,7 +19,11 @@ public sealed class ServiceBusHealthProbeTests
         services.AddRelayer(builder => builder.ServiceBus("ExactBus", bus =>
         {
             bus.TopologyMode = TopologyMode.None;
-            bus.Options.Configure(options => { options.Client = client; options.Queues.Add(new("orders")); });
+            bus.Options.Configure(options =>
+            {
+                options.Client = client;
+                options.Queues.Add(new("orders"));
+            });
             bus.Send<ServiceBusSendTests.First>("orders");
         }));
         await using var provider = services.BuildServiceProvider();
@@ -34,12 +38,14 @@ public sealed class ServiceBusHealthProbeTests
         await Assert.That(disconnected.Exception).IsSameReferenceAs(failure);
         // One cached send endpoint plus one new native link per poll, disposed even when attachment fails.
         await Assert.That(client.Senders.Count).IsEqualTo(4);
+
         foreach (var sender in client.Senders.Skip(1))
         {
             await Assert.That(sender.BatchCreations).IsEqualTo(1);
             await Assert.That(sender.Disposals).IsEqualTo(1);
             await Assert.That(sender.Sent.Count).IsEqualTo(0);
         }
+
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         await Assert.That(async () => await probe.CheckAsync(cancellation.Token)).Throws<OperationCanceledException>();

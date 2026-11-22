@@ -9,33 +9,56 @@ public abstract class OutboxMaintenanceContractTests
 {
     protected abstract Task<MaintenanceFixture> CreateFixtureAsync();
 
-    protected enum Table { Outbox, Dead, Inbox }
+    protected enum Table
+    {
+        Outbox,
+        Dead,
+        Inbox
+    }
 
     protected abstract class MaintenanceFixture : IAsyncDisposable
     {
         public abstract MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
             bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null, TimeProvider? idleTimeProvider = null,
             RelayerInstrumentation? instrumentation = null);
+
         public abstract Task Insert(Guid id, DateTimeOffset createdAt, int? lane = null,
             DateTimeOffset? deliverAt = null, string status = "pending", DateTimeOffset? claimExpiresAt = null);
+
         public abstract Task InsertDead(Guid id, DateTimeOffset failedAt);
+
         public abstract Task InsertInbox(string consumer, Guid id, DateTimeOffset processedAt);
+
         public abstract Task MakeDueAndExpireClaims();
+
         public abstract Task DropInboxTable();
+
         public abstract Task<int> Attempts(Guid id);
+
         public abstract Task<long> Count(Table table);
+
         public abstract ValueTask DisposeAsync();
     }
 
     protected abstract class MaintenanceWorker : IDisposable
     {
         public abstract ValueTask<int> SweepAsync(CancellationToken cancellationToken = default);
-        public abstract bool CleanupPending { get; }
+
+        public abstract bool CleanupPending
+        {
+            get;
+        }
+
         public abstract ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default);
+
         public abstract ValueTask ReleaseAsync(CancellationToken cancellationToken = default);
+
         public abstract Task StartAsync(CancellationToken cancellationToken = default);
+
         public abstract Task StopAsync(CancellationToken cancellationToken = default);
+
         public abstract ValueTask RefreshDepthAsync(CancellationToken cancellationToken = default);
+
         public abstract void Dispose();
     }
 
@@ -49,7 +72,12 @@ public abstract class OutboxMaintenanceContractTests
         await fixture.Insert(Id(1), old);
         await fixture.Insert(Id(2), old, claimExpiresAt: DateTimeOffset.UtcNow.AddDays(1));
         await fixture.Insert(Id(3), old, deliverAt: DateTimeOffset.UtcNow.AddDays(1));
-        for (var i = 4; i <= 8; i++) await fixture.Insert(Id(i), old);
+
+        for (var i = 4; i <= 8; i++)
+        {
+            await fixture.Insert(Id(i), old);
+        }
+
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var transport = new RecordingTransport(async (message, cancellationToken) =>
@@ -64,6 +92,7 @@ public abstract class OutboxMaintenanceContractTests
         var clock = new IdleClock();
         using var worker = fixture.Worker(transport, batchSize, idleTimeProvider: clock);
         await worker.StartAsync();
+
         try
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -80,16 +109,30 @@ public abstract class OutboxMaintenanceContractTests
             idle.Fire();
             await clock.NextIdle();
             await Assert.That(await fixture.Attempts(Id(1))).IsEqualTo(2);
-            foreach (var i in new[] { 2, 3, 9 }) await Assert.That(transport.Ids.Contains(Id(i))).IsTrue();
+
+            foreach (var i in new[] { 2, 3, 9 })
+            {
+                await Assert.That(transport.Ids.Contains(Id(i))).IsTrue();
+            }
+
             await Assert.That(await fixture.Count(Table.Outbox)).IsEqualTo(1L);
         }
-        finally { resume.TrySetResult(); await worker.StopAsync(); }
+        finally
+        {
+            resume.TrySetResult();
+            await worker.StopAsync();
+        }
     }
 
     private sealed class IdleClock : TimeProvider
     {
         private readonly Channel<IdleTimer> _timers = Channel.CreateUnbounded<IdleTimer>();
-        public async Task<IdleTimer> NextIdle() => await _timers.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+
+        public async Task<IdleTimer> NextIdle()
+        {
+            return await _timers.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+        }
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             var timer = new IdleTimer(callback, state);
@@ -100,10 +143,24 @@ public abstract class OutboxMaintenanceContractTests
 
     private sealed class IdleTimer(TimerCallback callback, object? state) : ITimer
     {
-        public void Fire() => callback(state);
-        public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-        public void Dispose() { }
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public void Fire()
+        {
+            callback(state);
+        }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            return true;
+        }
+
+        public void Dispose()
+        {
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     [Test]
@@ -150,18 +207,28 @@ public abstract class OutboxMaintenanceContractTests
         var transport = new RecordingTransport((message, _) =>
             offline && HeaderId(message) == Id(1) ? ValueTask.FromException(new InvalidOperationException("offline")) : ValueTask.CompletedTask);
         using var worker = fixture.Worker(transport, batchSize);
-        for (var i = 0; i < (batchSize == 1 ? 2 : 1); i++) await worker.SweepAsync();
+
+        for (var i = 0; i < (batchSize == 1 ? 2 : 1); i++)
+        {
+            await worker.SweepAsync();
+        }
+
         await Assert.That(transport.Ids.SequenceEqual([Id(4)])).IsTrue();
 
         offline = false;
         await fixture.MakeDueAndExpireClaims();
+
         for (var i = 5; i <= 10; i++)
         {
             await fixture.Insert(Id(i), old);
             await worker.SweepAsync();
         }
 
-        for (var i = 1; i <= 5; i++) await Assert.That(transport.Ids.Contains(Id(i))).IsTrue();
+        for (var i = 1; i <= 5; i++)
+        {
+            await Assert.That(transport.Ids.Contains(Id(i))).IsTrue();
+        }
+
         await Assert.That(transport.Ids.Distinct().Count()).IsEqualTo(transport.Ids.Count);
     }
 
@@ -200,11 +267,13 @@ public abstract class OutboxMaintenanceContractTests
         var old = DateTimeOffset.UtcNow.AddDays(-60);
         await fixture.Insert(Id(90), old, status: "parked");
         await fixture.InsertDead(Id(90), old);
+
         for (var i = 1; i <= 7; i++)
         {
             await fixture.InsertDead(Id(i), old);
             await fixture.InsertInbox("consumer", Id(i), old);
         }
+
         var transport = new RecordingTransport();
         using var worker = fixture.Worker(transport, batchSize: 2, cleanupBatchLimit: 2);
         await Assert.That(await worker.CleanupAsync()).IsEqualTo(8);
@@ -233,7 +302,11 @@ public abstract class OutboxMaintenanceContractTests
         var sends = 0;
         var transport = new RecordingTransport((_, _) =>
         {
-            if (Interlocked.Increment(ref sends) == 2) recovered.TrySetResult();
+            if (Interlocked.Increment(ref sends) == 2)
+            {
+                recovered.TrySetResult();
+            }
+
             return ValueTask.CompletedTask;
         });
         using var worker = fixture.Worker(transport, deadRetention: false, failure: () =>
@@ -243,6 +316,7 @@ public abstract class OutboxMaintenanceContractTests
         });
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await worker.StartAsync(timeout.Token);
+
         try
         {
             await failed.Task.WaitAsync(timeout.Token);
@@ -252,7 +326,10 @@ public abstract class OutboxMaintenanceContractTests
             await recovered.Task.WaitAsync(timeout.Token);
             await Assert.That(Volatile.Read(ref failures)).IsEqualTo(1);
         }
-        finally { await worker.StopAsync(timeout.Token); }
+        finally
+        {
+            await worker.StopAsync(timeout.Token);
+        }
     }
 
     [Test]
@@ -275,11 +352,13 @@ public abstract class OutboxMaintenanceContractTests
     {
         await using var fixture = await CreateFixtureAsync();
         var old = DateTimeOffset.UtcNow.AddDays(-60);
+
         for (var i = 1; i <= 3; i++)
         {
             await fixture.InsertDead(Id(i), old);
             await fixture.InsertInbox("consumer", Id(i), old);
         }
+
         using var worker = fixture.Worker(new());
         using var cancelled = new CancellationTokenSource();
         await cancelled.CancelAsync();
@@ -318,6 +397,7 @@ public abstract class OutboxMaintenanceContractTests
         using var instrumentation = new RelayerInstrumentation();
         using var depth = new DepthCapture(instrumentation);
         var worker = fixture.Worker(new(), instrumentation: instrumentation);
+
         try
         {
             await Assert.That(depth.Collect()).IsEmpty();
@@ -330,7 +410,11 @@ public abstract class OutboxMaintenanceContractTests
             // Collection reads the cached refresh, never the store.
             await Assert.That(depth.Collect()["relayer.outbox.dead.depth"]).IsEqualTo(2L);
         }
-        finally { worker.Dispose(); }
+        finally
+        {
+            worker.Dispose();
+        }
+
         await Assert.That(depth.Collect()).IsEmpty();
     }
 
@@ -343,34 +427,54 @@ public abstract class OutboxMaintenanceContractTests
         using var depth = new DepthCapture(instrumentation);
         using var worker = fixture.Worker(new(), instrumentation: instrumentation);
         await worker.StartAsync();
+
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
             while (!depth.Collect().ContainsKey("relayer.outbox.dead.depth"))
+            {
                 await Task.Delay(10, timeout.Token);
+            }
+
             await Assert.That(depth.Collect()["relayer.outbox.dead.depth"]).IsEqualTo(1L);
         }
-        finally { await worker.StopAsync(); }
+        finally
+        {
+            await worker.StopAsync();
+        }
     }
 
     private sealed class DepthCapture : IDisposable
     {
         private readonly System.Diagnostics.Metrics.MeterListener _listener = new();
         private readonly Dictionary<string, long> _values = [];
-        public List<string?> Stores { get; } = [];
+
+        public List<string?> Stores
+        {
+            get;
+        } = [];
 
         public DepthCapture(RelayerInstrumentation instrumentation)
         {
             _listener.InstrumentPublished = (instrument, listener) =>
             {
                 if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name.EndsWith(".depth", StringComparison.Ordinal))
+                {
                     listener.EnableMeasurementEvents(instrument);
+                }
             };
             _listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
             {
                 _values[instrument.Name] = value;
+
                 foreach (var tag in tags)
-                    if (tag.Key == "relayer.outbox.store") Stores.Add(tag.Value as string);
+                {
+                    if (tag.Key == "relayer.outbox.store")
+                    {
+                        Stores.Add(tag.Value as string);
+                    }
+                }
             });
             _listener.Start();
         }
@@ -382,44 +486,109 @@ public abstract class OutboxMaintenanceContractTests
             return new(_values);
         }
 
-        public void Dispose() => _listener.Dispose();
+        public void Dispose()
+        {
+            _listener.Dispose();
+        }
     }
 
-    private static Guid Id(int i) => Guid.Parse($"01900000-0000-7000-8000-{i:D12}");
-    private static Guid HeaderId(OutgoingMessage message) => Guid.Parse(message.Headers.Span[0].Value.ToString());
+    private static Guid Id(int i)
+    {
+        return Guid.Parse($"01900000-0000-7000-8000-{i:D12}");
+    }
+
+    private static Guid HeaderId(OutgoingMessage message)
+    {
+        return Guid.Parse(message.Headers.Span[0].Value.ToString());
+    }
 
     protected sealed class FailureLogger<T>(Action? failure) : ILogger<T>
     {
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (exception is not null) failure?.Invoke();
+            if (exception is not null)
+            {
+                failure?.Invoke();
+            }
         }
     }
 
     protected sealed class RecordingTransport(Func<OutgoingMessage, CancellationToken, ValueTask>? send = null) : ITransport
     {
         public string Name => "events";
-        public ConcurrentQueue<Guid> Ids { get; } = new();
-        public byte[]? LastBody { get; private set; }
-        public DateTimeOffset? LastDeliverAt { get; private set; }
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = 1 };
+
+        public ConcurrentQueue<Guid> Ids
+        {
+            get;
+        } = new();
+
+        public byte[]? LastBody
+        {
+            get; private set;
+        }
+
+        public DateTimeOffset? LastDeliverAt
+        {
+            get; private set;
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = 1
+            };
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (send is not null) await send(message, cancellationToken);
+            if (send is not null)
+            {
+                await send(message, cancellationToken);
+            }
+
             Ids.Enqueue(HeaderId(message));
             LastBody = message.Body.ToArray();
             LastDeliverAt = message.DeliverAt;
         }
+
         public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
         {
-            for (var i = 0; i < messages.Length; i++) await SendAsync(messages.Span[i], cancellationToken);
+            for (var i = 0; i < messages.Length; i++)
+            {
+                await SendAsync(messages.Span[i], cancellationToken);
+            }
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

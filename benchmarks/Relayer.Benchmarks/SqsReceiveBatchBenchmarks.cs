@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Text;
 using Amazon.Runtime;
 using Amazon.SQS;
@@ -6,6 +5,7 @@ using Amazon.SQS.Model;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.Options;
 using Relayer.AmazonSqs;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -14,7 +14,11 @@ namespace Relayer.Benchmarks;
 [MemoryDiagnoser]
 public class SqsReceiveBatchBenchmarks
 {
-    [Params(2, 10)] public int Size { get; set; }
+    [Params(2, 10)]
+    public int Size
+    {
+        get; set;
+    }
     private Client _client = null!;
     private ReceiveMessageRequest _request = null!;
     private DeleteMessageBatchRequest _delete = null!;
@@ -28,18 +32,52 @@ public class SqsReceiveBatchBenchmarks
     {
         var messages = new List<Message>(Size);
         var successful = new List<DeleteMessageBatchResultEntry>(Size);
-        _delete = new() { QueueUrl = "url", Entries = new(Size) };
+        _delete = new()
+        {
+            QueueUrl = "url",
+            Entries = new(Size)
+        };
+
         for (var i = 0; i < Size; i++)
         {
             var id = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            messages.Add(new() { Body = new string('x', 256), ReceiptHandle = id, Attributes = [], MessageAttributes = [] });
-            _delete.Entries.Add(new() { Id = id, ReceiptHandle = id });
-            successful.Add(new() { Id = id });
+            messages.Add(new()
+            {
+                Body = new string('x', 256),
+                ReceiptHandle = id,
+                Attributes = [],
+                MessageAttributes = []
+            });
+            _delete.Entries.Add(new()
+            {
+                Id = id,
+                ReceiptHandle = id
+            });
+            successful.Add(new()
+            {
+                Id = id
+            });
         }
-        _client = new(new() { Messages = messages }, new() { Successful = successful, Failed = [] });
-        _request = new() { QueueUrl = "url", MaxNumberOfMessages = Size };
+
+        _client = new(new()
+        {
+            Messages = messages
+        }, new()
+        {
+            Successful = successful,
+            Failed = []
+        });
+        _request = new()
+        {
+            QueueUrl = "url",
+            MaxNumberOfMessages = Size
+        };
         _tracing = new(Options.Create(new TracingOptions()), []);
-        var settlement = new SqsSettlement(_tracing, new() { System = "aws_sqs", Destination = "orders" });
+        var settlement = new SqsSettlement(_tracing, new()
+        {
+            System = "aws_sqs",
+            Destination = "orders"
+        });
         _consumer = new(new("orders", new(), [], 1, 1, default), _client, "url",
             (delivery, token) => settlement.SettleAsync(delivery, Disposition.Complete, token));
         _batch = new(_consumer, Size);
@@ -49,20 +87,40 @@ public class SqsReceiveBatchBenchmarks
     public async ValueTask Native()
     {
         var response = await _client.ReceiveMessageAsync(_request);
+
         for (var i = 0; i < response.Messages.Count; i++)
         {
             Encoding.UTF8.GetBytes(response.Messages[i].Body, _body);
             _delete.Entries[i].ReceiptHandle = response.Messages[i].ReceiptHandle;
         }
+
         var deleted = await _client.DeleteMessageBatchAsync(_delete);
+
         foreach (var entry in _delete.Entries)
         {
             var success = false;
+
             foreach (var result in deleted.Successful)
-                if (result.Id == entry.Id) { success = true; break; }
+            {
+                if (result.Id == entry.Id)
+                {
+                    success = true;
+                    break;
+                }
+            }
+
             foreach (var failure in deleted.Failed)
-                if (failure.Id == entry.Id) throw new AmazonSQSException(failure.Message);
-            if (!success) throw new InvalidOperationException("Missing native delete result.");
+            {
+                if (failure.Id == entry.Id)
+                {
+                    throw new AmazonSQSException(failure.Message);
+                }
+            }
+
+            if (!success)
+            {
+                throw new InvalidOperationException("Missing native delete result.");
+            }
         }
     }
 
@@ -88,7 +146,15 @@ public class SqsReceiveBatchBenchmarks
     {
         private readonly Task<ReceiveMessageResponse> _receive = Task.FromResult(receive);
         private readonly Task<DeleteMessageBatchResponse> _delete = Task.FromResult(delete);
-        public override Task<ReceiveMessageResponse> ReceiveMessageAsync(ReceiveMessageRequest request, CancellationToken cancellationToken = default) => _receive;
-        public override Task<DeleteMessageBatchResponse> DeleteMessageBatchAsync(DeleteMessageBatchRequest request, CancellationToken cancellationToken = default) => _delete;
+
+        public override Task<ReceiveMessageResponse> ReceiveMessageAsync(ReceiveMessageRequest request, CancellationToken cancellationToken = default)
+        {
+            return _receive;
+        }
+
+        public override Task<DeleteMessageBatchResponse> DeleteMessageBatchAsync(DeleteMessageBatchRequest request, CancellationToken cancellationToken = default)
+        {
+            return _delete;
+        }
     }
 }

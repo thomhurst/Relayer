@@ -1,7 +1,7 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -18,14 +18,22 @@ public class BatchBufferedSendBenchmarks
     private readonly CancellationTokenSource _batch = new();
     private readonly ConsumeMessage _message = new()
     {
-        MessageId = "benchmark", MessageType = new("benchmark.buffered-batch", 1), Body = ReadOnlySequence<byte>.Empty
+        MessageId = "benchmark",
+        MessageType = new("benchmark.buffered-batch", 1),
+        Body = ReadOnlySequence<byte>.Empty
     };
 
     [Params(1, 10, 100)]
-    public int BatchSize { get; set; }
+    public int BatchSize
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool DistinctDeliveryTokens { get; set; }
+    public bool DistinctDeliveryTokens
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -51,58 +59,122 @@ public class BatchBufferedSendBenchmarks
                 _provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0]);
         _contexts = new DefaultMessageContext[BatchSize];
         _deliveries = new CancellationTokenSource[DistinctDeliveryTokens ? BatchSize : 1];
-        for (var i = 0; i < _deliveries.Length; i++) _deliveries[i] = new();
+
+        for (var i = 0; i < _deliveries.Length; i++)
+        {
+            _deliveries[i] = new();
+        }
     }
 
     [Benchmark]
     public async ValueTask BufferedBatch()
     {
         for (var i = 0; i < BatchSize; i++)
+        {
             _contexts[i] = _pipeline.RentContext(_message, _deliveries[DistinctDeliveryTokens ? i : 0].Token);
-        try { await _pipeline.ProcessBatchAsync(_contexts, _batch.Token).ConfigureAwait(false); }
+        }
+
+        try
+        {
+            await _pipeline.ProcessBatchAsync(_contexts, _batch.Token).ConfigureAwait(false);
+        }
         finally
         {
-            for (var i = 0; i < BatchSize; i++) { _contexts[i].Dispose(); _contexts[i] = null!; }
+            for (var i = 0; i < BatchSize; i++)
+            {
+                _contexts[i].Dispose();
+                _contexts[i] = null!;
+            }
         }
     }
 
     [GlobalCleanup]
     public async ValueTask Cleanup()
     {
-        foreach (var delivery in _deliveries) delivery.Dispose();
+        foreach (var delivery in _deliveries)
+        {
+            delivery.Dispose();
+        }
+
         _batch.Dispose();
         await _provider.DisposeAsync().ConfigureAwait(false);
     }
 
     public sealed class Options;
+
     [Message("benchmark.buffered-batch")]
     public sealed class Payload;
+
     public sealed class Handler : IBatchHandler<Payload>
     {
         public async ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken)
         {
             var sender = batch.Items[0].Context.Services.GetRequiredService<ISender>();
+
             for (var i = 0; i < batch.Count; i++)
+            {
                 await sender.SendWithoutOutboxAsync(batch.Items[i].Message, cancellationToken).ConfigureAwait(false);
+            }
+
             return BatchResult.Success;
         }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "benchmark/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) { destination.GetSpan(1)[0] = 1; destination.Advance(1); }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            destination.GetSpan(1)[0] = 1;
+            destination.Advance(1);
+        }
     }
+
     private sealed class Transport : ITransport
     {
         public string Name => "benchmark";
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => default;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new();
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

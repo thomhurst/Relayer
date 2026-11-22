@@ -51,6 +51,7 @@ await using (var scope = app.Services.CreateAsyncScope())
     await using var schema = dataSource.CreateCommand(PostgreSqlOutboxSchema.CreateScript());
     await schema.ExecuteNonQueryAsync();
 }
+
 app.MapPost("/orders/{id}", async (string id, OrdersDbContext db, CancellationToken cancellationToken) =>
 {
     using var outbox = db.EnlistRelayerOutbox();
@@ -66,7 +67,10 @@ public sealed record OrderPlaced(string OrderId);
 
 public sealed class Order
 {
-    public required string Id { get; init; }
+    public required string Id
+    {
+        get; init;
+    }
 }
 
 public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) : DbContext(options)

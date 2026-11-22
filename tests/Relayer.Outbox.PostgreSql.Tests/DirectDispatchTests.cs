@@ -52,11 +52,20 @@ public class DirectDispatchTests
         await Assert.That(options.ClaimDuration).IsEqualTo(TimeSpan.FromSeconds(19));
         await Assert.That(() => services.AddRelayerPostgreSqlDirectDispatch("store", source)).Throws<InvalidOperationException>();
         await Assert.That(() => new ServiceCollection().AddRelayerPostgreSqlDirectDispatch("bad", source,
-            dispatchOptions: new() { QueueCapacity = 0 })).Throws<ArgumentOutOfRangeException>();
+            dispatchOptions: new()
+            {
+                QueueCapacity = 0
+            })).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new ServiceCollection().AddRelayerPostgreSqlDirectDispatch("bad", source,
-            dispatchOptions: new() { BatchSize = 0 })).Throws<ArgumentOutOfRangeException>();
+            dispatchOptions: new()
+            {
+                BatchSize = 0
+            })).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new ServiceCollection().AddRelayerPostgreSqlDirectDispatch("bad", source,
-            dispatchOptions: new() { ClaimDuration = TimeSpan.Zero })).Throws<ArgumentOutOfRangeException>();
+            dispatchOptions: new()
+            {
+                ClaimDuration = TimeSpan.Zero
+            })).Throws<ArgumentOutOfRangeException>();
         configuration["BatchSize"] = "broken";
         await Assert.That(() => new ServiceCollection().AddRelayerPostgreSqlDirectDispatch("bad", source, configuration))
             .Throws<OptionsValidationException>();
@@ -89,6 +98,7 @@ public class DirectDispatchTests
         await using var provider = database.Services(transport);
         var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
         await worker.StartAsync(default);
+
         try
         {
             await using (var scope = provider.CreateAsyncScope())
@@ -98,7 +108,15 @@ public class DirectDispatchTests
                 await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(7),
                     options => options.Headers["custom"] = "café");
                 await Assert.That(transport.Entered.Task.IsCompleted).IsFalse();
-                if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+
+                if (synchronous)
+                {
+                    db.SaveChanges();
+                }
+                else
+                {
+                    await db.SaveChangesAsync();
+                }
                 // Save returns while the broker call is blocked. No polling timer triggers dispatch.
                 await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
                 await Assert.That(await database.Count()).IsEqualTo(1L);
@@ -113,7 +131,11 @@ public class DirectDispatchTests
             await Assert.That(Guid.Parse(System.Text.Encoding.UTF8.GetString(sent.Headers.Single(header => header.Key == "ce_id").Value)).Version).IsEqualTo(7);
             await Assert.That(await database.Count()).IsEqualTo(0L);
         }
-        finally { transport.Release.TrySetResult(); await Stop(worker); }
+        finally
+        {
+            transport.Release.TrySetResult();
+            await Stop(worker);
+        }
     }
 
     [Test]
@@ -125,17 +147,20 @@ public class DirectDispatchTests
         await using var provider = database.Services(transport);
         var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
         await worker.StartAsync(default);
+
         try
         {
             await using var scope = provider.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<TestContext>();
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
             await using (var transaction = db.Database.BeginTransaction())
             {
                 await sender.SendAsync(new Probe(1));
                 db.SaveChanges();
                 transaction.Rollback();
             }
+
             await using (var transaction = db.Database.BeginTransaction())
             {
                 await sender.SendAsync(new Probe(2));
@@ -144,6 +169,7 @@ public class DirectDispatchTests
                 await Assert.That(await database.Count()).IsEqualTo(0L);
                 transaction.Commit();
             }
+
             await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             await Assert.That(await database.Count()).IsEqualTo(1L);
             transport.Release.TrySetResult();
@@ -151,7 +177,11 @@ public class DirectDispatchTests
             await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 2 });
             await Assert.That(await database.Count()).IsEqualTo(0L);
         }
-        finally { transport.Release.TrySetResult(); await Stop(worker); }
+        finally
+        {
+            transport.Release.TrySetResult();
+            await Stop(worker);
+        }
     }
 
     [Test]
@@ -163,6 +193,7 @@ public class DirectDispatchTests
         await using var provider = database.Services(transport);
         var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
         await worker.StartAsync(default);
+
         try
         {
             await using (var scope = provider.CreateAsyncScope())
@@ -183,6 +214,7 @@ public class DirectDispatchTests
                 await outbox.EnlistAsync(Record(4), default);
                 await db.SaveChangesAsync();
             }
+
             transport.Release.TrySetResult();
             await Stop(worker);
             var firstSent = transport.Received.Single(sent => sent.Body.Length == 3);
@@ -193,7 +225,11 @@ public class DirectDispatchTests
             await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 1, 2, 3, 4 });
             await Assert.That(await database.Count()).IsEqualTo(0L);
         }
-        finally { transport.Release.TrySetResult(); await Stop(worker); }
+        finally
+        {
+            transport.Release.TrySetResult();
+            await Stop(worker);
+        }
     }
 
     [Test]
@@ -202,9 +238,13 @@ public class DirectDispatchTests
         await using var database = new Database();
         await database.Start();
         var transport = new Transport();
-        await using var provider = database.Services(transport, new() { BatchSize = 3 });
+        await using var provider = database.Services(transport, new()
+        {
+            BatchSize = 3
+        });
         var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
         await worker.StartAsync(default);
+
         try
         {
             await using (var scope = provider.CreateAsyncScope())
@@ -221,6 +261,7 @@ public class DirectDispatchTests
                 await outbox.EnlistAsync(Record(7, "single"), default);
                 await db.SaveChangesAsync();
             }
+
             await Stop(worker);
             await Assert.That(transport.Calls.Select(call => $"{call.Destination}:{call.Count}")).IsEquivalentTo(new[]
             { "alpha:2", "alpha:1", "beta:2", "single:1", "single:1" });
@@ -229,7 +270,10 @@ public class DirectDispatchTests
             await Assert.That(await database.Scalar("SELECT count(*) FROM delete_log")).IsEqualTo(5L);
             await Assert.That(await database.Scalar("SELECT count(*) FROM update_log")).IsEqualTo(5L);
         }
-        finally { await Stop(worker); }
+        finally
+        {
+            await Stop(worker);
+        }
     }
 
     [Test]
@@ -243,9 +287,13 @@ public class DirectDispatchTests
         await database.Start();
         var transport = new Transport { CapabilityFailure = failure };
         var log = new CaptureLogger();
-        await using var provider = database.Services(transport, new() { BatchSize = 2 }, logger: log);
+        await using var provider = database.Services(transport, new()
+        {
+            BatchSize = 2
+        }, logger: log);
         var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
         await worker.StartAsync(default);
+
         try
         {
             await using (var scope = provider.CreateAsyncScope())
@@ -262,6 +310,7 @@ public class DirectDispatchTests
                 await outbox.EnlistAsync(Record(5, "zeta"), default);
                 await db.SaveChangesAsync();
             }
+
             await Stop(worker);
             await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 4, 5 });
             await Assert.That(await database.Count()).IsEqualTo(3L);
@@ -269,7 +318,10 @@ public class DirectDispatchTests
             await Assert.That(await database.Scalar("SELECT count(*) FROM update_log")).IsEqualTo(2L);
             await Assert.That(log.Messages.Count(message => message.Contains("Direct outbox dispatch failed", StringComparison.Ordinal))).IsEqualTo(1);
         }
-        finally { await Stop(worker); }
+        finally
+        {
+            await Stop(worker);
+        }
     }
 
     [Test]
@@ -277,15 +329,21 @@ public class DirectDispatchTests
     {
         await using var database = new Database();
         await database.Start();
+
         await using (var command = database.Source.CreateCommand($"""
             CREATE FUNCTION fail_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'completion unavailable'; END; $$;
             CREATE TRIGGER fail_completion BEFORE DELETE ON {Database.Table} FOR EACH STATEMENT EXECUTE FUNCTION fail_delete();
-            """)) await command.ExecuteNonQueryAsync();
+            """))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         var transport = new Transport();
         var log = new CaptureLogger();
         await using var provider = database.Services(transport, logger: log);
         var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
         await worker.StartAsync(default);
+
         try
         {
             await database.Commit(provider, Record(1));
@@ -295,7 +353,10 @@ public class DirectDispatchTests
             await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE attempts = 0 AND last_error IS NULL AND claim_token IS NOT NULL")).IsEqualTo(2L);
             await Assert.That(log.Messages.Count(message => message.Contains("completion failed", StringComparison.Ordinal))).IsEqualTo(2);
         }
-        finally { await Stop(worker); }
+        finally
+        {
+            await Stop(worker);
+        }
     }
 
     [Test]
@@ -308,20 +369,28 @@ public class DirectDispatchTests
         await using var provider = database.Services(transport, logger: log);
         var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
         await worker.StartAsync(default);
+
         try
         {
             await database.Commit(provider, Record(1));
             await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             // Force expiry while the native send is blocked, without depending on elapsed time.
             await using (var command = database.Source.CreateCommand($"UPDATE {Database.Table} SET claim_expires_at = now() - interval '1 second'"))
+            {
                 await command.ExecuteNonQueryAsync();
+            }
+
             transport.Release.TrySetResult();
             await Stop(worker);
             await Assert.That(transport.Received.Count).IsEqualTo(1);
             await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE attempts = 0 AND last_error IS NULL")).IsEqualTo(1L);
             await Assert.That(log.Messages.Any(message => message.Contains("deleted 0 of 1 sent rows", StringComparison.Ordinal))).IsTrue();
         }
-        finally { transport.Release.TrySetResult(); await Stop(worker); }
+        finally
+        {
+            transport.Release.TrySetResult();
+            await Stop(worker);
+        }
     }
 
     [Test]
@@ -334,6 +403,7 @@ public class DirectDispatchTests
         await using var provider = database.Services(transport, logger: log);
         var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
         await worker.StartAsync(default);
+
         try
         {
             await database.Commit(provider, Record(1));
@@ -349,7 +419,11 @@ public class DirectDispatchTests
             await Assert.That(transport.Received.Count).IsEqualTo(0);
             await Assert.That(await database.Count()).IsEqualTo(4L);
         }
-        finally { transport.Release.TrySetResult(); await Stop(worker); }
+        finally
+        {
+            transport.Release.TrySetResult();
+            await Stop(worker);
+        }
     }
 
     [Test]
@@ -370,6 +444,7 @@ public class DirectDispatchTests
         secondRows[0].Copy(record, 32);
         await first.StartAsync(default);
         await second.StartAsync(default);
+
         try
         {
             first.Committed(firstRows, firstRows.Count);
@@ -383,7 +458,12 @@ public class DirectDispatchTests
             await Assert.That(transport.Received.Count).IsEqualTo(1);
             await Assert.That(await database.Count()).IsEqualTo(0L);
         }
-        finally { transport.Release.TrySetResult(); await Stop(first); await Stop(second); }
+        finally
+        {
+            transport.Release.TrySetResult();
+            await Stop(first);
+            await Stop(second);
+        }
     }
 
     [Test]
@@ -409,6 +489,7 @@ public class DirectDispatchTests
         secondRows[0].Copy(reverse ? available : held, 32);
         secondRows[1].Copy(reverse ? held : available, 32);
         await first.StartAsync(default);
+
         try
         {
             first.Committed(firstRows, firstRows.Count);
@@ -426,7 +507,12 @@ public class DirectDispatchTests
             await Assert.That(blockedTransport.Received.Single().Body).IsEquivalentTo(new byte[] { 1 });
             await Assert.That(await database.Count()).IsEqualTo(0L);
         }
-        finally { blockedTransport.Release.TrySetResult(); await Stop(first); await Stop(second); }
+        finally
+        {
+            blockedTransport.Release.TrySetResult();
+            await Stop(first);
+            await Stop(second);
+        }
     }
 
     [Test]
@@ -436,9 +522,13 @@ public class DirectDispatchTests
         await database.Start();
         var transport = new Transport { Block = true };
         var log = new CaptureLogger();
-        await using var provider = database.Services(transport, new() { QueueCapacity = 1 }, logger: log);
+        await using var provider = database.Services(transport, new()
+        {
+            QueueCapacity = 1
+        }, logger: log);
         var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
         await worker.StartAsync(default);
+
         try
         {
             await database.Commit(provider, Record(1));
@@ -452,14 +542,20 @@ public class DirectDispatchTests
             await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 1, 2 });
             await Assert.That(await database.Count()).IsEqualTo(1L);
         }
-        finally { transport.Release.TrySetResult(); await Stop(worker); }
+        finally
+        {
+            transport.Release.TrySetResult();
+            await Stop(worker);
+        }
     }
 
     private static OutboxRecord Record(byte value, string destination = "destination", WireString? orderingKey = null,
         DateTimeOffset? deliverAt = null, KeyValuePair<string, WireString>[]? headers = null, byte[]? body = null,
-        string transport = "events") =>
-        new(Guid.CreateVersion7(), transport, "dispatch.probe;v=1",
-            new(destination, body ?? [value], headers ?? [], orderingKey, deliverAt), DateTimeOffset.UtcNow);
+        string transport = "events")
+    {
+        return new(Guid.CreateVersion7(), transport, "dispatch.probe;v=1",
+                    new(destination, body ?? [value], headers ?? [], orderingKey, deliverAt), DateTimeOffset.UtcNow);
+    }
 
     private static async Task Stop(PostgreSqlDirectDispatcher worker)
     {
@@ -472,13 +568,21 @@ public class DirectDispatchTests
         internal const string Schema = "Dispatch\"Schema";
         internal const string Table = "\"Dispatch\"\"Schema\".\"test_outbox\"";
         private readonly PostgreSqlFixture _fixture = new();
-        internal NpgsqlDataSource Source { get; private set; } = null!;
+
+        internal NpgsqlDataSource Source
+        {
+            get; private set;
+        } = null!;
 
         internal async Task Start()
         {
             await _fixture.StartAsync();
             Source = NpgsqlDataSource.Create(_fixture.ConnectionString);
-            await using var command = Source.CreateCommand(PostgreSqlOutboxSchema.CreateScript(new() { Schema = Schema, TablePrefix = "test_" }) + $"""
+            await using var command = Source.CreateCommand(PostgreSqlOutboxSchema.CreateScript(new()
+            {
+                Schema = Schema,
+                TablePrefix = "test_"
+            }) + $"""
                 CREATE TABLE delete_log (id integer);
                 CREATE FUNCTION log_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO delete_log VALUES (1); RETURN NULL; END; $$;
                 CREATE TRIGGER delete_count AFTER DELETE ON {Table} FOR EACH STATEMENT EXECUTE FUNCTION log_delete();
@@ -499,8 +603,17 @@ public class DirectDispatchTests
             services.AddSingleton<IMessageSerializer, Serializer>();
             services.AddRelayerEntityFrameworkCoreOutbox();
             services.AddRelayerPostgreSqlMaintenance("schedules", Source, new PostgreSqlMaintenanceOptions { Schema = Schema, TablePrefix = "test_" });
-            if (enableDispatch) services.AddRelayerPostgreSqlDirectDispatch("store", Source,
-                new() { Schema = Schema, TablePrefix = "test_" }, options);
+
+            if (enableDispatch)
+            {
+                services.AddRelayerPostgreSqlDirectDispatch("store", Source,
+                new()
+                {
+                    Schema = Schema,
+                    TablePrefix = "test_"
+                }, options);
+            }
+
             services.AddDbContext<TestContext>((provider, builder) => builder.UseNpgsql(_fixture.ConnectionString)
                 .AddRelayerOutbox(provider, new EntityFrameworkCoreOutboxOptions
                 {
@@ -525,7 +638,11 @@ public class DirectDispatchTests
             await db.SaveChangesAsync();
         }
 
-        internal Task<long> Count() => Scalar($"SELECT count(*) FROM {Table}");
+        internal Task<long> Count()
+        {
+            return Scalar($"SELECT count(*) FROM {Table}");
+        }
+
         internal async Task<long> Scalar(string sql)
         {
             await using var command = Source.CreateCommand(sql);
@@ -534,29 +651,55 @@ public class DirectDispatchTests
 
         public async ValueTask DisposeAsync()
         {
-            if (Source is not null) await Source.DisposeAsync();
+            if (Source is not null)
+            {
+                await Source.DisposeAsync();
+            }
+
             await _fixture.DisposeAsync();
         }
     }
 
     public sealed class TestContext(DbContextOptions<TestContext> options) : DbContext(options);
+
     public sealed class Empty;
+
     [Message("dispatch.probe")]
     public sealed record Probe(byte Value);
 
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
-        { destination.GetSpan(1)[0] = ((Probe)(object)message!).Value; destination.Advance(1); }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+        {
+            destination.GetSpan(1)[0] = ((Probe)(object)message!).Value;
+            destination.Advance(1);
+        }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     internal sealed class CaptureLogger : ILogger<PostgreSqlDirectDispatcher>
     {
-        internal ConcurrentQueue<string> Messages { get; } = new();
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
+        internal ConcurrentQueue<string> Messages
+        {
+            get;
+        } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             Messages.Enqueue(formatter(state, exception));

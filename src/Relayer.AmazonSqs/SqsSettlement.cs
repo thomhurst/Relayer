@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Amazon.SQS;
+using Relayer.Transports;
 
 namespace Relayer.AmazonSqs;
 
@@ -22,10 +22,16 @@ internal sealed class SqsSettlement(MessageTracing tracing, MessagingEndpoint en
         {
             var parent = Activity.Current;
             var activity = _delete.Start();
-            if (activity is { IsAllDataRequested: true }) SqsMessageBinding.EnrichActivity(activity, delivery);
+
+            if (activity is { IsAllDataRequested: true })
+            {
+                SqsMessageBinding.EnrichActivity(activity, delivery);
+            }
+
             Activity.Current = parent;
             return batch.DeleteAsync(activity);
         }
+
         return SettleSingleAsync(delivery, disposition, token);
     }
 
@@ -33,11 +39,23 @@ internal sealed class SqsSettlement(MessageTracing tracing, MessagingEndpoint en
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SettleSingleAsync(SqsDelivery delivery, Disposition disposition, CancellationToken token)
     {
-        if (disposition.Kind == DispositionKind.SettledByHandler) return;
+        if (disposition.Kind == DispositionKind.SettledByHandler)
+        {
+            return;
+        }
+
         if (disposition.Kind is not (DispositionKind.Complete or DispositionKind.Redeliver))
+        {
             throw new NotSupportedException("SQS cannot dead-letter a specific message with metadata. Configure Failure.DeadLetterEndpoint to copy durably before deletion.");
+        }
+
         using var activity = (disposition.Kind == DispositionKind.Complete ? _delete : _visibility).Start();
-        if (activity is { IsAllDataRequested: true }) SqsMessageBinding.EnrichActivity(activity, delivery);
+
+        if (activity is { IsAllDataRequested: true })
+        {
+            SqsMessageBinding.EnrichActivity(activity, delivery);
+        }
+
         try
         {
             if (disposition.Kind == DispositionKind.Complete)
@@ -58,17 +76,29 @@ internal sealed class SqsSettlement(MessageTracing tracing, MessagingEndpoint en
             MessageOperationTracing.Fail(activity, error.ErrorCode ?? "_OTHER");
             throw;
         }
-        catch { MessageOperationTracing.Fail(activity, "_OTHER"); throw; }
+        catch
+        {
+            MessageOperationTracing.Fail(activity, "_OTHER");
+            throw;
+        }
     }
 
     internal static int VisibilitySeconds(SqsDelivery delivery, TimeSpan delay)
     {
-        if (delay < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(delay));
+        if (delay < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(delay));
+        }
+
         var seconds = checked((int)Math.Ceiling(delay.TotalSeconds));
         // SQS measures the ceiling from the original ReceiveMessage request, not a visibility change.
         var remaining = TimeSpan.FromHours(12) - delivery.Time.GetElapsedTime(delivery.ReceivedAt);
+
         if (seconds > 43_200 || TimeSpan.FromSeconds(seconds) >= remaining)
+        {
             throw new InvalidOperationException("SQS visibility redelivery exceeds the remaining twelve-hour receive deadline. Use a shorter delay or durable outbox scheduling.");
+        }
+
         return seconds;
     }
 }

@@ -20,8 +20,11 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
     {
         var data = new StoreData(database);
         await data.Create();
+
         for (var i = 1; i <= 4; i++)
+        {
             await data.Insert(Id(i), DateTimeOffset.UtcNow, 0, orderedHeaders: true);
+        }
         // A valid predecessor must commit even when decoding a later row fails.
         await data.Execute($"UPDATE {data.Table} SET {corruption} WHERE seq = 2; " +
             $"UPDATE {data.Table} SET ordering_key = N'other' WHERE seq = 4");
@@ -50,15 +53,21 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
     [Arguments(true)]
     public async Task Bulk_flush_preserves_send_order_and_sequential_commits_despite_reversed_UUIDs(bool synchronous)
     {
-        var data = new StoreData(database, new() { Lanes = 1, TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("s") + "_" });
+        var data = new StoreData(database, new()
+        {
+            Lanes = 1,
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("s") + "_"
+        });
         await data.Create();
         await using var services = new ServiceCollection().AddRelayerSqlServerOutbox(data.Options).BuildServiceProvider();
         await using var scope = services.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<SqlServerOutbox>();
         var expected = new List<Guid>();
+
         for (var batch = 0; batch < 2; batch++)
         {
             await using var transaction = await outbox.BeginTransactionAsync(database.ConnectionString);
+
             for (var i = 0; i < 64; i++)
             {
                 var id = Id(128 - (batch * 64 + i));
@@ -66,19 +75,30 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
                 await outbox.EnlistAsync(new(id, "events", "probe;v=1", new OutgoingMessage("orders", new byte[] { 1 },
                     new KeyValuePair<string, WireString>[] { new("ce_id", new(id.ToString())), new(OutboxHeaders.Sequence, new("spoofed")) }, new WireString("key")), DateTimeOffset.UtcNow), default);
             }
-            if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+
+            if (synchronous)
+            {
+                transaction.Commit();
+            }
+            else
+            {
+                await transaction.CommitAsync();
+            }
         }
+
         var transport = new RecordingTransport();
         using var worker = Worker(data, transport, batchSize: 128);
         // A bounded dispatch may stop at its admission deadline on a busy database.
         // Drain with a progress assertion; ordering must hold across batch boundaries too.
         var dispatched = 0;
+
         while (dispatched < expected.Count)
         {
             var sent = await worker.DispatchLaneAsync(0, default);
             await Assert.That(sent).IsGreaterThan(0);
             dispatched += sent;
         }
+
         await Assert.That(dispatched).IsEqualTo(128);
         await Assert.That(transport.Ids.SequenceEqual(expected)).IsTrue();
         await Assert.That(transport.Sequences.Count).IsEqualTo(128);
@@ -161,8 +181,12 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await using var connection = await Open();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
         await Assert.That(await first.AcquireAsync(connection, transaction, 0, default)).IsTrue();
+
         await using (var expire = new SqlCommand($"UPDATE {SqlServerOutboxSchema.OrderedLeaseTable(data.Options)} SET expires_at = DATEADD(second, -1, SYSUTCDATETIME())", connection, transaction))
+        {
             await expire.ExecuteNonQueryAsync();
+        }
+
         await using var rival = await Open();
         await using var rivalTransaction = (SqlTransaction)await rival.BeginTransactionAsync();
         using var cancellation = new CancellationTokenSource();
@@ -170,9 +194,20 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await WaitForContention(data.Options.TablePrefix);
         cancellation.Cancel();
         var cancelled = false;
-        try { await blocked; }
-        catch (OperationCanceledException) { cancelled = true; }
-        catch (SqlException error) when (cancellation.IsCancellationRequested && error.Message.Contains("Operation cancelled by user", StringComparison.Ordinal)) { cancelled = true; }
+
+        try
+        {
+            await blocked;
+        }
+        catch (OperationCanceledException)
+        {
+            cancelled = true;
+        }
+        catch (SqlException error) when (cancellation.IsCancellationRequested && error.Message.Contains("Operation cancelled by user", StringComparison.Ordinal))
+        {
+            cancelled = true;
+        }
+
         await Assert.That(cancelled).IsTrue();
         await transaction.CommitAsync();
         // Retry in a new transaction after cancellation. Expiry is now visible and takeover succeeds.
@@ -191,13 +226,18 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await data.Insert(Id(2), DateTimeOffset.UtcNow, 0, orderedHeaders: true);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var one = new RecordingTransport(async (_, token) => { entered.TrySetResult(); await release.Task.WaitAsync(token); });
+        var one = new RecordingTransport(async (_, token) =>
+        {
+            entered.TrySetResult();
+            await release.Task.WaitAsync(token);
+        });
         var two = new RecordingTransport();
         using var first = Worker(data, one, batchSize: 1);
         using var second = Worker(data, two, batchSize: 1);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var owner = first.DispatchLaneAsync(0, deadline.Token).AsTask();
         Task<int>? contender = null;
+
         try
         {
             await entered.Task.WaitAsync(deadline.Token);
@@ -205,7 +245,11 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
             await WaitForContention(data.Options.TablePrefix);
             await Assert.That(two.Ids.Count).IsEqualTo(0);
         }
-        finally { release.TrySetResult(); }
+        finally
+        {
+            release.TrySetResult();
+        }
+
         await Assert.That(await owner).IsEqualTo(1);
         await Assert.That(await contender!).IsEqualTo(0);
         await data.Execute($"UPDATE {SqlServerOutboxSchema.OrderedLeaseTable(data.Options)} SET expires_at = DATEADD(second, -1, SYSUTCDATETIME())");
@@ -243,15 +287,24 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await data.Create();
         await data.Insert(Id(1), DateTimeOffset.UtcNow, 0, orderedHeaders: true);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var transport = new RecordingTransport(async (_, token) => { entered.SetResult(); await Task.Delay(Timeout.InfiniteTimeSpan, token); });
+        var transport = new RecordingTransport(async (_, token) =>
+        {
+            entered.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        });
         using var worker = Worker(data, transport);
         await worker.StartAsync(default);
-        try { await entered.Task.WaitAsync(TimeSpan.FromSeconds(15)); }
+
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        }
         finally
         {
             using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await worker.StopAsync(shutdown.Token);
         }
+
         var healthy = new RecordingTransport();
         using var replacement = Worker(data, healthy);
         await Assert.That(await replacement.DispatchLaneAsync(0, default)).IsEqualTo(1);
@@ -272,8 +325,12 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         var wrong = new OutboxClaim(Id(1), Guid.NewGuid());
         await Assert.That(await lane.CompleteAsync(connection, transaction, wrong, default)).IsFalse();
         await Assert.That(await lane.FailAsync(connection, transaction, wrong, "wrong", default)).IsFalse();
+
         await using (var expire = new SqlCommand($"UPDATE {data.Table} SET claim_expires_at = DATEADD(second, -1, SYSUTCDATETIME())", connection, transaction))
+        {
             await expire.ExecuteNonQueryAsync();
+        }
+
         await Assert.That(await lane.CompleteAsync(connection, transaction, claim, default)).IsFalse();
         await Assert.That(await lane.FailAsync(connection, transaction, claim, "expired", default)).IsFalse();
         var next = new OutboxClaim(Id(1), Guid.NewGuid());
@@ -287,7 +344,11 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
     public async Task Named_options_bind_independently_and_fail_early()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        { ["Lanes"] = "8", ["BatchSize"] = "17", ["TablePrefix"] = "orders_" }).Build();
+        {
+            ["Lanes"] = "8",
+            ["BatchSize"] = "17",
+            ["TablePrefix"] = "orders_"
+        }).Build();
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton<ITransport>(new RecordingTransport());
         services.AddRelayerSqlServerOrderedDispatch("orders", "Server=unused", configuration);
@@ -316,6 +377,7 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         ordered.Committed(Rows(Id(1)), 1);
         await Assert.That(ordered.Wake.Signalled).IsFalse();
         await ((IOrderedLaneWorker)ordered).RebalanceAsync(default);
+
         try
         {
             ordered.Committed(Rows(Id(2), DateTimeOffset.UtcNow.AddMinutes(1)), 1);
@@ -324,7 +386,10 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
             ordered.Committed(Rows(Id(4)), 1);
             await Assert.That(ordered.Wake.Signalled).IsTrue();
         }
-        finally { await ((IOrderedLaneWorker)ordered).ReleaseAsync(default); }
+        finally
+        {
+            await ((IOrderedLaneWorker)ordered).ReleaseAsync(default);
+        }
     }
 
     [Test]
@@ -334,7 +399,11 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await data.Create();
         var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var clock = new PollClock();
-        var transport = new RecordingTransport((_, _) => { delivered.TrySetResult(); return ValueTask.CompletedTask; });
+        var transport = new RecordingTransport((_, _) =>
+        {
+            delivered.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
         using var ordered = new SqlServerOrderedDispatcher(database.ConnectionString, Options(data), [transport],
             NullLogger<SqlServerOrderedDispatcher>.Instance, clock);
         // Direct dispatch requires an explicit catalog; the fixture's tables live in the login's default, master.
@@ -343,6 +412,7 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
             NullLogger<SqlServerDirectDispatcher>.Instance, ordered: ordered);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await ordered.StartAsync(timeout.Token);
+
         try
         {
             // The poll timer never fires, so only the commit handoff can start the next scan.
@@ -351,7 +421,11 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
             direct.Committed(Rows(Id(1)), 1);
             await delivered.Task.WaitAsync(timeout.Token);
         }
-        finally { await ordered.StopAsync(timeout.Token); }
+        finally
+        {
+            await ordered.StopAsync(timeout.Token);
+        }
+
         await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
     }
 
@@ -365,32 +439,63 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
 
     private sealed class PollClock : TimeProvider
     {
-        internal TaskCompletionSource FirstPoll { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource FirstPoll
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             FirstPoll.TrySetResult();
             return new SilentTimer();
         }
+
         private sealed class SilentTimer : ITimer
         {
-            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-            public void Dispose() { }
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                return true;
+            }
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return ValueTask.CompletedTask;
+            }
         }
     }
 
-    private SqlServerOrderedDispatcher Worker(StoreData data, RecordingTransport transport, int batchSize = 100, int maxAttempts = 10) =>
-        new(database.ConnectionString, Options(data, batchSize, maxAttempts), [transport], NullLogger<SqlServerOrderedDispatcher>.Instance);
-    private static SqlServerOrderedDispatchOptions Options(StoreData data, int batchSize = 100, int maxAttempts = 10) => new()
-    { Schema = data.Options.Schema, TablePrefix = data.Options.TablePrefix, Lanes = 1, BatchSize = batchSize, MaxDispatchAttempts = maxAttempts };
+    private SqlServerOrderedDispatcher Worker(StoreData data, RecordingTransport transport, int batchSize = 100, int maxAttempts = 10)
+    {
+        return new(database.ConnectionString, Options(data, batchSize, maxAttempts), [transport], NullLogger<SqlServerOrderedDispatcher>.Instance);
+    }
+
+    private static SqlServerOrderedDispatchOptions Options(StoreData data, int batchSize = 100, int maxAttempts = 10)
+    {
+        return new()
+        {
+            Schema = data.Options.Schema,
+            TablePrefix = data.Options.TablePrefix,
+            Lanes = 1,
+            BatchSize = batchSize,
+            MaxDispatchAttempts = maxAttempts
+        };
+    }
+
     private async Task WaitForContention(string prefix)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await using var connection = await Open();
         await using var query = new SqlCommand("SELECT COUNT_BIG(*) FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE r.wait_type LIKE 'LCK%' AND t.text LIKE @pattern", connection);
         query.Parameters.Add("@pattern", SqlDbType.NVarChar, -1).Value = "%" + prefix + "ordered_leases%";
+
         while ((long)(await query.ExecuteScalarAsync(deadline.Token))! == 0)
+        {
             await Task.Delay(10, deadline.Token);
+        }
     }
 
     private async Task<SqlConnection> Open()
@@ -399,28 +504,83 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await connection.OpenAsync();
         return connection;
     }
-    private static Guid Id(int number) => Guid.Parse($"01900000-0000-7000-8000-{number:x12}");
+
+    private static Guid Id(int number)
+    {
+        return Guid.Parse($"01900000-0000-7000-8000-{number:x12}");
+    }
 
     private sealed class RecordingTransport(Func<OutgoingMessage, CancellationToken, ValueTask>? send = null) : ITransport
     {
-        internal Func<OutgoingMessage, CancellationToken, ValueTask>? Send { get; set; } = send;
-        internal ConcurrentQueue<Guid> Ids { get; } = new();
-        internal ConcurrentQueue<long> Sequences { get; } = new();
+        internal Func<OutgoingMessage, CancellationToken, ValueTask>? Send
+        {
+            get; set;
+        } = send;
+
+        internal ConcurrentQueue<Guid> Ids
+        {
+            get;
+        } = new();
+
+        internal ConcurrentQueue<long> Sequences
+        {
+            get;
+        } = new();
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true
+            };
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (Send is not null) await Send(message, cancellationToken);
+            if (Send is not null)
+            {
+                await Send(message, cancellationToken);
+            }
+
             foreach (var header in message.Headers.Span)
             {
-                if (header.Key == "ce_id") Ids.Enqueue(Guid.Parse(header.Value.ToString()));
-                if (header.Key == OutboxHeaders.Sequence) Sequences.Enqueue(long.Parse(header.Value.ToString(), System.Globalization.CultureInfo.InvariantCulture));
+                if (header.Key == "ce_id")
+                {
+                    Ids.Enqueue(Guid.Parse(header.Value.ToString()));
+                }
+
+                if (header.Key == OutboxHeaders.Sequence)
+                {
+                    Sequences.Enqueue(long.Parse(header.Value.ToString(), System.Globalization.CultureInfo.InvariantCulture));
+                }
             }
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken token) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken token) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken token)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

@@ -20,7 +20,10 @@ public class PostgreSqlLocalDirectDispatchBenchmarks
     private int _remaining;
 
     [Params(1, 2)]
-    public int Concurrency { get; set; }
+    public int Concurrency
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -43,18 +46,29 @@ public class PostgreSqlLocalDirectDispatchBenchmarks
         // The settlement signal precedes admission release. Wait outside measurement for all slots.
         var receiver = _transport.GetReceiver("work")!;
         var admitted = 0;
+
         try
         {
             var spinner = new SpinWait();
+
             while (admitted < Concurrency)
             {
-                if (receiver.TryEnter()) admitted++;
-                else spinner.SpinOnce();
+                if (receiver.TryEnter())
+                {
+                    admitted++;
+                }
+                else
+                {
+                    spinner.SpinOnce();
+                }
             }
         }
         finally
         {
-            for (var i = 0; i < admitted; i++) receiver.Exit();
+            for (var i = 0; i < admitted; i++)
+            {
+                receiver.Exit();
+            }
         }
 
         foreach (var row in _rows)
@@ -70,6 +84,7 @@ public class PostgreSqlLocalDirectDispatchBenchmarks
             insert.ExecuteNonQuery();
             row.Copy(new(id, "local", "benchmark;v=1", new("work", default), now), 1);
         }
+
         _remaining = _rows.Count;
         _settled = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
@@ -89,7 +104,12 @@ public class PostgreSqlLocalDirectDispatchBenchmarks
     private async ValueTask<Disposition> SettleAsync(PostgreSqlLocalDelivery delivery, CancellationToken cancellationToken)
     {
         await _transport.SettleAsync(delivery, Disposition.Complete, cancellationToken);
-        if (Interlocked.Decrement(ref _remaining) == 0) _settled.SetResult();
+
+        if (Interlocked.Decrement(ref _remaining) == 0)
+        {
+            _settled.SetResult();
+        }
+
         return Disposition.SettledByHandler;
     }
 

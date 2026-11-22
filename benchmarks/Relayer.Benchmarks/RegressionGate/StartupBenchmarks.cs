@@ -38,7 +38,11 @@ public class StartupBenchmarks
         _messages = _provider.GetRequiredService<MessageTypeRegistry>();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();
         _handlers = _provider.GetRequiredService<HandlerRegistry>().Descriptors;
-        if (_handlers.Count != 100) throw new InvalidOperationException("Startup fixture requires exactly 100 handlers.");
+
+        if (_handlers.Count != 100)
+        {
+            throw new InvalidOperationException("Startup fixture requires exactly 100 handlers.");
+        }
     }
 
     [Benchmark]
@@ -46,10 +50,18 @@ public class StartupBenchmarks
     {
         var builder = new ConsumePipelineBuilder(_scopes, _messages, _serializer,
             static (_, error, _) => ValueTask.FromException(error));
-        foreach (var handler in _handlers) builder.Handler(handler);
+
+        foreach (var handler in _handlers)
+        {
+            builder.Handler(handler);
+        }
+
         return builder.Build();
     }
 
     [GlobalCleanup]
-    public void Cleanup() => _provider.Dispose();
+    public void Cleanup()
+    {
+        _provider.Dispose();
+    }
 }

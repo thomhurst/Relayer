@@ -1,7 +1,7 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
 
@@ -11,17 +11,32 @@ internal sealed class PostgreSqlDispatchFailures(IServiceScopeFactory? scopes)
     private readonly DefaultFailureClassifier _fallback = new();
 
     // The local-delivery wrapper only carries the classified action; record the handler's own failure.
-    internal static string Describe(Exception error) =>
-        OutboxErrorText.Describe(error is PostgreSqlLocalFailure { InnerException: { } inner } ? inner : error);
+    internal static string Describe(Exception error)
+    {
+        return OutboxErrorText.Describe(error is PostgreSqlLocalFailure { InnerException: { } inner } ? inner : error);
+    }
 
     internal async ValueTask<FailureAction> ClassifyAsync(Exception error, Guid id, string wireType,
         int attempt, string? tenantId, OutgoingMessage message, CancellationToken cancellationToken)
     {
-        if (error is PostgreSqlLocalFailure local) return local.Action;
-        if (scopes is null) return _fallback.Classify(error, new Context(id, wireType, attempt, message, null, cancellationToken));
+        if (error is PostgreSqlLocalFailure local)
+        {
+            return local.Action;
+        }
+
+        if (scopes is null)
+        {
+            return _fallback.Classify(error, new Context(id, wireType, attempt, message, null, cancellationToken));
+        }
+
         await using var scope = scopes.CreateAsyncScope();
         var services = scope.ServiceProvider;
-        if (tenantId is not null && services.GetService<TenantContext>() is { } tenant) tenant.Id = new(tenantId);
+
+        if (tenantId is not null && services.GetService<TenantContext>() is { } tenant)
+        {
+            tenant.Id = new(tenantId);
+        }
+
         var classifier = services.GetService<IFailureClassifier>() ?? _fallback;
         return classifier.Classify(error, new Context(id, wireType, attempt, message, services, cancellationToken));
     }
@@ -30,6 +45,7 @@ internal sealed class PostgreSqlDispatchFailures(IServiceScopeFactory? scopes)
         IServiceProvider? services, CancellationToken cancellationToken) : MessageContext
     {
         public override string MessageId => id.ToString();
+
         public override MessageType MessageType
         {
             get
@@ -39,10 +55,21 @@ internal sealed class PostgreSqlDispatchFailures(IServiceScopeFactory? scopes)
                     ? new(wireType[..separator], version) : new(wireType, 1);
             }
         }
-        public override MessageHeaders Headers { get; } = new HeadersView(message.Headers);
+
+        public override MessageHeaders Headers
+        {
+            get;
+        } = new HeadersView(message.Headers);
+
         public override int Attempt => attempt;
+
         public override IServiceProvider Services => services ?? throw new InvalidOperationException("Dispatch classifier services require a registered IServiceScopeFactory.");
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => cancellationToken;
     }
 
@@ -51,7 +78,14 @@ internal sealed class PostgreSqlDispatchFailures(IServiceScopeFactory? scopes)
         public override bool TryGetValue(string name, out WireString value)
         {
             foreach (var header in headers.Span)
-                if (header.Key == name) { value = header.Value; return true; }
+            {
+                if (header.Key == name)
+                {
+                    value = header.Value;
+                    return true;
+                }
+            }
+
             value = default;
             return false;
         }

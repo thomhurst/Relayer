@@ -1,5 +1,5 @@
-using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 
 namespace Relayer;
 
@@ -7,7 +7,10 @@ namespace Relayer;
 public interface IConsumerBuilder
 {
     /// <summary>The application's service collection.</summary>
-    IServiceCollection Services { get; }
+    IServiceCollection Services
+    {
+        get;
+    }
 
     /// <summary>Configures the existing consume pipeline once at startup, before global middleware.</summary>
     IConsumerBuilder ConfigurePipeline(Action<ConsumePipelineBuilder> configure);

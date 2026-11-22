@@ -15,19 +15,36 @@ public sealed class MessageAttributeCodeFixProvider : CodeFixProvider
 {
     public override ImmutableArray<string> FixableDiagnosticIds => ["RLY001"];
 
-    public override FixAllProvider GetFixAllProvider() => WellKnownFixAllProviders.BatchFixer;
+    public override FixAllProvider GetFixAllProvider()
+    {
+        return WellKnownFixAllProviders.BatchFixer;
+    }
 
     public override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
         foreach (var diagnostic in context.Diagnostics)
         {
-            if (diagnostic.AdditionalLocations.Count != 1) continue;
+            if (diagnostic.AdditionalLocations.Count != 1)
+            {
+                continue;
+            }
+
             var location = diagnostic.AdditionalLocations[0];
             var document = context.Document.Project.Solution.GetDocument(location.SourceTree);
-            if (document is null) continue;
+
+            if (document is null)
+            {
+                continue;
+            }
+
             var root = await document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
             if (root?.FindNode(location.SourceSpan) is not TypeDeclarationSyntax declaration
-                || declaration is InterfaceDeclarationSyntax) continue;
+                || declaration is InterfaceDeclarationSyntax)
+            {
+                continue;
+            }
+
             context.RegisterCodeFix(CodeAction.Create("Add [Message] attribute (choose a stable wire name)",
                 ct => AddAttributeAsync(document, location, ct), "Relayer.AddMessageAttribute"), diagnostic);
         }
@@ -37,7 +54,11 @@ public sealed class MessageAttributeCodeFixProvider : CodeFixProvider
     {
         var root = await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false);
         var declaration = root?.FindNode(location.SourceSpan) as TypeDeclarationSyntax;
-        if (root is null || declaration is null) return document.Project.Solution;
+
+        if (root is null || declaration is null)
+        {
+            return document.Project.Solution;
+        }
         // This is an editable suggestion, never a runtime CLR-name fallback. The user
         // must choose the contract's permanent wire name before publishing it.
         var attribute = SyntaxFactory.Attribute(SyntaxFactory.ParseName("global::Relayer.MessageAttribute"),

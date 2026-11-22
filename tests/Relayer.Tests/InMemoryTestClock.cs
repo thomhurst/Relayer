@@ -9,17 +9,36 @@ internal sealed class InMemoryTestClock : TimeProvider
     private readonly Channel<bool> _registered = Channel.CreateUnbounded<bool>();
     private int _created;
     private long _ticks = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).Ticks;
-    public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _ticks), TimeSpan.Zero);
-    public override long GetTimestamp() => Interlocked.Read(ref _ticks);
+
+    public override DateTimeOffset GetUtcNow()
+    {
+        return new(Interlocked.Read(ref _ticks), TimeSpan.Zero);
+    }
+
+    public override long GetTimestamp()
+    {
+        return Interlocked.Read(ref _ticks);
+    }
+
     public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-    internal async Task NextTimer() => await _registered.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+    internal async Task NextTimer()
+    {
+        await _registered.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     internal int TimersCreated => Volatile.Read(ref _created);
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
         var timer = new TestTimer(this, callback, state);
         Interlocked.Increment(ref _created);
-        lock (_timers) _timers.Add(timer);
+
+        lock (_timers)
+        {
+            _timers.Add(timer);
+        }
+
         timer.Change(dueTime, period);
         return timer;
     }
@@ -28,35 +47,75 @@ internal sealed class InMemoryTestClock : TimeProvider
     {
         Interlocked.Add(ref _ticks, duration.Ticks);
         TestTimer[] timers;
-        lock (_timers) timers = _timers.ToArray();
-        foreach (var timer in timers) timer.Fire();
+
+        lock (_timers)
+        {
+            timers = _timers.ToArray();
+        }
+
+        foreach (var timer in timers)
+        {
+            timer.Fire();
+        }
     }
 
     // System timers use whole-millisecond ticks and can wake before a precise elapsed-time deadline.
     internal void FireTimersEarly()
     {
         TestTimer[] timers;
-        lock (_timers) timers = _timers.ToArray();
-        foreach (var timer in timers) timer.Fire(early: true);
+
+        lock (_timers)
+        {
+            timers = _timers.ToArray();
+        }
+
+        foreach (var timer in timers)
+        {
+            timer.Fire(early: true);
+        }
     }
 
     private sealed class TestTimer(InMemoryTestClock clock, TimerCallback callback, object? state) : ITimer
     {
         private long _due = long.MaxValue;
+
         public bool Change(TimeSpan dueTime, TimeSpan period)
         {
-            if (period != Timeout.InfiniteTimeSpan) throw new NotSupportedException("Tests use one-shot timers only.");
+            if (period != Timeout.InfiniteTimeSpan)
+            {
+                throw new NotSupportedException("Tests use one-shot timers only.");
+            }
+
             Interlocked.Exchange(ref _due, dueTime == Timeout.InfiniteTimeSpan ? long.MaxValue : checked(clock.GetTimestamp() + dueTime.Ticks));
-            if (dueTime != Timeout.InfiniteTimeSpan) clock._registered.Writer.TryWrite(true);
+
+            if (dueTime != Timeout.InfiniteTimeSpan)
+            {
+                clock._registered.Writer.TryWrite(true);
+            }
+
             return true;
         }
+
         internal void Fire(bool early = false)
         {
             var due = Interlocked.Read(ref _due);
+
             if (due != long.MaxValue && (early || due <= clock.GetTimestamp()) &&
-                Interlocked.CompareExchange(ref _due, long.MaxValue, due) == due) callback(state);
+                Interlocked.CompareExchange(ref _due, long.MaxValue, due) == due)
+            {
+                callback(state);
+            }
         }
-        public void Dispose() => Interlocked.Exchange(ref _due, long.MaxValue);
-        public ValueTask DisposeAsync() { Dispose(); return default; }
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _due, long.MaxValue);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return default;
+        }
     }
 }

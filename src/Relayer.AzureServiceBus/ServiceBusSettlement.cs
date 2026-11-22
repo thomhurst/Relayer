@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Azure.Messaging.ServiceBus;
+using Relayer.Transports;
 
 namespace Relayer.AzureServiceBus;
 
@@ -36,11 +36,15 @@ internal sealed class ServiceBusSettlement : IConsumeMiddleware
         return SettleAsync(delivery, disposition, context.CancellationToken);
     }
 
-    internal ValueTask SettleAsync(ProcessMessageEventArgs args, Disposition disposition, CancellationToken cancellationToken) =>
-        SettleAsync(new ServiceBusDelivery(args), disposition, cancellationToken);
+    internal ValueTask SettleAsync(ProcessMessageEventArgs args, Disposition disposition, CancellationToken cancellationToken)
+    {
+        return SettleAsync(new ServiceBusDelivery(args), disposition, cancellationToken);
+    }
 
-    internal ValueTask SettleAsync(ProcessSessionMessageEventArgs args, Disposition disposition, CancellationToken cancellationToken) =>
-        SettleAsync(new ServiceBusDelivery(args), disposition, cancellationToken);
+    internal ValueTask SettleAsync(ProcessSessionMessageEventArgs args, Disposition disposition, CancellationToken cancellationToken)
+    {
+        return SettleAsync(new ServiceBusDelivery(args), disposition, cancellationToken);
+    }
 
     private ValueTask SettleAsync(ServiceBusDelivery delivery, Disposition disposition, CancellationToken cancellationToken)
     {
@@ -60,9 +64,18 @@ internal sealed class ServiceBusSettlement : IConsumeMiddleware
     // Error-path metadata only. Successful handling does not materialize headers or dictionaries.
     private static IDictionary<string, object>? Properties(ReadOnlyMemory<KeyValuePair<string, WireString>> headers)
     {
-        if (headers.IsEmpty) return null;
+        if (headers.IsEmpty)
+        {
+            return null;
+        }
+
         var properties = new Dictionary<string, object>(headers.Length, StringComparer.Ordinal);
-        foreach (var header in headers.Span) properties[header.Key] = header.Value.ToString();
+
+        foreach (var header in headers.Span)
+        {
+            properties[header.Key] = header.Value.ToString();
+        }
+
         return properties;
     }
 
@@ -79,12 +92,18 @@ internal sealed class ServiceBusSettlement : IConsumeMiddleware
             _ => _deadLetter,
         };
         using var activity = tracing.Start();
+
         if (activity is { IsAllDataRequested: true })
         {
             ServiceBusMessageBinding.EnrichActivity(activity, delivery.Message);
             activity.SetTag("messaging.message.id", ServiceBusMessageBinding.TryGetHeader(delivery.Message, "cloudEvents:id", out var id)
                 ? id.ToString() : delivery.Message.MessageId);
-            if (_subscription is not null) activity.SetTag("messaging.destination.subscription.name", _subscription);
+
+            if (_subscription is not null)
+            {
+                activity.SetTag("messaging.destination.subscription.name", _subscription);
+            }
+
             activity.SetTag("messaging.servicebus.disposition_status", operation switch
             {
                 ServiceBusDisposition.Complete => "complete",
@@ -93,13 +112,30 @@ internal sealed class ServiceBusSettlement : IConsumeMiddleware
                 _ => "dead_letter",
             });
         }
-        try { await delivery.ExecuteAsync(operation, properties, reason, description, cancellationToken).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch { MessageOperationTracing.Fail(activity, "_OTHER"); throw; }
+
+        try
+        {
+            await delivery.ExecuteAsync(operation, properties, reason, description, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            MessageOperationTracing.Fail(activity, "_OTHER");
+            throw;
+        }
     }
 }
 
-internal enum ServiceBusDisposition { Complete, Abandon, Defer, DeadLetter }
+internal enum ServiceBusDisposition
+{
+    Complete,
+    Abandon,
+    Defer,
+    DeadLetter
+}
 
 internal readonly struct ServiceBusDelivery
 {
@@ -108,10 +144,23 @@ internal readonly struct ServiceBusDelivery
     private readonly NativeMessage<ProcessMessageEventArgs>? _native;
     private readonly NativeMessage<ProcessSessionMessageEventArgs>? _nativeSession;
 
-    internal ServiceBusDelivery(ProcessMessageEventArgs callback) => _callback = callback;
-    internal ServiceBusDelivery(ProcessSessionMessageEventArgs callback) => _sessionCallback = callback;
+    internal ServiceBusDelivery(ProcessMessageEventArgs callback)
+    {
+        _callback = callback;
+    }
+
+    internal ServiceBusDelivery(ProcessSessionMessageEventArgs callback)
+    {
+        _sessionCallback = callback;
+    }
+
     private ServiceBusDelivery(NativeMessage<ProcessMessageEventArgs>? native, NativeMessage<ProcessSessionMessageEventArgs>? session)
-    { _native = native; _nativeSession = session; _callback = native?.Message; _sessionCallback = session?.Message; }
+    {
+        _native = native;
+        _nativeSession = session;
+        _callback = native?.Message;
+        _sessionCallback = session?.Message;
+    }
 
     internal static ServiceBusDelivery From(MessageContext context)
     {
@@ -121,26 +170,40 @@ internal readonly struct ServiceBusDelivery
     }
 
     internal ProcessMessageEventArgs Callback => _callback ?? throw new InvalidOperationException("This is a session delivery. Use SessionCallback.");
+
     internal ProcessSessionMessageEventArgs SessionCallback => _sessionCallback ?? throw new InvalidOperationException("This is not a session delivery. Use Callback.");
+
     internal ServiceBusReceivedMessage Message => _callback?.Message ?? _sessionCallback!.Message;
+
     internal Disposition Disposition => _native?.Disposition ?? _nativeSession?.Disposition ?? Disposition.Complete;
+
     internal void MarkSettled()
     {
-        if (_native is { } native) native.Disposition = Disposition.SettledByHandler;
-        else if (_nativeSession is { } session) session.Disposition = Disposition.SettledByHandler;
+        if (_native is { } native)
+        {
+            native.Disposition = Disposition.SettledByHandler;
+        }
+        else if (_nativeSession is { } session)
+        {
+            session.Disposition = Disposition.SettledByHandler;
+        }
     }
 
     internal Task ExecuteAsync(ServiceBusDisposition operation, IDictionary<string, object>? properties,
         string? reason, string? description, CancellationToken cancellationToken)
     {
-        if (_callback is { } callback) return operation switch
+        if (_callback is { } callback)
         {
-            ServiceBusDisposition.Complete => callback.CompleteMessageAsync(callback.Message, cancellationToken),
-            ServiceBusDisposition.Abandon => callback.AbandonMessageAsync(callback.Message, properties, cancellationToken),
-            ServiceBusDisposition.Defer => callback.DeferMessageAsync(callback.Message, properties, cancellationToken),
-            _ => properties is null ? callback.DeadLetterMessageAsync(callback.Message, reason!, description, cancellationToken)
-                : callback.DeadLetterMessageAsync(callback.Message, properties, reason!, description, cancellationToken),
-        };
+            return operation switch
+            {
+                ServiceBusDisposition.Complete => callback.CompleteMessageAsync(callback.Message, cancellationToken),
+                ServiceBusDisposition.Abandon => callback.AbandonMessageAsync(callback.Message, properties, cancellationToken),
+                ServiceBusDisposition.Defer => callback.DeferMessageAsync(callback.Message, properties, cancellationToken),
+                _ => properties is null ? callback.DeadLetterMessageAsync(callback.Message, reason!, description, cancellationToken)
+                    : callback.DeadLetterMessageAsync(callback.Message, properties, reason!, description, cancellationToken),
+            };
+        }
+
         var session = _sessionCallback!;
         return operation switch
         {

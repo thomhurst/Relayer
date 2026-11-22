@@ -8,7 +8,10 @@ namespace Relayer.Benchmarks;
 public class GooglePubSubPoolBenchmarks
 {
     [Params(1, 130, 256, 512)]
-    public int Concurrency { get; set; }
+    public int Concurrency
+    {
+        get; set;
+    }
 
     private GooglePubSubPool<object> _pool = null!;
     private object[] _items = null!;
@@ -24,7 +27,11 @@ public class GooglePubSubPoolBenchmarks
     [Benchmark]
     public void RentAndReturnBurst()
     {
-        for (var i = 0; i < _items.Length; i++) _items[i] = _pool.Rent();
+        for (var i = 0; i < _items.Length; i++)
+        {
+            _items[i] = _pool.Rent();
+        }
+
         for (var i = 0; i < _items.Length; i++)
         {
             _pool.Return(_items[i]);

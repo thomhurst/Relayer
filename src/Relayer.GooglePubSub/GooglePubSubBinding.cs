@@ -7,9 +7,16 @@ namespace Relayer.GooglePubSub;
 /// <summary>A borrowed native delivery and its streaming subscriber.</summary>
 public readonly record struct GooglePubSubDelivery(PubsubMessage Message, SubscriberClient Subscriber)
 {
-    internal GooglePubSubReply? Reply { get; init; }
+    internal GooglePubSubReply? Reply
+    {
+        get; init;
+    }
+
     /// <summary>The named transport's unchanged native API clients and topic publishers.</summary>
-    public IGooglePubSubClients Clients { get; internal init; } = null!;
+    public IGooglePubSubClients Clients
+    {
+        get; internal init;
+    } = null!;
 }
 
 internal sealed class GooglePubSubReply
@@ -21,9 +28,17 @@ internal sealed class GooglePubSubReply
 public readonly struct GooglePubSubBinding : IMessageBinding<GooglePubSubDelivery>
 {
     /// <inheritdoc />
-    public static ReadOnlySequence<byte> GetBody(GooglePubSubDelivery message) => new(message.Message.Data.Memory);
+    public static ReadOnlySequence<byte> GetBody(GooglePubSubDelivery message)
+    {
+        return new(message.Message.Data.Memory);
+    }
+
     /// <inheritdoc />
-    public static int? GetDeliveryCount(GooglePubSubDelivery message) => message.Message.GetDeliveryAttempt();
+    public static int? GetDeliveryCount(GooglePubSubDelivery message)
+    {
+        return message.Message.GetDeliveryAttempt();
+    }
+
     /// <inheritdoc />
     public static bool TryGetHeader(GooglePubSubDelivery message, string name, out WireString value)
     {
@@ -32,7 +47,12 @@ public readonly struct GooglePubSubBinding : IMessageBinding<GooglePubSubDeliver
             value = new(text);
             return true;
         }
-        if (name == FailureHeaders.History) return GooglePubSubFailureHeaders.TryRead(message.Message, out value);
+
+        if (name == FailureHeaders.History)
+        {
+            return GooglePubSubFailureHeaders.TryRead(message.Message, out value);
+        }
+
         value = default;
         return false;
     }
@@ -42,9 +62,14 @@ public readonly struct GooglePubSubBinding : IMessageBinding<GooglePubSubDeliver
 public static class GooglePubSubMessageContextExtensions
 {
     /// <summary>Returns the original message and subscriber. Do not retain either after the handler returns.</summary>
-    public static GooglePubSubDelivery GooglePubSub(this MessageContext context) =>
-        context.Features.GetRequired<NativeMessage<GooglePubSubDelivery>>().Message;
+    public static GooglePubSubDelivery GooglePubSub(this MessageContext context)
+    {
+        return context.Features.GetRequired<NativeMessage<GooglePubSubDelivery>>().Message;
+    }
 
     /// <summary>Customizes the native Pub/Sub message immediately before publication.</summary>
-    public static SendOptions GooglePubSub(this SendOptions options, Action<PubsubMessage> configure) => options.ConfigureNative(configure);
+    public static SendOptions GooglePubSub(this SendOptions options, Action<PubsubMessage> configure)
+    {
+        return options.ConfigureNative(configure);
+    }
 }

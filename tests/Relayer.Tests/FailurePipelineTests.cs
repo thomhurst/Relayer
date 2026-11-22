@@ -1,11 +1,11 @@
-using Relayer.Pipeline;
-using System.Collections.Concurrent;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
-using Relayer.Transports;
 using Relayer.InMemory;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -20,7 +20,11 @@ public class FailurePipelineTests
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>(), failure)
             .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>())
-            .Settle(_ => { settlements++; return default; }).Build(1);
+            .Settle(_ =>
+            {
+                settlements++;
+                return default;
+            }).Build(1);
         using var circuit = new ConsumerCircuit(1, 1, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1), new ConsumerCircuitTests.Clock());
         circuit.TryEnter(out var probe);
         circuit.Complete(probe, true);
@@ -49,8 +53,12 @@ public class FailurePipelineTests
         await Assert.That(result.Kind).IsEqualTo(recover ? DispositionKind.Complete : DispositionKind.DeadLetter);
         await Assert.That(time.Delays.Count).IsEqualTo(3);
         var expected = new[] { TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1) };
+
         for (var i = 0; i < expected.Length; i++)
+        {
             await Assert.That(time.Delays[i] >= expected[i] * .8 && time.Delays[i] <= expected[i]).IsTrue();
+        }
+
         if (!recover)
         {
             var attempts = result.DeadLetter.Headers.ToArray().Single(pair => pair.Key == FailureHeaders.Attempts);
@@ -94,9 +102,17 @@ public class FailurePipelineTests
                 options.ConfigureNative<Native>(native => native.Attempt = context.Attempt);
             });
             await Assert.That(transport.Sends.Count).IsEqualTo(0);
-            if (context.Attempt < 3) throw new InvalidOperationException("try again");
+
+            if (context.Attempt < 3)
+            {
+                throw new InvalidOperationException("try again");
+            }
         };
-        var pipeline = Pipeline(provider, new() { RetryDelays = new TimeSpan[2], Jitter = 0 });
+        var pipeline = Pipeline(provider, new()
+        {
+            RetryDelays = new TimeSpan[2],
+            Jitter = 0
+        });
         await Assert.That((await pipeline.ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.Complete);
         await Assert.That(string.Join(",", attempts)).IsEqualTo("1,2,3");
         await Assert.That(scopes[0]).IsNotSameReferenceAs(scopes[1]);
@@ -119,9 +135,14 @@ public class FailurePipelineTests
         var transport = new Transport { Capabilities = new() { DeadLetter = true, MaxRedeliveryDelay = delay, MaxDeliveryDelay = delay + delay } };
         using var provider = Provider(transport);
         provider.GetRequiredService<Control>().Invoke = Throw;
-        var result = await Pipeline(provider, new() { RedeliveryDelays = new[] { delay + TimeSpan.FromTicks(ticks) }, Jitter = 0 }, Copy).ProcessAsync(new());
+        var result = await Pipeline(provider, new()
+        {
+            RedeliveryDelays = new[] { delay + TimeSpan.FromTicks(ticks) },
+            Jitter = 0
+        }, Copy).ProcessAsync(new());
         await Assert.That(result.Kind).IsEqualTo(expected);
         await Assert.That(transport.Sends.Count).IsEqualTo(expected == DispositionKind.Complete ? 1 : 0);
+
         if (expected == DispositionKind.Redeliver)
         {
             await Assert.That(result.Delay).IsEqualTo(delay + TimeSpan.FromTicks(ticks));
@@ -139,7 +160,12 @@ public class FailurePipelineTests
         using var provider = Provider(transport);
         provider.GetRequiredService<Control>().Invoke = Throw;
         var scheduler = new Scheduler();
-        var pipeline = Pipeline(provider, new() { RetryDelays = [], RedeliveryDelays = new[] { delay + TimeSpan.FromTicks(ticks) }, Jitter = 0 }, Copy, scheduler);
+        var pipeline = Pipeline(provider, new()
+        {
+            RetryDelays = [],
+            RedeliveryDelays = new[] { delay + TimeSpan.FromTicks(ticks) },
+            Jitter = 0
+        }, Copy, scheduler);
         var result = await pipeline.ProcessAsync(new());
         await Assert.That(result.Kind).IsEqualTo(DispositionKind.Complete);
         await Assert.That(scheduler.Copies.Count).IsEqualTo(outbox ? 1 : 0);
@@ -162,11 +188,20 @@ public class FailurePipelineTests
         var transport = new Transport { Capabilities = new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.Zero } };
         using var provider = Provider(transport);
         provider.GetRequiredService<Control>().Invoke = Throw;
-        var pipeline = Pipeline(provider, new() { RetryDelays = new[] { TimeSpan.Zero }, RedeliveryDelays = new[] { TimeSpan.Zero } });
+        var pipeline = Pipeline(provider, new()
+        {
+            RetryDelays = new[] { TimeSpan.Zero },
+            RedeliveryDelays = new[] { TimeSpan.Zero }
+        });
         var first = await pipeline.ProcessAsync(new());
         await Assert.That(first.Kind).IsEqualTo(DispositionKind.Redeliver);
         var next = new Incoming();
-        foreach (var pair in first.Headers.Span) next.Headers[pair.Key] = pair.Value.ToString();
+
+        foreach (var pair in first.Headers.Span)
+        {
+            next.Headers[pair.Key] = pair.Value.ToString();
+        }
+
         var final = await pipeline.ProcessAsync(next);
         await Assert.That(final.Kind).IsEqualTo(DispositionKind.DeadLetter);
         var headers = final.DeadLetter.Headers.ToArray().ToDictionary(p => p.Key, p => p.Value.ToString());
@@ -178,6 +213,7 @@ public class FailurePipelineTests
         await Assert.That(root.GetProperty("Host").GetString()).IsEqualTo(Environment.MachineName);
         var attempts = root.GetProperty("Attempts");
         await Assert.That(attempts.GetArrayLength()).IsEqualTo(4);
+
         for (var i = 0; i < 4; i++)
         {
             await Assert.That(attempts[i].GetProperty("Attempt").GetInt32()).IsEqualTo(i + 1);
@@ -196,10 +232,21 @@ public class FailurePipelineTests
     {
         var transport = new Transport();
         using var provider = Provider(transport);
-        var pipeline = Pipeline(provider, new() { RetryDelays = new TimeSpan[2] });
+        var pipeline = Pipeline(provider, new()
+        {
+            RetryDelays = new TimeSpan[2]
+        });
         var incoming = new Incoming();
-        if (header == FailureHeaders.Attempts) incoming.Headers[header] = "invalid";
-        else incoming.Headers.Remove(header);
+
+        if (header == FailureHeaders.Attempts)
+        {
+            incoming.Headers[header] = "invalid";
+        }
+        else
+        {
+            incoming.Headers.Remove(header);
+        }
+
         var result = await pipeline.ProcessAsync(incoming);
         await Assert.That(result.Kind).IsEqualTo(DispositionKind.DeadLetter);
         await Assert.That(provider.GetRequiredService<Control>().Calls).IsEqualTo(0);
@@ -217,7 +264,10 @@ public class FailurePipelineTests
             throw new ArgumentException("discard");
         };
         var classifier = new FailureClassifierBuilder().On<ArgumentException>(FailureAction.Discard).Build();
-        var result = await Pipeline(provider, new() { RetryDelays = new TimeSpan[2] }, classifier: classifier).ProcessAsync(new());
+        var result = await Pipeline(provider, new()
+        {
+            RetryDelays = new TimeSpan[2]
+        }, classifier: classifier).ProcessAsync(new());
         await Assert.That(result.Kind).IsEqualTo(DispositionKind.Complete);
         await Assert.That(transport.Sends.Count).IsEqualTo(0);
         await Assert.That(provider.GetRequiredService<Control>().Calls).IsEqualTo(1);
@@ -231,7 +281,10 @@ public class FailurePipelineTests
         var transport = new Transport { Capabilities = new() };
         using var provider = Provider(transport);
         provider.GetRequiredService<Control>().Invoke = _ => throw new ArgumentException("permanent");
-        var failure = new FailurePipeline(provider, "test", "source", "consumer", new() { DeadLetterEndpoint = "errors" }, Copy);
+        var failure = new FailurePipeline(provider, "test", "source", "consumer", new()
+        {
+            DeadLetterEndpoint = "errors"
+        }, Copy);
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>(), failure,
             new FailureClassifierBuilder().On<ArgumentException>(FailureAction.DeadLetter).Build())
@@ -252,7 +305,10 @@ public class FailurePipelineTests
         var transport = new Transport { Capabilities = new() };
         using var provider = Provider(transport);
         provider.GetRequiredService<Control>().Invoke = Throw;
-        var result = await Pipeline(provider, new() { DeadLetterEndpoint = "errors" }, Copy).ProcessAsync(new());
+        var result = await Pipeline(provider, new()
+        {
+            DeadLetterEndpoint = "errors"
+        }, Copy).ProcessAsync(new());
         await Assert.That(result.Kind).IsEqualTo(DispositionKind.Complete);
         var copy = transport.Sends.Single();
         await Assert.That(copy.Destination).IsEqualTo("errors");
@@ -293,7 +349,10 @@ public class FailurePipelineTests
             await sender.SendAsync(new Payload());
             await sender.SendAsync(new Payload());
         };
-        var pipeline = Pipeline(provider, new() { RetryDelays = new TimeSpan[2] });
+        var pipeline = Pipeline(provider, new()
+        {
+            RetryDelays = new TimeSpan[2]
+        });
         await Assert.That(async () => await pipeline.ProcessAsync(new())).Throws<ApplicationException>();
         await Assert.That(provider.GetRequiredService<Control>().Calls).IsEqualTo(1);
         await Assert.That(transport.Sends.Count).IsEqualTo(1);
@@ -307,7 +366,11 @@ public class FailurePipelineTests
         using var provider = Provider(transport);
         provider.GetRequiredService<Control>().Invoke = Throw;
         using var cancellation = new CancellationTokenSource();
-        var pipeline = Pipeline(provider, new() { RetryDelays = new[] { TimeSpan.FromSeconds(10) }, Jitter = .2 }, time: time);
+        var pipeline = Pipeline(provider, new()
+        {
+            RetryDelays = new[] { TimeSpan.FromSeconds(10) },
+            Jitter = .2
+        }, time: time);
         var pending = pipeline.ProcessAsync(new(), cancellation.Token);
         await Assert.That(pending.IsCompleted).IsFalse();
         await Assert.That(time.Delay >= TimeSpan.FromSeconds(8) && time.Delay <= TimeSpan.FromSeconds(10)).IsTrue();
@@ -324,7 +387,10 @@ public class FailurePipelineTests
         using var provider = Provider(transport);
         await Assert.That(() => new FailurePipeline(provider, "test", "source", "consumer"))
             .Throws<InvalidOperationException>().WithMessageContaining("DeadLetterEndpoint");
-        transport.Capabilities = transport.Capabilities with { DeadLetter = true };
+        transport.Capabilities = transport.Capabilities with
+        {
+            DeadLetter = true
+        };
         // A fresh provider has a fresh capability cache; no mutable global state.
         using var other = Provider(transport);
         await Assert.That(() => new FailurePipeline(other, "test", "source", "consumer", new() { RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) } }))
@@ -361,7 +427,12 @@ public class FailurePipelineTests
         };
         var pipeline = Pipeline(provider);
         var tasks = new Task<Disposition>[70];
-        for (var i = 0; i < tasks.Length; i++) tasks[i] = pipeline.ProcessAsync(new()).AsTask();
+
+        for (var i = 0; i < tasks.Length; i++)
+        {
+            tasks[i] = pipeline.ProcessAsync(new()).AsTask();
+        }
+
         await Assert.That(senders.Count).IsEqualTo(70);
         gate.SetResult();
         await Task.WhenAll(tasks);
@@ -405,14 +476,24 @@ public class FailurePipelineTests
         {
             await sender.SendWithoutOutboxAsync(new Payload());
             await Assert.That(transport.Sends.Count).IsEqualTo(0);
-            if (failDisposal) throw new ApplicationException("scope failed after sending");
+
+            if (failDisposal)
+            {
+                throw new ApplicationException("scope failed after sending");
+            }
         };
         var pipeline = Pipeline(provider);
+
         if (failDisposal)
+        {
             await Assert.That(async () => await pipeline.ProcessAsync(new())).Throws<ApplicationException>();
+        }
         else
+        {
             await Assert.That((await pipeline.ProcessAsync(new())).Kind)
                 .IsEqualTo(failHandler ? DispositionKind.DeadLetter : DispositionKind.Complete);
+        }
+
         await Assert.That(transport.Sends.Count).IsEqualTo(failHandler || failDisposal ? 0 : 1);
 
         control.Invoke = null;
@@ -452,13 +533,18 @@ public class FailurePipelineTests
             disposing.SetResult();
             await finish.Task;
             await sender.SendWithoutOutboxAsync(new Payload());
-            if (failDisposal) throw new ApplicationException("scope failed after sending");
+
+            if (failDisposal)
+            {
+                throw new ApplicationException("scope failed after sending");
+            }
         };
         var pipeline = Pipeline(provider);
         var pending = pipeline.ProcessAsync(new());
         await disposing.Task;
         // The other scope also owns a Lifetime. Only the suspended disposer uses this callback.
         control.Dispose = null;
+
         try
         {
             await Assert.That(pending.IsCompleted).IsFalse();
@@ -472,10 +558,16 @@ public class FailurePipelineTests
         {
             finish.SetResult();
         }
+
         if (failDisposal)
+        {
             await Assert.That(async () => await pending).Throws<ApplicationException>();
+        }
         else
+        {
             await Assert.That((await pending).Kind).IsEqualTo(DispositionKind.Complete);
+        }
+
         await Assert.That(transport.Sends.Count).IsEqualTo(failDisposal ? 1 : 2);
     }
 
@@ -494,17 +586,28 @@ public class FailurePipelineTests
         var incoming = new Incoming();
         var serializer = provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>();
         var scopes = provider.GetRequiredService<IServiceScopeFactory>();
+
         for (var i = 0; i < 1000; i++)
         {
             ProcessSynchronously(pipeline, incoming);
             NativeSynchronously(scopes, serializer, incoming);
         }
+
         var start = GC.GetAllocatedBytesForCurrentThread();
         // The pooled attempt sender is attached without any DI disposal bookkeeping, so it is absent here.
-        for (var i = 0; i < 1000; i++) NativeSynchronously(scopes, serializer, incoming);
+        for (var i = 0; i < 1000; i++)
+        {
+            NativeSynchronously(scopes, serializer, incoming);
+        }
+
         var nativeBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) ProcessSynchronously(pipeline, incoming);
+
+        for (var i = 0; i < 1000; i++)
+        {
+            ProcessSynchronously(pipeline, incoming);
+        }
+
         var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         await Assert.That(pipelineBytes).IsEqualTo(nativeBytes);
 
@@ -515,8 +618,12 @@ public class FailurePipelineTests
             _ = scope.ServiceProvider.GetRequiredService<Handler>();
             _ = serializer.Deserialize<Payload>(new(incoming.Body));
             var pending = scope.DisposeAsync();
+
             if (!pending.IsCompletedSuccessfully)
+            {
                 throw new InvalidOperationException("The allocation fixture must dispose synchronously.");
+            }
+
             pending.GetAwaiter().GetResult();
         }
     }
@@ -535,7 +642,11 @@ public class FailurePipelineTests
         await Assert.That(scopes.Created).IsEqualTo(composed);
 
         var disposed = 0;
-        control.Dispose = () => { disposed++; return default; };
+        control.Dispose = () =>
+        {
+            disposed++;
+            return default;
+        };
         control.Invoke = static context =>
         {
             _ = context.Services.GetRequiredService<Lifetime>();
@@ -553,13 +664,21 @@ public class FailurePipelineTests
         using var provider = Provider(transport);
         var control = provider.GetRequiredService<Control>();
         var scopes = new CountingScopes(provider.GetRequiredService<IServiceScopeFactory>());
-        var pipeline = SingletonPipeline(provider, scopes, new() { RetryDelays = new TimeSpan[1], Jitter = 0 });
+        var pipeline = SingletonPipeline(provider, scopes, new()
+        {
+            RetryDelays = new TimeSpan[1],
+            Jitter = 0
+        });
         var composed = scopes.Created;
         control.Invoke = async context =>
         {
             await context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
             await Assert.That(transport.Sends.Count).IsEqualTo(0);
-            if (context.Attempt == 1) throw new InvalidOperationException("failed attempt");
+
+            if (context.Attempt == 1)
+            {
+                throw new InvalidOperationException("failed attempt");
+            }
         };
         await Assert.That((await pipeline.ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.Complete);
         await Assert.That(scopes.Created).IsEqualTo(composed + 2);
@@ -630,8 +749,14 @@ public class FailurePipelineTests
         var composed = scopes.Created;
         control.Invoke = static context =>
         {
-            try { _ = context.Services; }
-            catch (ApplicationException) { }
+            try
+            {
+                _ = context.Services;
+            }
+            catch (ApplicationException)
+            {
+            }
+
             _ = context.Services;
             return default;
         };
@@ -648,17 +773,20 @@ public class FailurePipelineTests
         var pipeline = Pipeline(provider);
         await pipeline.ProcessAsync(new());
         ISender first;
+
         await using (var scope = provider.CreateAsyncScope())
         {
             first = scope.ServiceProvider.GetRequiredService<ISender>();
             await first.SendAsync(new Payload());
         }
+
         await using (var scope = provider.CreateAsyncScope())
         {
             var second = scope.ServiceProvider.GetRequiredService<ISender>();
             await Assert.That(second).IsNotSameReferenceAs(first);
             await second.SendAsync(new Payload());
         }
+
         await Assert.That(transport.Sends.Count).IsEqualTo(2);
     }
 
@@ -681,6 +809,7 @@ public class FailurePipelineTests
         var pipeline = SingletonPipeline(provider, provider.GetRequiredService<IServiceScopeFactory>());
         var incoming = new Incoming();
         var serializer = provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>();
+
         for (var i = 0; i < 1000; i++)
         {
             ProcessSynchronously(pipeline, incoming);
@@ -692,12 +821,14 @@ public class FailurePipelineTests
         var pipelineWindows = new long[1000];
         var collectionsBefore = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
         var start = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < 1000; i++)
         {
             var before = GC.GetAllocatedBytesForCurrentThread();
             _ = serializer.Deserialize<Payload>(new(incoming.Body));
             jsonWindows[i] = GC.GetAllocatedBytesForCurrentThread() - before;
         }
+
         var jsonBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
         // Measure the synchronous pipeline, excluding the test caller's runtime-async await machinery.
@@ -708,14 +839,20 @@ public class FailurePipelineTests
             ProcessSynchronously(pipeline, incoming);
             pipelineWindows[i] = GC.GetAllocatedBytesForCurrentThread() - before;
         }
+
         var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         var collectionsAfter = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
+
         if (pipelineBytes != jsonBytes)
         {
             Console.WriteLine($"Singleton allocation comparison: JSON={jsonBytes}; pipeline={pipelineBytes}; collections before={collectionsBefore}; after={collectionsAfter}; runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}");
+
             for (var i = 0; i < jsonWindows.Length; i++)
+            {
                 Console.WriteLine($"window={i}; JSON={jsonWindows[i]}; pipeline={pipelineWindows[i]}");
+            }
         }
+
         await Assert.That(pipelineBytes).IsEqualTo(jsonBytes);
     }
 
@@ -723,8 +860,12 @@ public class FailurePipelineTests
     private static void ProcessSynchronously(ReceivePipeline<Incoming, Binding> pipeline, Incoming incoming)
     {
         var pending = pipeline.ProcessAsync(incoming);
+
         if (!pending.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("The allocation fixture must complete synchronously.");
+        }
+
         _ = pending.GetAwaiter().GetResult();
     }
 
@@ -736,7 +877,11 @@ public class FailurePipelineTests
         using var provider = Provider(transport);
         var control = provider.GetRequiredService<Control>();
         control.Invoke = context => context.Attempt == 1 ? Throw(context) : default;
-        var pipeline = Pipeline(provider, new() { RetryDelays = new[] { TimeSpan.FromSeconds(10) }, Jitter = 0 }, time: time);
+        var pipeline = Pipeline(provider, new()
+        {
+            RetryDelays = new[] { TimeSpan.FromSeconds(10) },
+            Jitter = 0
+        }, time: time);
         var pending = pipeline.ProcessAsync(new());
         await Assert.That(control.Calls).IsEqualTo(1);
         await Assert.That(time.Delay).IsEqualTo(TimeSpan.FromSeconds(10));
@@ -751,17 +896,25 @@ public class FailurePipelineTests
         var transport = new Transport { Capabilities = new() { DeadLetter = true, MaxDeliveryDelay = TimeSpan.FromSeconds(1) } };
         using var provider = Provider(transport);
         provider.GetRequiredService<Control>().Invoke = Throw;
+
         static OutgoingMessage NativeCopy(MessageContext context)
         {
             var original = Copy(context);
             var options = new SendOptions().ConfigureNative<Native>(static native => native.Attempt = 42);
             return new(original.Destination, original.Body, original.Headers, original.OrderingKey, options: options);
         }
-        var pipeline = Pipeline(provider, new() { RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) } }, NativeCopy);
+
+        var pipeline = Pipeline(provider, new()
+        {
+            RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) }
+        }, NativeCopy);
         await pipeline.ProcessAsync(new());
         await Assert.That(transport.Sends.Single().NativeAttempt).IsEqualTo(42);
         var scheduler = new Scheduler();
-        var outbox = Pipeline(provider, new() { RedeliveryDelays = new[] { TimeSpan.FromSeconds(2) } }, NativeCopy, scheduler);
+        var outbox = Pipeline(provider, new()
+        {
+            RedeliveryDelays = new[] { TimeSpan.FromSeconds(2) }
+        }, NativeCopy, scheduler);
         await Assert.That(async () => await outbox.ProcessAsync(new())).Throws<InvalidOperationException>().WithMessageContaining("Native configurators");
         await Assert.That(scheduler.Copies.Count).IsEqualTo(0);
     }
@@ -796,6 +949,7 @@ public class FailurePipelineTests
             await Task.WhenAll(sends);
         };
         var pipeline = Pipeline(provider);
+
         for (var iteration = 0; iteration < 2; iteration++)
         {
             transport.Sends.Clear();
@@ -842,13 +996,19 @@ public class FailurePipelineTests
         var pipeline = Pipeline(provider);
         var result = await pipeline.ProcessAsync(new());
         await Assert.That(result.Kind).IsEqualTo(kind);
-        if (kind == DispositionKind.Redeliver) await Assert.That(result.Delay).IsEqualTo(TimeSpan.FromSeconds(5));
+
+        if (kind == DispositionKind.Redeliver)
+        {
+            await Assert.That(result.Delay).IsEqualTo(TimeSpan.FromSeconds(5));
+        }
+
         if (kind == DispositionKind.DeadLetter)
         {
             await Assert.That(result.DeadLetter.Reason).IsEqualTo("invalid order");
             var headers = result.DeadLetter.Headers.ToArray().ToDictionary(p => p.Key, p => p.Value.ToString());
             await Assert.That(headers[FailureHeaders.DeadLetterReason]).IsEqualTo("invalid order");
         }
+
         await Assert.That(() => feature!.Complete()).Throws<InvalidOperationException>();
         control.Invoke = static _ => default;
         await Assert.That((await pipeline.ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.Complete);
@@ -869,9 +1029,13 @@ public class FailurePipelineTests
                 Request(context.Features.GetRequired<ISettlementFeature>(), kind);
                 throw new InvalidOperationException("failed after requesting settlement");
             }
+
             return default;
         };
-        var result = await Pipeline(provider, new() { RetryDelays = new[] { TimeSpan.Zero } }).ProcessAsync(new());
+        var result = await Pipeline(provider, new()
+        {
+            RetryDelays = new[] { TimeSpan.Zero }
+        }).ProcessAsync(new());
         await Assert.That(result.Kind).IsEqualTo(DispositionKind.Complete);
         await Assert.That(control.Calls).IsEqualTo(2);
         control.Invoke = context =>
@@ -916,7 +1080,10 @@ public class FailurePipelineTests
         };
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         transport.Pending = gate.Task;
-        var pipeline = Pipeline(provider, new() { DeadLetterEndpoint = "errors" }, Copy);
+        var pipeline = Pipeline(provider, new()
+        {
+            DeadLetterEndpoint = "errors"
+        }, Copy);
         var pending = pipeline.ProcessAsync(new());
         await Assert.That(pending.IsCompleted).IsFalse();
         gate.SetResult();
@@ -924,7 +1091,12 @@ public class FailurePipelineTests
         var copy = transport.Sends.Single();
         await Assert.That(copy.Destination).IsEqualTo(retry ? "source" : "errors");
         await Assert.That(copy.Headers["ce_id"]).IsEqualTo("original");
-        if (!retry) await Assert.That(copy.Headers[FailureHeaders.DeadLetterReason]).IsEqualTo("invalid order");
+
+        if (!retry)
+        {
+            await Assert.That(copy.Headers[FailureHeaders.DeadLetterReason]).IsEqualTo("invalid order");
+        }
+
         transport.Pending = Task.FromException(new ApplicationException("copy failed"));
         await Assert.That(async () => await pipeline.ProcessAsync(new())).Throws<ApplicationException>();
     }
@@ -963,8 +1135,16 @@ public class FailurePipelineTests
         var pending = Pipeline(provider).ProcessAsync(new());
         await Assert.That(pending.IsCompleted).IsFalse();
         await Assert.That(transport.Sends.Count).IsEqualTo(0);
-        if (failDisposal) gate.SetException(new ApplicationException("disposal failed"));
-        else gate.SetResult();
+
+        if (failDisposal)
+        {
+            gate.SetException(new ApplicationException("disposal failed"));
+        }
+        else
+        {
+            gate.SetResult();
+        }
+
         await Assert.That(async () => await pending).Throws<ApplicationException>();
         await Assert.That(control.Calls).IsEqualTo(1);
         await Assert.That(transport.Sends.Count).IsEqualTo(0);
@@ -1013,12 +1193,19 @@ public class FailurePipelineTests
         using var provider = Provider(transport);
         provider.GetRequiredService<Control>().Invoke = context =>
         {
-            if (context.Attempt == 1) throw new InvalidOperationException("first failure");
+            if (context.Attempt == 1)
+            {
+                throw new InvalidOperationException("first failure");
+            }
+
             context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.FromSeconds(5));
             return default;
         };
         var scheduler = new Scheduler();
-        await Assert.That((await Pipeline(provider, new() { RetryDelays = new[] { TimeSpan.Zero } }, Copy, scheduler).ProcessAsync(new())).Kind)
+        await Assert.That((await Pipeline(provider, new()
+        {
+            RetryDelays = new[] { TimeSpan.Zero }
+        }, Copy, scheduler).ProcessAsync(new())).Kind)
             .IsEqualTo(DispositionKind.Complete);
         var copy = scheduler.Copies.Single();
         await Assert.That(copy.Headers[FailureHeaders.Attempts]).IsEqualTo("2");
@@ -1032,10 +1219,19 @@ public class FailurePipelineTests
     {
         using var provider = Provider(new Transport { Capabilities = new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.Zero } });
         provider.GetRequiredService<Control>().Invoke = _ => throw new LongFailure();
-        var pipeline = Pipeline(provider, new() { RetryDelays = new TimeSpan[19], RedeliveryDelays = new[] { TimeSpan.Zero } });
+        var pipeline = Pipeline(provider, new()
+        {
+            RetryDelays = new TimeSpan[19],
+            RedeliveryDelays = new[] { TimeSpan.Zero }
+        });
         var first = await pipeline.ProcessAsync(new());
         var next = new Incoming();
-        foreach (var pair in first.Headers.Span) next.Headers[pair.Key] = pair.Value.ToString();
+
+        foreach (var pair in first.Headers.Span)
+        {
+            next.Headers[pair.Key] = pair.Value.ToString();
+        }
+
         var final = await pipeline.ProcessAsync(next);
         await Assert.That(final.DeadLetter.Description!.Length <= 1024).IsTrue();
         var json = final.DeadLetter.Headers.ToArray().Single(p => p.Key == FailureHeaders.History).Value.ToString();
@@ -1048,8 +1244,11 @@ public class FailurePipelineTests
         await Assert.That(attempts.GetArrayLength() <= FailureMetadata.MaxAttempts).IsTrue();
         await Assert.That(attempts[0].GetProperty("Attempt").GetInt32()).IsEqualTo(1);
         await Assert.That(attempts[attempts.GetArrayLength() - 1].GetProperty("Attempt").GetInt32()).IsEqualTo(40);
+
         foreach (var attempt in attempts.EnumerateArray())
+        {
             await Assert.That(attempt.GetProperty("StackTrace").GetString()!.Length <= FailureMetadata.MaxStackTraceChars).IsTrue();
+        }
     }
 
     [Test]
@@ -1072,27 +1271,39 @@ public class FailurePipelineTests
             return new(Disposition.Complete);
         });
         await transport.StartAsync(default);
+
         try
         {
             var incoming = new Incoming();
             // Old versions could have persisted an oversized history. It must not be resurrected
             // when the replacement cannot fit in the small destination.
             incoming.Headers[FailureHeaders.History] = new string('x', 20000);
-            var result = await Pipeline(provider, new() { DeadLetterEndpoint = "errors", RetryDelays = new TimeSpan[39] }, Copy).ProcessAsync(incoming);
+            var result = await Pipeline(provider, new()
+            {
+                DeadLetterEndpoint = "errors",
+                RetryDelays = new TimeSpan[39]
+            }, Copy).ProcessAsync(incoming);
             await Assert.That(result.Kind).IsEqualTo(DispositionKind.Complete);
             var copy = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
             await Assert.That(copy.Body).IsEqualTo("{}");
             await Assert.That(copy.Headers["custom"]).IsEqualTo("preserved");
             await Assert.That(copy.Headers[FailureHeaders.Attempts]).IsEqualTo("40");
+
             if (maximum == 2048)
             {
                 using var history = JsonDocument.Parse(copy.Headers[FailureHeaders.History]);
                 await Assert.That(history.RootElement.GetProperty("Truncated").GetBoolean()).IsTrue();
                 await Assert.That(history.RootElement.GetProperty("Attempts")[0].GetProperty("Attempt").GetInt32()).IsEqualTo(1);
             }
-            else await Assert.That(copy.Headers.ContainsKey(FailureHeaders.History)).IsFalse();
+            else
+            {
+                await Assert.That(copy.Headers.ContainsKey(FailureHeaders.History)).IsFalse();
+            }
         }
-        finally { await transport.StopAsync(default); }
+        finally
+        {
+            await transport.StopAsync(default);
+        }
     }
 
     [Test]
@@ -1108,8 +1319,16 @@ public class FailurePipelineTests
         };
         var incoming = new Incoming();
         var history = new FailureHistory { AttemptCount = 100 };
+
         for (var i = 1; i <= (oversized ? 100 : 20); i++)
-            history.Attempts.Add(new() { Attempt = i, StackTrace = new string('x', oversized ? 5000 : 100) });
+        {
+            history.Attempts.Add(new()
+            {
+                Attempt = i,
+                StackTrace = new string('x', oversized ? 5000 : 100)
+            });
+        }
+
         incoming.Headers[FailureHeaders.History] = JsonSerializer.Serialize(history, FailureJsonContext.Default.FailureHistory);
         var result = await Pipeline(provider).ProcessAsync(incoming);
         var json = result.DeadLetter.Headers.ToArray().Single(p => p.Key == FailureHeaders.History).Value.ToString();
@@ -1123,11 +1342,15 @@ public class FailurePipelineTests
     [Arguments(true)]
     public async Task Native_dead_letter_budget_includes_reason_and_description(bool manual)
     {
-        const int maximum = 640;
-        using var provider = Provider(new Transport { Capabilities = new() { DeadLetter = true, MaxMessageBytes = maximum } });
+        const int Maximum = 640;
+        using var provider = Provider(new Transport { Capabilities = new() { DeadLetter = true, MaxMessageBytes = Maximum } });
         provider.GetRequiredService<Control>().Invoke = context =>
         {
-            if (!manual) throw new InvalidOperationException(new string('界', 20));
+            if (!manual)
+            {
+                throw new InvalidOperationException(new string('界', 20));
+            }
+
             context.Features.GetRequired<ISettlementFeature>().DeadLetter(new string('界', 30));
             return default;
         };
@@ -1142,14 +1365,19 @@ public class FailurePipelineTests
         await Assert.That(result.Kind).IsEqualTo(DispositionKind.DeadLetter);
         var bytes = Encoding.UTF8.GetByteCount("{}") + Encoding.UTF8.GetByteCount(result.DeadLetter.Reason) +
             Encoding.UTF8.GetByteCount(result.DeadLetter.Description ?? "");
+
         foreach (var header in result.DeadLetter.Headers.ToArray())
+        {
             bytes += Encoding.UTF8.GetByteCount(header.Key) + Encoding.UTF8.GetByteCount(header.Value.ToString());
-        await Assert.That(bytes <= maximum).IsTrue();
+        }
+
+        await Assert.That(bytes <= Maximum).IsTrue();
     }
 
     private sealed class LongFailure : Exception
     {
         public override string Message => new('界', 20000);
+
         public override string StackTrace => string.Concat(Enumerable.Repeat("\"\\界😀\n", 20000));
     }
 
@@ -1157,10 +1385,17 @@ public class FailurePipelineTests
     {
         switch (kind)
         {
-            case DispositionKind.Complete: settlement.Complete(); break;
-            case DispositionKind.Redeliver: settlement.Retry(TimeSpan.FromSeconds(5)); break;
-            case DispositionKind.DeadLetter: settlement.DeadLetter("invalid order"); break;
-            default: throw new ArgumentOutOfRangeException(nameof(kind));
+            case DispositionKind.Complete:
+                settlement.Complete();
+                break;
+            case DispositionKind.Redeliver:
+                settlement.Retry(TimeSpan.FromSeconds(5));
+                break;
+            case DispositionKind.DeadLetter:
+                settlement.DeadLetter("invalid order");
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(kind));
         }
     }
 
@@ -1180,7 +1415,11 @@ public class FailurePipelineTests
         var handlerGate = new TaskCompletionSource();
         var disposalGate = new TaskCompletionSource();
         var disposalEntered = new TaskCompletionSource();
-        control.Invoke = _ => { ambient.Value = "handler"; return suspendDurable ? new(handlerGate.Task) : default; };
+        control.Invoke = _ =>
+        {
+            ambient.Value = "handler";
+            return suspendDurable ? new(handlerGate.Task) : default;
+        };
         control.Dispose = () =>
         {
             ambient.Value = "disposed";
@@ -1196,7 +1435,11 @@ public class FailurePipelineTests
             .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>())
             .Settle(context =>
             {
-                if (!scopeDisposed || ambient.Value != "disposed") throw new InvalidOperationException("Settlement lost durable-work context.");
+                if (!scopeDisposed || ambient.Value != "disposed")
+                {
+                    throw new InvalidOperationException("Settlement lost durable-work context.");
+                }
+
                 entered.SetResult();
                 return new(gate.Task);
             }).Build(1);
@@ -1210,6 +1453,7 @@ public class FailurePipelineTests
         ambient.Value = "caller";
         using var cancellation = new CancellationTokenSource();
         var processing = receive.ProcessAsync(new(), cancellation.Token);
+
         if (suspendDurable)
         {
             await Assert.That(ambient.Value).IsEqualTo("caller");
@@ -1218,6 +1462,7 @@ public class FailurePipelineTests
             await Assert.That(entered.Task.IsCompleted).IsFalse();
             disposalGate.SetResult();
         }
+
         await entered.Task;
         await Assert.That(processing.IsCompleted).IsFalse();
         await Assert.That(circuit.State).IsEqualTo(2);
@@ -1225,14 +1470,40 @@ public class FailurePipelineTests
         await Task.Run(() =>
         {
             ambient.Value = "completing-worker";
-            if (cancelSettlement) { cancellation.Cancel(); gate.SetCanceled(cancellation.Token); }
-            else if (failSettlement) gate.SetException(new ApplicationException("settlement failed"));
-            else gate.SetResult();
-            if (ambient.Value != "completing-worker") throw new InvalidOperationException("Completion leaked execution context.");
+
+            if (cancelSettlement)
+            {
+                cancellation.Cancel();
+                gate.SetCanceled(cancellation.Token);
+            }
+            else if (failSettlement)
+            {
+                gate.SetException(new ApplicationException("settlement failed"));
+            }
+            else
+            {
+                gate.SetResult();
+            }
+
+            if (ambient.Value != "completing-worker")
+            {
+                throw new InvalidOperationException("Completion leaked execution context.");
+            }
         });
-        if (cancelSettlement) await Assert.That(async () => await processing).Throws<OperationCanceledException>();
-        else if (failSettlement) await Assert.That(async () => await processing).Throws<ApplicationException>();
-        else await processing;
+
+        if (cancelSettlement)
+        {
+            await Assert.That(async () => await processing).Throws<OperationCanceledException>();
+        }
+        else if (failSettlement)
+        {
+            await Assert.That(async () => await processing).Throws<ApplicationException>();
+        }
+        else
+        {
+            await processing;
+        }
+
         await Assert.That(circuit.State).IsEqualTo(failSettlement || cancelSettlement ? 1 : 0);
         await Assert.That(ambient.Value).IsEqualTo("caller");
     }
@@ -1247,7 +1518,12 @@ public class FailurePipelineTests
         });
         var gates = new SettlementGate[10];
         var processing = new ValueTask<Disposition>[10];
-        for (var i = 0; i < gates.Length; i++) gates[i] = new();
+
+        for (var i = 0; i < gates.Length; i++)
+        {
+            gates[i] = new();
+        }
+
         var next = 0;
         var failures = new FailurePipeline(provider, "test", "source", "consumer");
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
@@ -1258,23 +1534,39 @@ public class FailurePipelineTests
         var incoming = new Incoming();
         var serializer = provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>();
         var scopes = provider.GetRequiredService<IServiceScopeFactory>();
+
         void PipelineWindow()
         {
             next = 0;
+
             for (var i = 0; i < gates.Length; i++)
             {
                 gates[i].Reset();
                 processing[i] = receive.ProcessAsync(incoming);
-                if (processing[i].IsCompleted) throw new InvalidOperationException("Settlement did not suspend.");
+
+                if (processing[i].IsCompleted)
+                {
+                    throw new InvalidOperationException("Settlement did not suspend.");
+                }
             }
-            for (var i = 0; i < gates.Length; i++) gates[i].Complete();
+
+            for (var i = 0; i < gates.Length; i++)
+            {
+                gates[i].Complete();
+            }
+
             for (var i = 0; i < gates.Length; i++)
             {
                 // Every gate completes inline above; this consumes a completed ValueTask, never blocks.
-                if (!processing[i].IsCompletedSuccessfully) throw new InvalidOperationException("Settlement failed.");
+                if (!processing[i].IsCompletedSuccessfully)
+                {
+                    throw new InvalidOperationException("Settlement failed.");
+                }
+
                 _ = processing[i].GetAwaiter().GetResult();
             }
         }
+
         void NativeWindow()
         {
             for (var i = 0; i < gates.Length; i++)
@@ -1285,12 +1577,28 @@ public class FailurePipelineTests
                 scope.DisposeAsync().GetAwaiter().GetResult(); // Lifetime completes synchronously in this test.
             }
         }
-        for (var i = 0; i < 1000; i++) { NativeWindow(); PipelineWindow(); }
+
+        for (var i = 0; i < 1000; i++)
+        {
+            NativeWindow();
+            PipelineWindow();
+        }
+
         var start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) NativeWindow();
+
+        for (var i = 0; i < 1000; i++)
+        {
+            NativeWindow();
+        }
+
         var nativeBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) PipelineWindow();
+
+        for (var i = 0; i < 1000; i++)
+        {
+            PipelineWindow();
+        }
+
         var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         await Assert.That(pipelineBytes).IsEqualTo(nativeBytes);
     }
@@ -1298,15 +1606,42 @@ public class FailurePipelineTests
     private sealed class SettlementGate : System.Threading.Tasks.Sources.IValueTaskSource
     {
         private System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore<bool> _completion;
-        internal void Reset() => _completion.Reset();
-        internal ValueTask Wait() => new(this, _completion.Version);
-        internal void Complete() => _completion.SetResult(true);
-        public void GetResult(short token) => _completion.GetResult(token);
-        public System.Threading.Tasks.Sources.ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, System.Threading.Tasks.Sources.ValueTaskSourceOnCompletedFlags flags) => _completion.OnCompleted(continuation, state, token, flags);
+
+        internal void Reset()
+        {
+            _completion.Reset();
+        }
+
+        internal ValueTask Wait()
+        {
+            return new(this, _completion.Version);
+        }
+
+        internal void Complete()
+        {
+            _completion.SetResult(true);
+        }
+
+        public void GetResult(short token)
+        {
+            _completion.GetResult(token);
+        }
+
+        public System.Threading.Tasks.Sources.ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, System.Threading.Tasks.Sources.ValueTaskSourceOnCompletedFlags flags)
+        {
+            _completion.OnCompleted(continuation, state, token, flags);
+        }
     }
 
-    private static ValueTask Throw(MessageContext context) => throw new InvalidOperationException("failed attempt");
+    private static ValueTask Throw(MessageContext context)
+    {
+        throw new InvalidOperationException("failed attempt");
+    }
 
     private static ServiceProvider Provider(ITransport transport, Action<IServiceCollection>? configure = null)
     {
@@ -1350,7 +1685,9 @@ public class FailurePipelineTests
     private sealed class CountingScopes(IServiceScopeFactory inner) : IServiceScopeFactory
     {
         private int _created;
+
         internal int Created => Volatile.Read(ref _created);
+
         public IServiceScope CreateScope()
         {
             Interlocked.Increment(ref _created);
@@ -1366,12 +1703,25 @@ public class FailurePipelineTests
 
     [Message("failure.payload")]
     public sealed class Payload;
+
     public sealed class Control
     {
-        public Func<MessageContext, ValueTask>? Invoke { get; set; }
-        public int Calls { get; set; }
-        public Func<ValueTask>? Dispose { get; set; }
+        public Func<MessageContext, ValueTask>? Invoke
+        {
+            get; set;
+        }
+
+        public int Calls
+        {
+            get; set;
+        }
+
+        public Func<ValueTask>? Dispose
+        {
+            get; set;
+        }
     }
+
     public sealed class Handler(Control control, Lifetime lifetime) : IHandler<Payload>
     {
         public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
@@ -1381,6 +1731,7 @@ public class FailurePipelineTests
             return control.Invoke?.Invoke(context) ?? default;
         }
     }
+
     public sealed class SingletonHandler(Control control) : IHandler<Payload>
     {
         public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
@@ -1389,28 +1740,56 @@ public class FailurePipelineTests
             return control.Invoke?.Invoke(context) ?? default;
         }
     }
+
     public sealed class Lifetime(Control control) : IAsyncDisposable
     {
-        public ValueTask DisposeAsync() => control.Dispose?.Invoke() ?? default;
+        public ValueTask DisposeAsync()
+        {
+            return control.Dispose?.Invoke() ?? default;
+        }
     }
+
     private sealed class InactiveOutbox : IOutboxEnlistment
     {
         public bool IsActive => false;
+
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
-            => throw new NotSupportedException();
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class Incoming
     {
-        internal byte[] Body { get; init; } = "{}"u8.ToArray();
-        internal Dictionary<string, string> Headers { get; } = new()
+        internal byte[] Body
         {
-            ["ce_id"] = "original", ["ce_type"] = "failure.payload;v=1", ["traceparent"] = "creation-context", ["custom"] = "preserved",
+            get; init;
+        } = "{}"u8.ToArray();
+
+        internal Dictionary<string, string> Headers
+        {
+            get;
+        } = new()
+        {
+            ["ce_id"] = "original",
+            ["ce_type"] = "failure.payload;v=1",
+            ["traceparent"] = "creation-context",
+            ["custom"] = "preserved",
         };
     }
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => new(message.Body);
-        public static int? GetDeliveryCount(Incoming message) => 1;
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return new(message.Body);
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
             var found = message.Headers.TryGetValue(name, out var text);
@@ -1418,7 +1797,15 @@ public class FailurePipelineTests
             return found;
         }
     }
-    private sealed class Native { internal int Attempt { get; set; } }
+
+    private sealed class Native
+    {
+        internal int Attempt
+        {
+            get; set;
+        }
+    }
+
     private sealed record Snapshot(string Destination, string Body, Dictionary<string, string> Headers, string? Key, DateTimeOffset? DeliverAt, int NativeAttempt)
     {
         internal static Snapshot From(OutgoingMessage message)
@@ -1429,59 +1816,158 @@ public class FailurePipelineTests
                 message.Headers.ToArray().ToDictionary(p => p.Key, p => p.Value.ToString()), message.OrderingKey?.ToString(), message.DeliverAt, native.Attempt);
         }
     }
+
     private sealed class Transport : ITransport
     {
         public string Name => "test";
-        internal TransportCapabilities Capabilities { get; set; } = new() { DeadLetter = true };
-        internal List<Snapshot> Sends { get; } = [];
-        internal int CapabilityReads { get; private set; }
-        internal Task? Pending { get; set; }
-        internal int FailAfter { get; init; } = int.MaxValue;
-        public TransportCapabilities GetCapabilities(string endpoint) { CapabilityReads++; return Capabilities; }
+
+        internal TransportCapabilities Capabilities
+        {
+            get; set;
+        } = new()
+        {
+            DeadLetter = true
+        };
+
+        internal List<Snapshot> Sends
+        {
+            get;
+        } = [];
+
+        internal int CapabilityReads
+        {
+            get; private set;
+        }
+
+        internal Task? Pending
+        {
+            get; set;
+        }
+
+        internal int FailAfter
+        {
+            get; init;
+        } = int.MaxValue;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            CapabilityReads++;
+            return Capabilities;
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (Pending is not null) await Pending.WaitAsync(cancellationToken);
-            if (Sends.Count >= FailAfter) throw new ApplicationException("partial send failure");
+            if (Pending is not null)
+            {
+                await Pending.WaitAsync(cancellationToken);
+            }
+
+            if (Sends.Count >= FailAfter)
+            {
+                throw new ApplicationException("partial send failure");
+            }
+
             Sends.Add(Snapshot.From(message));
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-            => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
+
     private sealed class Scheduler : IFailureScheduler
     {
-        internal List<Snapshot> Copies { get; } = [];
-        internal Task? Pending { get; init; }
+        internal List<Snapshot> Copies
+        {
+            get;
+        } = [];
+
+        internal Task? Pending
+        {
+            get; init;
+        }
+
         public async ValueTask ScheduleAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (Pending is not null) await Pending.WaitAsync(cancellationToken);
+            if (Pending is not null)
+            {
+                await Pending.WaitAsync(cancellationToken);
+            }
+
             Copies.Add(Snapshot.From(message));
         }
     }
+
     private sealed class ControlledTime(bool autoFire = false) : TimeProvider
     {
-        internal List<TimeSpan> Delays { get; } = [];
-        internal TimeSpan Delay { get; private set; }
+        internal List<TimeSpan> Delays
+        {
+            get;
+        } = [];
+
+        internal TimeSpan Delay
+        {
+            get; private set;
+        }
         private TimerCallback? _callback;
         private object? _state;
-        internal void Fire() => _callback!(_state);
+
+        internal void Fire()
+        {
+            _callback!(_state);
+        }
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             Delay = dueTime;
             Delays.Add(dueTime);
             _callback = callback;
             _state = state;
-            if (autoFire) callback(state);
+
+            if (autoFire)
+            {
+                callback(state);
+            }
+
             return new Timer();
         }
+
         private sealed class Timer : ITimer
         {
-            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-            public void Dispose() { }
-            public ValueTask DisposeAsync() => default;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                return true;
+            }
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return default;
+            }
         }
     }
 }

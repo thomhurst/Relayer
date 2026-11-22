@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using Azure.Messaging.ServiceBus;
 using Relayer.AzureServiceBus;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -14,7 +14,10 @@ public sealed class ServiceBusConsumerLifecycleTests
         var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var workToken = CancellationToken.None;
         await using var consumer = new ServiceBusConsumer(Declaration(), processor, (_, token) =>
-        { workToken = token; return new(pending.Task.WaitAsync(token)); });
+        {
+            workToken = token;
+            return new(pending.Task.WaitAsync(token));
+        });
         await consumer.StartAsync(default);
         var args = Args(nativeStop.Token);
         processor.Processing = consumer.ProcessAsync(args);
@@ -35,7 +38,10 @@ public sealed class ServiceBusConsumerLifecycleTests
         var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var workToken = CancellationToken.None;
         await using var consumer = new ServiceBusConsumer(Declaration(), processor, (_, token) =>
-        { workToken = token; return new(pending.Task.WaitAsync(token)); });
+        {
+            workToken = token;
+            return new(pending.Task.WaitAsync(token));
+        });
         await consumer.StartAsync(default);
         processor.Processing = consumer.ProcessAsync(Args(nativeStop.Token));
         var drain = consumer.StopAsync(deadline.Token);
@@ -46,20 +52,45 @@ public sealed class ServiceBusConsumerLifecycleTests
         await Assert.That(async () => await consumer.StartAsync(default)).Throws<InvalidOperationException>();
     }
 
-    private static ConsumerDefinition<ServiceBusConsumerOptions> Declaration() => new("orders", new(), [], 1, 1, TimeSpan.FromMilliseconds(100));
-    private static ProcessMessageEventArgs Args(CancellationToken token) => new(
-        ServiceBusModelFactory.ServiceBusReceivedMessage(deliveryCount: 1), new ServiceBusReceiveTests.NativeReceiver(), "drain", token);
+    private static ConsumerDefinition<ServiceBusConsumerOptions> Declaration()
+    {
+        return new("orders", new(), [], 1, 1, TimeSpan.FromMilliseconds(100));
+    }
+
+    private static ProcessMessageEventArgs Args(CancellationToken token)
+    {
+        return new(
+                ServiceBusModelFactory.ServiceBusReceivedMessage(deliveryCount: 1), new ServiceBusReceiveTests.NativeReceiver(), "drain", token);
+    }
 
     private sealed class DrainProcessor(CancellationTokenSource nativeStop) : ServiceBusProcessor
     {
-        internal Task Processing { get; set; } = Task.CompletedTask;
-        public override Task StartProcessingAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        internal Task Processing
+        {
+            get; set;
+        } = Task.CompletedTask;
+
+        public override Task StartProcessingAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
         public override async Task StopProcessingAsync(CancellationToken cancellationToken = default)
         {
             nativeStop.Cancel();
-            try { await Processing; }
-            catch (OperationCanceledException) when (nativeStop.IsCancellationRequested) { }
+
+            try
+            {
+                await Processing;
+            }
+            catch (OperationCanceledException) when (nativeStop.IsCancellationRequested)
+            {
+            }
         }
-        public override Task CloseAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public override Task CloseAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
     }
 }

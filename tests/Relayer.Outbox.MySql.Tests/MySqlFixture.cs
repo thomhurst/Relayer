@@ -11,15 +11,29 @@ internal sealed class MySqlFixture : IAsyncDisposable
 {
     private MySqlDataSource? _admin;
     private MySqlDataSource? _source;
-    internal string Database { get; } = TestContext.Current!.Isolation.GetIsolatedName(Guid.NewGuid().ToString("N")[..8]);
+
+    internal string Database
+    {
+        get;
+    } = TestContext.Current!.Isolation.GetIsolatedName(Guid.NewGuid().ToString("N")[..8]);
+
     internal MySqlDataSource Source => _source!;
-    internal MySqlOutboxOptions Options { get; } = new();
+
+    internal MySqlOutboxOptions Options
+    {
+        get;
+    } = new();
 
     internal async Task StartAsync()
     {
         var session = await MySqlSession.Current;
         _admin = session.Admin;
-        await using (var create = _admin.CreateCommand($"CREATE DATABASE {Database}")) await create.ExecuteNonQueryAsync();
+
+        await using (var create = _admin.CreateCommand($"CREATE DATABASE {Database}"))
+        {
+            await create.ExecuteNonQueryAsync();
+        }
+
         _source = new(session.Server.ConnectionString + ";Database=" + Database);
         await Execute(MySqlOutboxSchema.CreateScript(Options));
     }
@@ -58,10 +72,18 @@ internal sealed class MySqlFixture : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_admin is null) return;
+        if (_admin is null)
+        {
+            return;
+        }
+
         try
         {
-            if (_source is not null) await _source.DisposeAsync();
+            if (_source is not null)
+            {
+                await _source.DisposeAsync();
+            }
+
             await using var drop = _admin.CreateCommand($"DROP DATABASE IF EXISTS {Database}");
             await drop.ExecuteNonQueryAsync();
         }
@@ -81,7 +103,11 @@ internal sealed class MySqlServer : IAsyncDisposable
     private readonly string _name = "relayer-mysql-test-" + Guid.NewGuid().ToString("N");
     private readonly DockerCommand _docker = new();
     private bool _started;
-    internal string ConnectionString { get; private set; } = "";
+
+    internal string ConnectionString
+    {
+        get; private set;
+    } = "";
 
     internal async Task StartAsync()
     {
@@ -96,6 +122,7 @@ internal sealed class MySqlServer : IAsyncDisposable
         ConnectionString = $"Server=127.0.0.1;Port={port};User ID=root;Password=relayer-test;Connection Timeout=2;SslMode=Disabled;GuidFormat=LittleEndianBinary16;DateTimeKind=Local";
         await using var probe = new MySqlDataSource(ConnectionString + ";Pooling=false");
         var timeout = Stopwatch.StartNew();
+
         while (true)
         {
             try
@@ -103,13 +130,20 @@ internal sealed class MySqlServer : IAsyncDisposable
                 await using var connection = await probe.OpenConnectionAsync();
                 return;
             }
-            catch (MySqlException) when (timeout.Elapsed < TimeSpan.FromSeconds(60)) { await Task.Delay(200); }
+            catch (MySqlException) when (timeout.Elapsed < TimeSpan.FromSeconds(60))
+            {
+                await Task.Delay(200);
+            }
         }
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (!_started) return;
+        if (!_started)
+        {
+            return;
+        }
+
         _started = false;
         await _docker.RunAsync(["rm", "--force", "--volumes", _name]);
     }
@@ -118,15 +152,16 @@ internal sealed class MySqlServer : IAsyncDisposable
 public static class MySqlSession
 {
     // Started by the first test that needs a database, so filtered runs of pure unit tests start no container.
-    private static Lazy<Task<Session>> _shared = new(StartAsync);
+    private static Lazy<Task<Session>> s_shared = new(StartAsync);
 
-    internal static Task<Session> Current => Volatile.Read(ref _shared).Value;
+    internal static Task<Session> Current => Volatile.Read(ref s_shared).Value;
 
     internal sealed record Session(MySqlServer Server, MySqlDataSource Admin);
 
     private static async Task<Session> StartAsync()
     {
         var server = new MySqlServer();
+
         try
         {
             await server.StartAsync();
@@ -143,13 +178,25 @@ public static class MySqlSession
     public static async Task StopAsync()
     {
         // Like TUnit's own per-session instances, a later session in this process starts afresh.
-        var shared = Interlocked.Exchange(ref _shared, new(StartAsync));
-        if (!shared.IsValueCreated) return;
+        var shared = Interlocked.Exchange(ref s_shared, new(StartAsync));
+
+        if (!shared.IsValueCreated)
+        {
+            return;
+        }
         // Wait for a startup still in flight (every test may have given up on it) so its container is not left behind.
         Session session;
-        try { session = await shared.Value; }
+
+        try
+        {
+            session = await shared.Value;
+        }
         // A failed startup already removed its container and failed the tests that needed it.
-        catch { return; }
+        catch
+        {
+            return;
+        }
+
         await session.Admin.DisposeAsync();
         await session.Server.DisposeAsync();
     }
@@ -161,6 +208,8 @@ public static class MySqlFixtureCleanup
     public static void ReportFailures(TestContext context)
     {
         if (context.StateBag.TryGetValue<List<Exception>>("MySqlFixture.CleanupFailures", out var failures) && failures.Count > 0)
+        {
             throw new AggregateException("MySQL fixture cleanup failed.", failures);
+        }
     }
 }

@@ -24,10 +24,16 @@ public class TelemetryBenchmarks
     private ConsumeMessage _message;
 
     [Params(false, true)]
-    public bool ListenerAttached { get; set; }
+    public bool ListenerAttached
+    {
+        get; set;
+    }
 
     [Params(false, true)]
-    public bool ErrorLoggingEnabled { get; set; }
+    public bool ErrorLoggingEnabled
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -37,37 +43,62 @@ public class TelemetryBenchmarks
         services.AddLogging(logging => logging
             .SetMinimumLevel(ErrorLoggingEnabled ? LogLevel.Error : LogLevel.None)
             .AddProvider(new ScopeProvider()));
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
+        });
         _provider = services.BuildServiceProvider();
         var instrumentation = _provider.GetRequiredService<RelayerInstrumentation>();
         _endpoint = instrumentation.CreateEndpoint(new()
         {
-            System = "kafka", Destination = "orders", ConsumerGroup = "billing", Subscription = "subscription",
-            ServerAddress = "localhost", ServerPort = 9092,
+            System = "kafka",
+            Destination = "orders",
+            ConsumerGroup = "billing",
+            Subscription = "subscription",
+            ServerAddress = "localhost",
+            ServerPort = 9092,
         });
+
         if (ListenerAttached)
         {
             _listener = new MeterListener
             {
                 InstrumentPublished = (instrument, listener) =>
                 {
-                    if (ReferenceEquals(instrument.Meter.Scope, instrumentation)) listener.EnableMeasurementEvents(instrument);
+                    if (ReferenceEquals(instrument.Meter.Scope, instrumentation))
+                    {
+                        listener.EnableMeasurementEvents(instrument);
+                    }
                 },
             };
-            _listener.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
-            _listener.SetMeasurementEventCallback<long>(static (_, _, _, _) => { });
+            _listener.SetMeasurementEventCallback<double>(static (_, _, _, _) =>
+            {
+            });
+            _listener.SetMeasurementEventCallback<long>(static (_, _, _, _) =>
+            {
+            });
             _listener.Start();
         }
+
         _baseline = Builder().Build(1);
         _instrumented = Builder().Telemetry(_endpoint).Build(1);
         _receive = new(_instrumented, new HeaderNames(), 1);
         _incoming = new();
-        _message = new() { MessageId = "benchmark", MessageType = new("benchmark.payload", 1), Body = default };
+        _message = new()
+        {
+            MessageId = "benchmark",
+            MessageType = new("benchmark.payload", 1),
+            Body = default
+        };
     }
 
-    private ConsumePipelineBuilder Builder() => new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
-            _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error))
-        .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>());
+    private ConsumePipelineBuilder Builder()
+    {
+        return new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
+                    _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error))
+                .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>());
+    }
 
     [Benchmark(Baseline = true)]
     public async ValueTask ConsumerWithoutTelemetry()
@@ -84,10 +115,16 @@ public class TelemetryBenchmarks
     }
 
     [Benchmark]
-    public ValueTask<Disposition> NativeConsumerWithTelemetry() => _receive.ProcessAsync(_incoming);
+    public ValueTask<Disposition> NativeConsumerWithTelemetry()
+    {
+        return _receive.ProcessAsync(_incoming);
+    }
 
     [Benchmark]
-    public void FailureMeasurement() => _endpoint.RecordDuration(TimeSpan.FromMilliseconds(1), failed: true);
+    public void FailureMeasurement()
+    {
+        _endpoint.RecordDuration(TimeSpan.FromMilliseconds(1), failed: true);
+    }
 
     [GlobalCleanup]
     public void Cleanup()
@@ -99,23 +136,64 @@ public class TelemetryBenchmarks
     // LoggerFactory supplies real external scopes; output is disabled to isolate pipeline overhead.
     private sealed class ScopeProvider : ILoggerProvider, ISupportExternalScope, ILogger
     {
-        public ILogger CreateLogger(string categoryName) => this;
-        public bool IsEnabled(LogLevel level) => level >= LogLevel.Error;
-        public void SetScopeProvider(IExternalScopeProvider scopeProvider) { }
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => throw new NotSupportedException();
-        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter) { }
-        public void Dispose() { }
+        public ILogger CreateLogger(string categoryName)
+        {
+            return this;
+        }
+
+        public bool IsEnabled(LogLevel level)
+        {
+            return level >= LogLevel.Error;
+        }
+
+        public void SetScopeProvider(IExternalScopeProvider scopeProvider)
+        {
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            throw new NotSupportedException();
+        }
+
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter)
+        {
+        }
+
+        public void Dispose()
+        {
+        }
     }
+
     private sealed class Incoming
     {
-        internal byte[] Id { get; } = "benchmark"u8.ToArray();
-        internal byte[] Type { get; } = "benchmark.payload;v=1"u8.ToArray();
-        internal byte[] Correlation { get; } = "conversation"u8.ToArray();
+        internal byte[] Id
+        {
+            get;
+        } = "benchmark"u8.ToArray();
+
+        internal byte[] Type
+        {
+            get;
+        } = "benchmark.payload;v=1"u8.ToArray();
+
+        internal byte[] Correlation
+        {
+            get;
+        } = "conversation"u8.ToArray();
     }
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => default;
-        public static int? GetDeliveryCount(Incoming message) => 1;
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return default;
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
             value = name switch
@@ -130,15 +208,29 @@ public class TelemetryBenchmarks
     }
 
     public sealed class Payload;
+
     public sealed class Handler : IHandler<Payload>
     {
-        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "benchmark/cached";
-        public T Deserialize<T>(ReadOnlySequence<byte> source) => (T)(object)_payload;
-        public void Serialize<T>(T message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public T Deserialize<T>(ReadOnlySequence<byte> source)
+        {
+            return (T)(object)_payload;
+        }
+
+        public void Serialize<T>(T message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

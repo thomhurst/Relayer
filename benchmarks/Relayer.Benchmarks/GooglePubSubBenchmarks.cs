@@ -1,5 +1,3 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Text.Json.Serialization;
 using BenchmarkDotNet.Attributes;
@@ -9,7 +7,9 @@ using Grpc.Net.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.GooglePubSub;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -78,26 +78,46 @@ public class GooglePubSubSendBenchmarks
     }
 
     [Benchmark]
-    public ValueTask RelayerJsonSend() => _sender.SendWithoutOutboxAsync(_order);
+    public ValueTask RelayerJsonSend()
+    {
+        return _sender.SendWithoutOutboxAsync(_order);
+    }
 
     [GlobalCleanup]
     public async Task Cleanup()
     {
         _scope?.Dispose();
+
         if (_host is not null)
         {
             await _host.StopAsync();
             await ((IAsyncDisposable)_host).DisposeAsync();
         }
-        if (_publisher is not null) await _publisher.DisposeAsync();
-        if (_topic is not null && _api is not null) await _api.DeleteTopicAsync(_topic);
+
+        if (_publisher is not null)
+        {
+            await _publisher.DisposeAsync();
+        }
+
+        if (_topic is not null && _api is not null)
+        {
+            await _api.DeleteTopicAsync(_topic);
+        }
+
         _channel?.Dispose();
     }
 
     private readonly struct Headers : IMessageHeaderWriter<PubsubMessage>
     {
-        public static void SetHeader(PubsubMessage message, string name, ReadOnlySpan<char> value) => message.Attributes[name] = value.ToString();
-        public static void RemoveHeader(PubsubMessage message, string name) => message.Attributes.Remove(name);
+        public static void SetHeader(PubsubMessage message, string name, ReadOnlySpan<char> value)
+        {
+            message.Attributes[name] = value.ToString();
+        }
+
+        public static void RemoveHeader(PubsubMessage message, string name)
+        {
+            message.Attributes.Remove(name);
+        }
     }
 }
 
@@ -143,17 +163,30 @@ public class GooglePubSubReceiveBenchmarks
         var message = _serializer.Deserialize<PubSubBenchmarkOrder>(_body);
         await scope.ServiceProvider.GetRequiredService<PubSubBenchmarkHandler>().HandleAsync(message, null!, default).ConfigureAwait(false);
     }
+
     [Benchmark]
-    public ValueTask<Disposition> RelayerJsonReceive() => _receive.ProcessAsync(_delivery);
+    public ValueTask<Disposition> RelayerJsonReceive()
+    {
+        return _receive.ProcessAsync(_delivery);
+    }
+
     [GlobalCleanup]
-    public ValueTask Cleanup() => _provider.DisposeAsync();
+    public ValueTask Cleanup()
+    {
+        return _provider.DisposeAsync();
+    }
 }
 
 [Message("benchmarks.pubsub.order")]
 public sealed record PubSubBenchmarkOrder(int Value);
+
 public sealed class PubSubBenchmarkHandler : IHandler<PubSubBenchmarkOrder>
 {
-    public ValueTask HandleAsync(PubSubBenchmarkOrder message, MessageContext context, CancellationToken cancellationToken) => default;
+    public ValueTask HandleAsync(PubSubBenchmarkOrder message, MessageContext context, CancellationToken cancellationToken)
+    {
+        return default;
+    }
 }
+
 [JsonSerializable(typeof(PubSubBenchmarkOrder))]
 internal partial class PubSubBenchmarkJson : JsonSerializerContext;

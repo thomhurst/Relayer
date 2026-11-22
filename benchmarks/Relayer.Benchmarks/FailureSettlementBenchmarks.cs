@@ -1,18 +1,27 @@
 using System.Buffers;
-using Relayer.Pipeline;
-using Relayer.Transports;
 using System.Threading.Tasks.Sources;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
 [MemoryDiagnoser]
 public class FailureSettlementBenchmarks
 {
-    [Params(1, 10)] public int Pending { get; set; }
-    [Params(false, true)] public bool PendingHandler { get; set; }
+    [Params(1, 10)]
+    public int Pending
+    {
+        get; set;
+    }
+
+    [Params(false, true)]
+    public bool PendingHandler
+    {
+        get; set;
+    }
     private ServiceProvider _provider = null!;
     private ConsumePipeline _pipeline = null!;
     private IServiceScopeFactory _scopes = null!;
@@ -48,7 +57,12 @@ public class FailureSettlementBenchmarks
         _contexts = new DefaultMessageContext[Pending];
         _processing = new ValueTask[Pending];
         _gates = new Gate[Pending];
-        for (var i = 0; i < Pending; i++) _gates[i] = new();
+
+        for (var i = 0; i < Pending; i++)
+        {
+            _gates[i] = new();
+        }
+
         _directScopes = new AsyncServiceScope[Pending];
         _handlerGates.Gates = PendingHandler ? _gates : null;
     }
@@ -57,15 +71,24 @@ public class FailureSettlementBenchmarks
     public void DirectScopedWindow()
     {
         ResetGates();
+
         for (var i = 0; i < Pending; i++)
         {
             _directScopes[i] = new AsyncServiceScope(_scopes.CreateScope());
             var handler = _descriptor.Resolve(_directScopes[i].ServiceProvider);
             _processing[i] = _descriptor.DispatchAsync(handler, _serializer.Deserialize<Payload>(default), null!, default);
+
             if (PendingHandler && _processing[i].IsCompleted)
+            {
                 throw new InvalidOperationException("The direct handler must genuinely suspend.");
+            }
         }
-        if (PendingHandler) CompleteGates();
+
+        if (PendingHandler)
+        {
+            CompleteGates();
+        }
+
         for (var i = 0; i < Pending; i++)
         {
             _processing[i].GetAwaiter().GetResult();
@@ -78,14 +101,20 @@ public class FailureSettlementBenchmarks
     public void SettlementWindow()
     {
         ResetGates();
+
         for (var i = 0; i < Pending; i++)
         {
             _contexts[i] = _pipeline.RentContext(_message);
             _processing[i] = _pipeline.ProcessAsync(_contexts[i]);
+
             if (_processing[i].IsCompleted)
+            {
                 throw new InvalidOperationException("The pipeline must genuinely suspend.");
+            }
         }
+
         CompleteGates();
+
         for (var i = 0; i < Pending; i++)
         {
             _processing[i].GetAwaiter().GetResult(); // All gates completed synchronously above.
@@ -97,51 +126,135 @@ public class FailureSettlementBenchmarks
     {
         _next = 0;
         _handlerGates.Next = 0;
-        for (var i = 0; i < Pending; i++) _gates[i].Reset();
+
+        for (var i = 0; i < Pending; i++)
+        {
+            _gates[i].Reset();
+        }
     }
 
     private void CompleteGates()
     {
-        for (var i = 0; i < Pending; i++) _gates[i].Complete();
+        for (var i = 0; i < Pending; i++)
+        {
+            _gates[i].Complete();
+        }
     }
 
-    [GlobalCleanup] public async Task Cleanup() => await _provider.DisposeAsync();
-    [Message("benchmark.settlement")] public sealed class Payload;
+    [GlobalCleanup]
+    public async Task Cleanup()
+    {
+        await _provider.DisposeAsync();
+    }
+
+    [Message("benchmark.settlement")]
+    public sealed class Payload;
+
     public sealed class Handler(HandlerGates gates) : IHandler<Payload>
     {
-        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => gates.Gates is { } pending ? pending[gates.Next++].Wait() : default;
+        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return gates.Gates is { } pending ? pending[gates.Next++].Wait() : default;
+        }
     }
+
     public sealed class HandlerGates
     {
         internal Gate[]? Gates;
         internal int Next;
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "benchmark/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) { }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+        }
     }
+
     private sealed class Transport : ITransport
     {
         public string Name => "benchmark";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { DeadLetter = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => default;
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => default;
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => ValueTask.FromResult(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                DeadLetter = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
+
     internal sealed class Gate : IValueTaskSource
     {
         private ManualResetValueTaskSourceCore<bool> _completion;
-        internal void Reset() => _completion.Reset();
-        internal ValueTask Wait() => new(this, _completion.Version);
-        internal void Complete() => _completion.SetResult(true);
-        public void GetResult(short token) => _completion.GetResult(token);
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) => _completion.OnCompleted(continuation, state, token, flags);
+
+        internal void Reset()
+        {
+            _completion.Reset();
+        }
+
+        internal ValueTask Wait()
+        {
+            return new(this, _completion.Version);
+        }
+
+        internal void Complete()
+        {
+            _completion.SetResult(true);
+        }
+
+        public void GetResult(short token)
+        {
+            _completion.GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
+            _completion.OnCompleted(continuation, state, token, flags);
+        }
     }
 }

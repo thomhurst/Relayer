@@ -16,8 +16,12 @@ namespace Relayer.Benchmarks;
 public class RabbitMqReceiveBenchmarks
 {
     private const int Records = 512;
+
     [Params(false, true)]
-    public bool HighCardinality { get; set; }
+    public bool HighCardinality
+    {
+        get; set;
+    }
     private string[] _routingKeys = null!;
     private string _exchange = null!;
     private IConnection _connection = null!;
@@ -32,9 +36,16 @@ public class RabbitMqReceiveBenchmarks
     private BasicProperties _properties = null!;
 
     [GlobalSetup(Target = nameof(RawClient))]
-    public Task SetupRaw() => Setup(false);
+    public Task SetupRaw()
+    {
+        return Setup(false);
+    }
+
     [GlobalSetup(Target = nameof(Relayer))]
-    public Task SetupRelayer() => Setup(true);
+    public Task SetupRelayer()
+    {
+        return Setup(true);
+    }
 
     private async Task Setup(bool relayer)
     {
@@ -49,9 +60,22 @@ public class RabbitMqReceiveBenchmarks
         await _publisher.ExchangeDeclareAsync(_exchange, "topic");
         await _publisher.QueueBindAsync(_queue, _exchange, "order.#");
         _routingKeys = new string[Records];
-        for (var i = 0; i < Records; i++) _routingKeys[i] = HighCardinality ? "order." + i : "order.fixed";
-        _properties = new() { Persistent = true, ContentType = "application/json", Headers = new Dictionary<string, object?>
-        { ["cloudEvents:id"] = "benchmark", ["cloudEvents:type"] = "benchmarks.rabbit-receive;v=1" } };
+
+        for (var i = 0; i < Records; i++)
+        {
+            _routingKeys[i] = HighCardinality ? "order." + i : "order.fixed";
+        }
+
+        _properties = new()
+        {
+            Persistent = true,
+            ContentType = "application/json",
+            Headers = new Dictionary<string, object?>
+            {
+                ["cloudEvents:id"] = "benchmark",
+                ["cloudEvents:type"] = "benchmarks.rabbit-receive;v=1"
+            }
+        };
         var services = new ServiceCollection();
         services.AddSingleton(this);
         services.AddSingleton<RabbitMqBenchmarkHandler>();
@@ -60,7 +84,11 @@ public class RabbitMqReceiveBenchmarks
             builder.Infrastructure().MessageTypes.Add<RabbitMqBenchmarkPayload>("benchmarks.rabbit-receive");
             builder.UseJsonSerializer(RabbitMqReceiveBenchmarkJson.Default);
 
-            if (!relayer) return;
+            if (!relayer)
+            {
+                return;
+            }
+
             builder.RabbitMQ("benchmark", rabbit =>
             {
                 rabbit.TopologyMode = TopologyMode.None;
@@ -73,25 +101,39 @@ public class RabbitMqReceiveBenchmarks
             });
         });
         _provider = services.BuildServiceProvider();
+
         if (!relayer)
         {
             return;
         }
-        foreach (var service in _provider.GetServices<IHostedService>()) await service.StartAsync(default);
+
+        foreach (var service in _provider.GetServices<IHostedService>())
+        {
+            await service.StartAsync(default);
+        }
+
         var transport = (RabbitMqNativeTransport)_provider.GetRequiredService<ITransport>();
         _adapter = transport.Consumers.Single();
         await _adapter.StopAsync(default);
     }
 
     [IterationSetup]
-    public void Seed() => SeedAsync().GetAwaiter().GetResult();
+    public void Seed()
+    {
+        SeedAsync().GetAwaiter().GetResult();
+    }
+
     private async Task SeedAsync()
     {
         _count = 0;
         _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         for (var i = 0; i < Records; i++)
+        {
             await _publisher.BasicPublishAsync(_exchange, _routingKeys[i], true, _properties, "{\"Value\":42}"u8.ToArray());
+        }
     }
+
     [Benchmark(Baseline = true, OperationsPerInvoke = Records)]
     public async Task<int> RawClient()
     {
@@ -104,6 +146,7 @@ public class RabbitMqReceiveBenchmarks
         await _completion.Task.WaitAsync(timeout.Token);
         return _count;
     }
+
     [Benchmark(OperationsPerInvoke = Records)]
     public async Task<int> Relayer()
     {
@@ -112,21 +155,42 @@ public class RabbitMqReceiveBenchmarks
         await _completion.Task.WaitAsync(timeout.Token);
         return _count;
     }
+
     private async Task RawProcess(object sender, BasicDeliverEventArgs message)
     {
         var payload = JsonSerializer.Deserialize(message.Body.Span, RabbitMqReceiveBenchmarkJson.Default.RabbitMqBenchmarkPayload);
-        if (payload.Value != 42) throw new InvalidOperationException("Unexpected benchmark payload.");
+
+        if (payload.Value != 42)
+        {
+            throw new InvalidOperationException("Unexpected benchmark payload.");
+        }
+
         Completed();
         await _raw!.BasicAckAsync(message.DeliveryTag, false, message.CancellationToken);
     }
+
     internal void Completed()
-    { if (Interlocked.Increment(ref _count) == Records) _completion.TrySetResult(); }
+    {
+        if (Interlocked.Increment(ref _count) == Records)
+        {
+            _completion.TrySetResult();
+        }
+    }
+
     [IterationCleanup]
-    public void Drain() => DrainAsync().GetAwaiter().GetResult();
+    public void Drain()
+    {
+        DrainAsync().GetAwaiter().GetResult();
+    }
+
     private async Task DrainAsync()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        if (_adapter is not null) await _adapter.StopAsync(timeout.Token);
+
+        if (_adapter is not null)
+        {
+            await _adapter.StopAsync(timeout.Token);
+        }
         else if (_tag is not null)
         {
             await _raw!.BasicCancelAsync(_tag, false, timeout.Token);
@@ -135,30 +199,50 @@ public class RabbitMqReceiveBenchmarks
             _tag = null;
         }
     }
+
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        if (_provider is not null) await _provider.DisposeAsync();
-        if (_raw is not null) await _raw.DisposeAsync();
+        if (_provider is not null)
+        {
+            await _provider.DisposeAsync();
+        }
+
+        if (_raw is not null)
+        {
+            await _raw.DisposeAsync();
+        }
+
         if (_publisher is not null)
         {
             await _publisher.QueueDeleteAsync(_queue, false, false);
             await _publisher.ExchangeDeleteAsync(_exchange);
             await _publisher.DisposeAsync();
         }
-        if (_connection is not null) await _connection.DisposeAsync();
+
+        if (_connection is not null)
+        {
+            await _connection.DisposeAsync();
+        }
     }
 }
+
 [Message("benchmarks.rabbit-receive")]
 public readonly record struct RabbitMqBenchmarkPayload(int Value);
+
 public sealed class RabbitMqBenchmarkHandler(RabbitMqReceiveBenchmarks owner) : IHandler<RabbitMqBenchmarkPayload>
 {
     public ValueTask HandleAsync(RabbitMqBenchmarkPayload message, MessageContext context, CancellationToken cancellationToken)
     {
-        if (message.Value != 42) return ValueTask.FromException(new InvalidOperationException("Unexpected benchmark payload."));
+        if (message.Value != 42)
+        {
+            return ValueTask.FromException(new InvalidOperationException("Unexpected benchmark payload."));
+        }
+
         owner.Completed();
         return default;
     }
 }
+
 [JsonSerializable(typeof(RabbitMqBenchmarkPayload))]
 internal partial class RabbitMqReceiveBenchmarkJson : JsonSerializerContext;

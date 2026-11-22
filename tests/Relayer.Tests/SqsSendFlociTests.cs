@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using Amazon.Runtime;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using DotNet.Testcontainers.Builders;
 using Relayer.AmazonSqs;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -23,9 +23,26 @@ public class SqsSendFlociTests
         var standard = "relayer-" + Guid.NewGuid().ToString("N");
         var fifo = standard + ".fifo";
         var options = new AmazonSqsTransportOptions { SqsClient = client };
-        options.Queues.Add(new(standard) { Attributes = new() { ["MaximumMessageSize"] = "4096" }, Tags = new() { ["application"] = "relayer" } });
-        options.Queues.Add(new(fifo) { Attributes = new() { ["FifoQueue"] = "true" } });
+        options.Queues.Add(new(standard)
+        {
+            Attributes = new()
+            {
+                ["MaximumMessageSize"] = "4096"
+            },
+            Tags = new()
+            {
+                ["application"] = "relayer"
+            }
+        });
+        options.Queues.Add(new(fifo)
+        {
+            Attributes = new()
+            {
+                ["FifoQueue"] = "true"
+            }
+        });
         var urls = new List<string>();
+
         try
         {
             IRouteDefinition[] routes = [new RouteDefinition<SqsSendTests.Order>(fifo, null, null, new() { HeaderNames = new("event_") })];
@@ -50,10 +67,15 @@ public class SqsSendFlociTests
             await client.DeleteMessageAsync(standardUrl, received.ReceiptHandle, token);
 
             var batch = new OutgoingMessage[12];
+
             for (var i = 0; i < batch.Length; i++)
+            {
                 batch[i] = new(fifo, "identical body"u8.ToArray(),
                     new KeyValuePair<string, WireString>[] { new("event_id", new WireString("event-" + i)) }, new WireString("customer"));
+            }
+
             await transport.SendBatchAsync(batch, token);
+
             for (var i = 0; i < batch.Length; i++)
             {
                 var ordered = await ReceiveAsync(client, fifoUrl, token);
@@ -89,7 +111,10 @@ public class SqsSendFlociTests
         }
         finally
         {
-            foreach (var url in urls) await client.DeleteQueueAsync(url, CancellationToken.None);
+            foreach (var url in urls)
+            {
+                await client.DeleteQueueAsync(url, CancellationToken.None);
+            }
         }
     }
 
@@ -97,8 +122,11 @@ public class SqsSendFlociTests
     {
         var response = await client.ReceiveMessageAsync(new ReceiveMessageRequest
         {
-            QueueUrl = url, WaitTimeSeconds = 10, MaxNumberOfMessages = 1,
-            MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"],
+            QueueUrl = url,
+            WaitTimeSeconds = 10,
+            MaxNumberOfMessages = 1,
+            MessageAttributeNames = ["All"],
+            MessageSystemAttributeNames = ["All"],
         }, token);
         return response.Messages?.SingleOrDefault() ?? throw new InvalidOperationException("Floci did not deliver the expected SQS message.");
     }

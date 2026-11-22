@@ -1,7 +1,7 @@
 using System.Buffers;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Data.SqlClient;
 using System.Data;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging.Abstractions;
 using Relayer.TestFixtures;
 
 namespace Relayer.Outbox.SqlServer.Tests;
@@ -13,8 +13,17 @@ public sealed class SharedOrderedDispatchContractTests(SqlServerFixture database
     protected override async Task<OrderedFixture> CreateFixtureAsync()
     {
         var fixture = new Fixture(database);
-        try { await fixture.Start(); return fixture; }
-        catch { await fixture.DisposeAsync(); throw; }
+
+        try
+        {
+            await fixture.Start();
+            return fixture;
+        }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
     }
 
     private sealed class Fixture(SqlServerFixture database) : OrderedFixture
@@ -26,19 +35,31 @@ public sealed class SharedOrderedDispatchContractTests(SqlServerFixture database
             await _data.Create();
         }
 
-        public override OrderedWorker Worker(RecordingTransport transport) => new WorkerAdapter(
-            new(database.ConnectionString, new() { Lanes = 1, TablePrefix = _data.Options.TablePrefix }, [transport], NullLogger<SqlServerOrderedDispatcher>.Instance));
+        public override OrderedWorker Worker(RecordingTransport transport)
+        {
+            return new WorkerAdapter(
+                        new(database.ConnectionString, new()
+                        {
+                            Lanes = 1,
+                            TablePrefix = _data.Options.TablePrefix
+                        }, [transport], NullLogger<SqlServerOrderedDispatcher>.Instance));
+        }
 
         public override async Task Insert(Guid id, int? lane, string orderingKey = "customer-Ã©")
         {
             using var headers = new MemoryStream();
+
             using (var writer = new BinaryWriter(headers, System.Text.Encoding.UTF8, leaveOpen: true))
             {
-                writer.Write(1); writer.Write(1);
-                writer.Write(5); writer.Write("ce_id"u8);
+                writer.Write(1);
+                writer.Write(1);
+                writer.Write(5);
+                writer.Write("ce_id"u8);
                 var value = System.Text.Encoding.UTF8.GetBytes(id.ToString());
-                writer.Write(value.Length); writer.Write(value);
+                writer.Write(value.Length);
+                writer.Write(value);
             }
+
             await using var connection = new SqlConnection(database.ConnectionString);
             await connection.OpenAsync();
             await using var command = new SqlCommand($"""
@@ -97,18 +118,31 @@ public sealed class SharedOrderedDispatchContractTests(SqlServerFixture database
             await using var command = new SqlCommand($"SELECT id, attempts, last_error, claim_token, claim_expires_at FROM {_data.Table} ORDER BY id", connection);
             await using var reader = await command.ExecuteReaderAsync();
             var rows = new List<Row>();
+
             while (await reader.ReadAsync())
+            {
                 rows.Add(new(new Guid((byte[])reader.GetValue(0), bigEndian: true), reader.GetInt32(1), reader.IsDBNull(2) ? null : reader.GetString(2), !reader.IsDBNull(3), !reader.IsDBNull(4)));
+            }
+
             return rows.ToArray();
         }
 
-        public override ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
+        public override ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class WorkerAdapter(SqlServerOrderedDispatcher worker) : OrderedWorker
     {
-        public override ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken = default) => worker.DispatchLaneAsync(lane, cancellationToken);
-        public override void Dispose() => worker.Dispose();
+        public override ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken = default)
+        {
+            return worker.DispatchLaneAsync(lane, cancellationToken);
+        }
+
+        public override void Dispose()
+        {
+            worker.Dispose();
+        }
     }
 }

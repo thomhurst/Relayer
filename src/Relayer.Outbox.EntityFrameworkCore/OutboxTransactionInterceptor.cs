@@ -15,8 +15,10 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
     }
 
     public override ValueTask<InterceptionResult<DbTransaction>> TransactionStartingAsync(DbConnection connection,
-        TransactionStartingEventData eventData, InterceptionResult<DbTransaction> result, CancellationToken cancellationToken = default) =>
-        new(TransactionStarting(connection, eventData, result));
+        TransactionStartingEventData eventData, InterceptionResult<DbTransaction> result, CancellationToken cancellationToken = default)
+    {
+        return new(TransactionStarting(connection, eventData, result));
+    }
 
     public override DbTransaction TransactionStarted(DbConnection connection, TransactionEndEventData eventData, DbTransaction result)
     {
@@ -25,8 +27,10 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
     }
 
     public override ValueTask<DbTransaction> TransactionStartedAsync(DbConnection connection, TransactionEndEventData eventData,
-        DbTransaction result, CancellationToken cancellationToken = default) =>
-        new(TransactionStarted(connection, eventData, result));
+        DbTransaction result, CancellationToken cancellationToken = default)
+    {
+        return new(TransactionStarted(connection, eventData, result));
+    }
 
     public override DbTransaction TransactionUsed(DbConnection connection, TransactionEventData eventData, DbTransaction result)
     {
@@ -35,13 +39,23 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
     }
 
     public override ValueTask<DbTransaction> TransactionUsedAsync(DbConnection connection, TransactionEventData eventData,
-        DbTransaction result, CancellationToken cancellationToken = default) =>
-        new(TransactionUsed(connection, eventData, result));
+        DbTransaction result, CancellationToken cancellationToken = default)
+    {
+        return new(TransactionUsed(connection, eventData, result));
+    }
 
     public override InterceptionResult TransactionCommitting(DbTransaction transaction, TransactionEventData eventData, InterceptionResult result)
     {
-        try { outbox.Prepare(transaction)?.Execute(); }
-        catch { outbox.Invalidate(transaction); throw; }
+        try
+        {
+            outbox.Prepare(transaction)?.Execute();
+        }
+        catch
+        {
+            outbox.Invalidate(transaction);
+            throw;
+        }
+
         return result;
     }
 
@@ -52,20 +66,36 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
     {
         try
         {
-            if (outbox.Prepare(transaction) is { } batch) await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            if (outbox.Prepare(transaction) is { } batch)
+            {
+                await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
-        catch { outbox.Invalidate(transaction); throw; }
+        catch
+        {
+            outbox.Invalidate(transaction);
+            throw;
+        }
+
         return result;
     }
 
-    public override void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData) => outbox.Committed(transaction);
+    public override void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData)
+    {
+        outbox.Committed(transaction);
+    }
+
     public override Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
     {
         outbox.Committed(transaction);
         return Task.CompletedTask;
     }
 
-    public override void TransactionRolledBack(DbTransaction transaction, TransactionEndEventData eventData) => outbox.Ended(transaction);
+    public override void TransactionRolledBack(DbTransaction transaction, TransactionEndEventData eventData)
+    {
+        outbox.Ended(transaction);
+    }
+
     public override Task TransactionRolledBackAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
     {
         outbox.Ended(transaction);
@@ -82,7 +112,11 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
 
         // EF creates its automatic savepoint before any save command. When that fails, for example on a
         // canceled token, nothing from this save reached the database and the unit can continue.
-        if (eventData.Context is { } context && outbox.Get(context, configuration).SavepointFailed()) return;
+        if (eventData.Context is { } context && outbox.Get(context, configuration).SavepointFailed())
+        {
+            return;
+        }
+
         outbox.Invalidate(transaction);
     }
 
@@ -95,18 +129,29 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
     public override InterceptionResult CreatingSavepoint(DbTransaction transaction, TransactionEventData eventData, InterceptionResult result)
     {
         var state = outbox.Get(eventData.Context!, configuration);
-        if (state.Saving) state.CreatingSavepoint = true;
+
+        if (state.Saving)
+        {
+            state.CreatingSavepoint = true;
+        }
+
         return result;
     }
 
     public override ValueTask<InterceptionResult> CreatingSavepointAsync(DbTransaction transaction, TransactionEventData eventData,
-        InterceptionResult result, CancellationToken cancellationToken = default) =>
-        new(CreatingSavepoint(transaction, eventData, result));
+        InterceptionResult result, CancellationToken cancellationToken = default)
+    {
+        return new(CreatingSavepoint(transaction, eventData, result));
+    }
 
     public override void CreatedSavepoint(DbTransaction transaction, TransactionEventData eventData)
     {
         var state = outbox.Get(eventData.Context!, configuration);
-        if (state.Saving) state.SavepointCreated = true;
+
+        if (state.Saving)
+        {
+            state.SavepointCreated = true;
+        }
     }
 
     public override Task CreatedSavepointAsync(DbTransaction transaction, TransactionEventData eventData, CancellationToken cancellationToken = default)
@@ -131,7 +176,10 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
     public override void RolledBackToSavepoint(DbTransaction transaction, TransactionEventData eventData)
     {
         // Manual rewinds, and saves without a confirmed native checkpoint, remain fatal.
-        if (!outbox.Get(eventData.Context!, configuration).RollbackSave()) outbox.Invalidate(transaction);
+        if (!outbox.Get(eventData.Context!, configuration).RollbackSave())
+        {
+            outbox.Invalidate(transaction);
+        }
     }
 
     public override Task RolledBackToSavepointAsync(DbTransaction transaction, TransactionEventData eventData, CancellationToken cancellationToken = default)

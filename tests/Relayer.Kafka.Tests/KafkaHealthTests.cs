@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
@@ -8,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Relayer.HealthChecks;
+using Relayer.Transports;
 
 namespace Relayer.Kafka.Tests;
 
@@ -19,8 +19,16 @@ public class KafkaHealthTests
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.Kafka("events", kafka =>
         {
-            kafka.Consume("orders", consumer => { consumer.Options.Group = "one"; consumer.Handler<KafkaHealthHandler>(); });
-            kafka.Consume("orders", consumer => { consumer.Options.Group = "two"; consumer.Handler<KafkaHealthHandler>(); });
+            kafka.Consume("orders", consumer =>
+            {
+                consumer.Options.Group = "one";
+                consumer.Handler<KafkaHealthHandler>();
+            });
+            kafka.Consume("orders", consumer =>
+            {
+                consumer.Options.Group = "two";
+                consumer.Handler<KafkaHealthHandler>();
+            });
         }));
         await using var provider = services.BuildServiceProvider();
         var consumers = provider.GetRequiredService<RelayerConfiguration>().Transports.Single().Consumers;
@@ -74,7 +82,9 @@ public class KafkaHealthTests
     public async Task Connectivity_adapter_rejects_a_mismatched_transport_name_before_creating_a_client()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(builder => builder.Kafka("events", _ => { }));
+        services.AddRelayer(builder => builder.Kafka("events", _ =>
+        {
+        }));
         services.AddRelayerKafkaHealthProviders("Events");
         await using var provider = services.BuildServiceProvider();
         await Assert.That(() => provider.GetRequiredKeyedService<ITransportHealthProbe>("Events"))
@@ -139,6 +149,7 @@ public class KafkaHealthTests
         var beforeStart = await checks.CheckHealthAsync(check => check.Name == "relayer.consumer", token);
         await Assert.That(beforeStart.Status).IsEqualTo(HealthStatus.Unhealthy);
         await host.StartAsync(token);
+
         try
         {
             await Assert.That((await checks.CheckHealthAsync(check => check.Name == "relayer.transport", token)).Status).IsEqualTo(HealthStatus.Healthy);
@@ -146,11 +157,13 @@ public class KafkaHealthTests
             // Idle receivers stay healthy regardless of elapsed time.
             await Task.Delay(TimeSpan.FromSeconds(16), token);
             await Assert.That((await checks.CheckHealthAsync(check => check.Name == "relayer.consumer", token)).Status).IsEqualTo(HealthStatus.Healthy);
+
             await using (var admin = new AdminClientBuilder().WithBootstrapServers(fixture.Bootstrap).Build())
             {
                 var offsets = await admin.ListOffsetsAsync([new() { TopicPartition = new(fixture.Destination, 0), Spec = OffsetSpec.Latest }], cancellationToken: token);
                 await Assert.That(offsets[new(fixture.Destination, 0)].Offset).IsEqualTo(0L);
             }
+
             await fixture.Transport.StartAsync(token);
             await fixture.Transport.SendAsync(new(fixture.Destination, "{\"Number\":1}"u8.ToArray(),
                 new KeyValuePair<string, WireString>[] { new("ce_id", new("health")), new("ce_type", new("tests.kafka.receive;v=1")) }), token);
@@ -161,8 +174,12 @@ public class KafkaHealthTests
             await WaitForIdleAsync(adapter, consumers[1], token);
             await Assert.That((await checks.CheckHealthAsync(check => check.Name == "relayer.consumer", token)).Status).IsEqualTo(HealthStatus.Healthy);
             HealthReport stalled;
+
             while ((stalled = await checks.CheckHealthAsync(check => check.Name == "relayer.consumer", token)).Status != HealthStatus.Unhealthy)
+            {
                 await Task.Delay(100, token);
+            }
+
             await Assert.That(stalled.Status).IsEqualTo(HealthStatus.Unhealthy);
             var details = stalled.Entries["relayer.consumer"].Data;
             await Assert.That(((HealthCheckResult)details[$"events/0:{fixture.Destination}"]).Status).IsEqualTo(HealthStatus.Unhealthy);
@@ -177,6 +194,7 @@ public class KafkaHealthTests
             control.Release.TrySetResult();
             await host.StopAsync(token);
         }
+
         await Assert.That((await checks.CheckHealthAsync(check => check.Name == "relayer.consumer", token)).Status).IsEqualTo(HealthStatus.Unhealthy);
         var probe = host.Services.GetRequiredKeyedService<ITransportHealthProbe>("events");
         await Assert.That(async () => await probe.CheckAsync(new CancellationToken(true))).Throws<OperationCanceledException>();
@@ -193,28 +211,56 @@ public class KafkaHealthTests
     private static async Task WaitForIdleAsync(IConsumerHealthProvider adapter, IConsumerDefinition consumer, CancellationToken token)
     {
         while ((await adapter.GetStateAsync(consumer, token)) is not { IsIdle: true })
+        {
             await Task.Delay(10, token);
+        }
     }
 
     private sealed class CustomKafkaHealth : ITransportHealthProbe, IConsumerHealthProvider
     {
-        public ValueTask<HealthCheckResult> CheckAsync(CancellationToken cancellationToken) => new(HealthCheckResult.Healthy());
-        public ValueTask<ConsumerHealthState?> GetStateAsync(IConsumerDefinition consumer, CancellationToken cancellationToken) => new((ConsumerHealthState?)null);
+        public ValueTask<HealthCheckResult> CheckAsync(CancellationToken cancellationToken)
+        {
+            return new(HealthCheckResult.Healthy());
+        }
+
+        public ValueTask<ConsumerHealthState?> GetStateAsync(IConsumerDefinition consumer, CancellationToken cancellationToken)
+        {
+            return new((ConsumerHealthState?)null);
+        }
     }
 }
 
 internal sealed class KafkaHealthClock : TimeProvider
 {
     private long _ticks = new DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero).Ticks;
-    public override DateTimeOffset GetUtcNow() => new(Volatile.Read(ref _ticks), TimeSpan.Zero);
-    internal void Advance(TimeSpan duration) => Interlocked.Add(ref _ticks, duration.Ticks);
+
+    public override DateTimeOffset GetUtcNow()
+    {
+        return new(Volatile.Read(ref _ticks), TimeSpan.Zero);
+    }
+
+    internal void Advance(TimeSpan duration)
+    {
+        Interlocked.Add(ref _ticks, duration.Ticks);
+    }
 }
 
 public sealed class KafkaHealthControl
 {
-    internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    internal TaskCompletionSource IdleHandled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal TaskCompletionSource Entered
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal TaskCompletionSource Release
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal TaskCompletionSource IdleHandled
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
 
 public sealed class KafkaHealthHandler(KafkaHealthControl control) : IHandler<KafkaReceiveMessage>

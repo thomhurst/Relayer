@@ -15,8 +15,12 @@ public static class PostgreSqlMigrationExtensions
         PostgreSqlOutboxOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(migrationBuilder);
+
         if (migrationBuilder.ActiveProvider != "Npgsql.EntityFrameworkCore.PostgreSQL")
+        {
             throw new InvalidOperationException("CreateRelayerPostgreSqlSchema requires the Npgsql EF Core provider. Other database schemas are not implemented.");
+        }
+
         migrationBuilder.Sql(PostgreSqlOutboxSchema.CreateScript(options));
     }
 }

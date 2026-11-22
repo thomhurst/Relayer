@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Runtime.CompilerServices;
 using System.Transactions;
 using MySqlConnector;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
 
@@ -40,14 +40,14 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         var dead = MySqlOutboxSchema.DeadTable(options ?? new());
         _failureLimit = (options ?? new()).MaxDispatchAttempts;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_failureLimit);
-        const string eligible = "status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
-        const string fenced = "id = @id AND claim_token = @token AND claim_expires_at > @now";
-        _read = new($"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {eligible} AND lane <=> CAST(@lane AS SIGNED) AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit");
-        _claim = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible}");
-        _renew = new($"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced}");
-        _complete = new($"DELETE FROM {table} WHERE {fenced}");
-        _retry = new(MySqlRetrySql.Update(table, fenced, "@now"));
-        _fail = new($"UPDATE {table} SET attempts=attempts+1,last_error=@error WHERE {fenced}");
+        const string Eligible = "status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
+        const string Fenced = "id = @id AND claim_token = @token AND claim_expires_at > @now";
+        _read = new($"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {Eligible} AND lane <=> CAST(@lane AS SIGNED) AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit");
+        _claim = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {Eligible}");
+        _renew = new($"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {Fenced}");
+        _complete = new($"DELETE FROM {table} WHERE {Fenced}");
+        _retry = new(MySqlRetrySql.Update(table, Fenced, "@now"));
+        _fail = new($"UPDATE {table} SET attempts=attempts+1,last_error=@error WHERE {Fenced}");
         _failureSql = $"""
             REPLACE INTO {dead} (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,failed_at)
             SELECT id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,UTC_TIMESTAMP(6)
@@ -56,17 +56,19 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
             UPDATE {table} SET status=IF(attempts>=@limit,'parked',status),claim_token=NULL,claim_expires_at=NULL WHERE id=@id;
             SELECT NOT EXISTS (SELECT 1 FROM {table} WHERE id=@id);
             """;
-        _claimBatch = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND lane IS NULL AND {eligible}");
-        _completeBatch = new($"DELETE FROM {table} WHERE {fenced}");
-        _count = new($"SELECT COUNT(*) FROM {table} WHERE {eligible}");
-        _boundedCount = new($"SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE {eligible} LIMIT @countLimit) AS pending");
+        _claimBatch = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND lane IS NULL AND {Eligible}");
+        _completeBatch = new($"DELETE FROM {table} WHERE {Fenced}");
+        _count = new($"SELECT COUNT(*) FROM {table} WHERE {Eligible}");
+        _boundedCount = new($"SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE {Eligible} LIMIT @countLimit) AS pending");
         _boundedCount.Command.Parameters.Add("countLimit", MySqlDbType.Int64);
     }
 
     internal static void ValidateDataSource(MySqlDataSource dataSource)
     {
         if (new MySqlConnectionStringBuilder(dataSource.ConnectionString).UseAffectedRows)
+        {
             throw new ArgumentException("MySQL outbox stores require UseAffectedRows=false so unchanged live claim renewals report ownership correctly.", nameof(dataSource));
+        }
     }
 
     /// <inheritdoc />
@@ -76,19 +78,32 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         CancellationToken cancellationToken)
     {
         EnsureAvailable(cancellationToken);
-        if (request.Lane < 0) throw new ArgumentOutOfRangeException(nameof(request), "Lane must not be negative.");
-        if (destination.IsEmpty) return 0;
+
+        if (request.Lane < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request), "Lane must not be negative.");
+        }
+
+        if (destination.IsEmpty)
+        {
+            return 0;
+        }
+
         _read.Now(request.Now);
         _read.Read(request.Lane, request.AfterId, destination.Length);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         var command = _read.Command;
         command.Connection = connection;
+
         try
         {
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             return await ReadRowsAsync(reader, destination, cancellationToken).ConfigureAwait(false);
         }
-        finally { command.Connection = null; }
+        finally
+        {
+            command.Connection = null;
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -106,22 +121,36 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         CancellationToken cancellationToken, bool includeOrderedSequence = false, bool isolateMalformed = false)
     {
         var count = 0;
+
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             reader.GetBytes(0, 0, _readId, 0, 16);
             var id = new Guid(_readId, bigEndian: true);
+
             try
             {
-                if (_headers.Count == count) _headers.Add(new());
+                if (_headers.Count == count)
+                {
+                    _headers.Add(new());
+                }
+
                 var slot = _headers[count];
                 var headers = DurableOutboxHeaderCodec.Read(reader.GetFieldValue<byte[]>(5), ref slot.Entries);
+
                 if (includeOrderedSequence)
+                {
                     headers = OrderedSequenceHeader.Add(headers.Span, ref slot.OrderedEntries, slot.Sequence, reader.GetInt64(13));
+                }
+
                 var transport = reader.GetString(1);
                 var type = reader.GetString(2);
                 var target = reader.GetString(3);
+
                 if (isolateMalformed && (string.IsNullOrWhiteSpace(transport) || string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(target)))
+                {
                     throw new InvalidDataException("Transport, message type and destination must be nonempty.");
+                }
+
                 var message = new OutgoingMessage(target, reader.GetFieldValue<byte[]>(4), headers,
                     reader.IsDBNull(6) ? null : new WireString(reader.GetString(6)),
                     reader.IsDBNull(7) ? null : Utc(reader.GetDateTime(7)));
@@ -134,11 +163,14 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
                 destination.Span[count++] = new(id, "", "", default, default, Attempts: reader.GetInt32(10), LastError: "Malformed outbox row: " + error.Message);
             }
         }
+
         return count;
     }
 
-    internal ValueTask<FailureOutcome> QuarantineAsync(OutboxClaim claim, string error, CancellationToken cancellationToken) =>
-        FailAsync(claim, error, DateTimeOffset.UtcNow, 1, cancellationToken);
+    internal ValueTask<FailureOutcome> QuarantineAsync(OutboxClaim claim, string error, CancellationToken cancellationToken)
+    {
+        return FailAsync(claim, error, DateTimeOffset.UtcNow, 1, cancellationToken);
+    }
 
     /// <inheritdoc />
     public ValueTask<bool> TryClaimAsync(OutboxClaim claim, DateTimeOffset now, DateTimeOffset expiresAt,
@@ -177,7 +209,10 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     }
 
     internal ValueTask<FailureOutcome> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
-        CancellationToken cancellationToken) => FailAsync(claim, error, now, _failureLimit, cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        return FailAsync(claim, error, now, _failureLimit, cancellationToken);
+    }
 
     // Native send failures remain pending, independently of the explicit poison budget.
     internal ValueTask<bool> RecordRetryAsync(OutboxClaim claim, string error, DateTimeOffset now,
@@ -194,7 +229,11 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     {
         internal void RecordTelemetry(RelayerInstrumentation? instrumentation)
         {
-            if (!Removed || instrumentation is null) return;
+            if (!Removed || instrumentation is null)
+            {
+                return;
+            }
+
             instrumentation.AddOutboxPending(-1);
             instrumentation.RecordOutboxPoison();
         }
@@ -217,9 +256,14 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         command.Transaction = transaction;
         // Keep the claim until the raw copy and terminal transition finish under its row lock.
         var original = command.CommandText;
+
         try
         {
-            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1) return default;
+            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                return default;
+            }
+
             command.Parameters["limit"].Value = limit;
             command.CommandText = _failureSql;
             var removed = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 0;
@@ -246,6 +290,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         var command = operation.Command;
         command.Connection = connection;
+
         try
         {
             // Native affected-row behavior can report zero when renewal does not change the expiry.
@@ -269,8 +314,15 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         var command = _count.Command;
         command.Connection = connection;
-        try { return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!; }
-        finally { command.Connection = null; }
+
+        try
+        {
+            return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+        }
+        finally
+        {
+            command.Connection = null;
+        }
     }
 
     /// <inheritdoc />
@@ -283,8 +335,15 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         command.Parameters["countLimit"].Value = countLimit;
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         command.Connection = connection;
-        try { return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!; }
-        finally { command.Connection = null; }
+
+        try
+        {
+            return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+        }
+        finally
+        {
+            command.Connection = null;
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -293,9 +352,19 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken)
     {
         EnsureAvailable(cancellationToken);
-        if (claimed.Length != claims.Length) throw new ArgumentException("Claims and outcomes must have equal lengths.", nameof(claimed));
+
+        if (claimed.Length != claims.Length)
+        {
+            throw new ArgumentException("Claims and outcomes must have equal lengths.", nameof(claimed));
+        }
+
         claimed.Span.Clear();
-        if (claims.IsEmpty) return;
+
+        if (claims.IsEmpty)
+        {
+            return;
+        }
+
         ValidateBatch(claims.Span, now, expires);
         _claimBatch.Prepare(claims.Span, now, expires);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -308,7 +377,12 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         DateTimeOffset now, CancellationToken cancellationToken)
     {
         EnsureAvailable(cancellationToken);
-        if (claims.IsEmpty) return 0;
+
+        if (claims.IsEmpty)
+        {
+            return 0;
+        }
+
         ValidateBatch(claims.Span);
         _completeBatch.Prepare(claims.Span, now, now);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -317,30 +391,49 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
 
     private static void ValidateBatch(ReadOnlySpan<OutboxClaim> claims, DateTimeOffset? now = null, DateTimeOffset? expires = null)
     {
-        foreach (var claim in claims) Validate(claim, now, expires);
+        foreach (var claim in claims)
+        {
+            Validate(claim, now, expires);
+        }
     }
 
-    private static DateTimeOffset Utc(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
+    private static DateTimeOffset Utc(DateTime value)
+    {
+        return new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
+    }
 
     private void EnsureAvailable(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
+
         if (Transaction.Current is not null)
+        {
             throw new InvalidOperationException("MySQL outbox store operations require autocommit. Call outside an ambient TransactionScope.");
+        }
     }
 
     private static void Validate(OutboxClaim claim, DateTimeOffset? now = null, DateTimeOffset? expiresAt = null)
     {
         if (claim.MessageId == Guid.Empty || claim.Token == Guid.Empty)
+        {
             throw new ArgumentException("Outbox message ID and claim token must not be empty.", nameof(claim));
-        if (expiresAt <= now) throw new ArgumentOutOfRangeException(nameof(expiresAt), "Claim expiry must be after now.");
+        }
+
+        if (expiresAt <= now)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expiresAt), "Claim expiry must be after now.");
+        }
     }
 
     /// <summary>Releases cached commands. Does not dispose the application data source.</summary>
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
         _read.Command.Dispose();
         _claim.Command.Dispose();
@@ -359,6 +452,10 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     {
         internal KeyValuePair<string, WireString>[] Entries = [];
         internal KeyValuePair<string, WireString>[] OrderedEntries = [];
-        internal byte[] Sequence { get; } = new byte[20];
+
+        internal byte[] Sequence
+        {
+            get;
+        } = new byte[20];
     }
 }

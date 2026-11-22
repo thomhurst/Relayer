@@ -1,4 +1,5 @@
 using Relayer.Transports;
+
 namespace Relayer.Testing;
 
 // The generator composes the same dispatch path used by application handlers.
@@ -7,7 +8,10 @@ internal sealed record ConformanceMessage(int Value);
 
 internal sealed class ConformanceControl
 {
-    internal Func<MessageContext, ValueTask<Disposition>> Handle { get; set; } = static _ => new(Disposition.Complete);
+    internal Func<MessageContext, ValueTask<Disposition>> Handle
+    {
+        get; set;
+    } = static _ => new(Disposition.Complete);
 }
 
 internal sealed record ConformanceDecision(Disposition Value);

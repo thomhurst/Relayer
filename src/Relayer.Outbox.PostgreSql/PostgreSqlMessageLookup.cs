@@ -14,7 +14,10 @@ public sealed record PostgreSqlMessageLocation(
     long? EarlierRows, IReadOnlyList<PostgreSqlInboxReceipt> InboxReceipts)
 {
     /// <summary>Time durable completion was recorded after a successful native send, when retained.</summary>
-    public DateTimeOffset? SentAt { get; init; }
+    public DateTimeOffset? SentAt
+    {
+        get; init;
+    }
 }
 
 /// <summary>Looks up message metadata in a consistent, read-only PostgreSQL snapshot. Never reads message bodies.</summary>
@@ -34,7 +37,12 @@ public sealed class PostgreSqlMessageLookup
         _options = options;
         ArgumentNullException.ThrowIfNull(options.TablePrefix);
         var schema = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + ".";
-        string Table(string name) => schema + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + name);
+
+        string Table(string name)
+        {
+            return schema + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + name);
+        }
+
         var table = Table("outbox");
         var sent = options.RetainSentMessages ? $"""
             UNION ALL
@@ -66,13 +74,21 @@ public sealed class PostgreSqlMessageLookup
     /// <summary>Returns current durable state and all recorded consumer receipts without changing any row.</summary>
     public async ValueTask<PostgreSqlMessageLocation> FindAsync(Guid messageId, CancellationToken cancellationToken = default)
     {
-        if (messageId == Guid.Empty) throw new ArgumentException("Message ID must not be empty.", nameof(messageId));
+        if (messageId == Guid.Empty)
+        {
+            throw new ArgumentException("Message ID must not be empty.", nameof(messageId));
+        }
+
         await PostgreSqlSentSchema.ValidateAsync(_source, _options.RetainSentMessages, _options.Schema,
             _options.TablePrefix, cancellationToken).ConfigureAwait(false);
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait(false);
+
         await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", connection, transaction))
+        {
             await readOnly.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         await using var command = new NpgsqlCommand(_sql, connection, transaction);
         command.Parameters.AddWithValue("id", messageId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -80,17 +96,29 @@ public sealed class PostgreSqlMessageLookup
         var result = new PostgreSqlMessageLocation(messageId, "not present", null, null, null, null, 0, null, null, null, null, null, null, receipts);
         // The dead query excludes live rows, including parked rows with a dead copy.
         if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
             result = new(messageId, reader.GetString(0), reader.GetString(1), Read<DateTimeOffset>(reader, 2),
                 Read<Guid>(reader, 3), Read<DateTimeOffset>(reader, 4), reader.GetInt32(5),
                 reader.IsDBNull(6) ? null : reader.GetString(6), Read<DateTimeOffset>(reader, 7),
                 Read<int>(reader, 8), reader.IsDBNull(9) ? null : reader.GetString(9),
-                Read<DateTimeOffset>(reader, 10), Read<long>(reader, 11), receipts) { SentAt = Read<DateTimeOffset>(reader, 12) };
+                Read<DateTimeOffset>(reader, 10), Read<long>(reader, 11), receipts)
+            {
+                SentAt = Read<DateTimeOffset>(reader, 12)
+            };
+        }
+
         await reader.NextResultAsync(cancellationToken).ConfigureAwait(false);
+
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
             receipts.Add(new(reader.GetString(0), reader.GetFieldValue<DateTimeOffset>(1)));
+        }
+
         return result;
     }
 
-    private static T? Read<T>(NpgsqlDataReader reader, int ordinal) where T : struct =>
-        reader.IsDBNull(ordinal) ? null : reader.GetFieldValue<T>(ordinal);
+    private static T? Read<T>(NpgsqlDataReader reader, int ordinal) where T : struct
+    {
+        return reader.IsDBNull(ordinal) ? null : reader.GetFieldValue<T>(ordinal);
+    }
 }
