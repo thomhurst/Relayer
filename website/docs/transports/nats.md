@@ -65,6 +65,8 @@ Starting an already running transport returns without probing the connection; na
 
 Poison messages use the existing core failure pipeline: in-process `RetryDelays`, then a copy to the required `DeadLetterEndpoint` subject, confirmed before ACK of the original. Ensure that subject is captured by a JetStream stream. Copy/ACK failure can duplicate the copy at the at-least-once boundary. Original bodies, CloudEvents identity and creation context survive, including malformed envelopes. Copies omit the original native `Nats-Msg-Id` so stream-wide deduplication cannot suppress a dead-letter copy to another subject in the same stream.
 
+At startup, Relayer checks the broker's durable consumer filters, including wildcards and multiple filters. If a dead-letter subject matches the consumer and its stream captures that subject, startup fails. Narrow the consumer filter or choose a different dead-letter subject. An unfiltered consumer needs a dead-letter subject outside its stream. When the consumer filter permits the subject, the startup check requires permission to request `$JS.API.STREAM.NAMES` (or the equivalent under a custom JetStream API prefix).
+
 JetStream NAK cannot persist changed failure headers. Portable `RedeliveryDelays` and portable manual retry therefore fail explicitly; use in-process retries and durable dead-letter copies. Native NAK remains accessible through `context.Nats().Message`. Relayer does not advertise native dead-lettering with error metadata, portable keyed ordering, native transactions, scheduled sends or tombstones. Use the durable outbox for scheduling. Subject/stream order remains native, without a portable per-key guarantee.
 
 ## Native access and tracing

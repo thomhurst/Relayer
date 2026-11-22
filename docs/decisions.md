@@ -101,6 +101,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D88](#d88-kafka-provisioning-waits-for-concurrent-creations-through-read-only-metadata) | Kafka provisioning waits for concurrent creations through read-only metadata | Accepted |
 | [D89](#d89-registered-outboxes-require-enlistment-for-automatic-sends) | Registered outboxes require enlistment for automatic sends | Accepted |
 | [D90](#d90-ef-core-outbox-selections-own-their-sends) | EF Core outbox selections own their sends | Accepted |
+| [D91](#d91-jetstream-consumers-reject-dead-letter-subjects-they-receive) | JetStream consumers reject dead-letter subjects they receive | Accepted |
 
 ---
 
@@ -2072,3 +2073,11 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 **Decision.** When application code selects a context with `db.EnlistRelayerOutbox()`, use the returned handle's `EnqueueAsync` method. Each handle binds the existing send pipeline to its own context. Existing scoped senders keep their selection and explicit transaction semantics.
 
 **Consequences.** Enqueue completion means the selected context has enlisted the send. Its transaction commits or rolls back the row. The extension now resides on `DbContextOutboxExtensions`. Already compiled applications reference the original declaring type and the `IDisposable` return signature. Keep that static method as a forwarding shim hidden from IntelliSense.
+
+## D91. JetStream consumers reject dead-letter subjects they receive
+
+**Context.** Issue #984 reported that a durable consumer could receive the confirmed dead-letter copy of its own failure. NATS.Client.JetStream 3.4.1 exposes the live consumer filters through `GetConsumerAsync` and stream membership through `ListStreamNamesAsync(subject)`. Its consumer name listing has no subject filter, and the matcher in NATS.Client.OpenTelemetry is private. [nats.net #1306](https://github.com/nats-io/nats.net/issues/1306) requests a public matcher.
+
+**Decision.** Check the broker's consumer filters before starting native pulls, including for externally managed topology. Use a startup-only token comparison for `FilterSubject` and `FilterSubjects` until a native matcher is available. When the filters permit the dead-letter subject, ask JetStream which streams capture the subject. Reject startup if the consumer's own stream is among them. An unfiltered consumer permits every subject in its stream.
+
+**Consequences.** Filtered consumers can still use a dead-letter subject excluded by their filter in the same stream. A subject captured by another stream remains usable. Stream membership lookup is read-only and requires access to the native stream names API when the filter permits the subject. There is no steady-state per-message cost.
