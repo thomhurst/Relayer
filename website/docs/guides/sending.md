@@ -131,6 +131,8 @@ Enlistment must copy borrowed body and headers into the active transaction befor
 
 Inside a handler, Relayer buffers sends that do not enlist in the outbox, including `SendWithoutOutboxAsync`. It flushes them after the handler, middleware, and scope disposal succeed. If the attempt fails, Relayer discards the buffered messages. Await each send before returning from the handler.
 
+Each buffered send gets its own route timeout during the flush. A successful transport result counts as success even if the route timer has fired. A transport cancellation caused by the route timeout faults the receive with `TimeoutException`. Cancellation from the receive can still stop the attempt before settlement.
+
 The pipeline pools contexts, serialization buffers, envelope storage, and timeout sources. Each route retains at most 64 completed send operations; the scoped sender pool also retains at most 64 senders. Sends beyond those limits still proceed normally, allocating temporary state that is discarded on return. Operations with body buffers above 64 KiB, ordering-key buffers above 4 KiB, more than 64 envelope slots, envelope value buffers above 4 KiB, additional-header dictionary capacity above 128, or native callback capacity above 16 are also discarded on return. These are storage retention limits, not message size or concurrency limits.
 
 After warmup, the default direct path allocates no managed memory with no tracing listener while sends fit within these retention limits. Repeated oversized sends or bursts above the pool capacity allocate again rather than permanently retaining peak memory. Caller code, middleware, serializer implementations and native clients can add their own allocations.

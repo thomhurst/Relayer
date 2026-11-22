@@ -574,6 +574,45 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    public async Task Buffered_send_timeout_faults_the_hosted_receiver_when_queue_admission_is_full()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("local", transport =>
+            {
+                transport.Options.Configure(options => options.Endpoints.Add("orders", new() { Capacity = 1 }));
+                transport.Send<InMemoryOrder>("orders", route => route.SendOptions = new() { Timeout = TimeSpan.FromSeconds(1) });
+                transport.Consume("orders", consumer => consumer.Handler<InMemoryFollowUpOrderHandler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        var hosted = provider.GetServices<IHostedService>().ToArray();
+
+        foreach (var lifecycle in hosted.OfType<IHostedLifecycleService>())
+        {
+            await lifecycle.StartingAsync(default);
+        }
+
+        foreach (var service in hosted)
+        {
+            await service.StartAsync(default);
+        }
+
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await sender.SendAsync(new InMemoryOrder(1));
+
+        var native = (InMemoryTransport)provider.GetRequiredService<ITransport>();
+        await Assert.That(async () => await native.Completion.WaitAsync(s_limit))
+            .Throws<TimeoutException>().WithMessageContaining("route timeout");
+        await Assert.That(native.Completion.IsFaulted).IsTrue();
+        await Assert.That(native.DeadLetters("orders").TryRead(out _)).IsFalse();
+        await Assert.That(async () => await native.StopAsync(default)).Throws<TimeoutException>();
+    }
+
+    [Test]
     public async Task Unsupported_native_operations_fail_explicitly()
     {
         await using var transport = Transport(new()
@@ -1438,6 +1477,14 @@ public sealed class InMemoryOrderHandler(Channel<int> received) : IHandler<InMem
 
         received.Writer.TryWrite(message.Id);
         return default;
+    }
+}
+
+public sealed class InMemoryFollowUpOrderHandler(ISender sender) : IHandler<InMemoryOrder>
+{
+    public ValueTask HandleAsync(InMemoryOrder message, MessageContext context, CancellationToken cancellationToken)
+    {
+        return message.Id == 1 ? sender.SendAsync(new InMemoryOrder(2), cancellationToken) : ValueTask.CompletedTask;
     }
 }
 

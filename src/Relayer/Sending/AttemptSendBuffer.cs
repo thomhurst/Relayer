@@ -165,7 +165,13 @@ internal sealed class AttemptSendBuffer(Pipeline.ConsumePipeline? owner = null)
             {
                 _timeout.Token.ThrowIfCancellationRequested();
                 await _transport!.SendAsync(_message, _timeout.Token).ConfigureAwait(false);
-                _timeout.Token.ThrowIfCancellationRequested();
+
+                // The route timer cannot undo a successful send. Receive cancellation still stops settlement.
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            catch (OperationCanceledException error) when (SendRouteTimeout.HasExpired(cancellationToken, _timeout))
+            {
+                throw SendRouteTimeout.CreateException(error);
             }
             finally
             {

@@ -53,6 +53,20 @@ internal sealed class FanOutSendTarget<TMessage>(SendRoute<TMessage>[] routes) :
     }
 }
 
+internal static class SendRouteTimeout
+{
+    internal static bool HasExpired(CancellationToken callerToken, CancellationTokenSource timeout)
+    {
+        return !callerToken.IsCancellationRequested && timeout.IsCancellationRequested;
+    }
+
+    internal static TimeoutException CreateException(OperationCanceledException cancellation)
+    {
+        return new TimeoutException(
+            "The send exceeded its route timeout. Check broker connectivity or increase SendRouteOptions.Timeout.", cancellation);
+    }
+}
+
 internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
 {
     private readonly ITransport _transport;
@@ -305,9 +319,9 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
 
         private Exception Translate(Exception exception)
         {
-            return exception is OperationCanceledException && !_callerToken.IsCancellationRequested && Timeout.IsCancellationRequested
-                            ? new TimeoutException("The send exceeded its route timeout. Check broker connectivity or increase SendRouteOptions.Timeout.", exception)
-                            : exception;
+            return exception is OperationCanceledException cancellation && SendRouteTimeout.HasExpired(_callerToken, Timeout)
+                ? SendRouteTimeout.CreateException(cancellation)
+                : exception;
         }
 
         public void GetResult(short token)
