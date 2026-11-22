@@ -27,25 +27,37 @@ The core owns everything that is the same on every broker: serialization, the Cl
 
 ## The native escape hatch
 
-`MessageContext.Features` follows the same pattern as ASP.NET Core's `HttpContext.Features`. A transport publishes the untouched native delivery as `NativeMessage<TIncoming>`, and its package adds a typed extension to reach it:
+`MessageContext.Features` follows the same pattern as ASP.NET Core's `HttpContext.Features`. Transports can expose native deliveries through `NativeMessage<TIncoming>` and provide typed extensions to access them. Use borrowed native deliveries only while processing the message.
+
+In a Kafka handler, `context.Kafka().ConsumeResult` exposes Dekaf's original record, including its `Partition` and `Offset`. See [Kafka consumer registration](../transports/kafka.md#register-a-consumer).
 
 ```csharp
-public async ValueTask HandleAsync(OrderPlaced message, MessageContext context, CancellationToken ct)
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using Relayer;
+using Relayer.Kafka;
+
+public sealed class OrderPlacedHandler(ILogger<OrderPlacedHandler> logger) : IHandler<OrderPlaced>
 {
-    var kafka = context.Kafka();          // throws if this consumer is not on Kafka
-    logger.LogInformation("partition {P} offset {O}", kafka.Partition, kafka.Offset);
+    public ValueTask HandleAsync(OrderPlaced message, MessageContext context, CancellationToken cancellationToken)
+    {
+        var record = context.Kafka().ConsumeResult;
+        logger.LogInformation("Kafka partition {Partition}, offset {Offset}", record.Partition, record.Offset);
+        return ValueTask.CompletedTask;
+    }
 }
 ```
 
-On the send side, a typed callback receives the native outgoing object just before it is handed to the client:
+In an Azure Service Bus handler, import `Relayer.AzureServiceBus` for `context.ServiceBus()`. Use `.Message` for the original `ServiceBusReceivedMessage`, `.Callback` for a non-session callback, or `.SessionCallback` for a session callback. See [Azure Service Bus receiving](../transports/service-bus.md#register-receiving).
+
+On the send side, `ConfigureNative<TNative>` passes the outgoing object to a typed callback before the transport hands it to the client. Import `Azure.Messaging.ServiceBus` for `ServiceBusMessage` in this example.
 
 ```csharp
 await sender.SendAsync(new ChargeCard(orderId, amount),
     options => options.ConfigureNative<ServiceBusMessage>(m => m.SessionId = customerId),
     cancellationToken);
 ```
-
-`context.Kafka()` and the Service Bus types come from transport packages that are still in development; the `NativeMessage<TIncoming>` feature and `ConfigureNative<TNative>` exist in the core today.
 
 Native configuration is passed straight through and never re-modelled: Dekaf's builders, `ServiceBusClientOptions`, `ConnectionFactory` and `AmazonSQSConfig`.
 
