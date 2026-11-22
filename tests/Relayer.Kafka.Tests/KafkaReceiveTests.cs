@@ -188,9 +188,11 @@ public class KafkaReceiveTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Core_retry_durable_dead_letter_and_native_commits_preserve_creation_context(bool unacknowledgedProducer)
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Core_retry_durable_dead_letter_and_native_commits_preserve_creation_context(bool configureProducer,
+        bool unacknowledgedProducer)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -206,7 +208,8 @@ public class KafkaReceiveTests
             ActivityStopped = spans.Enqueue,
         };
         ActivitySource.AddActivityListener(listener);
-        using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control, unacknowledgedProducer: unacknowledgedProducer);
+        using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control,
+            unacknowledgedProducer: unacknowledgedProducer, configureProducer: configureProducer, observe: true);
         await host.StartAsync(token);
         var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
         await fixture.Transport.StartAsync(token);
@@ -223,7 +226,8 @@ public class KafkaReceiveTests
         var poison = Message(source, 2);
         await fixture.Transport.SendAsync(new(source, poison.Body, poison.Headers, poison.OrderingKey,
             options: new SendOptions().ConfigureNative<Dekaf.Serialization.Headers>(static headers =>
-                headers.Add(new Dekaf.Serialization.Header("nullable", (byte[]?)null)).Add("nullable", "second"))), token);
+                headers.Add(new Dekaf.Serialization.Header("nullable", (byte[]?)null))
+                    .Add("between", "middle").Add("nullable", "second"))), token);
         var tombstone = Message(source, 4);
         await fixture.Transport.SendAsync(new(source, default, tombstone.Headers, tombstone.OrderingKey,
             isTombstone: true), token);
@@ -258,10 +262,19 @@ public class KafkaReceiveTests
         await Assert.That(dead.Headers.First(header => header.Key == "traceparent").GetValueAsString()).IsEqualTo(Creation);
         await Assert.That(dead.Headers.First(header => header.Key == "tracestate").GetValueAsString()).IsEqualTo("tenant=original");
         await Assert.That(dead.Headers.First(header => header.Key == FailureHeaders.History).GetValueAsString()).Contains("poison record");
-        var nullable = dead.Headers.Where(header => header.Key == "nullable").ToArray();
-        await Assert.That(nullable.Length).IsEqualTo(2);
-        await Assert.That(nullable[0].IsValueNull).IsTrue();
-        await Assert.That(nullable[1].GetValueAsString()).IsEqualTo("second");
+        var harness = host.Services.GetRequiredService<RelayerHarness>();
+        var observed = harness.Dispatched.Where(message => message.Destination == dead.Topic && message.MessageId == "record-2").ToArray();
+        await Assert.That(observed.Length).IsEqualTo(1);
+        await Assert.That(observed[0].TransportName).IsEqualTo("events");
+        await Assert.That(harness.Read<KafkaReceiveMessage>(observed[0]).Number).IsEqualTo(2);
+        var application = dead.Headers.Where(header => header.Key is "nullable" or "between").ToArray();
+        await Assert.That(application.Length).IsEqualTo(3);
+        await Assert.That(application[0].Key).IsEqualTo("nullable");
+        await Assert.That(application[0].IsValueNull).IsTrue();
+        await Assert.That(application[1].Key).IsEqualTo("between");
+        await Assert.That(application[1].GetValueAsString()).IsEqualTo("middle");
+        await Assert.That(application[2].Key).IsEqualTo("nullable");
+        await Assert.That(application[2].GetValueAsString()).IsEqualTo("second");
         var deadTombstone = (await deadReader.ConsumeOneAsync(TimeSpan.FromSeconds(30), token))!.Value;
         await Assert.That(deadTombstone.Value).IsNull();
         await Assert.That(deadTombstone.Headers.First(header => header.Key == "traceparent").GetValueAsString()).IsEqualTo(Creation);
@@ -664,7 +677,7 @@ public class KafkaReceiveTests
 
     private static IHost BuildHost(string bootstrap, string destination, KafkaReceiveControl control, bool missingDeadLetter = false,
         bool healthySibling = false, CircuitClock? circuitClock = null, bool circuitRetry = false, int concurrency = 1,
-        bool unacknowledgedProducer = false)
+        bool unacknowledgedProducer = false, bool configureProducer = true, bool observe = false)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -693,15 +706,19 @@ public class KafkaReceiveTests
                     options.BootstrapServers.Add(bootstrap);
                     options.ConfigureConsumer = native => native.WithAutoOffsetReset(AutoOffsetReset.Earliest)
                         .WithOffsetCommitMode(OffsetCommitMode.Auto).WithAutoOffsetStore(); // Relayer must override both.
-                    options.ConfigureProducer = native =>
-                    {
-                        native.WithAllowAutoCreateTopics(false);
 
-                        if (unacknowledgedProducer)
+                    if (configureProducer)
+                    {
+                        options.ConfigureProducer = native =>
                         {
-                            native.WithIdempotence(false).WithAcks(Acks.None);
-                        }
-                    };
+                            native.WithClientId("observation-audit").WithAllowAutoCreateTopics(false);
+
+                            if (unacknowledgedProducer)
+                            {
+                                native.WithIdempotence(false).WithAcks(Acks.None);
+                            }
+                        };
+                    }
                 });
                 kafka.Consume(destination, consumer =>
                 {
@@ -745,6 +762,12 @@ public class KafkaReceiveTests
                 }
             });
         });
+
+        if (observe)
+        {
+            builder.Services.AddRelayerHarness();
+        }
+
         return builder.Build();
     }
 }

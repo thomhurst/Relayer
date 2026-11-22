@@ -145,6 +145,13 @@ internal sealed partial class KafkaHostedService(IServiceProvider provider, stri
         var tracing = provider.GetRequiredService<MessageTracing>();
         var handlers = provider.GetRequiredService<HandlerRegistry>();
         ITransport? registeredTransport = null;
+        ITransport? copyTransport = null;
+
+        if (transport.FailureCopyTransport is { } acknowledged)
+        {
+            registeredTransport = provider.GetServices<ITransport>().Single(item => item.Name == name);
+            copyTransport = WrapSendTarget(registeredTransport, acknowledged);
+        }
 
         foreach (var declaration in declarations)
         {
@@ -161,7 +168,7 @@ internal sealed partial class KafkaHostedService(IServiceProvider provider, stri
             }, Copy)
             {
                 // Transactional copies follow the same redirect as handler sends so offsets and outputs commit together.
-                CopyTransport = exactlyOnce ? null : transport.FailureCopyTransport,
+                CopyTransport = exactlyOnce ? null : copyTransport,
             };
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
@@ -215,10 +222,7 @@ internal sealed partial class KafkaHostedService(IServiceProvider provider, stri
                 var sends = new KafkaTransactionalSends(transport);
                 // The sender and the failure pipeline both use the registered adapter, including its test wrapper.
                 registeredTransport ??= provider.GetServices<ITransport>().Single(item => item.Name == name);
-                var target = registeredTransport is ITransportSendTargetWrapper wrapper
-                    ? wrapper.WrapSendTarget(sends)
-                    : sends;
-                composed.SendRedirect = (registeredTransport, target);
+                composed.SendRedirect = (registeredTransport, WrapSendTarget(registeredTransport, sends));
 
                 var group = consumer.Options.Group!;
                 var transactionalId = consumer.Options.TransactionalId;
@@ -233,6 +237,11 @@ internal sealed partial class KafkaHostedService(IServiceProvider provider, stri
         }
     }
 
+    private static ITransport WrapSendTarget(ITransport registeredTransport, ITransport target)
+    {
+        return registeredTransport is ITransportSendTargetWrapper wrapper ? wrapper.WrapSendTarget(target) : target;
+    }
+
     [LoggerMessage(Level = LogLevel.Warning,
         Message = "Could not dispose the staged Kafka receiver for {Topic} in group {Group} after composition failed.")]
     private static partial void LogCompositionCleanupFailed(ILogger logger, string topic, string? group, Exception exception);
@@ -243,44 +252,58 @@ internal sealed partial class KafkaHostedService(IServiceProvider provider, stri
         var record = delivery.Result;
         var nativeHeaders = delivery.Headers;
         var headers = new KeyValuePair<string, WireString>[nativeHeaders.Count];
-        var nativeCopy = record.Value is null;
+        var hasNullApplicationHeaders = false;
 
         for (var i = 0; i < headers.Length; i++)
         {
-            headers[i] = new(nativeHeaders[i].Key, new(nativeHeaders[i].Value));
-            nativeCopy |= nativeHeaders[i].IsValueNull || nativeHeaders[i].Key == KafkaSendState.TombstoneHeader;
+            var header = nativeHeaders[i];
+            headers[i] = new(header.Key, new(header.Value));
+            hasNullApplicationHeaders |= header.IsValueNull && IsApplicationHeader(header.Key);
         }
 
-        if (!nativeCopy)
+        SendOptions? options = null;
+
+        if (hasNullApplicationHeaders)
         {
-            return new(record.Topic, record.Value, headers, record.IsKeyNull ? null : new WireString(record.Key!));
+            options = new SendOptions().ConfigureNative<Headers>(native => RestoreApplicationHeaders(native, nativeHeaders));
         }
 
-        var options = new SendOptions().ConfigureNative<Headers>(native =>
+        return new(record.Topic, record.Value ?? [], headers, record.IsKeyNull ? null : new WireString(record.Key!),
+            options: options, isTombstone: record.Value is null);
+    }
+
+    private static void RestoreApplicationHeaders(Headers copy, IReadOnlyList<Header> original)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < original.Count; i++)
         {
-            native.Remove(KafkaSendState.TombstoneHeader);
-            // WireString represents bytes but not Kafka's null header value. Restore native
-            // nulls on this error-only copy path, retaining duplicates in their native order.
-            for (var i = 0; i < nativeHeaders.Count; i++)
+            var key = original[i].Key;
+
+            if (IsApplicationHeader(key))
             {
-                var header = nativeHeaders[i];
-
-                if (!header.IsValueNull || header.Key is KafkaSendState.TombstoneHeader or FailureHeaders.History or FailureHeaders.Attempts or FailureHeaders.Redeliveries or FailureHeaders.DeadLetterReason)
-                {
-                    continue;
-                }
-
-                native.Remove(header.Key);
-
-                for (var j = 0; j < nativeHeaders.Count; j++)
-                {
-                    if (nativeHeaders[j].Key == header.Key)
-                    {
-                        native.Add(nativeHeaders[j]);
-                    }
-                }
+                keys.Add(key);
             }
-        });
-        return new(record.Topic, record.Value ?? [], headers, record.IsKeyNull ? null : new WireString(record.Key!), options: options, isTombstone: record.Value is null);
+        }
+
+        // Keep failure metadata and any new trace headers. Restore original headers as a sequence
+        // because WireString cannot distinguish a Kafka null from an empty value.
+        copy.RemoveAll(static (header, applicationKeys) => applicationKeys.Contains(header.Key), keys);
+
+        for (var i = 0; i < original.Count; i++)
+        {
+            var header = original[i];
+
+            if (keys.Contains(header.Key))
+            {
+                copy.Add(header);
+            }
+        }
+    }
+
+    private static bool IsApplicationHeader(string key)
+    {
+        return key is not (KafkaSendState.TombstoneHeader or FailureHeaders.History or FailureHeaders.Attempts
+            or FailureHeaders.Redeliveries or FailureHeaders.DeadLetterReason);
     }
 }
