@@ -172,11 +172,12 @@ With no ambient consumer span, the creation context is also its parent by defaul
 and never counts enqueue. Adapters count immediately before invoking a native send API,
 after validation, native customization and message or batch preparation. A cancelled
 call rejected before that boundary, a preparation failure, and an unattempted batch
-tail contribute zero. Each Service Bus size/session/partition split counts only its
-own messages, including a failed split. Kafka batches without tombstones count the
-messages supplied to each native `ProduceAllAsync` call. Batches containing tombstones
-count each invoked `ProduceAsync` separately. Retries inside the native client do not
-add Relayer attempts.
+tail contribute zero. Service Bus checks for cancellation after preparation and before
+recording send attempts or native send duration. Each Service Bus size/session/partition
+split counts only its own messages, including a failed split. Kafka batches without
+tombstones count the messages supplied to each native `ProduceAllAsync` call. Batches
+containing tombstones count each invoked `ProduceAsync` separately. Retries inside the
+native client do not add Relayer attempts.
 It uses the adapter's precomputed native system and destination
 dimensions. Built-in Kafka, Service Bus and in-memory adapters use this shared send instrumentation.
 Standalone `MessageTracing` callers can supply `instrumentation:` to enable the same
