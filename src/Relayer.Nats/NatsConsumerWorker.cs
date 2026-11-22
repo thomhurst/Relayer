@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using NATS.Client.Core;
@@ -35,9 +36,9 @@ internal sealed partial class NatsConsumerWorker(string stream, string name, Nat
         var consumer = await context.GetConsumerAsync(stream, name, token).ConfigureAwait(false);
         Validate(consumer.Info.Config, stream, name);
 
-        if (deadLetterSubject is not null && MatchesConsumerFilter(consumer.Info.Config, deadLetterSubject))
+        if (deadLetterSubject is not null)
         {
-            await ValidateDeadLetterStreamAsync(context, deadLetterSubject, token).ConfigureAwait(false);
+            await ValidateDeadLetterStreamAsync(context, consumer.Info.Config, deadLetterSubject, token).ConfigureAwait(false);
         }
 
         _pull = new();
@@ -74,17 +75,48 @@ internal sealed partial class NatsConsumerWorker(string stream, string name, Nat
         }
     }
 
-    private async ValueTask ValidateDeadLetterStreamAsync(NatsJSContext context, string subject, CancellationToken token)
+    private async ValueTask ValidateDeadLetterStreamAsync(NatsJSContext context, ConsumerConfig config, string subject, CancellationToken token)
     {
         await foreach (var destinationStream in context.ListStreamNamesAsync(subject, token).ConfigureAwait(false))
         {
-            if (destinationStream == stream)
+            if (destinationStream != stream)
             {
-                throw new InvalidOperationException($"NATS consumer '{stream}/{name}' can receive its dead-letter subject '{subject}'. Narrow the JetStream consumer filter or choose a different DeadLetterEndpoint.");
+                continue;
             }
+
+            var nativeStream = await context.GetStreamAsync(stream, cancellationToken: token).ConfigureAwait(false);
+            var storedSubject = GetStoredDeadLetterSubject(subject, nativeStream.Info.Config.SubjectTransform);
+
+            if (MatchesConsumerFilter(config, storedSubject))
+            {
+                var rewrite = storedSubject == subject ? "" : $" after the JetStream stream subject transform rewrites it to '{storedSubject}'";
+                throw new InvalidOperationException($"NATS consumer '{stream}/{name}' can receive its dead-letter subject '{subject}'{rewrite}. Narrow the JetStream consumer filter or choose a different DeadLetterEndpoint.");
+            }
+
+            break;
         }
 
         token.ThrowIfCancellationRequested();
+    }
+
+    private string GetStoredDeadLetterSubject(string subject, SubjectTransform? transform)
+    {
+        if (transform?.Dest is not { Length: > 0 } destination ||
+            (transform.Src is { Length: > 0 } source && !MatchesSubjectFilter(subject, source)))
+        {
+            return subject;
+        }
+
+        // Leave wildcard substitution and mapping functions to JetStream.
+        if (destination.Split('.').Any(static token =>
+                token == ">" ||
+                (token.StartsWith("{{", StringComparison.Ordinal) && token.EndsWith("}}", StringComparison.Ordinal)) ||
+                (token.StartsWith('$') && long.TryParse(token.AsSpan(1), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _))))
+        {
+            throw new InvalidOperationException($"NATS consumer '{stream}/{name}' cannot validate its dead-letter subject '{subject}' through the JetStream stream subject transform to '{destination}'. Choose a DeadLetterEndpoint outside this transform, or configure a literal destination.");
+        }
+
+        return destination;
     }
 
     private static bool MatchesConsumerFilter(ConsumerConfig config, string subject)

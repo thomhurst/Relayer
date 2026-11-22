@@ -54,33 +54,7 @@ public class NatsExecutionTests
             FilterSubjects = secondFilter is null ? null : [Filter(filter)!, root + secondFilter]
         }, token);
 
-        var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddRelayer(relayer =>
-        {
-            relayer.AddMessageTypesFromThisAssembly();
-            relayer.UseJsonSerializer(NatsExecutionJson.Default);
-            relayer.Nats("execution", transport =>
-            {
-                transport.TopologyMode = TopologyMode.None;
-                transport.Options.Configure(options =>
-                {
-                    options.ConnectionOptions = broker.Options();
-                    options.Consumers.Add(new(stream, "worker"));
-                });
-                transport.Send<ExecutionMessage>(sendSubject);
-                transport.Consume("worker", consumer =>
-                {
-                    consumer.Options.Stream = stream;
-                    consumer.Failures(new()
-                    {
-                        RetryDelays = [],
-                        DeadLetterEndpoint = deadSubject
-                    });
-                    consumer.Handler<ExecutionHandler>();
-                });
-            });
-        });
-        var host = builder.Build();
+        var host = CreateDeadLetterValidationHost(broker.Options(), stream, sendSubject, deadSubject);
         await using var lifetime = (IAsyncDisposable)host;
 
         if (rejects)
@@ -100,6 +74,91 @@ public class NatsExecutionTests
         {
             return suffix is null or ">" ? suffix : root + suffix;
         }
+    }
+
+    [Test]
+    [Arguments(".dead", ".created", ".created", "can receive")]
+    [Arguments(".*", ".created", ".created", "can receive")]
+    [Arguments(".dead", ".archive", ".dead", null)]
+    [Arguments(".dead", ".$archive", ".dead", null)]
+    [Arguments(".updated", ".created", ".created", null)]
+    [Arguments(".*", ".{{Wildcard(1)}}", ".created", "cannot validate")]
+    [Arguments(".*", ".$1", ".created", "cannot validate")]
+    [Arguments(".dead", ".{{Random(8)}}", ".created", "cannot validate")]
+    [Arguments(null, ".archive.>", ".created", "cannot validate")]
+    public async Task Hosted_start_validates_native_dead_letter_subject_transforms(
+        string? sourceSuffix, string destinationSuffix, string filterSuffix, string? expectedError)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var isolation = TestContext.Current!.Isolation;
+        var stream = isolation.GetIsolatedName("events");
+        var root = isolation.GetIsolatedName("orders");
+        var sendSubject = root + ".created";
+        var deadSubject = root + ".dead";
+        var destination = root + destinationSuffix;
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        await js.CreateStreamAsync(new(stream, [root + ".>"])
+        {
+            SubjectTransform = new()
+            {
+                Src = sourceSuffix is null ? null : root + sourceSuffix,
+                Dest = destination
+            }
+        }, token);
+        await js.CreateConsumerAsync(stream, new("worker")
+        {
+            FilterSubject = root + filterSuffix
+        }, token);
+
+        var host = CreateDeadLetterValidationHost(broker.Options(), stream, sendSubject, deadSubject);
+        await using var lifetime = (IAsyncDisposable)host;
+
+        if (expectedError is null)
+        {
+            await host.StartAsync(token);
+            await host.StopAsync(token);
+            return;
+        }
+
+        var error = await Assert.That(() => host.StartAsync(token)).Throws<InvalidOperationException>();
+        await Assert.That(error!.Message).Contains($"{stream}/worker");
+        await Assert.That(error.Message).Contains(deadSubject);
+        await Assert.That(error.Message).Contains(destination);
+        await Assert.That(error.Message).Contains(expectedError);
+    }
+
+    private static IHost CreateDeadLetterValidationHost(NatsOpts options, string stream, string sendSubject, string deadSubject)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(NatsExecutionJson.Default);
+            relayer.Nats("execution", transport =>
+            {
+                transport.TopologyMode = TopologyMode.None;
+                transport.Options.Configure(transportOptions =>
+                {
+                    transportOptions.ConnectionOptions = options;
+                    transportOptions.Consumers.Add(new(stream, "worker"));
+                });
+                transport.Send<ExecutionMessage>(sendSubject);
+                transport.Consume("worker", consumer =>
+                {
+                    consumer.Options.Stream = stream;
+                    consumer.Failures(new()
+                    {
+                        RetryDelays = [],
+                        DeadLetterEndpoint = deadSubject
+                    });
+                    consumer.Handler<ExecutionHandler>();
+                });
+            });
+        });
+        return builder.Build();
     }
 
     [Test]
