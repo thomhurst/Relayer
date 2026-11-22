@@ -125,8 +125,9 @@ The worker logs failures and continues with other groups and subsequent commits;
 the failed group in a busy loop.
 
 `QueueCapacity` bounds queued commit notifications, not transaction size. If the queue is full or the
-worker is stopped, an error states how many committed rows remain pending. Shutdown completes the
-queue and drains it within the host's shutdown deadline; cancellation leaves unfinished work durable.
+worker is stopped, the worker attempts to log how many committed rows remain pending. A logging failure
+leaves the commit result intact. Shutdown completes the queue and drains it within the host's shutdown
+deadline. Cancellation leaves unfinished work durable.
 
 [Ordered lane dispatch](ordered-dispatch.md) handles rows with ordering keys separately.
 [Leased recovery and cleanup](postgres-maintenance.md) handles due unordered rows left by failure,

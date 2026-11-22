@@ -712,8 +712,10 @@ send attempts, and incomplete deletions log a warning about duplicate delivery. 
 
 **Consequences.** Commit returns independently of broker latency. Normal competing instances cannot
 claim the same row, while expired in-flight sends and partial native failures retain D29's at-least-once
-boundary. Queue saturation or a stopped worker logs an error and leaves durable rows pending instead of
-failing a business transaction that already committed. Shutdown drains queued commits until its deadline.
+boundary. Queue saturation or a stopped worker leaves durable rows pending. Logging the rejected handoff
+is best effort because the transaction already committed. Shutdown drains queued commits until its deadline.
+Hosted RabbitMQ drains consumers in `StopAsync` and uses the Generic Host's `StoppedAsync` phase to
+drain publishers and close the native connection after outbox workers finish stopping.
 Recovery polling, ordered lane dispatch and poison-row processing remain separate work; direct dispatch
 alone does not recover rows left by overflow, failure or process death. Buffer handoff, sorting and
 projection have dedicated allocation benchmarks; native client and database allocations remain excluded.

@@ -243,9 +243,9 @@ send leaves attempts unchanged. An expired or interrupted
 send may be delivered again: this is at-least-once delivery, not an atomic broker/database commit.
 Size `ClaimDuration` for the slowest expected database and broker operation.
 
-Queue overflow or a stopped worker logs an error and leaves rows durable without failing an
-already committed transaction. Graceful shutdown drains accepted work until the host's shutdown
-deadline; cancellation leaves unfinished rows durable. Ordered rows and future-due rows are not
+Queue overflow or a stopped worker attempts to log an error. Rows remain durable and the commit
+returns successfully even if the logging provider throws. Graceful shutdown drains accepted work until the
+host's shutdown deadline. Cancellation leaves unfinished rows durable. Ordered rows and future-due rows are not
 queued. Register maintenance below to recover missed notifications, failures and crashes.
 
 ## Ordered dispatch

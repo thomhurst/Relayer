@@ -8,12 +8,22 @@ using Relayer.Transports;
 namespace Relayer.RabbitMQ;
 
 // Keeps the BackgroundService fault contract: a terminal consumer failure faults ExecuteTask, which stops the host.
-internal sealed class RabbitMqHostedService(RabbitMqConsumerControl consumers) : BackgroundService
+internal sealed class RabbitMqHostedService(RabbitMqConsumerControl consumers) : BackgroundService, IHostedLifecycleService
 {
+    public Task StartingAsync(CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
+    }
+
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
         await consumers.StartAsync(cancellationToken).ConfigureAwait(false);
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task StartedAsync(CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -29,23 +39,31 @@ internal sealed class RabbitMqHostedService(RabbitMqConsumerControl consumers) :
         }
     }
 
+    public Task StoppingAsync(CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
+    }
+
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         try
         {
             await consumers.StopAsync(cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // StoppedAsync still closes the connection and reports the shutdown cancellation once.
+        }
         finally
         {
-            try
-            {
-                await consumers.CloseAsync(cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                await base.StopAsync(cancellationToken).ConfigureAwait(false);
-            }
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    public Task StoppedAsync(CancellationToken cancellationToken)
+    {
+        // Outbox workers can still publish during StopAsync, even when services stop concurrently.
+        return consumers.CloseAsync(cancellationToken);
     }
 }
 
