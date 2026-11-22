@@ -14,7 +14,6 @@ using Relayer.Kafka;
 services.AddRelayer(relayer =>
 {
     relayer.AddMessageTypesFromThisAssembly();
-    relayer.UseJsonSerializer(AppJsonContext.Default);
     relayer.Kafka("events", kafka =>
     {
         // Create topics externally; the default Validate mode checks their existence.
@@ -33,7 +32,7 @@ services.AddRelayer(relayer =>
 await sender.SendAsync(new OrderPlaced(customerId));
 ```
 
-The message must have a stable `[Message]` identity and be included in `AppJsonContext`. Start the application host before sending. Startup initializes Dekaf; shutdown flushes outstanding sends and disposing the provider disposes the producer. Named transport options also support [configuration binding](../guides/configuration.md).
+Give the message a stable `[Message]` identity. `AddMessageTypesFromThisAssembly()` registers its generated JSON metadata. Use [`UseJsonSerializer`](../guides/messages.md#serialization) to supply an optional application-owned context. Start the application host before sending. Startup initializes Dekaf; shutdown flushes outstanding sends and disposing the provider disposes the producer. Named transport options also support [configuration binding](../guides/configuration.md).
 
 `ConfigureProducer` receives Dekaf's own builder unchanged. Its generic key is `WireString?`; its value is `(ReadOnlyMemory<byte> Body, Dekaf.Serialization.Headers Headers)?`. Relayer supplies serializers that write the existing serialized body and headers using Dekaf's record-header serializer hook. This avoids allocating immutable native message objects or copying the body into another array. The nullable tuple preserves null-valued failure copies as native tombstones. Existing inferred configuration callbacks remain unchanged; explicit native builder types must include the nullable value. Keep these serializers when changing native producer settings. Native callbacks passed through `SendOptions.ConfigureNative<Headers>` receive the native header collection before the send. Borrowed header storage must not be retained after the callback.
 
@@ -267,9 +266,9 @@ services.AddRelayer(relayer =>
 });
 ```
 
-`orderJsonSchema` and `invoiceJsonSchema` are explicit JSON Schema strings. `ContractsJson` is an application-owned source-generated `JsonSerializerContext` covering both contracts. Declare stable `[Message]` names as usual. A message has one send route; use different message types for different routes. The same CLR contract may be consumed on multiple clusters with independent schema registrations.
+`orderJsonSchema` and `invoiceJsonSchema` are explicit JSON Schema strings. `ContractsJson` is an application-owned source-generated `JsonSerializerContext` covering both contracts. Declare stable `[Message]` names as usual. Each `KafkaJsonSchemaSerializer` accepts one schema declaration per CLR type. You can declare the same CLR type on multiple named Kafka transports, with a separate serializer and schema registration for each. To send that type through more than one route, use [atomic outbox fan-out](../guides/sending.md#sending-to-several-routes) and send within an active outbox transaction.
 
-The host resolves each writer schema asynchronously before starting receivers. Dekaf handles native subject selection, registration or lookup and the five-byte prefix (magic byte zero plus big-endian schema ID). Pass `JsonSchemaSerializerConfig` unchanged to select native fixed-schema settings, including custom synchronous subject naming, normalization or a fixed schema ID. Match the `Add` topic to the route or consumer topic; one contract declaration per CLR type is supported within a serializer. Different types on a shared topic can use native record-name subjects. Registration and lookup failures stop host startup. The serializer owns its native writer serializers; it does not dispose the supplied registry client.
+The host resolves each writer schema asynchronously before starting receivers. Dekaf handles native subject selection, registration or lookup and the five-byte prefix (magic byte zero plus big-endian schema ID). Pass `JsonSchemaSerializerConfig` unchanged to select native fixed-schema settings, including custom synchronous subject naming, normalization or a fixed schema ID. Match the `Add` topic to the route or consumer topic. Different types on a shared topic can use native record-name subjects. Registration and lookup failures stop host startup. The serializer owns its native writer serializers; it does not dispose the supplied registry client.
 
 This package supports JSON payloads with prefix schema IDs and source-generated metadata. It writes `content-type: application/vnd.relayer.kafka.json-schema`; stable CloudEvents identity remains in `ce_type` and is independent of registry IDs. Sends, retries and durable failure copies retain the selected wire body. Default JSON and application-supplied serializers remain available per transport through `UseSerializer`.
 

@@ -20,7 +20,7 @@ docker run --name relayer-sample-kafka -p 9092:9092 \
   -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 -d apache/kafka:4.0.2
 ```
 
-Wait for PostgreSQL and Kafka to become ready, then create both the source and failure topic explicitly (Kafka topology management remains planned):
+The sample sets `TopologyMode.None` and leaves topic creation and validation to deployment tooling. For a local run, wait for PostgreSQL and Kafka to become ready, then create both the source and failure topics. See the [Kafka topology modes](https://relayer.tomlonghurst.dev/docs/transports/kafka#topic-topology) for how to validate existing topics or provision missing ones at startup.
 
 ```shell
 docker exec relayer-sample-postgres pg_isready -U postgres -d orders
@@ -57,7 +57,7 @@ docker exec relayer-sample-postgres psql -U postgres -d orders -c 'SELECT * FROM
 docker exec relayer-sample-postgres psql -U postgres -d orders -c 'SELECT id, destination, status FROM relayer_outbox;'
 ```
 
-After successful dispatch the outbox row is deleted. Delivery is at-least-once: a crash after Kafka accepts a record but before row deletion may send it again. No ordering key is configured: these are unordered rows, not ordered-lane dispatch. Kafka consumers currently process serially; parallel receive remains planned. See [EF enlistment](https://relayer.tomlonghurst.dev/docs/reference/ef-core-outbox), [direct dispatch](https://relayer.tomlonghurst.dev/docs/reference/direct-dispatch) and [recovery](https://relayer.tomlonghurst.dev/docs/reference/postgres-maintenance).
+After successful dispatch the outbox row is deleted. Delivery is at-least-once: a crash after Kafka accepts a record but before row deletion may send it again. The sample sends unkeyed records through unordered outbox dispatch. Its Kafka consumer uses the default concurrency of one. With [key-ordered parallelism](https://relayer.tomlonghurst.dev/docs/transports/kafka#parallelism-commits-and-rebalances), unkeyed records still share one lane within each partition. See [EF enlistment](https://relayer.tomlonghurst.dev/docs/reference/ef-core-outbox), [direct dispatch](https://relayer.tomlonghurst.dev/docs/reference/direct-dispatch) and [recovery](https://relayer.tomlonghurst.dev/docs/reference/postgres-maintenance).
 
 Stop the application first, then remove only these demonstration containers:
 
@@ -67,4 +67,4 @@ docker rm -f relayer-sample-postgres relayer-sample-kafka
 
 Removing the PostgreSQL container discards its demonstration data.
 
-The application [outbox and inbox guide](../../website/docs/guides/outbox.md) walks through this setup. The endpoint enqueues the event through the selected order context and commits it with the order in `SaveChangesAsync`; the consumer configures in-process retries and a dead-letter topic through `consumer.Failures(...)`. Kafka delayed redelivery, parallel handlers and batch handlers remain unsupported.
+The application [outbox and inbox guide](../../website/docs/guides/outbox.md) walks through this setup. The endpoint enqueues the event through the selected order context and commits it with the order in `SaveChangesAsync`; the consumer configures in-process retries and a dead-letter topic through `consumer.Failures(...)`. Kafka delayed redelivery and batch handlers remain unsupported.
