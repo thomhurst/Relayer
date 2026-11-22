@@ -45,7 +45,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
             BatchSize = options.BatchSize,
             QueueCapacity = 1,
             ClaimDuration = options.ClaimDuration
-        }, transports, dispatchLogger ?? NullLogger<SqlServerDirectDispatcher>.Instance, _store, instrumentation);
+        }, transports, dispatchLogger ?? NullLogger<SqlServerDirectDispatcher>.Instance, _store, instrumentation, timeProvider: idleTimeProvider);
         _logger = logger;
         _table = SqlServerOutboxSchema.Table(settings);
         _leases = SqlServerOutboxSchema.LeaseTable(settings);
@@ -200,9 +200,8 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
                 if (row.TransportName.Length == 0)
                 {
                     var claim = new OutboxClaim(row.Id, Guid.NewGuid());
-                    var now = DateTimeOffset.UtcNow;
 
-                    if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
+                    if (await _dispatcher.ClaimForDispatchAsync(claim, cancellationToken).ConfigureAwait(false))
                     {
                         if (await _store.QuarantineAsync(claim, row.LastError!, cancellationToken).ConfigureAwait(false))
                         {
@@ -222,7 +221,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
                 _buffers[valid++].Copy(row, 1, unordered: true);
             }
 
-            _batch.Take(_buffers, valid, DateTimeOffset.UtcNow);
+            _batch.Take(_buffers, valid);
             await _dispatcher.DispatchRecoveredAsync(_batch, cancellationToken).ConfigureAwait(false);
             return count;
         }

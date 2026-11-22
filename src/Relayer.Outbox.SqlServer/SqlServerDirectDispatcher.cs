@@ -9,8 +9,8 @@ namespace Relayer.Outbox.SqlServer;
 internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<OutboxDispatchBatch>
 {
     private readonly SqlServerOutboxStore _store;
+    private readonly string _claimSql;
     private readonly Func<Exception, bool>? _retrySendFailure;
-    private readonly SqlServerDirectDispatchOptions _options;
     private long _recoveredCompletions;
     private List<Guid>? _recoveredIds;
     private long _recoveredPoison;
@@ -25,8 +25,8 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     internal SqlServerDirectDispatcher(string connectionString, SqlServerOutboxOptions storeOptions,
         SqlServerDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<SqlServerDirectDispatcher> logger,
-        SqlServerOutboxStore? store = null, RelayerInstrumentation? instrumentation = null, SqlServerOrderedDispatcher? ordered = null)
-        : base(options.QueueCapacity, options.BatchSize, options.ClaimDuration, transports, logger, instrumentation)
+        SqlServerOutboxStore? store = null, RelayerInstrumentation? instrumentation = null, SqlServerOrderedDispatcher? ordered = null, TimeProvider? timeProvider = null)
+        : base(options.QueueCapacity, options.BatchSize, options.ClaimDuration, transports, logger, instrumentation, timeProvider ?? TimeProvider.System)
     {
         _store = store ?? new(connectionString, storeOptions);
         _retrySendFailure = storeOptions.RetrySendFailure;
@@ -35,7 +35,7 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         _database = target.InitialCatalog;
         _schema = storeOptions.Schema ?? "dbo";
         _prefix = storeOptions.TablePrefix;
-        _options = options;
+        _claimSql = _store.CreateDispatchClaimSql(options.ClaimDuration);
         // An in-process ordered worker for the same tables is woken after commit instead of waiting for its poll.
         if (ordered is not null && ordered.Matches(_schema, _prefix))
         {
@@ -78,7 +78,8 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         // Take moves unordered rows out of the source, so read ordered lanes first.
         _ordered?.Committed(rows, count);
         var batch = RentBatch();
-        batch.Take(rows, count, DateTimeOffset.UtcNow);
+        // The database decides when stored schedules are due during its fenced claim.
+        batch.Take(rows, count);
         Enqueue(batch);
     }
 
@@ -154,9 +155,8 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
             }
 
             var claim = new OutboxClaim(id, Guid.NewGuid());
-            var now = DateTimeOffset.UtcNow;
 
-            if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
+            if (await ClaimForDispatchAsync(claim, cancellationToken).ConfigureAwait(false))
             {
                 await RecordFailureAsync(claim, OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false);
             }
@@ -167,34 +167,38 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         return offset;
     }
 
+    internal ValueTask<bool> ClaimForDispatchAsync(OutboxClaim claim, CancellationToken cancellationToken)
+    {
+        return _store.ClaimForDispatchAsync(claim, _claimSql, cancellationToken);
+    }
+
     protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken)
     {
-        return _store.ClaimBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), now, expires, cancellationToken);
+        return _store.ClaimBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), _claimSql, cancellationToken);
     }
 
     protected override ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken)
     {
         var claims = _claims.AsMemory(offset, count);
-        var now = DateTimeOffset.UtcNow;
 
         if (_instrumentation?.Observer is null)
         {
-            return _store.CompleteBatchAsync(claims, now, cancellationToken);
+            return _store.CompleteBatchAsync(claims, cancellationToken);
         }
 
         return _recovering
-            ? _store.CompleteBatchAsync(claims, now, cancellationToken, _recoveredIds ??= [])
-            : CompleteObservedAsync(claims, now, cancellationToken);
+            ? _store.CompleteBatchAsync(claims, cancellationToken, _recoveredIds ??= [])
+            : CompleteObservedAsync(claims, cancellationToken);
     }
 
-    private async ValueTask<long> CompleteObservedAsync(ReadOnlyMemory<OutboxClaim> claims, DateTimeOffset now,
+    private async ValueTask<long> CompleteObservedAsync(ReadOnlyMemory<OutboxClaim> claims,
         CancellationToken cancellationToken)
     {
         var ids = new List<Guid>();
 
         try
         {
-            return await _store.CompleteBatchAsync(claims, now, cancellationToken, ids).ConfigureAwait(false);
+            return await _store.CompleteBatchAsync(claims, cancellationToken, ids).ConfigureAwait(false);
         }
         finally
         {
@@ -208,7 +212,7 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     {
         if (SqlServerSendFailure.IsRetryable(_retrySendFailure, error, _logger))
         {
-            return await _store.RecordRetryAsync(_claims[index], OutboxErrorText.Describe(error), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+            return await _store.RecordRetryAsync(_claims[index], OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false);
         }
 
         await RecordFailureAsync(_claims[index], OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false);
@@ -218,7 +222,7 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     // An exhausted row moves to dead storage. Recovery records it once its transaction commits.
     private async ValueTask RecordFailureAsync(OutboxClaim claim, string error, CancellationToken cancellationToken)
     {
-        if (!await _store.RecordDispatchFailureAsync(claim, error, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false))
+        if (!await _store.RecordDispatchFailureAsync(claim, error, cancellationToken).ConfigureAwait(false))
         {
             return;
         }

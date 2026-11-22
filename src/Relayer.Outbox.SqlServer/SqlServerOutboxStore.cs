@@ -14,7 +14,10 @@ namespace Relayer.Outbox.SqlServer;
 /// </remarks>
 public sealed class SqlServerOutboxStore : IOutboxStore
 {
+    private const string Pending = "status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
+    private const string DatabaseClock = "DECLARE @now datetimeoffset(7) = SYSUTCDATETIME(); ";
     private readonly string _connectionString;
+    private readonly string _table;
     private readonly int _failureLimit;
     private readonly string _read;
     private SqlConnection? _dispatchConnection;
@@ -56,17 +59,16 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         options ??= new();
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxDispatchAttempts);
         _failureLimit = options.MaxDispatchAttempts;
-        var table = SqlServerOutboxSchema.Table(options);
+        var table = _table = SqlServerOutboxSchema.Table(options);
         var dead = SqlServerOutboxSchema.DeadTable(options);
-        var eligible = "status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
         var fenced = "id = @id AND claim_token = @token AND claim_expires_at > @now";
-        _read = $"SELECT TOP (@limit) id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {eligible} AND (lane = @lane OR (lane IS NULL AND @lane IS NULL)) AND (@after IS NULL OR id > @after) ORDER BY id";
+        _read = $"SELECT TOP (@limit) id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {Pending} AND (lane = @lane OR (lane IS NULL AND @lane IS NULL)) AND (@after IS NULL OR id > @after) ORDER BY id";
         // Report the DML row count explicitly so enabled triggers can run.
-        _claim = $"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible}; SELECT CAST(@@ROWCOUNT AS bit)";
+        _claim = ClaimSql("@expires");
         _renew = $"UPDATE {table} SET claim_expires_at = CASE WHEN claim_expires_at > @expires THEN claim_expires_at ELSE @expires END WHERE {fenced}; SELECT CAST(@@ROWCOUNT AS bit)";
         var delete = $"DELETE FROM {table} WHERE {fenced}";
         _complete = delete + "; SELECT CAST(@@ROWCOUNT AS bit)";
-        _batchComplete = delete + "; SELECT CAST(@@ROWCOUNT AS bigint)";
+        _batchComplete = DatabaseClock + delete + "; SELECT CAST(@@ROWCOUNT AS bigint)";
         _fail = $"""
             SET XACT_ABORT ON;
             DECLARE @own bit = CASE WHEN @@TRANCOUNT = 0 THEN 1 ELSE 0 END;
@@ -120,10 +122,10 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             SELECT CAST(@changed AS bit);
             """;
         // Reports whether an unordered row moved to dead storage instead of whether the claim was current.
-        _failOutcome = _fail.Replace("SELECT CAST(@changed AS bit);", "SELECT CAST(@removed AS bit);", StringComparison.Ordinal);
-        _retry = SqlServerDispatchSql.Retry(table, fenced, "@now");
-        _count = $"SELECT COUNT_BIG(*) FROM {table} WHERE {eligible}";
-        _boundedCount = $"SELECT COUNT_BIG(*) FROM (SELECT TOP (@countLimit) 1 AS value FROM {table} WHERE {eligible}) AS pending";
+        _failOutcome = DatabaseClock + _fail.Replace("SELECT CAST(@changed AS bit);", "SELECT CAST(@removed AS bit);", StringComparison.Ordinal);
+        _retry = DatabaseClock + SqlServerDispatchSql.Retry(table, fenced, "@now");
+        _count = $"SELECT COUNT_BIG(*) FROM {table} WHERE {Pending}";
+        _boundedCount = $"SELECT COUNT_BIG(*) FROM (SELECT TOP (@countLimit) 1 AS value FROM {table} WHERE {Pending}) AS pending";
     }
 
     /// <inheritdoc />
@@ -258,11 +260,42 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         return count;
     }
 
+    internal string CreateDispatchClaimSql(TimeSpan duration)
+    {
+        // Older SQL Server versions take int DATEADD offsets. Split large durations and preserve 100 ns precision.
+        var expires = duration.Days == 0 ? "@now" : FormattableString.Invariant($"DATEADD(day, {duration.Days}, @now)");
+        var milliseconds = duration.Ticks % TimeSpan.TicksPerDay / TimeSpan.TicksPerMillisecond;
+        var nanoseconds = duration.Ticks % TimeSpan.TicksPerMillisecond * 100;
+
+        if (milliseconds != 0)
+        {
+            expires = FormattableString.Invariant($"DATEADD(millisecond, {milliseconds}, {expires})");
+        }
+
+        if (nanoseconds != 0)
+        {
+            expires = FormattableString.Invariant($"DATEADD(nanosecond, {nanoseconds}, {expires})");
+        }
+
+        return DatabaseClock + ClaimSql(expires);
+    }
+
+    private string ClaimSql(string expires)
+    {
+        return $"UPDATE {_table} SET claim_token = @token, claim_expires_at = {expires} WHERE id = @id AND {Pending}; SELECT CAST(@@ROWCOUNT AS bit)";
+    }
+
+    internal ValueTask<bool> ClaimForDispatchAsync(OutboxClaim claim, string claimSql, CancellationToken cancellationToken)
+    {
+        Validate(claim);
+        return MutateAsync(claimSql, claim, null, null, null, cancellationToken);
+    }
+
     internal ValueTask<bool> QuarantineAsync(OutboxClaim claim, string error, CancellationToken cancellationToken)
     {
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
-        return MutateAsync(_fail, claim, DateTimeOffset.UtcNow, null, error, cancellationToken, failureLimit: 1);
+        return MutateAsync(_failOutcome, claim, null, null, error, cancellationToken, failureLimit: 1);
     }
 
     /// <inheritdoc />
@@ -297,24 +330,24 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     }
 
     // Returns true when the row moved to dead storage.
-    internal ValueTask<bool> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
+    internal ValueTask<bool> RecordDispatchFailureAsync(OutboxClaim claim, string error,
         CancellationToken cancellationToken)
     {
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
-        return MutateAsync(_failOutcome, claim, now, null, error, cancellationToken);
+        return MutateAsync(_failOutcome, claim, null, null, error, cancellationToken);
     }
 
-    internal ValueTask<bool> RecordRetryAsync(OutboxClaim claim, string error, DateTimeOffset now, CancellationToken cancellationToken)
+    internal ValueTask<bool> RecordRetryAsync(OutboxClaim claim, string error, CancellationToken cancellationToken)
     {
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
-        return MutateAsync(_retry, claim, now, null, error, cancellationToken);
+        return MutateAsync(_retry, claim, null, null, error, cancellationToken);
     }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    private async ValueTask<bool> MutateAsync(string sql, OutboxClaim claim, DateTimeOffset now,
+    private async ValueTask<bool> MutateAsync(string sql, OutboxClaim claim, DateTimeOffset? now,
         DateTimeOffset? expiresAt, string? error, CancellationToken cancellationToken, int? failureLimit = null)
     {
         CheckOperation(cancellationToken);
@@ -325,8 +358,12 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         using var command = new SqlCommand(sql, connection, _dispatchTransaction);
         Add(command, "@id", SqlDbType.Binary, _id, 16);
         Add(command, "@token", SqlDbType.Binary, _token, 16);
-        Unsafe.Unbox<DateTimeOffset>(_now) = now.ToUniversalTime();
-        Add(command, "@now", SqlDbType.DateTimeOffset, _now);
+
+        if (now.HasValue)
+        {
+            Unsafe.Unbox<DateTimeOffset>(_now) = now.Value.ToUniversalTime();
+            Add(command, "@now", SqlDbType.DateTimeOffset, _now);
+        }
 
         if (expiresAt.HasValue)
         {
@@ -362,18 +399,13 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ClaimBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
-        DateTimeOffset now, DateTimeOffset expiresAt, CancellationToken cancellationToken)
+        string claimSql, CancellationToken cancellationToken)
     {
         CheckOperation(cancellationToken);
 
         if (claimed.Length < claims.Length)
         {
             throw new ArgumentException("The claim result buffer is too small.", nameof(claimed));
-        }
-
-        if (expiresAt <= now)
-        {
-            throw new ArgumentOutOfRangeException(nameof(expiresAt));
         }
 
         claimed.Span.Clear();
@@ -386,7 +418,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         using var ownedConnection = _dispatchConnection is null ? new SqlConnection(_connectionString) : null;
         var connection = _dispatchConnection ?? ownedConnection!;
         await using var batch = new SqlBatch(connection, _dispatchTransaction);
-        PrepareBatch(batch, claims.Span, _claim, now, expiresAt);
+        PrepareBatch(batch, claims.Span, claimSql);
 
         if (ownedConnection is not null)
         {
@@ -413,7 +445,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    internal async ValueTask<long> CompleteBatchAsync(ReadOnlyMemory<OutboxClaim> claims, DateTimeOffset now,
+    internal async ValueTask<long> CompleteBatchAsync(ReadOnlyMemory<OutboxClaim> claims,
         CancellationToken cancellationToken, List<Guid>? settled = null)
     {
         CheckOperation(cancellationToken);
@@ -426,7 +458,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         using var ownedConnection = _dispatchConnection is null ? new SqlConnection(_connectionString) : null;
         var connection = _dispatchConnection ?? ownedConnection!;
         await using var batch = new SqlBatch(connection, _dispatchTransaction);
-        PrepareBatch(batch, claims.Span, _batchComplete, now, null);
+        PrepareBatch(batch, claims.Span, _batchComplete);
 
         if (ownedConnection is not null)
         {
@@ -460,11 +492,8 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         return completed;
     }
 
-    private void PrepareBatch(SqlBatch batch, ReadOnlySpan<OutboxClaim> claims, string sql, DateTimeOffset now, DateTimeOffset? expiresAt)
+    private void PrepareBatch(SqlBatch batch, ReadOnlySpan<OutboxClaim> claims, string sql)
     {
-        Unsafe.Unbox<DateTimeOffset>(_now) = now.ToUniversalTime();
-        Unsafe.Unbox<DateTimeOffset>(_expires) = expiresAt.GetValueOrDefault().ToUniversalTime();
-
         for (var i = 0; i < claims.Length; i++)
         {
             Validate(claims[i]);
@@ -480,12 +509,6 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             var command = new SqlBatchCommand(sql);
             command.Parameters.Add(new SqlParameter("@id", SqlDbType.Binary, 16) { Value = slot.Id });
             command.Parameters.Add(new SqlParameter("@token", SqlDbType.Binary, 16) { Value = slot.Token });
-            command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTimeOffset) { Value = _now });
-
-            if (expiresAt.HasValue)
-            {
-                command.Parameters.Add(new SqlParameter("@expires", SqlDbType.DateTimeOffset) { Value = _expires });
-            }
 
             batch.BatchCommands.Add(command);
         }
