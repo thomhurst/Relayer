@@ -104,7 +104,9 @@ Generated dispatch must be able to access each handler's message type. Make the 
 
 ## RLYM001
 
-`[Message]` requires a concrete, non-generic declaration outside generic containing types. An open generic message such as `Order<T>`, or even a non-generic message nested inside `Container<T>`, cannot be referenced from generated registration and JSON metadata. Declare a concrete contract such as `OrderPlaced` at namespace scope or inside a non-generic containing type. The generator reports this error at the unsupported declaration and excludes it from both generated outputs; other valid messages still generate normally.
+`[Message]` requires a non-generic declaration outside generic containing types. An open generic message such as `Order<T>`, or a non-generic message nested inside `Container<T>`, cannot be referenced from generated registration and JSON metadata. Declare a non-generic contract at namespace scope or inside a non-generic containing type. Abstract contracts are supported with a serializer configured for polymorphism. See [message contracts](../guides/messages.md#stable-message-names).
+
+The generator reports this error at the unsupported declaration and excludes it from both generated outputs. Other valid messages still generate normally.
 
 ## RLYM002
 

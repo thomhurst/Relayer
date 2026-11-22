@@ -245,10 +245,12 @@ queued. Register maintenance below to recover missed notifications, failures and
 Register the native named transports and an ordered worker alongside the transactional writer:
 
 ```csharp
-services.AddRelayerMySqlOutbox(new MySqlOutboxOptions { Lanes = 64 });
+const string tablePrefix = "orders_";
+services.AddRelayerMySqlOutbox(new MySqlOutboxOptions { TablePrefix = tablePrefix, Lanes = 64 });
 services.AddRelayerMySqlOrderedDispatch("orders", dataSource,
     new MySqlOrderedDispatchOptions
     {
+        TablePrefix = tablePrefix,
         Lanes = 64,
         LeaseDuration = TimeSpan.FromSeconds(30),
         PollInterval = TimeSpan.FromSeconds(1),

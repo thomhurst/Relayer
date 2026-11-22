@@ -129,6 +129,8 @@ var placed = await harness.WaitForConsumedAsync<OrderPlaced>(
 
 `WaitForConsumedAsync` completes with the first delivery of that registered message type that the consume pipeline handled successfully and that matches the optional predicate. It includes deliveries handled before the call, so start it before or after sending. A failed attempt does not match, nor does a delivery that failure handling redelivers, discards or dead-letters, or one whose handler requests a retry or dead-letter; a later successful redelivery does. Handlers that settle the native message themselves count as handled. The wait is signalled when processing finishes, not by polling. To wait for a cascade, wait for the last message in the chain.
 
+The wait matches the delivery's original wire name and version and returns the original contract. If a consumer handles `Legacy` as `Current` through `Accepts<Current>` or an upcaster, `WaitForConsumedAsync<Legacy>()` matches that delivery and returns `Legacy`. `WaitForConsumedAsync<Current>()` waits for a delivery with the `Current` wire identity. To assert which handler ran or inspect the converted value, signal from the handler or one of its dependencies.
+
 The predicate runs on the consuming thread, so keep it short. An exception from the predicate or from deserialization fails the wait, not the delivery. Cancellation cancels only that wait. `Reset()` clears the handled history, so a later wait only matches deliveries handled after the reset.
 
 ## Invoke a handler without a host

@@ -24,7 +24,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
     private static readonly DiagnosticDescriptor s_openGenericMessage = new(
         "RLYM001", "Message declaration has unbound type parameters",
-        "Message '{0}' has type parameters on itself or a containing type. Declare a concrete, non-generic message outside generic containing types.",
+        "Message '{0}' has type parameters on itself or a containing type. Declare a non-generic message outside generic containing types.",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym001");
 

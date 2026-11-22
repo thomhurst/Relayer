@@ -14,11 +14,13 @@ public sealed record ChargeCard(Guid OrderId, decimal Amount);
 
 On the wire this becomes the CloudEvents type `billing.charge-card;v=2`. Renaming or moving the class never breaks consumers. Names are case-sensitive and the default version is 1. Two types cannot declare the same name and version; analyzer [RLY002](../reference/diagnostics.md#rly002) reports the conflict at compile time and startup validation checks referenced assemblies too.
 
-`[Message]` declarations must be concrete and non-generic, and any containing types must also be non-generic. Generator error [RLYM001](../reference/diagnostics.md#rlym001) identifies unsupported open generic declarations; declare a concrete contract such as `OrderPlaced` instead.
+`[Message]` declarations and their containing types must be non-generic. Generator error [RLYM001](../reference/diagnostics.md#rlym001) identifies declarations with unbound type parameters.
 
 Generated registration preserves the exact name, including C# escape sequences such as `\n`, `\r`, `\u2028`, quotes, and backslashes. These characters remain part of the wire identity; generation does not normalize names.
 
-Message contracts can be ordinary structs, classes or records. A `ref struct` or `readonly ref struct` is stack-only and cannot be a wire message; [RLYM003](../reference/diagnostics.md#rlym003) reports these declarations before generating registration or JSON metadata.
+Message contracts can be ordinary structs, classes or records. Abstract classes and records are supported when the serializer can materialize a derived type. With the default System.Text.Json serializer, configure polymorphism on the abstract contract using `[JsonPolymorphic]` and `[JsonDerivedType]` with a discriminator for each derived type. Send using the registered abstract type, for example `sender.SendAsync<Event>(new Created(17))`.
+
+A `ref struct` or `readonly ref struct` is stack-only and cannot be a wire message; [RLYM003](../reference/diagnostics.md#rlym003) reports these declarations before generating registration or JSON metadata.
 
 Register message types explicitly, or with the source-generated method that lists every `[Message]` type in the assembly:
 
