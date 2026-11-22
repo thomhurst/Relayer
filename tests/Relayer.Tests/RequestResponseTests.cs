@@ -57,35 +57,91 @@ public class RequestResponseTests
     }
 
     [Test]
-    public async Task Hosted_native_in_memory_pipelines_deliver_concurrent_correlated_replies()
+    public async Task Duplicate_default_request_clients_are_rejected()
     {
-        using var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder =>
+        var services = new ServiceCollection();
+
+        await Assert.That(() => services.AddRelayer(builder => builder.InMemory("local", transport =>
         {
-            builder.AddMessageTypesFromThisAssembly();
-            builder.InMemory("local", transport =>
-            {
-                transport.Request<RpcRequest, RpcResponse>("requests", "replies", request =>
+            transport.Request<RpcRequest, RpcResponse>("requests", "replies");
+            transport.Request<RpcRequest, RpcResponse>("other-requests", "other-replies");
+        }))).Throws<InvalidOperationException>().WithMessage("This request/response pair already has a registration. Declare it once.");
+    }
+
+    [Test]
+    public async Task Pending_request_capacity_belongs_to_each_service_provider()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.InMemory("local", transport =>
+            transport.Request<RpcRequest, RpcResponse>("requests", "replies", request =>
+                request.Options = new()
                 {
-                    request.Options = new()
+                    MaxPendingRequests = 1
+                })));
+
+        await using var firstProvider = services.BuildServiceProvider();
+        await using var secondProvider = services.BuildServiceProvider();
+        using var firstScope = firstProvider.CreateScope();
+        var first = firstScope.ServiceProvider.GetRequiredService<RequestReplies<RpcRequest, RpcResponse>>();
+        var second = secondProvider.GetRequiredService<RequestReplies<RpcRequest, RpcResponse>>();
+
+        var firstPending = first.Reserve();
+        var secondPending = second.Reserve();
+        var firstRoot = firstProvider.GetRequiredService<RequestReplies<RpcRequest, RpcResponse>>();
+        await Assert.That(() => firstRoot.Reserve()).Throws<InvalidOperationException>().WithMessageContaining("MaxPendingRequests");
+
+        first.Release(firstPending);
+        second.Release(secondPending);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Concurrent_requests_round_trip_with_a_keyed_client_in_either_registration_order(bool keyedFirst)
+    {
+        var alternate = new AlternateRequestClient();
+        using var host = new HostBuilder().ConfigureServices(services =>
+        {
+            if (keyedFirst)
+            {
+                services.AddKeyedSingleton<IRequestClient<RpcRequest, RpcResponse>>("alternate", alternate);
+            }
+
+            services.AddRelayer(builder =>
+            {
+                builder.AddMessageTypesFromThisAssembly();
+                builder.InMemory("local", transport =>
+                {
+                    transport.Request<RpcRequest, RpcResponse>("requests", "replies", request =>
                     {
-                        MaxPendingRequests = 128
-                    };
-                    request.Send(route => route.SendOptions = new() { Source = "/configured-request" });
-                    request.Replies(c => c.Concurrency(4));
+                        request.Options = new()
+                        {
+                            MaxPendingRequests = 128
+                        };
+                        request.Send(route => route.SendOptions = new() { Source = "/configured-request" });
+                        request.Replies(c => c.Concurrency(4));
+                    });
+                    transport.Send<RpcResponse>("replies");
+                    transport.Consume("requests", c => c.Handler<RequestEchoHandler>().Concurrency(4));
                 });
-                transport.Send<RpcResponse>("replies");
-                transport.Consume("requests", c => c.Handler<RequestEchoHandler>().Concurrency(4));
             });
-        })).Build();
+
+            if (!keyedFirst)
+            {
+                services.AddKeyedSingleton<IRequestClient<RpcRequest, RpcResponse>>("alternate", alternate);
+            }
+        }).Build();
         await host.StartAsync();
 
         try
         {
             using var scope = host.Services.CreateScope();
             var client = scope.ServiceProvider.GetRequiredService<IRequestClient<RpcRequest, RpcResponse>>();
+            var keyed = scope.ServiceProvider.GetRequiredKeyedService<IRequestClient<RpcRequest, RpcResponse>>("alternate");
             var requests = Enumerable.Range(0, 64).Select(i => client.RequestAsync(new(i), s_limit).AsTask()).ToArray();
             var responses = await Task.WhenAll(requests).WaitAsync(s_limit);
             await Assert.That(responses.Select(r => r.Value).SequenceEqual(Enumerable.Range(0, 64))).IsTrue();
+            await Assert.That(ReferenceEquals(keyed, alternate)).IsTrue();
         }
         finally
         {
@@ -549,6 +605,14 @@ public class RequestResponseTests
         {
             _scope.Dispose();
             await _provider.DisposeAsync();
+        }
+    }
+
+    private sealed class AlternateRequestClient : IRequestClient<RpcRequest, RpcResponse>
+    {
+        public ValueTask<RpcResponse> RequestAsync(RpcRequest request, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
         }
     }
 

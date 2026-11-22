@@ -34,7 +34,10 @@ public sealed class GetPriceHandler : IHandler<GetPrice>
 }
 ```
 
-Inject `IRequestClient<GetPrice, Price>` into the requesting application:
+`Request<GetPrice, Price>` registers one unkeyed `IRequestClient<GetPrice, Price>`.
+An application can also register a keyed client for the same pair before or after `AddRelayer`.
+
+Inject the unkeyed client into the requesting application:
 
 ```csharp
 var price = await client.RequestAsync(

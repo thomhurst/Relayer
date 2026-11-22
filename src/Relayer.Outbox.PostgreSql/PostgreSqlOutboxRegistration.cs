@@ -28,8 +28,8 @@ public static class PostgreSqlOutboxRegistration
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        if (services.Any(static descriptor => descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
-            !services.Any(static descriptor => descriptor.ServiceType == typeof(PostgreSqlOutbox)))
+        if (services.Any(static descriptor => !descriptor.IsKeyedService && descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
+            !services.Any(static descriptor => !descriptor.IsKeyedService && descriptor.ServiceType == typeof(PostgreSqlOutbox)))
         {
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
         }

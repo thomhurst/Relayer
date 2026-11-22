@@ -18,8 +18,8 @@ public static class SqlServerOutboxRegistration
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        if (services.Any(static descriptor => descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
-            !services.Any(static descriptor => descriptor.ServiceType == typeof(SqlServerOutbox)))
+        if (services.Any(static descriptor => !descriptor.IsKeyedService && descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
+            !services.Any(static descriptor => !descriptor.IsKeyedService && descriptor.ServiceType == typeof(SqlServerOutbox)))
         {
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
         }

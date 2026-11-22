@@ -138,14 +138,12 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         var options = request.Options;
         options.Validate();
 
-        if (_services.Any(service => service.ServiceType == typeof(IRequestClient<TRequest, TResponse>)))
+        if (_services.Any(static service => service.ServiceType == typeof(IRequestClient<TRequest, TResponse>) && !service.IsKeyedService))
         {
             throw new InvalidOperationException("This request/response pair already has a registration. Declare it once.");
         }
 
-        _services.AddSingleton(new RequestReplies<TRequest, TResponse>(Name, replyAddress, options));
-        _services.AddScoped<IRequestClient<TRequest, TResponse>, RequestClient<TRequest, TResponse>>();
-        _services.AddSingleton<IRequestRegistration, RequestRegistration<TRequest, TResponse>>();
+        RegisterRequestServices<TRequest, TResponse>(replyAddress, options);
         Send(destination, request.ConfigureSend);
         Consume(replyAddress, consumer =>
         {
@@ -171,6 +169,14 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
     void ITransportConsumerBuilder.Consume(string source, Action<IConsumerBuilder> configure)
     {
         Consume(source, configure);
+    }
+
+    private void RegisterRequestServices<TRequest, TResponse>(string replyAddress, RequestOptions options)
+    {
+        string transportName = Name;
+        _services.AddSingleton<RequestReplies<TRequest, TResponse>>(_ => new(transportName, replyAddress, options));
+        _services.AddScoped<IRequestClient<TRequest, TResponse>, RequestClient<TRequest, TResponse>>();
+        _services.AddSingleton<IRequestRegistration, RequestRegistration<TRequest, TResponse>>();
     }
 
     private void EnsureMutable()
