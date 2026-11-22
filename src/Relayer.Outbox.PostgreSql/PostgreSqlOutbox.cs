@@ -16,6 +16,8 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     private readonly int _lanes;
     private readonly RelayerInstrumentation? _instrumentation;
     private readonly PostgreSqlDirectDispatcher? _dispatcher;
+    private readonly PostgreSqlLocalStore[] _localStores;
+    private readonly PostgreSqlOutboxOptions _options;
     private PostgreSqlOutboxTransaction? _transaction;
     private readonly OutboxTenantBinding? _tenant;
     private bool _failed;
@@ -29,11 +31,14 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     }
 
     internal PostgreSqlOutbox(IOptionsSnapshot<PostgreSqlOutboxOptions> options,
-        IEnumerable<PostgreSqlSchedulingRegistration> workers, RelayerInstrumentation? instrumentation = null, PostgreSqlDirectDispatcher? dispatcher = null)
+        IEnumerable<PostgreSqlSchedulingRegistration> workers, RelayerInstrumentation? instrumentation = null,
+        PostgreSqlDirectDispatcher? dispatcher = null, PostgreSqlLocalStore[]? localStores = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var value = options.Value;
         ValidateOptions(value);
+        _options = value;
+        _localStores = localStores ?? [];
         _tenant = value.TenantBinding;
         _tenant?.Validate();
         _lanes = value.Lanes;
@@ -70,6 +75,8 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         ArgumentNullException.ThrowIfNull(connection);
         EnsureAvailable();
         _dispatcher?.ValidateConnection(connection);
+        PostgreSqlLocalStore.ValidateWriterConnection(_localStores, _options.Schema, _options.TablePrefix, _lanes,
+            connection, static writer => writer.ConnectionString);
         var native = await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
         return _transaction = new(this, native, null);
     }
@@ -80,6 +87,8 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     {
         ArgumentNullException.ThrowIfNull(dataSource);
         EnsureAvailable();
+        PostgreSqlLocalStore.ValidateWriterConnection(_localStores, _options.Schema, _options.TablePrefix, _lanes,
+            dataSource, static writer => writer.ConnectionString);
         var connection = dataSource.CreateConnection();
 
         try

@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Npgsql;
 using Relayer.Pipeline;
@@ -59,13 +60,17 @@ public static class PostgreSqlLocalBuilderExtensions
         options ??= new();
         var snapshot = options;
         builder.AddTransport(name, configure);
+        var storeName = dispatchStoreName ?? name;
+        builder.Services.AddSingleton(new PostgreSqlLocalStore(name, storeName, dataSource, snapshot));
+        builder.Services.TryAddSingleton(static provider => provider.GetServices<PostgreSqlLocalStore>().ToArray());
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, PostgreSqlRecoveryStartupValidator>());
         builder.Services.AddSingleton<ITransport>(provider =>
         {
             var declaration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
             return new PostgreSqlLocalTransport(name, dataSource, snapshot,
                 declaration.Routes.Select(route => route.Destination).Concat(declaration.Consumers.Select(consumer => consumer.Source)), provider.GetRequiredService<MessageTracing>());
         });
-        builder.Services.AddSingleton<IHostedService>(provider => new LocalConsumers(provider, name, dispatchStoreName ?? name));
+        builder.Services.AddSingleton<IHostedService>(provider => new LocalConsumers(provider, name, storeName));
         return builder;
     }
 

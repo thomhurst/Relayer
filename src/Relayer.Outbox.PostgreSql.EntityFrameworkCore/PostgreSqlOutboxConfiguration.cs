@@ -25,8 +25,12 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
 
     private readonly string _inboxInsertWithTransactionIdSql;
     private readonly string _verifyInboxCommitSql;
+    private readonly string? _schema;
+    private readonly string _tablePrefix;
+    private readonly PostgreSqlLocalStore[] _localStores;
 
-    internal PostgreSqlOutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null, IEnumerable<PostgreSqlSchedulingRegistration>? workers = null)
+    internal PostgreSqlOutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null,
+        IEnumerable<PostgreSqlSchedulingRegistration>? workers = null, PostgreSqlLocalStore[]? localStores = null)
     {
         TenantBinding = options.TenantBinding;
         TenantBinding?.Validate();
@@ -45,6 +49,9 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
         Table = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox");
         Lanes = options.Lanes;
+        _schema = options.Schema;
+        _tablePrefix = options.TablePrefix;
+        _localStores = localStores ?? [];
 
         if (options.DispatchStoreName is not null)
         {
@@ -96,6 +103,14 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
         {
             throw new InvalidOperationException($"Relayer.Outbox.PostgreSql.EntityFrameworkCore requires the Npgsql.EntityFrameworkCore.PostgreSQL provider; configured provider: '{providerName ?? "none"}'. Configure UseNpgsql on this DbContext. SQL Server and MySQL EF Core integrations are planned; use their ADO.NET integrations instead.");
         }
+    }
+
+    internal override void ValidateWriter(DbContext context)
+    {
+        base.ValidateWriter(context);
+
+        PostgreSqlLocalStore.ValidateWriterConnection(_localStores, _schema, _tablePrefix, Lanes,
+            context, static writer => writer.Database.GetDbConnection().ConnectionString);
     }
 
     internal override void ValidateProvider(IDbContextOptions options)

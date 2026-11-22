@@ -58,7 +58,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         var snapshot = new PostgreSqlOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix, MaxDispatchAttempts = storeOptions.MaxDispatchAttempts, RetainSentMessages = storeOptions.RetainSentMessages };
         _ = PostgreSqlOutboxSchema.CreateScript(snapshot);
         services.AddRelayerPostgreSqlOutboxStore(storeName, dataSource, snapshot);
-        services.AddSingleton(new PostgreSqlDispatchRegistration(storeName, dataSource, snapshot));
+        services.AddSingleton(new PostgreSqlDispatchRegistration(storeName, dataSource, snapshot, PostgreSqlDispatchKind.Direct));
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, PostgreSqlRecoveryStartupValidator>());
         services.AddSingleton(new DispatchSettings(storeName, dispatchOptions));
         services.AddOptions<PostgreSqlDirectDispatchOptions>();
@@ -167,6 +167,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         var snapshot = options;
         services.AddOptions<PostgreSqlOrderedDispatchOptions>(name);
         services.AddSingleton(new OrderedRegistration(name, snapshot));
+        services.AddSingleton<PostgreSqlDispatchRegistration>(provider => new(name, dataSource,
+            provider.GetRequiredService<IOptionsMonitor<PostgreSqlOrderedDispatchOptions>>().Get(name).Validate(), PostgreSqlDispatchKind.Ordered));
         services.TryAddSingleton<IOptionsFactory<PostgreSqlOrderedDispatchOptions>>(provider =>
             new OrderedOptionsFactory(provider.GetServices<OrderedRegistration>(), provider.GetServices<IConfigureOptions<PostgreSqlOrderedDispatchOptions>>(),
                 provider.GetServices<IPostConfigureOptions<PostgreSqlOrderedDispatchOptions>>(),

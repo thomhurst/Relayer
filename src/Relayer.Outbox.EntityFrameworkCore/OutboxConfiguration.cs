@@ -82,6 +82,11 @@ internal abstract class OutboxConfiguration : IDbContextOptionsExtension
 
     internal abstract void ValidateProvider(string? providerName);
 
+    internal virtual void ValidateWriter(DbContext context)
+    {
+        ValidateProvider(context.Database.ProviderName);
+    }
+
     internal abstract void ValidateProvider(IDbContextOptions options);
 
     internal abstract OutboxConfiguration? FindConfiguration(IDbContextOptions options);

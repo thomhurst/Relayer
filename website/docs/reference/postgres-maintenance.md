@@ -122,6 +122,9 @@ and durable stores, and on every `PostgreSqlOrderedDispatchOptions`,
 `PostgreSqlChangeCaptureOptions` and `PostgreSqlMaintenanceOptions` for those tables.
 For [PostgreSQL local work](../transports/postgresql-local.md#register-routes-and-workers), also pass
 `PostgreSqlLocal` a `PostgreSqlOutboxOptions` with `RetainSentMessages = true`.
+
+At startup, Relayer rejects direct dispatch and maintenance registrations on the same data source,
+schema and table prefix when their `RetainSentMessages` settings differ.
 Tenant catalog dispatch reads the flag from each store's `PostgreSqlOutboxOptions`.
 
 ```csharp

@@ -310,7 +310,7 @@ public class SentHistoryTests
             }
 
             await Assert.That(process.ExitCode).IsEqualTo(0);
-            await Assert.That(await output).Contains("State: sent\nDestination: orders");
+            await Assert.That((await output).ReplaceLineEndings("\n")).Contains("State: sent\nDestination: orders");
             await Assert.That(await output).Contains("Sent: ");
             await Assert.That(await error).IsEqualTo("");
         }
