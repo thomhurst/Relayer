@@ -95,9 +95,63 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
         await Assert.That(await scenario.CountsAsync()).IsEqualTo((1L, 1L, 1L));
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Kafka_cleanup_failure_still_drops_the_database(bool failDuringStartup)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        var startupFailure = new InvalidOperationException("Could not seed the Kafka inbox scenario.");
+        Scenario? scenario = null;
+        IAdminClient? admin = null;
+
+        async Task CaptureResourcesAsync(Scenario started, IAdminClient client)
+        {
+            scenario = started;
+            admin = client;
+
+            if (failDuringStartup)
+            {
+                await client.DisposeAsync();
+                throw startupFailure;
+            }
+        }
+
+        try
+        {
+            if (failDuringStartup)
+            {
+                var observed = await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => Scenario.StartAsync(broker, token, CaptureResourcesAsync));
+                await Assert.That(observed).IsSameReferenceAs(startupFailure);
+                await Assert.That(observed!.Data["KafkaInboxScenarioCleanupFailure"]).IsTypeOf<ObjectDisposedException>();
+            }
+            else
+            {
+                Scenario started = await Scenario.StartAsync(broker, token, CaptureResourcesAsync);
+                await admin!.DisposeAsync();
+                await Assert.ThrowsAsync<ObjectDisposedException>(async () => await started.DisposeAsync());
+            }
+
+            var session = await PostgreSqlSession.Current;
+            await using var command = session.Admin.CreateCommand("SELECT count(*) FROM pg_database WHERE datname = $1");
+            command.Parameters.AddWithValue(scenario!.DatabaseFixture.Database);
+            await Assert.That((long)(await command.ExecuteScalarAsync(token))!).IsEqualTo(0L);
+        }
+        finally
+        {
+            if (scenario is not null)
+            {
+                await scenario.DatabaseFixture.DisposeAsync();
+                await using var cleanup = new AdminClientBuilder().WithBootstrapServers(broker.Bootstrap).Build();
+                await cleanup.DeleteTopicsAsync([scenario.Topic]);
+            }
+        }
+    }
+
     private sealed class Scenario : IAsyncDisposable
     {
-        private readonly PostgreSqlFixture _database = new();
         private readonly KafkaInboxBroker _broker;
         private IAdminClient? _admin;
 
@@ -112,21 +166,33 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
             get;
         }
 
-        internal string ConnectionString => _database.ConnectionString;
+        internal PostgreSqlFixture DatabaseFixture
+        {
+            get;
+        } = new();
 
-        internal static async Task<Scenario> StartAsync(KafkaInboxBroker broker, CancellationToken token)
+        internal string ConnectionString => DatabaseFixture.ConnectionString;
+
+        internal static async Task<Scenario> StartAsync(KafkaInboxBroker broker, CancellationToken token,
+            Func<Scenario, IAdminClient, Task>? beforeSeedAsync = null)
         {
             var scenario = new Scenario(broker);
 
             try
             {
                 await broker.Started.WaitAsync(token);
-                await scenario._database.StartAsync();
+                await scenario.DatabaseFixture.StartAsync();
                 await scenario.ExecuteAsync(PostgreSqlOutboxSchema.CreateScript() +
                     "CREATE TABLE kafka_orders (\"Id\" uuid PRIMARY KEY, \"Value\" integer NOT NULL)");
                 scenario._admin = new AdminClientBuilder().WithBootstrapServers(broker.Bootstrap).Build();
                 await scenario._admin.CreateTopicsAsync([new() { Name = scenario.Topic, NumPartitions = 1, ReplicationFactor = 1 }],
                     cancellationToken: token);
+
+                if (beforeSeedAsync is not null)
+                {
+                    await beforeSeedAsync(scenario, scenario._admin);
+                }
+
                 // Relayer's own send writes the wire identity and UUIDv7 message ID the inbox requires.
                 // No consumer here: the transport starts every registered consumer, which could process the seed.
                 var sending = new ServiceCollection().AddLogging();
@@ -144,9 +210,17 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
                 await transport.StopAsync(token);
                 return scenario;
             }
-            catch
+            catch (Exception startupFailure)
             {
-                await scenario.DisposeAsync();
+                try
+                {
+                    await scenario.DisposeAsync();
+                }
+                catch (Exception cleanupFailure)
+                {
+                    startupFailure.Data["KafkaInboxScenarioCleanupFailure"] = cleanupFailure;
+                }
+
                 throw;
             }
         }
@@ -235,19 +309,19 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
 
         public async ValueTask DisposeAsync()
         {
-            if (_admin is not null)
+            try
             {
-                try
+                await using var admin = _admin;
+
+                if (admin is not null)
                 {
-                    await _admin.DeleteTopicsAsync([Topic]);
-                }
-                finally
-                {
-                    await _admin.DisposeAsync();
+                    await admin.DeleteTopicsAsync([Topic]);
                 }
             }
-
-            await _database.DisposeAsync();
+            finally
+            {
+                await DatabaseFixture.DisposeAsync();
+            }
         }
     }
 
