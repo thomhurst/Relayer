@@ -6,6 +6,7 @@ description: "Declared topology: validate or provision broker entities at startu
 Declare routes and consumers normally. Relayer builds an inspectable topology from those declarations; it never infers broker entities from CLR names.
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
 using Relayer;
 using Relayer.Transports;
 
@@ -155,6 +156,9 @@ The same exporters are available through the [command-line export](#command-line
 Export an [AsyncAPI 3.0.0 document](https://www.asyncapi.com/docs/reference/specification/v3.0.0) from the same declarations:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+
 var topology = serviceProvider.GetRequiredService<ITopology>();
 using var output = File.Create("asyncapi.json");
 topology.ExportAsyncApi(output, new AsyncApiOptions
