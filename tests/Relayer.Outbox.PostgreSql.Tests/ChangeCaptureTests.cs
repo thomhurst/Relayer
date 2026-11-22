@@ -88,12 +88,25 @@ public class ChangeCaptureTests
         try
         {
             await Streaming(source, timeout.Token);
-            await Acknowledged(source, await Insert(source, Id(1)), timeout.Token);
+            var id = Id(1);
+            await using var currentWal = source.CreateCommand("SELECT pg_current_wal_insert_lsn()");
+            NpgsqlLogSequenceNumber outboxPosition;
+
+            // Logical decoding can see COMMIT before a SQL snapshot sees the row.
+            // Hold the worker's only SQL connection until the writer finishes committing.
+            await using (await workerSource.OpenConnectionAsync(timeout.Token))
+            {
+                await Insert(source, id);
+                outboxPosition = (NpgsqlLogSequenceNumber)(await currentWal.ExecuteScalarAsync(timeout.Token))!;
+            }
+
+            await Acknowledged(source, outboxPosition, timeout.Token);
+            await Assert.That(transport.Ids.ToArray()).IsEquivalentTo([id]);
+
             await Sql(source, "INSERT INTO unrelated VALUES (1)");
-            await using var command = source.CreateCommand("SELECT pg_current_wal_insert_lsn()");
-            var position = (NpgsqlLogSequenceNumber)(await command.ExecuteScalarAsync(timeout.Token))!;
-            await Acknowledged(source, position, timeout.Token);
-            await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
+            var unrelatedPosition = (NpgsqlLogSequenceNumber)(await currentWal.ExecuteScalarAsync(timeout.Token))!;
+            await Acknowledged(source, unrelatedPosition, timeout.Token);
+            await Assert.That(transport.Ids.ToArray()).IsEquivalentTo([id]);
         }
         finally
         {
