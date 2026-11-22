@@ -94,6 +94,80 @@ public class HandlerGeneratorTests
     }
 
     [Test]
+    [Arguments("string?", "string?")]
+    [Arguments("Envelope<string?>", "global::Envelope<string?>")]
+    public async Task Batch_dispatch_preserves_nullable_message_contracts(string messageType, string generatedType)
+    {
+        var compilation = CreateCompilation($$"""
+            using Relayer;
+            using Relayer.Transports;
+            using System.Threading;
+            using System.Threading.Tasks;
+
+            public sealed record Envelope<T>(T Value);
+
+            public sealed class NullableHandler : IBatchHandler<{{messageType}}>
+            {
+                public ValueTask<BatchResult> HandleAsync(Batch<{{messageType}}> batch, CancellationToken token) => default;
+            }
+
+            public static class Registration
+            {
+                public static void Add(IRelayerBuilder relayer, IConsumerBuilder consumer)
+                {
+                    relayer.Infrastructure().MessageTypes.Add<{{messageType}}>("messages");
+                    consumer.Handler<NullableHandler>();
+                }
+            }
+            """);
+        var driver = Run(compilation.WithOptions(compilation.Options.WithGeneralDiagnosticOption(ReportDiagnostic.Error)), out _);
+        var generated = Generated(driver);
+
+        await Assert.That(generated).Contains($"BatchHandlerDescriptor<{generatedType}>");
+        await Assert.That(generated).Contains($"Batch<{generatedType}> batch");
+        await Assert.That(generated).Contains($"IBatchHandler<{generatedType}>");
+    }
+
+    [Test]
+    [Arguments("")]
+    [Arguments("consumer.Handler<GenericHandler<string>>();")]
+    public async Task Closed_generic_handler_emits_one_dispatcher_per_runtime_contract(string equivalentRegistration)
+    {
+        var compilation = CreateCompilation($$"""
+            using Relayer;
+            using System.Threading;
+            using System.Threading.Tasks;
+
+            public sealed record Envelope<T>(T Value);
+
+            public sealed class GenericHandler<T> : IBatchHandler<Envelope<T>>
+            {
+                public ValueTask<BatchResult> HandleAsync(Batch<Envelope<T>> batch, CancellationToken token) => default;
+            }
+
+            public static class Registration
+            {
+                public static void Add(IConsumerBuilder consumer)
+                {
+                    consumer.Handler<GenericHandler<string?>>();
+                    {{equivalentRegistration}}
+                }
+            }
+            """);
+        var driver = Run(compilation.WithOptions(compilation.Options.WithGeneralDiagnosticOption(ReportDiagnostic.Error)), out _);
+        var generated = Generated(driver);
+
+        await Assert.That(generated).Contains("class Dispatcher0 :");
+        await Assert.That(generated).DoesNotContain("Dispatcher1");
+
+        if (equivalentRegistration.Length == 0)
+        {
+            await Assert.That(generated).Contains("TryAddScoped<global::GenericHandler<string?>>");
+            await Assert.That(generated).Contains("BatchHandlerDescriptor<global::Envelope<string?>>");
+        }
+    }
+
+    [Test]
     public async Task Root_builder_registration_is_rejected_at_compile_time()
     {
         var compilation = CreateCompilation(Handlers + """
@@ -342,16 +416,16 @@ public class HandlerGeneratorTests
             }
 
             public sealed class OrderHandler :
-                IHandler<Envelope<Orders::Shared.Order>.Message<@class::Shared.Order>[]>
+                IHandler<Envelope<Orders::Shared.Order>.Message<@class::Shared.Order?>[]>
             {
-                public ValueTask HandleAsync(Envelope<Orders::Shared.Order>.Message<@class::Shared.Order>[] message,
+                public ValueTask HandleAsync(Envelope<Orders::Shared.Order>.Message<@class::Shared.Order?>[] message,
                     MessageContext context, CancellationToken cancellationToken) => default;
             }
             """).AddReferences(orders, returns);
 
         var driver = Run(compilation, out _);
         await Assert.That(Generated(driver))
-            .Contains("HandlerDescriptor<global::Envelope<@Orders::Shared.Order>.Message<@class::Shared.Order>[]>");
+            .Contains("HandlerDescriptor<global::Envelope<@Orders::Shared.Order>.Message<@class::Shared.Order?>[]>");
     }
 
     [Test]
