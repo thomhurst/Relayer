@@ -293,10 +293,10 @@ from the native send. Native send failures persist attempts, errors and the same
 deadline as direct dispatch, and commit a successful prefix. They never park a row. Until its deadline,
 a retrying head stalls its lane, including other keys. Preparation failures such as missing transports,
 unsupported ordering and malformed rows retain the poison budget. At `MaxDispatchAttempts`,
-the original row parks with its sequence intact;
-only later rows for that exact key are blocked, while other keys continue. Malformed headers and
-empty required routing fields also consume attempts and park the original raw row. Inspect and repair
-parked rows through application-owned SQL. Resume by updating the original row to
+the worker parks the original row and preserves its sequence. The parked row blocks later rows
+for that exact key. After committing a park, the worker scans again immediately for other ready keys.
+Malformed headers and empty required routing fields also consume attempts and park the original raw row.
+Inspect and repair parked rows through application-owned SQL. Resume by updating the original row to
 `status = 'pending', attempts = 0`; deleting and reinserting it would change its order.
 If the repaired row exhausts again through the outbox store, its dead copy is atomically
 replaced with the latest raw contents, attempts, error and failure time while the original

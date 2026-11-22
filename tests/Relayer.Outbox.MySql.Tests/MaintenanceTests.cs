@@ -394,7 +394,7 @@ public sealed class MaintenanceTests
         },
             [transport], NullLogger<MySqlOrderedDispatcher>.Instance, instrumentation: instrumentation);
         await Assert.That(await ordered.DispatchLaneAsync(0, default)).IsEqualTo(0);
-        await Assert.That(await ordered.DispatchLaneAsync(0, default)).IsEqualTo(0);
+        await Assert.That(await ordered.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(poisonCount).IsEqualTo(1L);
         await Assert.That(await ordered.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(poisonCount).IsEqualTo(1L);

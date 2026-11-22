@@ -267,7 +267,7 @@ public sealed class OrderedDispatchTests
             Lanes = 1,
             MaxDispatchAttempts = 1
         }, [transport], NullLogger<MySqlOrderedDispatcher>.Instance);
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
         await database.Execute("UPDATE relayer_outbox SET status = 'pending', attempts = 0, transport = 'events' WHERE status = 'parked'");
@@ -341,6 +341,39 @@ public sealed class OrderedDispatchTests
         finally
         {
             await ((IOrderedLaneWorker)ordered).ReleaseAsync(default);
+        }
+    }
+
+    [Test]
+    public async Task Committed_park_rescans_before_first_idle_poll()
+    {
+        await using var database = new MySqlFixture();
+        await database.StartAsync();
+        await Insert(database, Id(1));
+        await Insert(database, Id(2));
+        await Insert(database, Id(3), "other");
+        await database.Execute($"UPDATE relayer_outbox SET transport='missing' WHERE id=UNHEX('{Id(1):N}')");
+        var clock = new PollClock();
+        var transport = new RecordingTransport();
+        using var ordered = new MySqlOrderedDispatcher(database.Source, new()
+        {
+            Lanes = 1,
+            MaxDispatchAttempts = 1
+        }, [transport], NullLogger<MySqlOrderedDispatcher>.Instance, clock);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await ordered.StartAsync(timeout.Token);
+
+        try
+        {
+            await clock.FirstPoll.Task.WaitAsync(timeout.Token);
+            await Assert.That(transport.Ids.SequenceEqual([Id(3)])).IsTrue();
+            await Assert.That(await Scalar(database, "SELECT COUNT(*) FROM relayer_outbox")).IsEqualTo(2L);
+            await Assert.That(await Scalar(database, $"SELECT COUNT(*) FROM relayer_outbox WHERE id=UNHEX('{Id(1):N}') AND status='parked'")).IsEqualTo(1L);
+            await Assert.That(await Scalar(database, $"SELECT COUNT(*) FROM relayer_outbox WHERE id=UNHEX('{Id(2):N}') AND status='pending'")).IsEqualTo(1L);
+        }
+        finally
+        {
+            await ordered.StopAsync(timeout.Token);
         }
     }
 

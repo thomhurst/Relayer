@@ -397,7 +397,8 @@ backoff as unordered dispatch. The head holds the lane until its deadline, then 
 classified broker outages never park its key. Exhausting `MaxDispatchAttempts` on preparation or
 unclassified send failures parks the
 original row, preserving its sequence and error. Later rows with exactly the same key remain behind that barrier, while other keys
-in the lane can proceed. SQL Server dead-letter inspection/redrive/purge APIs remain planned; operate on
+in the lane can proceed. After committing a park, the worker scans again immediately for other ready keys.
+SQL Server dead-letter inspection/redrive/purge APIs remain planned; operate on
 parked rows only with application-owned tooling that preserves the row and sequence. The worker records
 `relayer.outbox.poison` when parking; it does not add an unordered recovery or retention worker.
 
