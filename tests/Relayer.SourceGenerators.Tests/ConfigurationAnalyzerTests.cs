@@ -442,6 +442,39 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("int", "")]
+    [Arguments("string", "RLY001")]
+    public async Task Generic_handler_checks_the_closed_nested_message_identity(string registeredType, string expected)
+    {
+        var diagnostics = await Analyze(Imports + $$"""
+            public class Outer<T>
+            {
+                public record Message(T Value);
+            }
+
+            public class OuterHandler<T> : IHandler<Outer<T>.Message>
+            {
+                public ValueTask HandleAsync(Outer<T>.Message message, MessageContext context, CancellationToken ct) => default;
+            }
+
+            static class Setup
+            {
+                public static void Add(IRelayerBuilder builder, IConsumerBuilder consumer)
+                {
+                    builder.Infrastructure().MessageTypes.Add<Outer<{{registeredType}}>.Message>("orders");
+                    consumer.Handler<OuterHandler<int>>();
+                }
+            }
+            """);
+        await Assert.That(Ids(diagnostics)).IsEqualTo(expected);
+
+        foreach (var diagnostic in diagnostics)
+        {
+            await Assert.That(diagnostic.GetMessage()).Contains("Outer<int>.Message");
+        }
+    }
+
+    [Test]
     public async Task Unrelated_registration_names_do_not_register_handlers()
     {
         await Verify(Imports + s_internalHandler + """

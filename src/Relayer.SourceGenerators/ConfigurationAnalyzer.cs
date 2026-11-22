@@ -353,7 +353,8 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
         {
             ITypeParameterSymbol => true,
             IArrayTypeSymbol array => ContainsTypeParameter(array.ElementType),
-            INamedTypeSymbol named => named.TypeArguments.Any(ContainsTypeParameter),
+            INamedTypeSymbol named => named.TypeArguments.Any(ContainsTypeParameter)
+                || (named.ContainingType is { } containingType && ContainsTypeParameter(containingType)),
             _ => false,
         };
     }
