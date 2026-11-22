@@ -40,7 +40,8 @@ public sealed class MessageAttributeCodeFixProvider : CodeFixProvider
             var root = await document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
 
             if (root?.FindNode(location.SourceSpan) is not TypeDeclarationSyntax declaration
-                || declaration is InterfaceDeclarationSyntax)
+                || declaration is InterfaceDeclarationSyntax
+                || declaration.AncestorsAndSelf().OfType<TypeDeclarationSyntax>().Any(static type => type.TypeParameterList is not null))
             {
                 continue;
             }

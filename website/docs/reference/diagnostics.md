@@ -11,7 +11,7 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 | [RLYEXP002](#rlyexp002) | Error | Explicit opt-in for PostgreSQL local transport. |
 | [RLYEXP003](#rlyexp003) | Error | Explicit opt-in for PostgreSQL change capture. |
 | [RLYEXP004](#rlyexp004) | Error | Explicit opt-in for PostgreSQL tenant catalog dispatch. |
-| [RLY001](#rly001) | Warning | A message used by a route or handler has neither `[Message]` nor an explicit identity registration. |
+| [RLY001](#rly001) | Warning | A message used by a route, request, or handler has neither `[Message]` nor an explicit identity registration. |
 | [RLY002](#rly002) | Error | Two types declare the same message name and version. |
 | [RLY003](#rly003) | Warning | A non-public concrete handler is never registered in this compilation. |
 | [RLY004](#rly004) | Warning | An inline consumer configuration has no handler. |
@@ -26,14 +26,16 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 
 ## RLY001
 
-Declare a stable wire identity on each message used by `Send<TMessage>`, `IHandler<TMessage>` or `IBatchHandler<TMessage>`:
+Declare a stable wire identity on each message used by `Send<TMessage>`, `IHandler<TMessage>` or `IBatchHandler<TMessage>`. For `Request<TRequest, TResponse>`, declare identities for both the request and the response.
 
 ```csharp
 [Message("orders.placed", Version = 1)]
 public sealed record OrderPlaced(string OrderId);
 ```
 
-The code fix adds `[global::Relayer.MessageAttribute("OrderPlaced")]` to the message declaration. **Edit this suggestion to the permanent wire name before publishing.** It is an explicit source declaration, not a runtime fallback to CLR names. The fix preserves comments and supports classes, structs and records. Referenced types cannot be edited; add the attribute in their owning project or register their identity explicitly. Each missing message type is reported once per compilation, even when routes and multiple handlers use it.
+The code fix adds `[global::Relayer.MessageAttribute("OrderPlaced")]` to the message declaration. **Edit this suggestion to the permanent wire name before publishing.** It is an explicit source declaration, not a runtime fallback to CLR names. The fix preserves comments and supports classes, structs and records. For a type from a referenced assembly, add the attribute in its owning project or register its identity explicitly. Use explicit registration for a closed generic contract or a contract nested in a generic type. The code fix is unavailable for those declarations.
+
+RLY001 reports a source-declared message type once at its declaration. For a type from a referenced assembly, it reports each use that it checks.
 
 Alternatively, call `builder.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed")`. RLY001 recognizes calls to Relayer's `MessageTypeRegistry.Add<T>` anywhere in the current compilation, including after the route or handler use. The registration covers that exact type and its `Tombstone<T>` wrapper; registering one closed generic type does not cover other instantiations. Calls hidden inside a referenced assembly or generic helper are not inferred; mark the helper instead, as below. The analyzer does not prove that a visible registration executes; startup validation remains authoritative.
 
@@ -90,7 +92,7 @@ dotnet_diagnostic.RLY003.severity = none
 
 ## RLY004
 
-An empty consumer, including one that only sets native options, concurrency or batching, needs a handler:
+A consumer needs a handler even if its callback sets native options, concurrency, batching, or failure behavior with `Failures` or `Classify`. This check applies to both `TransportBuilder<TTransportOptions, TConsumerOptions>` and `ITransportConsumerBuilder`.
 
 ```csharp
 broker.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>());
