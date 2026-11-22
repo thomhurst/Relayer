@@ -597,7 +597,8 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
             {
                 OrderedByKey = Fifo,
                 MaxBatchSize = 10,
-                MaxRedeliveryDelay = TimeSpan.FromHours(12),
+                // Visibility rounds up to whole seconds and must stay below the receive deadline.
+                MaxRedeliveryDelay = TimeSpan.FromSeconds(SqsSettlement.MaxVisibilitySeconds - 1),
                 MaxDeliveryDelay = Fifo ? null : TimeSpan.FromMinutes(15)
             };
 

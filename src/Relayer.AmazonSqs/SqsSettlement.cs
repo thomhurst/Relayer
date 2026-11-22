@@ -7,6 +7,8 @@ namespace Relayer.AmazonSqs;
 
 internal sealed class SqsSettlement(MessageTracing tracing, MessagingEndpoint endpoint)
 {
+    internal const int MaxVisibilitySeconds = 43_200;
+
     private readonly MessageOperationTracing _delete = new(tracing, endpoint, MessagingOperation.Settle, "delete");
     private readonly MessageOperationTracing _visibility = new(tracing, endpoint, MessagingOperation.Settle, "change_visibility");
 
@@ -92,9 +94,9 @@ internal sealed class SqsSettlement(MessageTracing tracing, MessagingEndpoint en
 
         var seconds = checked((int)Math.Ceiling(delay.TotalSeconds));
         // SQS measures the ceiling from the original ReceiveMessage request, not a visibility change.
-        var remaining = TimeSpan.FromHours(12) - delivery.Time.GetElapsedTime(delivery.ReceivedAt);
+        var remaining = TimeSpan.FromSeconds(MaxVisibilitySeconds) - delivery.Time.GetElapsedTime(delivery.ReceivedAt);
 
-        if (seconds > 43_200 || TimeSpan.FromSeconds(seconds) >= remaining)
+        if (seconds > MaxVisibilitySeconds || TimeSpan.FromSeconds(seconds) >= remaining)
         {
             throw new InvalidOperationException("SQS visibility redelivery exceeds the remaining twelve-hour receive deadline. Use a shorter delay or durable outbox scheduling.");
         }
