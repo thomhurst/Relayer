@@ -317,9 +317,23 @@ internal sealed class InMemoryEndpoint
 
     internal ValueTask EnqueueAsync(InMemoryMessage message, CancellationToken cancellationToken)
     {
+        return GetWriter(message).WriteAsync(message, cancellationToken);
+    }
+
+    internal void EnqueueNativeRedelivery(InMemoryMessage message)
+    {
+        // The active delivery holds its admission credit. Both channels reserve a separate wake-up slot.
+        if (!GetWriter(message).TryWrite(message))
+        {
+            throw new InvalidOperationException("In-memory queue admission capacity was exceeded.");
+        }
+    }
+
+    private ChannelWriter<InMemoryMessage> GetWriter(InMemoryMessage message)
+    {
         return message.DeliverAt is { } due && due > Clock.GetUtcNow()
-                    ? _scheduled[message.Partition].Writer.WriteAsync(message, cancellationToken)
-                    : _partitions[message.Partition].Writer.WriteAsync(message, cancellationToken);
+            ? _scheduled[message.Partition].Writer
+            : _partitions[message.Partition].Writer;
     }
 
     internal void Start(List<Task> tasks, CancellationToken stop, CancellationToken abort)
@@ -752,7 +766,16 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                         _redeliveryHeaders = default;
                         _pending.QueueAttempt = Attempt;
                         _pending.DeliverAt = redeliveryAt ?? endpoint.Clock.GetUtcNow();
-                        await endpoint.EnqueueAsync(_pending, _manual ? CancellationToken.None : abort).ConfigureAwait(false);
+
+                        if (_manual)
+                        {
+                            endpoint.EnqueueNativeRedelivery(_pending);
+                        }
+                        else
+                        {
+                            await endpoint.EnqueueAsync(_pending, abort).ConfigureAwait(false);
+                        }
+
                         _pending = null;
                     }
                     else

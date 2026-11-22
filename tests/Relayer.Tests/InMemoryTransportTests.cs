@@ -499,6 +499,70 @@ public class InMemoryTransportTests
         await Assert.That(transport.DeadLetters("orders").TryRead(out _)).IsFalse();
     }
 
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    public async Task Cancelled_stop_preserves_native_queue_redelivery_at_full_admission(int delaySeconds)
+    {
+        var clock = new InMemoryTestClock();
+        var delay = TimeSpan.FromSeconds(delaySeconds);
+        await using var transport = Transport(new()
+        {
+            Capacity = 2
+        }, clock);
+        var settled = Signal();
+        var release = Signal();
+        var received = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", async (delivery, _) =>
+        {
+            int value = Value(delivery);
+
+            if (value == 1 && delivery.Attempt == 1)
+            {
+                delivery.Redeliver(delay);
+                settled.SetResult();
+                await release.Task;
+                return Disposition.SettledByHandler;
+            }
+
+            received.Writer.TryWrite(value * 10 + delivery.Attempt);
+            return Disposition.Complete;
+        });
+
+        await transport.StartAsync(default);
+
+        try
+        {
+            await Send(transport, 1);
+            await settled.Task.WaitAsync(s_limit);
+            await Send(transport, 2);
+            using var cancellation = new CancellationTokenSource();
+            var stop = transport.StopAsync(cancellation.Token);
+            cancellation.Cancel();
+            await Assert.That(async () => await stop.WaitAsync(s_limit)).Throws<OperationCanceledException>();
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await transport.Completion.WaitAsync(s_limit);
+        await transport.StartAsync(default);
+        await Assert.That(await Next(received)).IsEqualTo(21);
+        var redelivery = Next(received);
+
+        if (delay > TimeSpan.Zero)
+        {
+            var armed = clock.NextTimer();
+            await Assert.That(await Task.WhenAny(armed, redelivery).WaitAsync(s_limit)).IsSameReferenceAs(armed);
+            await armed;
+            clock.Advance(delay);
+        }
+
+        await Assert.That(await redelivery).IsEqualTo(12);
+        await transport.StopAsync(default).WaitAsync(s_limit);
+    }
+
     private static async Task<Exception?> GetReceiverFault(InMemoryTransport transport)
     {
         try
