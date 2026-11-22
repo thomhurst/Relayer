@@ -65,6 +65,17 @@ public class ServiceBusSendTests
     }
 
     [Test]
+    public async Task Case_only_queue_and_topic_duplicates_fail_declaration_validation()
+    {
+        var options = new ServiceBusTransportOptions();
+        options.Queues.Add(new("orders"));
+        options.Topics.Add(new("ORDERS"));
+
+        await Assert.That(() => ServiceBusSendTransport.ValidateDeclarations("bus", options, ["orders"]))
+            .Throws<InvalidOperationException>().WithMessageContaining("duplicate entity 'ORDERS'");
+    }
+
+    [Test]
     public async Task Only_owned_clients_are_disposed_and_disposal_is_idempotent()
     {
         var client = new NativeClient();
@@ -563,7 +574,7 @@ public class ServiceBusSendTests
                     });
                     options.TrustedSessionEntities.Add("orders");
                 });
-                bus.Send<First>("orders", route => route.OrderingKey(static _ => "customer"));
+                bus.Send<First>("ORDERS", route => route.OrderingKey(static _ => "customer"));
             });
         });
         await using var provider = services.BuildServiceProvider();
@@ -571,7 +582,7 @@ public class ServiceBusSendTests
         var report = await transport.ApplyTopologyAsync(mode, default);
         await Assert.That(report.Differences.Count).IsEqualTo(0);
         await Assert.That(admin.Calls).IsEqualTo(0);
-        await Assert.That(transport.GetCapabilities("orders").OrderedByKey).IsTrue();
+        await Assert.That(transport.GetCapabilities("ORDERS").OrderedByKey).IsTrue();
         await using var scope = provider.CreateAsyncScope();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         await sender.SendWithoutOutboxAsync(new First());
@@ -598,20 +609,20 @@ public class ServiceBusSendTests
         });
         options.TrustedSessionEntities.Add("events/Subscriptions/audit");
 
-        await using (var partial = new ServiceBusSendTransport("bus", client, false, options, ["events"], mode))
+        await using (var partial = new ServiceBusSendTransport("bus", client, false, options, ["EVENTS"], mode))
         {
-            await Assert.That(partial.GetCapabilities("events").OrderedByKey).IsFalse();
+            await Assert.That(partial.GetCapabilities("EVENTS").OrderedByKey).IsFalse();
         }
 
         options.TrustedSessionEntities.Add("events/Subscriptions/billing");
-        await using var trusted = new ServiceBusSendTransport("bus", client, false, options, ["events"], mode);
-        await Assert.That(trusted.GetCapabilities("events").OrderedByKey).IsTrue();
+        await using var trusted = new ServiceBusSendTransport("bus", client, false, options, ["EVENTS"], mode);
+        await Assert.That(trusted.GetCapabilities("EVENTS").OrderedByKey).IsTrue();
         var report = await trusted.ApplyTopologyAsync(mode, default);
         await Assert.That(report.Differences.Count).IsEqualTo(0);
         await Assert.That(client.Receiver.Peeks).IsEqualTo(0); // Send-only startup never requests Listen.
         options.Subscriptions[1].RequiresSession = false;
-        await using var mixed = new ServiceBusSendTransport("bus", client, false, options, ["events"], mode);
-        await Assert.That(mixed.GetCapabilities("events").OrderedByKey).IsFalse();
+        await using var mixed = new ServiceBusSendTransport("bus", client, false, options, ["EVENTS"], mode);
+        await Assert.That(mixed.GetCapabilities("EVENTS").OrderedByKey).IsFalse();
     }
 
     [Test]

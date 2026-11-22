@@ -66,7 +66,8 @@ public class ServiceBusSendEmulatorTests
         var token = timeout.Token;
         await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString());
         var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
-        var queue = TestContext.Current!.Isolation.GetIsolatedName("route-native");
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("route-native").ToLowerInvariant();
+        var destination = queue.ToUpperInvariant();
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.AddMessageTypesFromThisAssembly().ServiceBus("routed", bus =>
         {
@@ -80,7 +81,7 @@ public class ServiceBusSendEmulatorTests
                     DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
                 });
             });
-            bus.Send<ServiceBusSendTests.First>(queue, route => route.ServiceBus(static (_, native) =>
+            bus.Send<ServiceBusSendTests.First>(destination, route => route.ServiceBus(static (_, native) =>
             {
                 native.TimeToLive = TimeSpan.FromMinutes(5);
                 native.ReplyTo = "replies";
@@ -93,8 +94,9 @@ public class ServiceBusSendEmulatorTests
 
         try
         {
+            await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(0);
             // The headers-only shape that outbox dispatch sends for a stored row.
-            await transport.SendAsync(new(queue, new byte[] { 7 },
+            await transport.SendAsync(new(destination, new byte[] { 7 },
                 new KeyValuePair<string, WireString>[] { new("cloudEvents:type", new("servicebus.first;v=1")) }), token);
             await using var receiver = client.CreateReceiver(queue);
             var delivered = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
