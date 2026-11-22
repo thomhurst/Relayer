@@ -18,9 +18,12 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
         "Handler '{0}' is never registered in this compilation. Call consumer.Handler<{0}>() inside a consumer configuration callback.");
     private static readonly DiagnosticDescriptor s_emptyConsumer = Rule("RLY004", "Consumer has no handler",
         "Consumer has no handler. Call consumer.Handler<THandler>() inside its configuration callback.");
+    private static readonly DiagnosticDescriptor s_inaccessibleMessage = Rule("RLYH001", "Handler message type is inaccessible",
+        "Handler '{0}' uses message type '{1}', which generated dispatch cannot access. Make the message type assembly-accessible and non-file-local.",
+        DiagnosticSeverity.Error);
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        [s_missingMessage, s_duplicateMessage, s_unregisteredHandler, s_emptyConsumer];
+        [s_missingMessage, s_duplicateMessage, s_unregisteredHandler, s_emptyConsumer, s_inaccessibleMessage];
 
     private static DiagnosticDescriptor Rule(string id, string title, string message,
         DiagnosticSeverity severity = DiagnosticSeverity.Warning)
@@ -182,13 +185,22 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 {
                     var handler = method.TypeArguments[0];
                     registered.TryAdd(handler, 0);
+                    var location = invocation.Syntax.GetLocation();
+                    var canReferenceHandler = HandlerGenerator.CanReference(handler, compilation);
 
                     foreach (var contract in handler.AllInterfaces)
                     {
                         if (SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, single)
                             || SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, batch))
                         {
-                            CheckMessage(contract.TypeArguments[0], invocation.Syntax.GetLocation());
+                            var message = contract.TypeArguments[0];
+                            CheckMessage(message, location);
+
+                            if (canReferenceHandler && !HandlerGenerator.CanReference(message, compilation))
+                            {
+                                operationContext.ReportDiagnostic(Diagnostic.Create(s_inaccessibleMessage, location,
+                                    handler.ToDisplayString(), message.ToDisplayString()));
+                            }
                         }
                     }
                 }

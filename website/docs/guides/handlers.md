@@ -166,7 +166,7 @@ kafka.Consume("orders", consumer => consumer.LocalQueue<OrderPlaced, OrderPlaced
 
 It selects the handler for that one `IHandler<TMessage>` contract on this consumer, even when other consumers register its other contracts, and registers it as a scoped service. Dispatch is typed and reflection-free, the same as the generated path, and registering the same handler both ways is idempotent. The typed overload rejects tombstone and saga handlers during configuration. Register them with the generated `Handler<THandler>()`, which also registers the saga execution service. The `DynamicallyAccessedMembers` annotation keeps the handler's constructor under trimming and Native AOT.
 
-Message types must be accessible to the generated code; [RLYH001](../reference/diagnostics.md#rlyh001) reports ones that are not. Analyzer [RLY003](../reference/diagnostics.md#rly003) warns about a non-public handler that is never registered, and [RLY004](../reference/diagnostics.md#rly004) about a consumer with no handler.
+Use `Handler<THandler, TMessage>()` directly when you want to select one contract from a concrete handler, including when its other contracts use private nested message types. Generated `Handler<THandler>()` and `Consume<THandler>()` require all contracts to be accessible to generated code. [RLYH001](../reference/diagnostics.md#rlyh001) reports inaccessible contracts at calls that select a concrete handler. Analyzer [RLY003](../reference/diagnostics.md#rly003) warns about a non-public handler that is never registered, and [RLY004](../reference/diagnostics.md#rly004) about a consumer with no handler.
 
 ## Dispatch
 

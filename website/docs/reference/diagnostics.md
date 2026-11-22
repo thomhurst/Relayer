@@ -1,6 +1,6 @@
 ---
 title: Diagnostics
-description: "Compile-time analyzers RLY001 to RLY004 and generator errors RLYH001 and RLYM001 to RLYM007, and preview opt-ins RLYEXP001 to RLYEXP004: what each reports and how to fix it."
+description: "Compile-time analyzers RLY001 to RLY004 and RLYH001, generator errors RLYM001 to RLYM007, and preview opt-ins RLYEXP001 to RLYEXP004: what each reports and how to fix it."
 ---
 
 Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. They inspect symbols, not naming conventions, and add no runtime work. Startup validation still checks the complete configuration, including declarations assembled through helpers or other assemblies.
@@ -15,7 +15,7 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 | [RLY002](#rly002) | Error | Two types declare the same message name and version. |
 | [RLY003](#rly003) | Warning | A non-public concrete handler is never registered in this compilation. |
 | [RLY004](#rly004) | Warning | An inline consumer configuration has no handler. |
-| [RLYH001](#rlyh001) | Error | A handler message type is inaccessible to generated dispatch. |
+| [RLYH001](#rlyh001) | Error | A generated handler registration selects an inaccessible message type. |
 | [RLYM001](#rlym001) | Error | A message declaration has type parameters on itself or a containing type. |
 | [RLYM002](#rlym002) | Error | A declared message type is inaccessible to generated registration and JSON metadata. |
 | [RLYM003](#rlym003) | Error | A `[Message]` type is ref-like. |
@@ -102,7 +102,7 @@ The analyzer checks inline lambdas and anonymous delegates. It does not follow m
 
 ## RLYH001
 
-Generated dispatch must be able to access each handler's message type. Make the message type and any containing types assembly-accessible (for example, `internal` or `public`) and non-file-local. A private nested message type or a file-local type cannot be referenced by generated dispatch; see [handler discovery](../guides/handlers.md#registration-without-scanning).
+Generated `Handler<THandler>()` and `Consume<THandler>()` register every contract on the handler. This error points to a call that selects a concrete handler with an inaccessible message type. To register all contracts, make the message types and their containing types assembly-accessible (for example, `internal` or `public`) and non-file-local. To select one ordinary `IHandler<TMessage>` contract, call [`Handler<THandler, TMessage>()`](../guides/handlers.md#registering-from-a-generic-helper). The typed overload can use a handler with other inaccessible contracts.
 
 ## RLYM001
 

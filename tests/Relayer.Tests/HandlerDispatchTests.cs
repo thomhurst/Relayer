@@ -191,6 +191,40 @@ public class HandlerDispatchTests
     }
 
     [Test]
+    public async Task Typed_registration_selects_an_accessible_contract_on_a_mixed_handler()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(r => r.AddTransport<object, object>("events", b =>
+            b.Consume("orders", c => c.Handler<MixedAccessHandler, int>())));
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var registry = provider.GetRequiredService<HandlerRegistry>();
+        var descriptor = registry.GetHandler<int, MixedAccessHandler>();
+        var handler = (MixedAccessHandler)descriptor.Resolve(scope.ServiceProvider);
+
+        await descriptor.DispatchAsync(handler, 42, new TestContext(scope.ServiceProvider), default);
+
+        await Assert.That(registry.Descriptors.Count).IsEqualTo(1);
+        await Assert.That(handler.Message).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task Generated_registration_through_a_type_parameter_rejects_inaccessible_contracts()
+    {
+        var services = new ServiceCollection();
+
+        await Assert.That(() => services.AddRelayer(r => r.AddTransport<object, object>("events", b =>
+                b.Consume("orders", static c => RegisterAll<MixedAccessHandler>(c)))))
+            .Throws<InvalidOperationException>().WithMessageContaining("HiddenMessage");
+        await Assert.That(services.Any(static descriptor => descriptor.ServiceType == typeof(MixedAccessHandler))).IsFalse();
+
+        static void RegisterAll<THandler>(IConsumerBuilder consumer) where THandler : class, IHandlerMarker
+        {
+            consumer.Handler<THandler>();
+        }
+    }
+
+    [Test]
     public async Task Generic_helper_registration_rejects_tombstone_contracts()
     {
         await Assert.That(() => new ServiceCollection().AddRelayer(r =>
@@ -216,6 +250,27 @@ public class HandlerDispatchTests
     }
 
     public sealed class ScopedDependency;
+
+    private sealed class HiddenMessage;
+
+    public sealed class MixedAccessHandler : IHandler<int>, IHandler<HiddenMessage>
+    {
+        public int Message
+        {
+            get; private set;
+        }
+
+        public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken)
+        {
+            Message = message;
+            return default;
+        }
+
+        ValueTask IHandler<HiddenMessage>.HandleAsync(HiddenMessage message, MessageContext context, CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException("The private contract was not selected.");
+        }
+    }
 
     public sealed class TwoContractHandler : IHandler<int>, IHandler<string>
     {

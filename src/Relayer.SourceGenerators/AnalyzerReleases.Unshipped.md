@@ -4,7 +4,7 @@
 
 Rule ID | Category | Severity | Notes
 --------|----------|----------|-------
-RLYH001 | Relayer | Error | Handler message type must be accessible to generated dispatch
+RLYH001 | Relayer | Error | Generated handler registration requires accessible message contracts
 RLY001 | Relayer | Warning | Message type needs a stable wire identity
 RLY002 | Relayer | Error | Message name and version must be unique
 RLY003 | Relayer | Warning | Handler must be registered
