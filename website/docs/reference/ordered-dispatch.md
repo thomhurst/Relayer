@@ -122,6 +122,9 @@ handler for a full-state `OrderUpdated` event can use PostgreSQL's conditional u
 has a primary key on `(tenant_id, order_id)` and a `last_sequence bigint NOT NULL` column):
 
 ```csharp
+using Npgsql;
+using Relayer;
+
 [Message("order.updated")]
 public sealed record OrderUpdated(string TenantId, string OrderId, string Status);
 

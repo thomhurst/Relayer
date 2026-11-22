@@ -74,7 +74,11 @@ CloudEvents envelopes with the original UUIDv7 ID and stable type are required. 
 ## Complete work atomically
 
 ```csharp
+using Npgsql;
+using Relayer;
+using Relayer.Outbox.PostgreSql;
 using Relayer.Transports;
+
 public sealed class CleanupHandler : IHandler<Cleanup>
 {
     public async ValueTask HandleAsync(Cleanup message, MessageContext context,
