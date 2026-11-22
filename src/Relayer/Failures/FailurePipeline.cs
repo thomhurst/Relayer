@@ -18,7 +18,7 @@ public sealed class FailurePipeline
     private readonly TimeSpan[] _redeliveries;
     private readonly FailureOptions _options;
     private readonly TimeSpan _copyTimeout;
-    private readonly FailureMessageCopyDelegate? _copy;
+    private readonly Func<MessageContext, string, OutgoingMessage>? _copy;
     private readonly IFailureScheduler? _scheduler;
     private readonly TimeProvider _time;
     private readonly RedeliveryPath[] _paths;
@@ -39,12 +39,13 @@ public sealed class FailurePipeline
     public FailurePipeline(IServiceProvider services, string transportName, string source, string consumer,
         FailureOptions? options = null, FailureMessageCopyDelegate? copy = null,
         IFailureScheduler? scheduler = null, TimeProvider? timeProvider = null)
-        : this(services, transportName, source, consumer, false, options, copy, scheduler, timeProvider)
+        : this(services, transportName, source, consumer, false, options,
+            copy is null ? null : (context, _) => copy(context), scheduler, timeProvider)
     {
     }
 
     internal FailurePipeline(IServiceProvider services, string transportName, string source, string consumer,
-        bool nativeRedeliveryOnly, FailureOptions? options, FailureMessageCopyDelegate? copy,
+        bool nativeRedeliveryOnly, FailureOptions? options, Func<MessageContext, string, OutgoingMessage>? copy,
         IFailureScheduler? scheduler, TimeProvider? timeProvider)
     {
         _nativeRedeliveryOnly = nativeRedeliveryOnly;
@@ -312,7 +313,7 @@ public sealed class FailurePipeline
     private async ValueTask CopyAsync(DefaultMessageContext context, string destination, DateTimeOffset? deliverAt,
         KeyValuePair<string, WireString>[] metadata, bool schedule)
     {
-        var original = _copy!(context);
+        var original = _copy!(context, destination);
         var headers = new List<KeyValuePair<string, WireString>>(original.Headers.Length + metadata.Length);
 
         foreach (var header in original.Headers.Span)

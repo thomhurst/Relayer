@@ -24,10 +24,10 @@ public class RabbitMqConformanceTests
     [Arguments(TransportConformanceCase.SendDuringOutage)]
     public async Task RabbitMQ_passes(TransportConformanceCase scenario)
     {
+        // These two scenarios stop the broker.
+        var dedicated = scenario is TransportConformanceCase.Reconnect or TransportConformanceCase.SendDuringOutage;
         var suite = new TransportConformanceSuite<RabbitMqDelivery, RabbitMqMessageBinding>(
-            // These two stop the broker.
-            (tracing, token) => RabbitMqFixture.CreateAsync(tracing, token,
-                scenario is TransportConformanceCase.Reconnect or TransportConformanceCase.SendDuringOutage), TimeSpan.FromMinutes(3));
+            (tracing, token) => RabbitMqFixture.CreateAsync(tracing, token, dedicated), TimeSpan.FromMinutes(3));
         var result = await suite.RunAsync(scenario);
         await Assert.That(result.Skipped).IsEqualTo(scenario is TransportConformanceCase.DeadLetter or TransportConformanceCase.Delay
             or TransportConformanceCase.RedeliveryDelay or TransportConformanceCase.OrderingByKey);
