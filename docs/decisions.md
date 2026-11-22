@@ -234,6 +234,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 - One request is allowed per attempt; another request throws. Immediate retries and pooled deliveries start with no request.
 - `Retry(delay)` requests a new delivery with the exact delay, without jitter or the exception policy's in-process retries. It uses native redelivery, scheduled copy, then durable scheduler in capability order. Unsupported runtime delays fail at the request call. `Retry` and `DeadLetter` discard buffered direct sends; applications remain responsible for transactional rollback and native side effects.
 - Batch requests are per item. Reported failures override the corresponding requests, and a thrown batch exception overrides all requests. Mixed completing/non-completing outcomes with shared buffered sends fail the entire attempt because sends cannot be attributed to individual items.
+- A half-open circuit probe that requests `Retry` reopens the circuit once settlement finishes. The circuit waits another break duration before offering a probe.
 - Manual outcomes preserve prior exception history without creating a fictitious exception. A dead-letter copy carries the reason in `FailureHeaders.DeadLetterReason` (`relayer.dead_letter.reason`).
 - Native extras, such as ASB `Defer`, are reached through the transport feature.
 

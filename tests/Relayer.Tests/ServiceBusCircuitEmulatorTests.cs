@@ -11,16 +11,19 @@ namespace Relayer.Tests;
 public sealed class ServiceBusCircuitEmulatorTests
 {
     [Test]
-    public async Task Queue_and_session_failures_reopen_and_redeliver_without_failure_pipeline_dead_lettering()
+    public async Task Queue_and_session_probe_failures_and_retry_requests_reopen_the_circuit()
     {
-        await using var broker = await ServiceBusReceiveBroker.StartAsync(["circuit-queue"], ["circuit-session"]);
+        var isolation = TestContext.Current!.Isolation;
+        var queueName = isolation.GetIsolatedName("circuit-queue");
+        var sessionQueueName = isolation.GetIsolatedName("circuit-session");
+        await using var broker = await ServiceBusReceiveBroker.StartAsync([queueName], [sessionQueueName]);
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(4));
         var token = deadline.Token;
         await using var client = new ServiceBusClient(broker.ConnectionString);
 
         foreach (var sessions in new[] { false, true })
         {
-            var queue = sessions ? "circuit-session" : "circuit-queue";
+            var queue = sessions ? sessionQueueName : queueName;
             var clock = new ConsumerCircuitTests.Clock();
             var control = new Control();
             var services = new ServiceCollection();
@@ -91,10 +94,15 @@ public sealed class ServiceBusCircuitEmulatorTests
             await Assert.That(await states.Reader.ReadAsync(token)).IsEqualTo(1);
             clock.Recovery.Fire();
             await Assert.That(await states.Reader.ReadAsync(token)).IsEqualTo(2);
+            var retryingProbe = await control.Deliveries.Reader.ReadAsync(token);
+            await Assert.That(await states.Reader.ReadAsync(token)).IsEqualTo(1);
+            clock.Recovery.Fire();
+            await Assert.That(await states.Reader.ReadAsync(token)).IsEqualTo(2);
             var healthyProbe = await control.Deliveries.Reader.ReadAsync(token);
             await Assert.That(await states.Reader.ReadAsync(token)).IsEqualTo(0);
             await Assert.That(failedProbe > first).IsTrue();
-            await Assert.That(healthyProbe > failedProbe).IsTrue();
+            await Assert.That(retryingProbe > failedProbe).IsTrue();
+            await Assert.That(healthyProbe > retryingProbe).IsTrue();
             await ServiceBusReceiveTests.Stop(provider, token);
             await using var deadLetters = client.CreateReceiver(queue, new ServiceBusReceiverOptions { SubQueue = SubQueue.DeadLetter });
             await Assert.That(await deadLetters.PeekMessageAsync(cancellationToken: token)).IsNull();
@@ -125,8 +133,19 @@ public sealed class ServiceBusCircuitEmulatorTests
             }
 
             control.Deliveries.Writer.TryWrite(native.DeliveryCount);
-            return Interlocked.Increment(ref control.Calls) <= 2
-                ? ValueTask.FromException(new InvalidOperationException("dependency unavailable")) : ValueTask.CompletedTask;
+            var call = Interlocked.Increment(ref control.Calls);
+
+            if (call <= 2)
+            {
+                return ValueTask.FromException(new InvalidOperationException("dependency unavailable"));
+            }
+
+            if (call == 3)
+            {
+                context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.Zero);
+            }
+
+            return ValueTask.CompletedTask;
         }
     }
 }

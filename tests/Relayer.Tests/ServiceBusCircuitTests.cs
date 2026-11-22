@@ -230,6 +230,75 @@ public sealed class ServiceBusCircuitTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Probe_must_complete_without_requesting_redelivery_to_restore_admission(bool retryProbe)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var token = deadline.Token;
+        var clock = new ConsumerCircuitTests.Clock();
+        var client = new ServiceBusReceiveTests.NativeClient();
+        await using var provider = ServiceBusReceiveTests.Provider(client, consumer =>
+        {
+            consumer.Failures(FailureOptions.None);
+            consumer.Options.CircuitBreaker = new()
+            {
+                MinimumThroughput = 1
+            };
+        }, time: clock);
+        var control = provider.GetRequiredService<ServiceBusReceiveTests.Control>();
+        control.Handle = (_, _, _) => ValueTask.FromException(new InvalidOperationException("offline"));
+        await ServiceBusReceiveTests.Start(provider, token);
+        var processor = client.Processors.Single();
+        await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("start");
+        await processor.Emit(ServiceBusReceiveTests.Args(new()));
+        await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("stop");
+        clock.Recovery.Fire();
+        await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("start");
+
+        control.Handle = (_, context, _) =>
+        {
+            var settlement = context.Features.GetRequired<ISettlementFeature>();
+
+            if (retryProbe)
+            {
+                settlement.Retry(TimeSpan.Zero);
+            }
+            else
+            {
+                settlement.Complete();
+            }
+
+            return ValueTask.CompletedTask;
+        };
+        var probe = new ServiceBusReceiveTests.NativeReceiver();
+        await processor.Emit(ServiceBusReceiveTests.Args(probe));
+        await Assert.That(probe.Operations.Single()).IsEqualTo(retryProbe ? "abandon" : "complete");
+
+        var calls = 0;
+        control.Handle = (_, _, _) =>
+        {
+            calls++;
+            return ValueTask.CompletedTask;
+        };
+        var next = new ServiceBusReceiveTests.NativeReceiver();
+        await processor.Emit(ServiceBusReceiveTests.Args(next));
+        await Assert.That(calls).IsEqualTo(retryProbe ? 0 : 1);
+
+        if (retryProbe)
+        {
+            await Assert.That(next.Operations).IsEmpty();
+            await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("stop");
+            clock.Recovery.Fire();
+            await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("start");
+            await processor.Emit(ServiceBusReceiveTests.Args(next));
+        }
+
+        await Assert.That(next.Operations.Single()).IsEqualTo("complete");
+        await ServiceBusReceiveTests.Stop(provider, token);
+    }
+
+    [Test]
     public async Task In_process_retries_count_once_and_a_success_can_cross_the_sampling_threshold()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
