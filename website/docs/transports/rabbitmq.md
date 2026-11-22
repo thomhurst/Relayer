@@ -197,9 +197,12 @@ flag is exposed unchanged and is never treated as a delivery counter. Native del
 Graceful stop waits for native cancel-ok and active callbacks before closing their settlement channel. The host's
 stop deadline cancels processing. Unexpected callback failure reaches the hosted service and leaves uncertain
 work unacknowledged. A connection outage that prevents acknowledgement leaves the delivery for native
-redelivery without terminating the host when automatic recovery is enabled. Channel protocol errors and
-other unrecoverable native callback errors still fault the receiver. Failed poison copies on an open consumer channel use the backoff and requeue policy above. When native automatic recovery is disabled, an unexpected
-connection shutdown faults the receiver and reaches the hosted service even when no handler is active.
+redelivery without terminating the host when both `ConnectionFactory.AutomaticRecoveryEnabled` and
+`ConnectionFactory.TopologyRecoveryEnabled` are true. RabbitMQ.Client restores subscriptions as part of
+topology recovery. With either setting disabled, an unexpected connection shutdown faults the receiver
+and reaches the hosted service even when no handler is active. Enable both settings for consumers that
+must resume after an outage. Channel protocol errors and other unrecoverable native callback errors still
+fault the receiver. Failed poison copies on an open consumer channel use the backoff and requeue policy above.
 Normal host shutdown does not fault completion. When cancellation forces the consumer channel to close before a delivery can be acknowledged, RabbitMQ requeues the unacknowledged delivery. Cancellation of that callback or an acknowledgement interrupted by the channel’s normal close does not fault consumer completion. Automatic recovery remains owned by RabbitMQ.Client.
 
 Process and settle destinations are the consumed queue, with names `process {queue}`, `ack {queue}` and

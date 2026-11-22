@@ -16,6 +16,7 @@ internal sealed partial class RabbitMqConsumer
     private readonly RabbitMqReceiveEndpoint _endpoint;
     private readonly TimeProvider _clock;
     private readonly bool _automaticRecovery;
+    private readonly bool _topologyRecovery;
     private readonly long[] _active;
     private CancellationTokenSource _abort = new();
     private IChannel? _channel;
@@ -59,6 +60,7 @@ internal sealed partial class RabbitMqConsumer
         _endpoint = new(tracing, declaration.Source, factory?.HostName, factory?.Port);
         _clock = clock ?? TimeProvider.System;
         _automaticRecovery = factory?.AutomaticRecoveryEnabled ?? true;
+        _topologyRecovery = factory?.TopologyRecoveryEnabled ?? true;
         _active = new long[declaration.Concurrency];
     }
 
@@ -134,13 +136,14 @@ internal sealed partial class RabbitMqConsumer
     private Task ConnectionShutdownAsync(object sender, ShutdownEventArgs reason)
     {
         Volatile.Write(ref _connectionShutdown, reason);
-        // Without native recovery there may never be another callback to report this failure.
+        // Without native subscription recovery there may never be another callback to report this failure.
         // StopAsync marks intentional shutdown before closing any native resources.
-        if (!_automaticRecovery && Volatile.Read(ref _stopping) == 0)
+        if ((!_automaticRecovery || !_topologyRecovery) && Volatile.Read(ref _stopping) == 0)
         {
-            var error = new AlreadyClosedException(reason);
-            Volatile.Write(ref _failure, error);
-            _completion.TrySetException(error);
+            var closed = new AlreadyClosedException(reason);
+            Exception failure = _automaticRecovery ? CreateTopologyRecoveryDisabledException(closed) : closed;
+            Volatile.Write(ref _failure, failure);
+            _completion.TrySetException(failure);
         }
 
         return Task.CompletedTask;
@@ -159,19 +162,33 @@ internal sealed partial class RabbitMqConsumer
         {
             return Task.CompletedTask;
         }
-        // The native recoverable connection owns redelivery after a connection outage. Keep
-        // its shutdown reason even after recovery so a delayed callback cannot fault the host.
+        // The native client restores subscriptions and redelivers after an outage only with both recovery
+        // settings enabled. Keep its shutdown reason even after recovery so a delayed callback cannot fault the host.
         // Errors that escape processing recovery (including a closed consumer channel) remain terminal.
-        if (_automaticRecovery && args.Exception is AlreadyClosedException error &&
+        var failure = args.Exception;
+
+        if (_automaticRecovery && failure is AlreadyClosedException error &&
             error.ShutdownReason is { Initiator: not ShutdownInitiator.Application, ReplyCode: not 403 } reason &&
             (ReferenceEquals(reason, _connection?.CloseReason) || ReferenceEquals(reason, Volatile.Read(ref _connectionShutdown))))
         {
-            return Task.CompletedTask;
+            if (_topologyRecovery)
+            {
+                return Task.CompletedTask;
+            }
+
+            failure = CreateTopologyRecoveryDisabledException(error);
         }
 
-        Volatile.Write(ref _failure, args.Exception);
-        _completion.TrySetException(args.Exception);
+        Volatile.Write(ref _failure, failure);
+        _completion.TrySetException(failure);
         return Task.CompletedTask;
+    }
+
+    private InvalidOperationException CreateTopologyRecoveryDisabledException(AlreadyClosedException error)
+    {
+        return new InvalidOperationException(
+            $"RabbitMQ consumer '{Declaration.Source}' lost its connection. Set ConnectionFactory.TopologyRecoveryEnabled to true to restore the subscription after an outage.",
+            error);
     }
 
     private Task CancelledAsync(object sender, ConsumerEventArgs args)

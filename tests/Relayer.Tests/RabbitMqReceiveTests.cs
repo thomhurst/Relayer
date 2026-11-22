@@ -576,18 +576,55 @@ public class RabbitMqReceiveTests
     }
 
     [Test]
-    public async Task Normal_stop_with_native_recovery_disabled_completes_successfully()
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    public async Task Normal_stop_without_native_subscription_recovery_completes_successfully(bool automaticRecovery, bool topologyRecovery)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
         var factory = broker.Factory();
-        factory.AutomaticRecoveryEnabled = false;
+        factory.AutomaticRecoveryEnabled = automaticRecovery;
+        factory.TopologyRecoveryEnabled = topologyRecovery;
         using var host = Host(factory, new());
         await host.StartAsync(token);
         var consumer = ((RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>()).Consumers.Single();
         await host.StopAsync(token);
         await Assert.That(consumer.Completion.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    public async Task Idle_connection_shutdown_faults_the_host_when_topology_recovery_is_disabled()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token, dedicated: true);
+        var factory = broker.Factory();
+        factory.AutomaticRecoveryEnabled = true;
+        factory.TopologyRecoveryEnabled = false;
+        var control = new RabbitMqReceiveControl();
+        using var host = Host(factory, control);
+        await host.StartAsync(token);
+        var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
+        var consumer = transport.Consumers.Single();
+
+        await transport.SendAsync(new("orders", "{\"Value\":1}"u8.ToArray(), Headers()), token);
+        await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(1);
+        await WaitAsync(() => Task.FromResult(consumer.GetHealthState()?.IsIdle == true), token);
+        await broker.CommandAsync(["rabbitmqctl", "stop_app"], token);
+
+        var failure = await Assert.That(async () => await consumer.Completion.WaitAsync(TimeSpan.FromSeconds(10), token))
+            .Throws<InvalidOperationException>();
+        await Assert.That(failure!.Message).Contains("orders");
+        await Assert.That(failure.Message).Contains("ConnectionFactory.TopologyRecoveryEnabled");
+        await Assert.That(failure.InnerException).IsTypeOf<AlreadyClosedException>();
+        await WaitAsync(() => Task.FromResult(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested), token);
+
+#if NET11_0_OR_GREATER
+        await Assert.That(async () => await host.StopAsync(token)).Throws<InvalidOperationException>();
+#else
+        await host.StopAsync(token);
+#endif
     }
 
     [Test]
