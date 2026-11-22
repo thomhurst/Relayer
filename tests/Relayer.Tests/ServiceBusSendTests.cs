@@ -391,14 +391,37 @@ public class ServiceBusSendTests
     }
 
     [Test]
-    public async Task Route_callback_on_another_transport_fails_validation()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Route_callback_on_another_transport_fails_validation(bool selector)
     {
         var services = new ServiceCollection();
-        services.AddRelayer(builder => builder.InMemory("memory", memory =>
-            memory.Send<First>("orders", route => route.ServiceBus(static (_, native) => native.TimeToLive = TimeSpan.FromMinutes(1)))));
-        await using var provider = services.BuildServiceProvider();
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("memory", memory =>
+            {
+                static void Configure(RouteBuilder<First> route)
+                {
+                    route.ServiceBus(static (_, native) => native.TimeToLive = TimeSpan.FromMinutes(1));
+                }
 
-        await Assert.That(() => provider.GetRequiredService<RelayerConfigurationValidator>().Validate())
+                if (selector)
+                {
+                    memory.Send<First>(["orders", "other"], static _ => "orders", Configure);
+                }
+                else
+                {
+                    memory.Send<First>("orders", Configure);
+                }
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        await Assert.That(() => scope.ServiceProvider.GetRequiredService<ISender>())
+            .Throws<OptionsValidationException>().WithMessageContaining("native callback is for a different transport (ServiceBusTransportOptions)");
+        await Assert.That(async () => await provider.GetRequiredService<RelayerConfigurationValidator>().ValidateAsync())
             .Throws<OptionsValidationException>().WithMessageContaining("native callback is for a different transport (ServiceBusTransportOptions)");
     }
 

@@ -36,7 +36,7 @@ internal sealed class EndpointCapabilityValidator
         }
     }
 
-    internal void Validate(TransportDefinition definition, bool deferInitialization = false)
+    internal async ValueTask ValidateAsync(TransportDefinition definition, bool deferInitialization)
     {
         // Configuration-only applications can inspect declarations without installing native adapters.
         if (!_hasRuntimeTransports || string.IsNullOrWhiteSpace(definition.Name))
@@ -66,7 +66,10 @@ internal sealed class EndpointCapabilityValidator
 
             if (capabilities is not null && route is ISendRouteDefinition send && _outbox is not null)
             {
-                SendCapabilityValidator.Validate(send.SendOptions, capabilities, route.HasOrderingKey, _outbox,
+                var executor = SendCapabilityValidator.NeedsOutbox(send.SendOptions, capabilities)
+                    ? await _outbox.GetAsync().ConfigureAwait(false)
+                    : null;
+                SendCapabilityValidator.Validate(send.SendOptions, capabilities, route.HasOrderingKey, executor,
                     $"Route for '{route.MessageType}' to '{route.Destination}' on transport '{definition.Name}'", _failures);
             }
 

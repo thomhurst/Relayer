@@ -127,8 +127,10 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
         for (var i = 0; i < destinations.Length; i++)
         {
             var destination = destinations[i];
-            capabilities[i] = capabilitiesCache.GetCapabilities(transport, destination);
-            SendCapabilityValidator.Validate(options, capabilities[i], orderingKey is not null, outbox,
+            var capability = capabilitiesCache.GetCapabilities(transport, destination);
+            capabilities[i] = capability;
+            var executor = SendCapabilityValidator.NeedsOutbox(options, capability) ? outbox.Get() : null;
+            SendCapabilityValidator.Validate(options, capability, orderingKey is not null, executor,
                 $"Send route '{messageType}' on transport '{transportName}' to endpoint '{destination}'", failures);
 
             if (orderingKey is not null && !capabilities[i].OrderedByKey)
@@ -206,7 +208,15 @@ internal sealed class SendPipeline
                     throw new InvalidOperationException($"Route for '{definition.MessageType}' on transport '{transport.Name}': a message type can have only one route to each destination; '{definition.Destination}' is declared more than once.");
                 }
 
-                if (((ISendRouteDefinition)definition).CreateSendRegistration(transport.Name) is not { } registration)
+                var send = (ISendRouteDefinition)definition;
+
+                if (SendCapabilityValidator.GetNativeCallbackError(send, transport.OptionsType) is { } callbackError)
+                {
+                    throw new OptionsValidationException(Options.DefaultName, typeof(SendRouteOptions),
+                        [$"Route for '{definition.MessageType}' on transport '{transport.Name}': {callbackError}"]);
+                }
+
+                if (send.CreateSendRegistration(transport.Name) is not { } registration)
                 {
                     continue;
                 }

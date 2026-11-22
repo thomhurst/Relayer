@@ -12,20 +12,7 @@ public class TransportCapabilityInitializationTests
     public async Task Native_capabilities_finish_before_validation_and_route_composition_even_with_concurrent_startup(bool concurrent)
     {
         var transport = new InitializingTransport();
-        using var host = new HostBuilder().ConfigureServices(services =>
-        {
-            services.Configure<HostOptions>(options => options.ServicesStartConcurrently = concurrent);
-            services.AddSingleton<ITransport>(transport);
-            services.AddRelayer(builder =>
-            {
-                builder.AddMessageTypesFromThisAssembly();
-                builder.AddTransport<Options, Options>("native", native =>
-                {
-                    native.TopologyMode = TopologyMode.None;
-                    native.Send<Sample>("orders", route => route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromMinutes(1) });
-                });
-            });
-        }).Build();
+        using var host = CreateHost(transport, concurrent);
         await using var lifetime = (IAsyncDisposable)host;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var starting = host.StartAsync(timeout.Token);
@@ -48,6 +35,48 @@ public class TransportCapabilityInitializationTests
         using var scope = host.Services.CreateScope();
         await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Sample(), cancellationToken: timeout.Token);
         await host.StopAsync(timeout.Token);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task The_same_host_can_retry_after_capability_initialization_is_cancelled(bool concurrent)
+    {
+        var transport = new InitializingTransport();
+        using var host = CreateHost(transport, concurrent);
+        await using var lifetime = (IAsyncDisposable)host;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cancelStart = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var starting = host.StartAsync(cancelStart.Token);
+        await transport.Entered.Task.WaitAsync(timeout.Token);
+        await cancelStart.CancelAsync();
+        await Assert.That(async () => await starting.WaitAsync(timeout.Token)).Throws<OperationCanceledException>();
+        await Assert.That(transport.Initializations).IsEqualTo(1);
+        await Assert.That(transport.Lookups).IsEqualTo(0);
+
+        transport.Release.TrySetResult();
+        await host.StartAsync(timeout.Token);
+        await Assert.That(transport.Initializations).IsEqualTo(2);
+        await Assert.That(transport.Lookups).IsEqualTo(1);
+        await host.StopAsync(timeout.Token);
+    }
+
+    private static IHost CreateHost(InitializingTransport transport, bool concurrent)
+    {
+        return new HostBuilder().ConfigureServices(services =>
+        {
+            services.Configure<HostOptions>(options => options.ServicesStartConcurrently = concurrent);
+            services.AddSingleton<ITransport>(transport);
+            services.AddRelayer(builder =>
+            {
+                builder.AddMessageTypesFromThisAssembly();
+                builder.AddTransport<Options, Options>("native", native =>
+                {
+                    native.TopologyMode = TopologyMode.None;
+                    native.Send<Sample>("orders", route => route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromMinutes(1) });
+                });
+            });
+        }).Build();
     }
 
     public sealed class Options;

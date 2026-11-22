@@ -11,19 +11,28 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
 {
     private readonly object _initialization = new();
     private Task? _capabilityInitialization;
+    private CancellationToken _capabilityInitializationToken;
 
     internal Task InitializeCapabilitiesAsync(CancellationToken cancellationToken)
     {
-        // Shared by StartingAsync callbacks, including concurrent host startup. Cache failure as well as success.
+        // Share one attempt across StartingAsync callbacks. Retry cancellation on a new host start.
         lock (_initialization)
         {
-            return _capabilityInitialization ??= InitializeCapabilitiesCoreAsync(cancellationToken);
+            if (_capabilityInitialization is null ||
+                (_capabilityInitialization.IsCanceled && _capabilityInitializationToken != cancellationToken &&
+                 !cancellationToken.IsCancellationRequested))
+            {
+                _capabilityInitializationToken = cancellationToken;
+                _capabilityInitialization = InitializeCapabilitiesCoreAsync(cancellationToken);
+            }
+
+            return _capabilityInitialization;
         }
     }
 
     private async Task InitializeCapabilitiesCoreAsync(CancellationToken cancellationToken)
     {
-        Validate(deferCapabilityInitialization: true);
+        await ValidateAsync(deferCapabilityInitialization: true).ConfigureAwait(false);
         var adapters = services.GetServices<ITransport>().ToDictionary(transport => transport.Name, StringComparer.Ordinal);
 
         foreach (var declaration in configuration.Transports)
@@ -33,9 +42,11 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
                 await initializer.InitializeCapabilitiesAsync(declaration.TopologyMode ?? configuration.TopologyMode, cancellationToken).ConfigureAwait(false);
             }
         }
+
+        await ValidateAsync().ConfigureAwait(false);
     }
 
-    public void Validate(bool deferCapabilityInitialization = false)
+    internal async ValueTask ValidateAsync(bool deferCapabilityInitialization = false)
     {
         var failures = new List<string>();
 
@@ -88,9 +99,9 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
                 {
                     send.SendOptions.Validate(location, failures);
 
-                    if (send.NativeTransportOptionsType is { } native && native != transport.OptionsType)
+                    if (SendCapabilityValidator.GetNativeCallbackError(send, transport.OptionsType) is { } callbackError)
                     {
-                        failures.Add($"{location}: the route's native callback is for a different transport ({native.Name}); declare it only on routes of that transport.");
+                        failures.Add($"{location}: {callbackError}");
                     }
                 }
             }
@@ -137,7 +148,7 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
 
             foreach (var transport in configuration.Transports)
             {
-                capabilities.Validate(transport, deferCapabilityInitialization);
+                await capabilities.ValidateAsync(transport, deferCapabilityInitialization).ConfigureAwait(false);
             }
         }
         catch (OptionsValidationException error)
