@@ -109,6 +109,10 @@ Do not infer delivery from aggregate exceptions or cancellation.
 For example, the declaration seam and runtime adapter registration can be composed as follows:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+using Relayer.Transports;
+
 services.AddSingleton<ITransport>(myTransport); // Name == "events"
 services.AddRelayer(relayer =>
 {
