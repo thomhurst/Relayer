@@ -1,3 +1,6 @@
 # Shell scripts run on Linux CI runners and must keep LF endings.
 *.sh text eol=lf
 *.ps1 text eol=lf
+
+# Match the C# line endings required by .editorconfig.
+*.cs text eol=lf
