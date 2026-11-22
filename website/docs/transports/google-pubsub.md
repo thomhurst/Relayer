@@ -114,6 +114,8 @@ Relayer emits `gcp_pubsub` process/send spans and an `ack` settlement span when 
 
 Topic declarations check existence. Subscription declarations support pull delivery, topic, acknowledgement deadline, ordering, exactly-once delivery, filter, native dead-letter/retry policies, retention, expiration and labels. Native subscription messages are passed unchanged to creation. Nondefault unsupported fields, including push/export delivery, fail startup. Unspecified acknowledgement deadline, retention and expiration accept service defaults; declared values are checked. Extra labels on existing subscriptions are preserved.
 
+When a native policy is declared, `Validate` and `Provision` compare its effective settings. Pub/Sub defaults an omitted retry minimum to 10 seconds, an omitted retry maximum to 600 seconds, and zero or omitted dead-letter attempts to 5. Explicit backoffs, including zero seconds, and explicit nonzero delivery attempts still affect the comparison. Omitting a whole policy checks that the corresponding policy is absent.
+
 ## Native AOT and emulator validation
 
 The adapter and generated JSON/handler path are Native AOT tested. Google's convenience builders still retain reflection and authentication dependencies that fail strict AOT publication ([upstream #13328](https://github.com/googleapis/google-cloud-dotnet/issues/13328)). Prepare native API clients through Google's public constructors over an application-owned managed gRPC channel instead. For the emulator:

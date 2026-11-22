@@ -84,7 +84,7 @@ The original native message exposes its connection. Delivery objects are borrowe
 
 ## Topology modes
 
-`None` makes no topology requests. `Validate` reads stream/consumer information only. Name-only declarations check existence. With `Configuration`, validation compares native generated JSON settings, normalizes JetStream scalar defaults and unordered subject sets, and ignores server-owned `_nats.*` metadata. Differences identify the entity, setting and expected/actual values. Validation never publishes probes or changes settings.
+`None` makes no topology requests. `Validate` reads stream/consumer information only. Name-only declarations check existence. With `Configuration`, validation compares native generated JSON settings, normalizes JetStream scalar defaults and unordered subject sets, and ignores server-owned `_nats.*` metadata. For a stream without a mirror or sources, omitting subjects is equivalent to declaring the stream name as its only subject. A mirror or sourced stream with no subjects keeps its empty subject set. Differences identify the entity, setting and expected/actual values. Validation never publishes probes or changes settings.
 
 `Provision` calls native create-only APIs with the supplied `StreamConfig`/`ConsumerConfig`. The server checks existing entities for equivalence. Relayer never updates, deletes or purges entities; reconcile conflicts externally. Names and optional `DurableName` must match the declaration.
 
