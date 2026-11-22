@@ -2,6 +2,7 @@ using System.Globalization;
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Relayer.Transports;
 
@@ -251,7 +252,8 @@ internal sealed class KafkaDeadLetterManager : IDeadLetterManager
 
     private ConsumerBuilder<byte[], byte[]> ReaderBuilder()
     {
-        var builder = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(_options.BootstrapServers.ToArray());
+        var builder = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(_options.BootstrapServers.ToArray())
+            .WithIsolationLevel(IsolationLevel.ReadCommitted);
         _options.ConfigureConsumer?.Invoke(builder);
         return builder.WithKeyDeserializer(Serializers.ByteArray).WithValueDeserializer(Serializers.ByteArray)
             .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false)
