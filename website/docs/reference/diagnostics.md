@@ -37,6 +37,8 @@ The code fix adds `[global::Relayer.MessageAttribute("OrderPlaced")]` to the mes
 
 Alternatively, call `builder.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed")`. RLY001 recognizes calls to Relayer's `MessageTypeRegistry.Add<T>` anywhere in the current compilation, including after the route or handler use. The registration covers that exact type and its `Tombstone<T>` wrapper; registering one closed generic type does not cover other instantiations. Calls hidden inside a referenced assembly or generic helper are not inferred; mark the helper instead, as below. The analyzer does not prove that a visible registration executes; startup validation remains authoritative.
 
+For a generic handler whose message is nested in a generic type, such as `IHandler<Outer<T>.Message>`, RLY001 checks the closed message when you register the concrete handler. For example, `consumer.Handler<OuterHandler<int>>()` can use an identity registered with `builder.Infrastructure().MessageTypes.Add<Outer<int>.Message>("orders")`.
+
 When a helper registers the identity, for example a shared messaging library that registers it together with the route, mark the helper's type parameter with `[RegistersMessageIdentity]`. Each call with a concrete type argument then counts as a registration, including calls to a helper in a referenced assembly:
 
 ```csharp
