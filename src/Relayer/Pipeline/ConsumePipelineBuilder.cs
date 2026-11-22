@@ -22,6 +22,7 @@ public sealed class ConsumePipelineBuilder
     private bool _built;
     private EndpointTelemetry? _telemetry;
     private ConsumeDelegate? _settlement;
+    private Action<Disposition>? _validateSettlementRequest;
     private ConsumeTracing? _tracing;
 
     /// <summary>Builds a homogeneous batch consumer using its existing size, wait and concurrency declaration.</summary>
@@ -96,7 +97,8 @@ public sealed class ConsumePipelineBuilder
         }
 
         return new ConsumePipeline(_scopes, identities.ToFrozenDictionary(), [], _failure, _classifier,
-            checked(consumer.BatchSize * consumer.Concurrency), _failures, null, _settlement, _tracing)
+            checked(consumer.BatchSize * consumer.Concurrency), _failures, null, _settlement, _tracing,
+            validateSettlementRequest: _validateSettlementRequest)
         {
             BatchExecution = new BatchExecution(_scopes, batch, identity, consumer, _failure, _classifier, _failures, activitySource, _tracing,
                 additional.Count == 0 ? null : additional.ToFrozenSet())
@@ -262,9 +264,15 @@ public sealed class ConsumePipelineBuilder
     /// </remarks>
     public ConsumePipelineBuilder Settle(ConsumeDelegate settlement)
     {
+        return Settle(settlement, validateRequest: null);
+    }
+
+    internal ConsumePipelineBuilder Settle(ConsumeDelegate settlement, Action<Disposition>? validateRequest)
+    {
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(settlement);
         _settlement = settlement;
+        _validateSettlementRequest = validateRequest;
         return this;
     }
 
@@ -312,7 +320,7 @@ public sealed class ConsumePipelineBuilder
 
         _built = true;
         return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier,
-            contextPoolCapacity, _failures, _telemetry, _settlement, _tracing, SingletonHandlerServices());
+            contextPoolCapacity, _failures, _telemetry, _settlement, _tracing, SingletonHandlerServices(), _validateSettlementRequest);
     }
 
     // The final registration of a service wins, matching how the container resolves it. Applications that

@@ -260,15 +260,19 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         native.Disposition = Disposition.SettledByHandler;
     }
 
-    [RuntimeAsyncMethodGeneration(false)]
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    internal async ValueTask SettleAsync(PostgreSqlLocalDelivery delivery, Disposition disposition, CancellationToken cancellationToken)
+    internal static void ValidateSettlement(Disposition disposition)
     {
         if (disposition.Kind != DispositionKind.Complete)
         {
             throw new NotSupportedException("Local work uses the consumer's outbox retry and poison policy; native settlement overrides are unsupported.");
         }
+    }
 
+    [RuntimeAsyncMethodGeneration(false)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask SettleAsync(PostgreSqlLocalDelivery delivery, Disposition disposition, CancellationToken cancellationToken)
+    {
+        ValidateSettlement(disposition);
         using var activity = _settlementTracing?.GetValueOrDefault(delivery.Message.Destination)?.Start(default);
 
         try

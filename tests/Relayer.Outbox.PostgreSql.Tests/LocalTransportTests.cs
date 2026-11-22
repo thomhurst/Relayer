@@ -93,6 +93,62 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     }
 
     [Test]
+    [Arguments(DispositionKind.Redeliver)]
+    [Arguments(DispositionKind.DeadLetter)]
+    public async Task Unsupported_settlement_throws_in_handler_and_allows_completion(DispositionKind kind)
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var caughtInHandler = false;
+        await using var provider = Provider(source, afterWrite: context =>
+        {
+            var settlement = context.Features.GetRequired<ISettlementFeature>();
+
+            try
+            {
+                if (kind == DispositionKind.Redeliver)
+                {
+                    settlement.Retry(TimeSpan.FromSeconds(1));
+                }
+                else
+                {
+                    settlement.DeadLetter("Rejected");
+                }
+            }
+            catch (NotSupportedException)
+            {
+                caughtInHandler = true;
+                settlement.Complete();
+            }
+        });
+
+        foreach (var starter in provider.GetServices<IHostedService>())
+        {
+            if (starter is not PostgreSqlDirectDispatcher)
+            {
+                await starter.StartAsync(default);
+            }
+        }
+
+        var transport = provider.GetServices<ITransport>().Single();
+        await Enqueue(provider, source, new(7), commit: true);
+        await Attempt(null, source, transport, provider);
+
+        await Assert.That(caughtInHandler).IsTrue();
+        await Assert.That(await Count(source, "local_business")).IsEqualTo(1L);
+        await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task Idle_maintenance_stops_without_waiting_for_sweep_interval()
     {
         await using var database = server.CreateDatabase();
@@ -958,7 +1014,8 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     }
 
     internal static ServiceProvider Provider(NpgsqlDataSource source, bool ordered = false, bool directHandoff = false, int maxAttempts = 1, FailureAction? failureAction = null,
-        Action<PostgreSqlLocalConsumerOptions>? consumerOptions = null, ILoggerProvider? logs = null, int concurrency = 1)
+        Action<PostgreSqlLocalConsumerOptions>? consumerOptions = null, ILoggerProvider? logs = null, int concurrency = 1,
+        Action<MessageContext>? afterWrite = null)
     {
         var services = new ServiceCollection().AddLogging(logging =>
         {
@@ -972,6 +1029,11 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         services.AddSingleton(source);
         services.AddScoped<FailingCleanup>();
         services.AddSingleton<LocalAtLeastOnceTests.Probe>();
+
+        if (afterWrite is not null)
+        {
+            services.AddSingleton(afterWrite);
+        }
 
         if (failureAction is { } action)
         {
@@ -1090,7 +1152,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     [Message("local.work")]
     public sealed record LocalWork(int Value);
 
-    public sealed class LocalHandler(NpgsqlDataSource source, ISender sender) : IHandler<LocalWork>
+    public sealed class LocalHandler(NpgsqlDataSource source, ISender sender, Action<MessageContext>? afterWrite = null) : IHandler<LocalWork>
     {
         public async ValueTask HandleAsync(LocalWork message, MessageContext context, CancellationToken cancellationToken)
         {
@@ -1105,6 +1167,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             await using var command = new NpgsqlCommand("INSERT INTO local_business VALUES (@value)", own ?? delivery.Transaction.Connection, delivery.OpenTransaction);
             command.Parameters.AddWithValue("value", message.Value);
             await command.ExecuteNonQueryAsync(context.CancellationToken);
+            afterWrite?.Invoke(context);
 
             if (message.Value is 10 or -10 or -11)
             {

@@ -77,6 +77,7 @@ public sealed partial class ConsumePipeline
     private readonly WireIdentity[] _wireIdentities;
     private readonly EndpointTelemetry? _telemetry;
     private readonly ConsumeDelegate? _settlement;
+    private readonly Action<Disposition>? _validateSettlementRequest;
     private readonly ConsumeTracing? _tracing;
     private readonly ILogger? _logger;
 
@@ -117,7 +118,7 @@ public sealed partial class ConsumePipeline
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
         IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier,
         int capacity, FailurePipeline? failures, EndpointTelemetry? telemetry, ConsumeDelegate? settlement, ConsumeTracing? tracing,
-        IServiceProvider? singletonHandlerServices = null)
+        IServiceProvider? singletonHandlerServices = null, Action<Disposition>? validateSettlementRequest = null)
     {
         _scopes = scopes;
 
@@ -137,6 +138,7 @@ public sealed partial class ConsumePipeline
         _classifier = classifier;
         _telemetry = telemetry;
         _settlement = settlement is not null && Observer is { } observer ? observer.WrapSettlement(settlement) : settlement;
+        _validateSettlementRequest = validateSettlementRequest;
         _process = static context => ProcessCoreAsync((DefaultMessageContext)context);
         _tracing = tracing;
         _logger = telemetry?.Logger ?? tracing?.Logger;
@@ -272,6 +274,7 @@ public sealed partial class ConsumePipeline
     internal void ValidateSettlement(Disposition disposition)
     {
         _failures?.ValidateSettlement(disposition);
+        _validateSettlementRequest?.Invoke(disposition);
     }
 
     internal ConsumeDelegate? Settlement => _settlement;
