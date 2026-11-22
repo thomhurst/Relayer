@@ -230,9 +230,9 @@ It uses native `SendAsync`/`SendBatchAsync`, preserving message identity, bytes 
 
 Each due unordered row receives a fresh expiring claim token through native conditional updates.
 Direct dispatch requires `autocommit=1` on every session from its data source. The worker checks
-the setting at startup. If a later session disables autocommit, the worker rejects its claim or
-completion batch and logs a configuration error. Check the server default and any connection-opened
-callback on the dispatch data source.
+the setting at startup. A dispatch claim, completion or retry update on a later session with
+autocommit disabled fails with a configuration error. Check the server default and any
+connection-opened callback on the dispatch data source.
 Claim and completion commands use `MySqlBatch`, including native `ROW_COUNT()` results for exact
 per-command outcomes. A successful broker send deletes only rows whose token still matches and
 whose claim has not expired. After the native client finishes its own send retries, a broker failure

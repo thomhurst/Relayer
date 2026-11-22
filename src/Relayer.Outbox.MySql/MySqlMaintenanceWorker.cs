@@ -206,7 +206,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
                     var claim = new OutboxClaim(row.Id, Guid.NewGuid());
                     var now = DateTimeOffset.UtcNow;
 
-                    if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
+                    if (await _store.TryClaimForDispatchAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
                     {
                         var outcome = await _store.QuarantineAsync(claim, row.LastError!, cancellationToken).ConfigureAwait(false);
                         outcome.RecordTelemetry(_instrumentation);

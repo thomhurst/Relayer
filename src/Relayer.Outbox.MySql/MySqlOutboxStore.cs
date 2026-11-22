@@ -53,7 +53,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         _claim = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {Eligible}");
         _renew = new($"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {Fenced}");
         _complete = new($"DELETE FROM {table} WHERE {Fenced}");
-        _retry = new(MySqlRetrySql.Update(table, Fenced, "@now"));
+        _retry = new(MySqlRetrySql.Update(table, Fenced, "@now") + MySqlDispatchMutations.AutocommitFence);
         _fail = new($"UPDATE {table} SET attempts=attempts+1,last_error=@error WHERE {Fenced}");
         _failureSql = $"""
             REPLACE INTO {dead} (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,failed_at)
@@ -235,13 +235,40 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     }
 
     // Native send failures remain pending, independently of the explicit poison budget.
-    internal ValueTask<bool> RecordRetryAsync(OutboxClaim claim, string error, DateTimeOffset now,
+    [RuntimeAsyncMethodGeneration(false)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<bool> RecordRetryAsync(OutboxClaim claim, string error, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
-        _retry.Command.Parameters["error"].Value = error;
-        return MutateAsync(_retry, claim, now, cancellationToken);
+        EnsureAvailable(cancellationToken);
+        _retry.Claim(claim);
+        _retry.Now(now);
+        var recoveryConnection = RecoveryConnection;
+        await using var ownedConnection = recoveryConnection is null
+            ? await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        var command = _retry.Command;
+        command.Connection = recoveryConnection ?? ownedConnection!;
+        command.Parameters["error"].Value = error;
+
+        try
+        {
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException(MySqlDispatchMutations.MissingAffectedRowCount);
+            }
+
+            return MySqlDispatchMutations.GetAffectedRows(reader) == 1;
+        }
+        finally
+        {
+            command.Connection = null;
+            command.Parameters["error"].Value = DBNull.Value;
+        }
     }
 
     // Only returned after the native transaction commits; stale claims and rollback have no terminal outcome.
@@ -372,6 +399,22 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         {
             command.Connection = null;
         }
+    }
+
+    [RuntimeAsyncMethodGeneration(false)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<bool> TryClaimForDispatchAsync(OutboxClaim claim, DateTimeOffset now, DateTimeOffset expires,
+        CancellationToken cancellationToken)
+    {
+        EnsureAvailable(cancellationToken);
+        Validate(claim, now, expires);
+        _claimBatch.Prepare(new ReadOnlySpan<OutboxClaim>(in claim), now, expires);
+        var recoveryConnection = RecoveryConnection;
+        await using var ownedConnection = recoveryConnection is null
+            ? await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        var connection = recoveryConnection ?? ownedConnection!;
+        return await _claimBatch.ExecuteAsync(connection, default, cancellationToken).ConfigureAwait(false) == 1;
     }
 
     [RuntimeAsyncMethodGeneration(false)]

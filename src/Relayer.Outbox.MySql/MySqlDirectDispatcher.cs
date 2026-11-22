@@ -158,7 +158,7 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
             var claim = new OutboxClaim(id, Guid.NewGuid());
             var now = DateTimeOffset.UtcNow;
 
-            if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
+            if (await _store.TryClaimForDispatchAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
             {
                 (await _store.RecordDispatchFailureAsync(claim, OutboxErrorText.Describe(error), now, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
             }

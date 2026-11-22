@@ -10,6 +10,9 @@ namespace Relayer.Outbox.MySql;
 internal sealed class MySqlDispatchMutations(string conditionalMutationSql) : IDisposable
 {
     internal const string AutocommitRequired = "MySQL outbox dispatch requires autocommit=1. Check the server default and the data source's connection-opened callback.";
+    // A disabled session leaves the row untouched and reports a configuration error distinct from a lost claim.
+    internal const string AutocommitFence = " AND @@SESSION.autocommit = 1; SELECT IF(@@SESSION.autocommit = 1, ROW_COUNT(), -1);";
+    internal const string MissingAffectedRowCount = "MySQL dispatch mutation did not return its affected-row count.";
 
     private readonly MySqlBatch _batch = new();
     private readonly List<Row> _rows = [];
@@ -47,15 +50,10 @@ internal sealed class MySqlDispatchMutations(string conditionalMutationSql) : ID
             {
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    throw new InvalidOperationException("MySQL dispatch mutation did not return its affected-row count.");
+                    throw new InvalidOperationException(MissingAffectedRowCount);
                 }
 
-                var count = reader.GetInt64(0);
-
-                if (count == -1)
-                {
-                    throw new InvalidOperationException(AutocommitRequired);
-                }
+                var count = GetAffectedRows(reader);
 
                 total += count;
 
@@ -79,6 +77,18 @@ internal sealed class MySqlDispatchMutations(string conditionalMutationSql) : ID
         }
     }
 
+    internal static long GetAffectedRows(MySqlDataReader reader)
+    {
+        var count = reader.GetInt64(0);
+
+        if (count == -1)
+        {
+            throw new InvalidOperationException(AutocommitRequired);
+        }
+
+        return count;
+    }
+
     public void Dispose()
     {
         _batch.Dispose();
@@ -98,9 +108,7 @@ internal sealed class MySqlDispatchMutations(string conditionalMutationSql) : ID
 
         internal Row(string sql)
         {
-            // Check the actual dispatch session without adding a round trip. A disabled session must
-            // leave the row untouched and report a configuration error, distinct from a lost claim.
-            Command = new(sql + " AND @@SESSION.autocommit = 1; SELECT IF(@@SESSION.autocommit = 1, ROW_COUNT(), -1);");
+            Command = new(sql + AutocommitFence);
             Command.Parameters.Add(new("id", MySqlDbType.Binary)
             {
                 Value = _id
