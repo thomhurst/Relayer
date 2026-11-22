@@ -202,6 +202,11 @@ public readonly struct InMemoryMessageBinding : IMessageBinding<InMemoryDelivery
         return message.TryConsumeLoggedSettlementError(error);
     }
 
+    static bool IMessageBinding<InMemoryDelivery>.HasSettledNatively(InMemoryDelivery message)
+    {
+        return message.SettlementKind != DispositionKind.Unset;
+    }
+
     /// <inheritdoc />
     public static ReadOnlySequence<byte> GetBody(InMemoryDelivery message)
     {

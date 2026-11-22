@@ -408,6 +408,175 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    [Arguments(false, DispositionKind.Complete)]
+    [Arguments(false, DispositionKind.DeadLetter)]
+    [Arguments(false, DispositionKind.Redeliver)]
+    [Arguments(true, DispositionKind.Complete)]
+    [Arguments(true, DispositionKind.DeadLetter)]
+    [Arguments(true, DispositionKind.Redeliver)]
+    public async Task Native_settlement_survives_callback_failure(bool log, DispositionKind settlement)
+    {
+        var clock = new InMemoryTestClock();
+        var delay = TimeSpan.FromSeconds(1);
+        await using var transport = Transport(new()
+        {
+            Capacity = 1,
+            Capabilities = new()
+            {
+                ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue,
+                DeadLetter = true,
+                MaxDeliveryDelay = delay,
+                MaxRedeliveryDelay = delay
+            }
+        }, clock);
+        var error = new InvalidOperationException("after native settlement");
+        var received = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", async (delivery, _) =>
+        {
+            int value = Value(delivery);
+
+            if (value == 1 && delivery.Attempt == 1)
+            {
+                switch (settlement)
+                {
+                    case DispositionKind.Complete:
+                        delivery.Complete();
+                        break;
+                    case DispositionKind.DeadLetter:
+                        delivery.DeadLetter(new("manual", "details"));
+                        break;
+                    case DispositionKind.Redeliver:
+                        delivery.Redeliver(delay);
+                        break;
+                }
+
+                await Task.Yield();
+                throw error;
+            }
+
+            received.Writer.TryWrite(value * 10 + delivery.Attempt);
+            return Disposition.Complete;
+        }, log ? "workers" : null);
+        await transport.StartAsync(default);
+        await Send(transport, 1);
+        Exception? fault = await GetReceiverFault(transport);
+        await Assert.That(fault).IsSameReferenceAs(error);
+
+        var terminal = settlement != DispositionKind.Redeliver;
+
+        if (log)
+        {
+            await Assert.That(transport.GetCommittedPosition("orders", "workers", 0)).IsEqualTo(terminal ? 0L : -1L);
+        }
+
+        bool deadLettered = transport.DeadLetters("orders").TryRead(out var dead);
+        await Assert.That(deadLettered).IsEqualTo(settlement == DispositionKind.DeadLetter);
+
+        if (dead is not null)
+        {
+            await Assert.That(dead.Error.Reason).IsEqualTo("manual");
+            await Assert.That(dead.Error.Description).IsEqualTo("details");
+            await Assert.That(dead.Attempt).IsEqualTo(1);
+            await Assert.That(BitConverter.ToInt32(dead.Body.Span)).IsEqualTo(1);
+        }
+
+        await transport.StartAsync(default);
+        using var timeout = new CancellationTokenSource(s_limit);
+
+        if (!terminal)
+        {
+            var redelivered = Next(received);
+            var armed = clock.NextTimer();
+            await Assert.That(await Task.WhenAny(armed, redelivered).WaitAsync(s_limit)).IsSameReferenceAs(armed);
+            await armed;
+            clock.Advance(delay);
+            await Assert.That(await redelivered).IsEqualTo(12);
+        }
+
+        await Send(transport, 2, cancellationToken: timeout.Token);
+        await Assert.That(await Next(received)).IsEqualTo(21);
+        await transport.StopAsync(default);
+        await Assert.That(transport.DeadLetters("orders").TryRead(out _)).IsFalse();
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    public async Task Cancelled_stop_preserves_native_queue_redelivery_at_full_admission(int delaySeconds)
+    {
+        var clock = new InMemoryTestClock();
+        var delay = TimeSpan.FromSeconds(delaySeconds);
+        await using var transport = Transport(new()
+        {
+            Capacity = 2
+        }, clock);
+        var settled = Signal();
+        var release = Signal();
+        var received = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", async (delivery, _) =>
+        {
+            int value = Value(delivery);
+
+            if (value == 1 && delivery.Attempt == 1)
+            {
+                delivery.Redeliver(delay);
+                settled.SetResult();
+                await release.Task;
+                return Disposition.SettledByHandler;
+            }
+
+            received.Writer.TryWrite(value * 10 + delivery.Attempt);
+            return Disposition.Complete;
+        });
+
+        await transport.StartAsync(default);
+
+        try
+        {
+            await Send(transport, 1);
+            await settled.Task.WaitAsync(s_limit);
+            await Send(transport, 2);
+            using var cancellation = new CancellationTokenSource();
+            var stop = transport.StopAsync(cancellation.Token);
+            cancellation.Cancel();
+            await Assert.That(async () => await stop.WaitAsync(s_limit)).Throws<OperationCanceledException>();
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await transport.Completion.WaitAsync(s_limit);
+        await transport.StartAsync(default);
+        await Assert.That(await Next(received)).IsEqualTo(21);
+        var redelivery = Next(received);
+
+        if (delay > TimeSpan.Zero)
+        {
+            var armed = clock.NextTimer();
+            await Assert.That(await Task.WhenAny(armed, redelivery).WaitAsync(s_limit)).IsSameReferenceAs(armed);
+            await armed;
+            clock.Advance(delay);
+        }
+
+        await Assert.That(await redelivery).IsEqualTo(12);
+        await transport.StopAsync(default).WaitAsync(s_limit);
+    }
+
+    private static async Task<Exception?> GetReceiverFault(InMemoryTransport transport)
+    {
+        try
+        {
+            await transport.Completion.WaitAsync(s_limit);
+            return null;
+        }
+        catch (InvalidOperationException error)
+        {
+            return error;
+        }
+    }
+
+    [Test]
     public async Task Graceful_stop_drains_handler_and_preserves_queued_messages_for_restart()
     {
         await using var transport = Transport();
@@ -527,6 +696,66 @@ public class InMemoryTransportTests
             {
                 await service.StopAsync(default);
             }
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Hosted_native_settlement_preserves_the_handler_error(bool deadLetter)
+    {
+        var received = Channel.CreateUnbounded<int>();
+        var error = new InvalidOperationException("after hosted native settlement");
+        var failures = deadLetter ? new FailureOptions(RetryDelays: [TimeSpan.Zero]) : FailureOptions.None;
+        var services = new ServiceCollection();
+        services.AddSingleton(received);
+        services.AddSingleton(error);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("local", transport =>
+            {
+                transport.Send<InMemoryOrder>("orders");
+                transport.Consume("orders", consumer => consumer
+                    .Failures(failures)
+                    .Handler<NativeSettlementFaultOrderHandler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        var hosted = provider.GetServices<IHostedService>().ToArray();
+
+        foreach (var lifecycle in hosted.OfType<IHostedLifecycleService>())
+        {
+            await lifecycle.StartingAsync(default);
+        }
+
+        foreach (var service in hosted)
+        {
+            await service.StartAsync(default);
+        }
+
+        var native = (InMemoryTransport)provider.GetRequiredService<ITransport>();
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await sender.SendAsync(new InMemoryOrder(deadLetter ? -2 : -1));
+        Exception? fault = await GetReceiverFault(native);
+        await Assert.That(fault).IsSameReferenceAs(error);
+        await Assert.That(await Next(received)).IsEqualTo(1);
+        bool deadLettered = native.DeadLetters("orders").TryRead(out var dead);
+        await Assert.That(deadLettered).IsEqualTo(deadLetter);
+
+        if (dead is not null)
+        {
+            await Assert.That(dead.Error.Reason).IsEqualTo("manual");
+        }
+
+        await native.StartAsync(default);
+        await sender.SendAsync(new InMemoryOrder(42));
+        await Assert.That(await Next(received)).IsEqualTo(42);
+
+        foreach (var service in hosted.Reverse())
+        {
+            await service.StopAsync(default);
         }
     }
 
@@ -1664,6 +1893,32 @@ public sealed class InMemoryFollowUpOrderHandler(ISender sender) : IHandler<InMe
     public ValueTask HandleAsync(InMemoryOrder message, MessageContext context, CancellationToken cancellationToken)
     {
         return message.Id == 1 ? sender.SendAsync(new InMemoryOrder(2), cancellationToken) : ValueTask.CompletedTask;
+    }
+}
+
+public sealed class NativeSettlementFaultOrderHandler(Channel<int> received, InvalidOperationException error) : IHandler<InMemoryOrder>
+{
+    public ValueTask HandleAsync(InMemoryOrder message, MessageContext context, CancellationToken cancellationToken)
+    {
+        if (message.Id >= 0)
+        {
+            received.Writer.TryWrite(message.Id);
+            return default;
+        }
+
+        received.Writer.TryWrite(context.Attempt);
+        var delivery = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message;
+
+        if (message.Id == -2)
+        {
+            delivery.DeadLetter(new("manual"));
+        }
+        else
+        {
+            delivery.Complete();
+        }
+
+        throw error;
     }
 }
 

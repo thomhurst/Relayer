@@ -43,6 +43,12 @@ public interface IMessageBinding<TIncoming> : IMessageHeaderReader<TIncoming>
     {
     }
 
+    // Some native deliveries already track manual settlement without the feature's disposition marker.
+    internal static virtual bool HasSettledNatively(TIncoming message)
+    {
+        return false;
+    }
+
     /// <summary>Consumes a native settlement error's logging marker, so the pipeline does not log that same error again.</summary>
     /// <remarks>Called only on failure. Return true only when this delivery already logged this exact exception. Clear markers before reusing native state.</remarks>
     static virtual bool TryConsumeLoggedSettlementError(TIncoming message, Exception error)
