@@ -32,7 +32,7 @@ internal sealed class RequestClient<TRequest, TResponse>(SendPipeline pipeline, 
             {
                 // Do not wait on a handler's send buffer or an uncommitted outbox transaction.
                 await _route.SendAsync(request, null, null, cancellation.Token, null,
-                    new(new(replies.Address), new(pending.Correlation)), tenant?.Id ?? default).ConfigureAwait(false);
+                    new(new(replies.Destination), new(pending.Correlation)), tenant?.Id ?? default).ConfigureAwait(false);
                 cancellation.Token.ThrowIfCancellationRequested();
                 return await pending.Completion.Task.WaitAsync(cancellation.Token).ConfigureAwait(false);
             }

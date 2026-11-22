@@ -76,6 +76,25 @@ The default maximum outstanding element count is one. Native flow control suppli
 
 Every transport with consumers must set `PublisherSettings.EnableMessageOrdering = true`. Poison-message copies preserve ordering keys received from external publishers, including on unordered subscriptions. Startup rejects disabled publisher ordering before processing can begin. Send-only transports can leave it disabled.
 
+## Request and response
+
+Declare the request topic, the reply topic, and a dedicated reply subscription attached to the reply topic in the transport options above. Give each requesting process its own reply endpoint. Use fully qualified native names throughout.
+
+On the requester, pass the subscription as the reply consumer source and set `ReplyDestination` to the topic that feeds it. Configure the reply consumer's dead-letter topic in `Replies`.
+
+```csharp
+pubsub.Request<GetPrice, Price>(requestTopic.ToString(), replySubscription.ToString(), request =>
+{
+    request.ReplyDestination = replyTopic.ToString();
+    request.Replies(consumer => consumer.Failures(new()
+    {
+        DeadLetterEndpoint = deadLetter.ToString(),
+    }));
+});
+```
+
+On the responder, declare `pubsub.Send<Price>(replyTopic.ToString())` as the fixed CloudEvents route and call `context.ReplyAsync(response)` in the request handler. See the [request/response guide](../guides/request-response.md) for correlation and timeout behavior.
+
 ## Ordering and native access
 
 For keyed ordering, set `PublisherSettings.EnableMessageOrdering = true` and set `Subscription.EnableMessageOrdering = true` on every declared subscription for the topic. Startup rejects a route with `.OrderingKey(...)` if publisher ordering is disabled or any declared subscription for that topic has ordering disabled. This check uses the subscription declarations for the named transport. For subscriptions managed outside those declarations, enable ordering on the broker to get ordered delivery.

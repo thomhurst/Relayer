@@ -14,7 +14,7 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
     {
         if (!messages.TryGetMessageType(typeof(TResponse), out _))
         {
-            failures.Add($"Request replies on '{replies.Address}': register the stable message identity for '{typeof(TResponse)}'.");
+            failures.Add($"Request replies on '{replies.Source}': register the stable message identity for '{typeof(TResponse)}'.");
         }
 
         var requestRoutes = 0;
@@ -40,7 +40,7 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
                     responseRoutes++;
                 }
 
-                if (transport.Name == replies.Transport && route.Destination == replies.Address)
+                if (transport.Name == replies.Transport && route.Destination == replies.Destination)
                 {
                     localResponseRoute = send;
                 }
@@ -54,7 +54,7 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
 
         if (localResponseRoute is not null)
         {
-            var location = $"Request replies on '{replies.Address}' on transport '{replies.Transport}'";
+            var location = $"Request replies to '{replies.Destination}' on transport '{replies.Transport}'";
 
             if (responseRoutes != 1)
             {
@@ -86,7 +86,7 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
                     continue;
                 }
 
-                if (route.Destination == replies.Address)
+                if (route.Destination == replies.Destination)
                 {
                     failures.Add($"Request route to '{route.Destination}': use a dedicated reply endpoint distinct from the request destination.");
                 }
@@ -101,7 +101,7 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
 
             foreach (var consumer in transport.Consumers)
             {
-                if (consumer.Source != replies.Address)
+                if (consumer.Source != replies.Source)
                 {
                     continue;
                 }
@@ -110,18 +110,18 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
 
                 if (consumer.Handlers.Count != 1)
                 {
-                    failures.Add($"Request replies on '{replies.Address}': use a dedicated reply consumer without additional handlers.");
+                    failures.Add($"Request replies on '{replies.Source}': use a dedicated reply consumer without additional handlers.");
                 }
 
                 if (consumer.BatchSize != 1)
                 {
-                    failures.Add($"Request replies on '{replies.Address}': batch replies are unsupported. Use a single-message reply consumer.");
+                    failures.Add($"Request replies on '{replies.Source}': batch replies are unsupported. Use a single-message reply consumer.");
                 }
             }
 
             if (replyConsumers != 1)
             {
-                failures.Add($"Request replies on '{replies.Address}': declare exactly one dedicated reply consumer on this endpoint.");
+                failures.Add($"Request replies on '{replies.Source}': declare exactly one dedicated reply consumer on this endpoint.");
             }
         }
     }

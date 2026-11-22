@@ -305,6 +305,16 @@ public class RequestResponseTests
     }
 
     [Test]
+    [Arguments("")]
+    [Arguments(" ")]
+    public async Task Blank_reply_destination_fails_registration(string destination)
+    {
+        await Assert.That(() => new ServiceCollection().AddRelayer(builder =>
+            builder.InMemory("local", transport => transport.Request<RpcRequest, RpcResponse>("requests", "replies",
+                request => request.ReplyDestination = destination)))).Throws<ArgumentException>().WithMessageContaining("ReplyDestination");
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Startup_rejects_batched_or_shared_reply_endpoint(bool shared)
@@ -315,13 +325,17 @@ public class RequestResponseTests
             builder.InMemory("local", transport =>
             {
                 transport.Request<RpcRequest, RpcResponse>("requests", "replies",
-                    request => request.Replies(consumer =>
+                    request =>
                     {
-                        if (!shared)
+                        request.ReplyDestination = "reply-destination";
+                        request.Replies(consumer =>
                         {
-                            consumer.Batch(2, TimeSpan.FromSeconds(1));
-                        }
-                    }));
+                            if (!shared)
+                            {
+                                consumer.Batch(2, TimeSpan.FromSeconds(1));
+                            }
+                        });
+                    });
 
                 if (shared)
                 {
@@ -329,7 +343,8 @@ public class RequestResponseTests
                 }
             });
         })).Build();
-        await Assert.That(async () => await host.StartAsync()).Throws<Microsoft.Extensions.Options.OptionsValidationException>();
+        await Assert.That(async () => await host.StartAsync()).Throws<Microsoft.Extensions.Options.OptionsValidationException>()
+            .WithMessageContaining(shared ? "declare exactly one dedicated reply consumer" : "batch replies are unsupported");
     }
 
     [Test]
@@ -380,7 +395,8 @@ public class RequestResponseTests
             builder.AddMessageTypesFromThisAssembly();
             builder.InMemory("local", transport =>
             {
-                transport.Request<RpcRequest, RpcResponse>("requests", "replies");
+                transport.Request<RpcRequest, RpcResponse>("requests", "reply-source",
+                    request => request.ReplyDestination = "replies");
                 transport.Consume("requests", consumer => consumer.Handler<RequestEchoHandler>());
 
                 switch (configuration)

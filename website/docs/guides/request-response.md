@@ -46,7 +46,7 @@ var price = await client.RequestAsync(
 
 In separate applications, the requester declares `Request<GetPrice, Price>` and the responder declares `Send<Price>` plus its ordinary request consumer. Both register their stable message identities and serializers. Do not add a second `Send<GetPrice>` route: `Request` already declares it.
 
-When the requester also declares a response send route to its reply endpoint on the same named transport, startup validates that the response type has exactly one send route across all transports. That route must use a fixed destination and CloudEvents mode. A requester with an external responder can start without declaring a local response route.
+When the requester also declares a response send route to its advertised reply destination on the same named transport, startup validates that the response type has exactly one send route across all transports. That route must use a fixed destination and CloudEvents mode. A requester with an external responder can start without declaring a local response route.
 
 `ReplyAsync` requires the request's reply address to equal the response type's configured `Send` destination. Request and response types support exactly one declared route, even though ordinary sends can [fan out to several routes](sending.md#sending-to-several-routes). It does not create arbitrary endpoints, route to an untrusted header, or emulate native reply queues. Applications needing several independent reply destinations for one response type must currently use the native client's routing facilities. Give each requesting process its own reply endpoint and configure the responder's matching route. Do not run competing requesters on the same reply queue; process-local pending state cannot correlate another process's replies. For Kafka, also give each requester its own group and source topic.
 
@@ -69,7 +69,7 @@ The default capacity is 256; supported capacities are 1 through 65,536. Exhausti
 
 `Request<TRequest, TResponse>` adds a typed reply handler to the consumer for the declared reply address. Hosted transports compose it through their normal single-message receive pipeline. Batch reply handlers fail startup validation.
 
-Use `request.Replies` to configure the reply consumer with the transport's usual options and failure settings. The consumer follows the transport's normal ordering, delivery and settlement rules. Use the reply address as the responder's fixed `Send<TResponse>` destination.
+Use `request.Replies` to configure the reply consumer with the transport's usual options and failure settings. The consumer follows the transport's normal ordering, delivery and settlement rules. `Request` uses its second argument as the reply consumer source and advertises that address by default. When the responder publishes to a different address, set `request.ReplyDestination` to match the responder's fixed `Send<TResponse>` destination.
 
 | Transport | Reply endpoint setup |
 | --- | --- |
@@ -80,8 +80,7 @@ Use `request.Replies` to configure the reply consumer with the transport's usual
 | [RabbitMQ](../transports/rabbitmq.md#receive-and-settle) | Use the dedicated queue name for both consuming and sending. |
 | [PostgreSQL local](../transports/postgresql-local.md#register-routes-and-workers) | Use a dedicated local endpoint name with the matching PostgreSQL dispatch store and workers. Keep the store isolated from other dispatching processes so they cannot claim the replies. |
 | [NATS JetStream](../transports/nats.md#register-sends-and-a-durable-consumer) | Use the same dedicated name for the reply subject and the durable consumer, such as `price-replies-instance-1`. Declare the durable in `NatsTransportOptions.Consumers` with a filter for that subject. Set `consumer.Options.Stream` and the dead-letter subject in `Replies`. |
-
-[Google Cloud Pub/Sub](../transports/google-pubsub.md#register-topics-and-subscriptions) composes the same typed handler. Its reply consumer requires a fully qualified subscription name, while publishing requires a fully qualified topic name. `Request` puts the subscription name in `replyto`, and `ReplyAsync` requires it to match the response route's topic name exactly. This prevents end-to-end `Request` and `ReplyAsync` on Pub/Sub today.
+| [Google Cloud Pub/Sub](../transports/google-pubsub.md#request-and-response) | Pass the fully qualified reply subscription name to `Request` and set `request.ReplyDestination` to the fully qualified reply topic name. Configure the dead-letter topic in `Replies`. |
 
 This Kafka example configures a dedicated reply group and a process-specific CloudEvents source.
 
