@@ -64,7 +64,7 @@ public sealed class TopologyCommandTests
             });
         using var output = new StringWriter();
         using var error = new StringWriter();
-        var result = RelayerCommand.Run(Command(typeof(AwsDeclarations), "--format", "terraform", "--account-id", "123456789012", "--region", "eu-west-1"), output, error);
+        var result = await RelayerCommand.RunAsync(Command(typeof(AwsDeclarations), "--format", "terraform", "--account-id", "123456789012", "--region", "eu-west-1"), output, error);
         await Assert.That(error.ToString()).IsEqualTo("");
         await Assert.That(result).IsEqualTo(0);
         await Assert.That(output.ToString()).IsEqualTo(Encoding.UTF8.GetString(expected.ToArray()));
@@ -97,7 +97,6 @@ public sealed class TopologyCommandTests
         await Failure(Command(typeof(InvalidDeclarations), "--format", "bicep", "--transport", "events"));
         await Failure(Command(typeof(ThrowingDeclarations), "--format", "json"), "factory failed");
         await Failure(Command(typeof(WrongFactory), "--format", "json"), "CreateTopologyServices");
-        await Failure(Command(typeof(DisposalFailureDeclarations), "--format", "json"), "dispose failed");
         await Failure(Command(typeof(MissingFactory), "--format", "json"), "CreateTopologyServices");
         await Failure(Command(typeof(NullDeclarations), "--format", "json"), "returned null");
         await Failure(Command(typeof(EmptyDeclarations), "--format", "json"), "ITopology");
@@ -105,6 +104,14 @@ public sealed class TopologyCommandTests
         await Failure(Command(typeof(AwsDeclarations), "--format", "terraform", "--account-id", "invalid", "--region", "eu-west-1"), "twelve digits");
         await Failure(["topology", "export", "--assembly", "missing.dll", "--type", "Missing", "--format", "json"]);
         await Failure(["topology", "export", "--assembly", typeof(TopologyCommandTests).Assembly.Location, "--type", "Missing", "--format", "json"]);
+    }
+
+    [Test]
+    [Arguments(typeof(DisposalFailureDeclarations), "dispose failed")]
+    [Arguments(typeof(AsyncDisposalFailureDeclarations), "async dispose failed")]
+    public async Task Provider_disposal_failure_emits_no_artifact(Type factory, string message)
+    {
+        await Failure(Command(factory, "--format", "json"), message);
     }
 
     [Test]
@@ -131,7 +138,8 @@ public sealed class TopologyCommandTests
     {
         using var output = new StringWriter();
         using var error = new StringWriter();
-        await Assert.That(RelayerCommand.Run(args, output, error)).IsEqualTo(1);
+        var result = await RelayerCommand.RunAsync(args, output, error);
+        await Assert.That(result).IsEqualTo(1);
         await Assert.That(output.ToString()).IsEqualTo("");
         await Assert.That(error.ToString().Length).IsGreaterThan(0);
 
@@ -270,6 +278,31 @@ public static class DisposalFailureDeclarations
         {
             ((IDisposable)_inner).Dispose();
             throw new InvalidOperationException("dispose failed");
+        }
+    }
+}
+
+public static class AsyncDisposalFailureDeclarations
+{
+    public static IServiceProvider CreateTopologyServices()
+    {
+        return new FailingProvider();
+    }
+
+    private sealed class FailingProvider : IServiceProvider, IAsyncDisposable
+    {
+        private readonly ServiceProvider _inner = ServiceBusDeclarations.Create(false);
+
+        public object? GetService(Type serviceType)
+        {
+            return _inner.GetService(serviceType);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Task.Yield();
+            await _inner.DisposeAsync();
+            throw new InvalidOperationException("async dispose failed");
         }
     }
 }
