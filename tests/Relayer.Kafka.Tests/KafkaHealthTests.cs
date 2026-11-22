@@ -35,10 +35,14 @@ public class KafkaHealthTests
         var clock = new KafkaHealthClock();
         var health = new KafkaConsumerHealth(clock);
         await Assert.That(health.GetState(consumers[0])).IsNull();
-        var stalled = health.Register(consumers[0]);
-        var busy = health.Register(consumers[0]);
-        var idle = health.Register(consumers[0]);
-        var sibling = health.Register(consumers[1]);
+        var stalled = health.CreateWorker();
+        var busy = health.CreateWorker();
+        var idle = health.CreateWorker();
+        var sibling = health.CreateWorker();
+        health.Register(consumers[0], stalled);
+        health.Register(consumers[0], busy);
+        health.Register(consumers[0], idle);
+        health.Register(consumers[1], sibling);
         await Assert.That(health.GetState(consumers[0])).IsNull();
         // Each worker reads its native monitor's oldest buffered or in-flight record; null means idle.
         var activation = clock.GetUtcNow();
@@ -206,6 +210,81 @@ public class KafkaHealthTests
         var recovered = await checks.CheckHealthAsync(check => check.Name == "relayer.transport", token);
         await Assert.That(recovered.Status).IsEqualTo(HealthStatus.Healthy);
         await Assert.That(adminConfigured).IsEqualTo(1);
+    }
+
+    [Test]
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Consumer_health_recovers_when_the_same_host_retries_failed_composition(KafkaHeaderSnapshotBroker broker)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await broker.Started.WaitAsync(token);
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        var topic = TestContext.Current!.Isolation.GetIsolatedName("health-retry").ToLowerInvariant();
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, topic, token);
+        var control = new KafkaHealthControl();
+        control.Release.SetResult();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Logging.ClearProviders();
+        builder.Services.AddSingleton(control);
+        builder.Services.AddRelayerKafkaHealthProviders("events");
+        var failComposition = true;
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(KafkaReceiveJson.Default);
+            relayer.Kafka("events", kafka =>
+            {
+                kafka.TopologyMode = TopologyMode.None;
+                kafka.Options.Configure(options =>
+                {
+                    options.BootstrapServers.Add(broker.Bootstrap);
+                    options.ConfigureConsumer = native => native.WithAutoOffsetReset(AutoOffsetReset.Earliest);
+                });
+                kafka.Consume(topic, consumer =>
+                {
+                    consumer.Options.Group = topic + ".one";
+                    consumer.Handler<KafkaHealthHandler>();
+                });
+                kafka.Consume(topic, consumer =>
+                {
+                    consumer.Options.Group = topic + ".two";
+                    consumer.Handler<KafkaHealthIdleHandler>();
+                    consumer.ConfigurePipeline(_ =>
+                    {
+                        if (failComposition)
+                        {
+                            failComposition = false;
+                            throw new InvalidOperationException("Composition failed on the second consumer.");
+                        }
+                    });
+                });
+            });
+        });
+        using var host = builder.Build();
+        var declarations = host.Services.GetRequiredService<RelayerConfiguration>().Transports.Single().Consumers;
+        var receivers = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers;
+        var adapter = host.Services.GetRequiredKeyedService<IConsumerHealthProvider>("events");
+        await Assert.That(() => host.StartAsync(token)).Throws<InvalidOperationException>()
+            .WithMessageContaining("Composition failed on the second consumer.");
+        await Assert.That(receivers.Count).IsEqualTo(0);
+        await host.StartAsync(token);
+
+        try
+        {
+            await fixture.Transport.StartAsync(token);
+            await fixture.Transport.SendAsync(new(topic, "{\"Number\":1}"u8.ToArray(),
+                new KeyValuePair<string, WireString>[] { new("ce_id", new("health-retry")), new("ce_type", new("tests.kafka.receive;v=1")) }), token);
+            await Task.WhenAll(control.Entered.Task, control.IdleHandled.Task).WaitAsync(token);
+
+            await Assert.That(receivers.Count).IsEqualTo(2);
+            await Assert.That(await adapter.GetStateAsync(declarations[1], token)).IsNotNull();
+            await Assert.That(await adapter.GetStateAsync(declarations[0], token)).IsNotNull();
+        }
+        finally
+        {
+            await host.StopAsync(token);
+        }
     }
 
     private static async Task WaitForIdleAsync(IConsumerHealthProvider adapter, IConsumerDefinition consumer, CancellationToken token)

@@ -23,7 +23,6 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     private readonly PartitionedProcessingControl _control = new();
     private readonly PartitionedProcessingMonitor? _monitor;
     private readonly ConcurrentDictionary<int, string> _partitions = new();
-    private readonly KafkaWorkerHealth? _health;
     private CancellationTokenSource _stop = new();
     private readonly int _concurrency;
     private PartitionedProcessingOptions _runOptions;
@@ -49,6 +48,11 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         get;
     }
 
+    internal KafkaWorkerHealth? WorkerHealth
+    {
+        get;
+    }
+
     internal Task Completion
     {
         get; private set;
@@ -61,9 +65,8 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         PartitionedProcessingOptions options, int concurrency, KafkaWorkerHealth? health = null)
     {
         _create = create;
-        _native = create();
         _receive = receive;
-        _health = health;
+        WorkerHealth = health;
         _process = ProcessAsync;
         Topic = endpoint.Destination;
         Group = endpoint.ConsumerGroup;
@@ -71,6 +74,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         _concurrency = concurrency;
         _options = _runOptions = KafkaProcessing.Compose(options, concurrency, _control, _monitor,
             new KafkaCommitObserver(new(tracing, endpoint, MessagingOperation.Settle, "commit")));
+        _native = create();
     }
 
     // Exactly-once: each run gets its own transactional producer, which Dekaf's runtime uses to commit the consumed
@@ -160,10 +164,10 @@ internal sealed class KafkaConsumer : IAsyncDisposable
             throw;
         }
 
-        if (_health is not null)
+        if (WorkerHealth is not null)
         {
             var monitor = _monitor!;
-            _health.Start(() => monitor.OldestOutstandingRecordAt);
+            WorkerHealth.Start(() => monitor.OldestOutstandingRecordAt);
         }
         // Polling and processing never inherit the application's startup Activity.
         if (ExecutionContext.IsFlowSuppressed())
@@ -193,7 +197,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         }
         finally
         {
-            _health?.Unavailable();
+            WorkerHealth?.Unavailable();
             // Leave the group once the drain has committed, so the stopped member's partitions move to the others.
             try
             {
