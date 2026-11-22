@@ -44,6 +44,8 @@ public sealed record OrderPlaced(string OrderId);
 Select the order context, enqueue the message, and save. EF Core commits the order and its outgoing message together.
 
 ```csharp
+using Relayer.Outbox.EntityFrameworkCore;
+
 using var outbox = db.EnlistRelayerOutbox();
 db.Orders.Add(new Order { Id = orderId });
 await outbox.EnqueueAsync(new OrderPlaced(orderId), cancellationToken);
