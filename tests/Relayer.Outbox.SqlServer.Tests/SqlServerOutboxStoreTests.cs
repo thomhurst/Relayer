@@ -3,6 +3,7 @@ using System.Transactions;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
+using TUnit.Assertions.Enums;
 
 namespace Relayer.Outbox.SqlServer.Tests;
 
@@ -29,13 +30,13 @@ public sealed class SqlServerOutboxStoreTests(SqlServerFixture database)
         await Assert.That(await store.ReadPendingAsync(new(null, now), rows, default)).IsEqualTo(2);
         await Assert.That(rows[0].Id).IsEqualTo(first);
         await Assert.That(rows[1].Id).IsEqualTo(second);
-        await Assert.That(rows[0].Message.Body.ToArray()).IsEquivalentTo(new byte[] { 0, 255, 1 });
+        await Assert.That(rows[0].Message.Body.ToArray()).IsEquivalentTo(new byte[] { 0, 255, 1 }, CollectionOrdering.Matching);
         await Assert.That(rows[1].Message.Body.Length).IsEqualTo(100_000);
         await Assert.That(rows[0].Message.Headers.Length).IsEqualTo(3);
         await Assert.That(rows[0].Message.Headers.Span[0].Key).IsEqualTo("duplicate");
         await Assert.That(rows[0].Message.Headers.Span[0].Value.ToString()).IsEqualTo("é");
         await Assert.That(rows[0].Message.Headers.Span[1].Key).IsEqualTo("duplicate");
-        await Assert.That(rows[0].Message.Headers.Span[1].Value.Utf8.ToArray()).IsEquivalentTo(new byte[] { 255, 0, 254 });
+        await Assert.That(rows[0].Message.Headers.Span[1].Value.Utf8.ToArray()).IsEquivalentTo(new byte[] { 255, 0, 254 }, CollectionOrdering.Matching);
         await Assert.That(rows[0].Message.Headers.Span[2].Value.IsEmpty).IsTrue();
         await Assert.That(rows[0].Message.Destination).IsEqualTo("orders");
         await Assert.That(rows[0].MessageType).IsEqualTo("order.placed.v1");

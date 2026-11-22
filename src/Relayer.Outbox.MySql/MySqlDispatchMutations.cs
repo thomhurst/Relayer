@@ -7,8 +7,10 @@ namespace Relayer.Outbox.MySql;
 
 // Native MySqlBatch owns packet construction and cancellation. ROW_COUNT() supplies each
 // conditional mutation's outcome because MySqlBatchCommand.RecordsAffected is always zero.
-internal sealed class MySqlDispatchMutations(string sql) : IDisposable
+internal sealed class MySqlDispatchMutations(string conditionalMutationSql) : IDisposable
 {
+    internal const string AutocommitRequired = "MySQL outbox dispatch requires autocommit=1. Check the server default and the data source's connection-opened callback.";
+
     private readonly MySqlBatch _batch = new();
     private readonly List<Row> _rows = [];
 
@@ -20,7 +22,7 @@ internal sealed class MySqlDispatchMutations(string sql) : IDisposable
         {
             if (i == _rows.Count)
             {
-                _rows.Add(new(sql));
+                _rows.Add(new(conditionalMutationSql));
             }
 
             var row = _rows[i];
@@ -49,6 +51,12 @@ internal sealed class MySqlDispatchMutations(string sql) : IDisposable
                 }
 
                 var count = reader.GetInt64(0);
+
+                if (count == -1)
+                {
+                    throw new InvalidOperationException(AutocommitRequired);
+                }
+
                 total += count;
 
                 if (!outcomes.IsEmpty)
@@ -90,7 +98,9 @@ internal sealed class MySqlDispatchMutations(string sql) : IDisposable
 
         internal Row(string sql)
         {
-            Command = new(sql + "; SELECT ROW_COUNT();");
+            // Check the actual dispatch session without adding a round trip. A disabled session must
+            // leave the row untouched and report a configuration error, distinct from a lost claim.
+            Command = new(sql + " AND @@SESSION.autocommit = 1; SELECT IF(@@SESSION.autocommit = 1, ROW_COUNT(), -1);");
             Command.Parameters.Add(new("id", MySqlDbType.Binary)
             {
                 Value = _id

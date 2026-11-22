@@ -4,6 +4,7 @@ using Npgsql;
 using NpgsqlTypes;
 using Relayer.Outbox.PostgreSql;
 using Relayer.Transports;
+using TUnit.Assertions.Enums;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
@@ -39,12 +40,12 @@ public class PostgreSqlOutboxStoreTests
         await Assert.That(rows[0].MessageType).IsEqualTo("order.placed.v1");
         await Assert.That(rows[0].Message.Destination).IsEqualTo("orders");
         await Assert.That(rows[0].Message.OrderingKey!.Value.ToString()).IsEqualTo("customer-é");
-        await Assert.That(rows[0].Message.Body.ToArray()).IsEquivalentTo(new byte[] { 0, 255, 1 });
+        await Assert.That(rows[0].Message.Body.ToArray()).IsEquivalentTo(new byte[] { 0, 255, 1 }, CollectionOrdering.Matching);
         await Assert.That(rows[0].InsertSequence).IsEqualTo(2L);
         await Assert.That(rows[0].Message.Headers.Length).IsEqualTo(3);
         await Assert.That(rows[0].Message.Headers.Span[0].Key).IsEqualTo("duplicate");
         await Assert.That(rows[0].Message.Headers.Span[1].Key).IsEqualTo("duplicate");
-        await Assert.That(rows[0].Message.Headers.Span[1].Value.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0, 0xfe });
+        await Assert.That(rows[0].Message.Headers.Span[1].Value.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0, 0xfe }, CollectionOrdering.Matching);
         await Assert.That(rows[0].Message.Headers.Span[2].Value.IsEmpty).IsTrue();
         await Assert.That(rows[0].TenantId).IsEqualTo("tenant");
         await Assert.That(rows[0].CreatedAt).IsEqualTo(Microseconds(now));

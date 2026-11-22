@@ -1387,6 +1387,9 @@ MySQL commits. Reuse native conditional InnoDB updates/deletes, `MySqlBatch` and
 for each fenced outcome. Keep UUID and timestamp parameter storage reusable, as in D48. Do not
 implement a second packet protocol or replace native transport sends. The writer and worker's
 explicit database, server, port and table prefix must agree; validate before the transaction.
+Direct dispatch validates native autocommit at startup. Since later connections may have different
+session settings, each conditional claim and completion also checks `@@SESSION.autocommit` and
+reports a disabled session through the existing batch result without another database round trip.
 
 **Consequences.** MySQL batching remains experimental upstream and does not promise one round
 trip. Partial claim batches may leave expiring claims after an error; no send begins without all

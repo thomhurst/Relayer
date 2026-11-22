@@ -10,6 +10,39 @@ namespace Relayer.Outbox.MySql.Tests;
 public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchContractTests
 {
     [Test]
+    public async Task Startup_rejects_dispatch_sessions_with_autocommit_disabled()
+    {
+        var transport = new RecordingTransport();
+        await using var fixture = new Fixture(transport);
+        var error = await Assert.That(() => fixture.Start(10, 10, openDispatcherConnection: DisableAutocommitAsync))
+            .Throws<InvalidOperationException>();
+        await Assert.That(error!.Message).Contains("autocommit=1");
+    }
+
+    [Test]
+    public async Task Dispatch_does_not_send_when_a_later_session_disables_autocommit()
+    {
+        var transport = new RecordingTransport();
+        var disableAutocommit = false;
+        await using var fixture = new Fixture(transport);
+        await fixture.Start(10, 10, openDispatcherConnection: (context, token) =>
+            Volatile.Read(ref disableAutocommit) ? DisableAutocommitAsync(context, token) : default);
+        Volatile.Write(ref disableAutocommit, true);
+        var record = Record(1);
+        await fixture.CommitAsync(record);
+        await fixture.StopAsync();
+
+        await Assert.That(transport.Received.Count).IsEqualTo(0);
+        await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[] { new Row(record.Id, 0, null, false, false) });
+    }
+
+    private static async ValueTask DisableAutocommitAsync(MySqlConnectionOpenedContext context, CancellationToken cancellationToken)
+    {
+        await using var command = new MySqlCommand("SET SESSION autocommit=0", context.Connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    [Test]
     [Arguments("throw")]
     [Arguments("zero")]
     [Arguments("negative")]
@@ -205,6 +238,7 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
         private readonly MySqlFixture _database = new();
 
         internal MySqlDataSource Source => _database.Source;
+        private MySqlDataSource? _dispatchSource;
         private ServiceProvider? _provider;
         private MySqlDirectDispatcher? _worker;
 
@@ -216,7 +250,8 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
 
         internal MySqlDirectDispatcher? Worker => _worker;
 
-        internal async Task Start(int batchSize, int queueCapacity, bool startWorker = true)
+        internal async Task Start(int batchSize, int queueCapacity, bool startWorker = true,
+            MySqlConnectionOpenedCallback? openDispatcherConnection = null)
         {
             await _database.StartAsync();
             await using var connection = await Source.OpenConnectionAsync();
@@ -227,7 +262,14 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
             services.AddSingleton<ITransport>(transport);
             services.AddSingleton<RelayerInstrumentation>();
             services.AddRelayerMySqlOutbox(_options);
-            services.AddRelayerMySqlDirectDispatch("store", Source, _options,
+
+            if (openDispatcherConnection is not null)
+            {
+                _dispatchSource = new MySqlDataSourceBuilder(Source.ConnectionString + ";Pooling=false")
+                    .UseConnectionOpenedCallback(openDispatcherConnection).Build();
+            }
+
+            services.AddRelayerMySqlDirectDispatch("store", _dispatchSource ?? Source, _options,
                 new()
                 {
                     BatchSize = batchSize,
@@ -327,6 +369,11 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
                 }
                 finally
                 {
+                    if (_dispatchSource is not null)
+                    {
+                        await _dispatchSource.DisposeAsync();
+                    }
+
                     await _database.DisposeAsync();
                 }
             }

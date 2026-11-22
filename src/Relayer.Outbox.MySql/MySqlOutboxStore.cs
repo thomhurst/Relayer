@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Transactions;
 using MySqlConnector;
@@ -74,6 +75,19 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         if (new MySqlConnectionStringBuilder(dataSource.ConnectionString).UseAffectedRows)
         {
             throw new ArgumentException("MySQL outbox stores require UseAffectedRows=false so unchanged live claim renewals report ownership correctly.", nameof(dataSource));
+        }
+    }
+
+    internal async Task ValidateDispatchSessionAsync(CancellationToken cancellationToken)
+    {
+        EnsureAvailable(cancellationToken);
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = new MySqlCommand("SELECT @@SESSION.autocommit", connection);
+        var autocommit = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        if (Convert.ToInt64(autocommit, CultureInfo.InvariantCulture) != 1)
+        {
+            throw new InvalidOperationException(MySqlDispatchMutations.AutocommitRequired);
         }
     }
 

@@ -10,6 +10,7 @@ using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Serialization;
 using Relayer.Transports;
+using TUnit.Assertions.Enums;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
@@ -386,12 +387,12 @@ public class AdoNetEnlistmentTests
         await Assert.That(row.Message.Destination).IsEqualTo("original-destination");
         await Assert.That(row.Message.DeliverAt).IsEqualTo(delivery.ToUniversalTime());
         await Assert.That(row.Message.OrderingKey!.Value.ToString()).IsEqualTo("café");
-        await Assert.That(row.Message.Body.ToArray()).IsEquivalentTo(new byte[] { 0, 255, 1 });
+        await Assert.That(row.Message.Body.ToArray()).IsEquivalentTo(new byte[] { 0, 255, 1 }, CollectionOrdering.Matching);
         await Assert.That(row.Message.Headers.Length).IsEqualTo(3);
         await Assert.That(row.Message.Headers.Span[0].Key).IsEqualTo("duplicate");
         await Assert.That(row.Message.Headers.Span[0].Value.ToString()).IsEqualTo("first");
         await Assert.That(row.Message.Headers.Span[1].Key).IsEqualTo("duplicate");
-        await Assert.That(row.Message.Headers.Span[1].Value.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0, 0xfe });
+        await Assert.That(row.Message.Headers.Span[1].Value.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0, 0xfe }, CollectionOrdering.Matching);
         await Assert.That(row.Message.Headers.Span[2].Value.ToString()).IsEqualTo("");
         await Assert.That(lane is >= 0 and < 8).IsTrue();
     }

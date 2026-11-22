@@ -68,6 +68,12 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
         }
     }
 
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        await _store.ValidateDispatchSessionAsync(cancellationToken).ConfigureAwait(false);
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     // Called only after durable commit. Queue pressure and shutdown cannot make a committed transaction fail.
     internal void Committed(List<BufferedOutboxMessage> rows, int count)
     {

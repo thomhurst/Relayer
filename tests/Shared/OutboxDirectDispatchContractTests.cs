@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Relayer.Testing;
 using Relayer.Transports;
+using TUnit.Assertions.Enums;
 
 namespace Relayer.TestFixtures;
 
@@ -121,10 +122,10 @@ public abstract class OutboxDirectDispatchContractTests
         transport.Release.TrySetResult();
         await fixture.StopAsync();
         var sent = transport.Received.Single(message => Identity(message) == first.Id);
-        await Assert.That(sent.Body).IsEquivalentTo(new byte[] { 1, 255, 0 });
-        await Assert.That(sent.Headers.Select(value => value.Key)).IsEquivalentTo(new[] { "ce_id", "same", "same" });
-        await Assert.That(sent.Headers[1].Value).IsEquivalentTo(new byte[] { 0xff, 0, 0xfe });
-        await Assert.That(sent.Headers[2].Value).IsEquivalentTo("second"u8.ToArray());
+        await Assert.That(sent.Body).IsEquivalentTo(new byte[] { 1, 255, 0 }, CollectionOrdering.Matching);
+        await Assert.That(sent.Headers.Select(value => value.Key)).IsEquivalentTo(new[] { "ce_id", "same", "same" }, CollectionOrdering.Matching);
+        await Assert.That(sent.Headers[1].Value).IsEquivalentTo(new byte[] { 0xff, 0, 0xfe }, CollectionOrdering.Matching);
+        await Assert.That(sent.Headers[2].Value).IsEquivalentTo("second"u8.ToArray(), CollectionOrdering.Matching);
         await Assert.That(transport.Received.Select(message => message.Body[0])).IsEquivalentTo(new byte[] { 1, 2, 3, 4 });
         await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(0);
     }
