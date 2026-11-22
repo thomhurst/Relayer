@@ -46,3 +46,9 @@ internal interface ITransportSendTargetWrapper
     // Preserve observation when a consumer supplies its own send target. The caller owns the target.
     ITransport WrapSendTarget(ITransport target);
 }
+
+internal interface ITransportFailureCopyObserver
+{
+    // Failure copies keep the source binding, even when the destination has no send route.
+    ValueTask SendCopyAsync(OutgoingMessage message, HeaderNames sourceNames, CancellationToken cancellationToken);
+}

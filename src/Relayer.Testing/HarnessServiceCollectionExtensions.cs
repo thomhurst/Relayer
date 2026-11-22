@@ -73,7 +73,7 @@ public static class HarnessServiceCollectionExtensions
     }
 }
 
-internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITransportWrapper, ITransportSendTargetWrapper
+internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITransportWrapper, ITransportSendTargetWrapper, ITransportFailureCopyObserver
 {
     private readonly ITransport _inner;
     private readonly RelayerHarness _harness;
@@ -159,13 +159,23 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
         return _ownsTransport ? _inner.DisposeAsync() : default;
     }
 
-    public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    {
+        return SendAsync(message, null, cancellationToken);
+    }
+
+    ValueTask ITransportFailureCopyObserver.SendCopyAsync(OutgoingMessage message, HeaderNames sourceNames, CancellationToken cancellationToken)
+    {
+        return SendAsync(message, sourceNames, cancellationToken);
+    }
+
+    private async ValueTask SendAsync(OutgoingMessage message, HeaderNames? sourceNames, CancellationToken cancellationToken)
     {
         _harness.WorkStarted();
 
         try
         {
-            var snapshot = Snapshot(message);
+            var snapshot = Snapshot(message, sourceNames);
             _harness.Remember(snapshot);
 
             try
@@ -224,43 +234,52 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
         }
     }
 
-    private HarnessMessage Snapshot(OutgoingMessage message)
+    private HarnessMessage Snapshot(OutgoingMessage message, HeaderNames? sourceNames = null)
     {
-        var candidates = _names.GetValueOrDefault(message.Destination, _defaultNames);
-        string? id = null;
-        string? type = null;
+        var (id, type) = sourceNames is null ? default : ReadIdentity(message.Headers.Span, sourceNames);
 
-        foreach (var names in candidates)
+        if (id is null || type is null)
         {
-            string? candidateId = null;
-            string? candidateType = null;
-
-            foreach (var header in message.Headers.Span)
+            foreach (var names in _names.GetValueOrDefault(message.Destination, _defaultNames))
             {
-                if (header.Key == names.Id)
+                var (candidateId, candidateType) = ReadIdentity(message.Headers.Span, names);
+
+                // Keep each binding's ID and type together, preferring a complete envelope.
+                if (candidateId is not null && candidateType is not null)
                 {
-                    candidateId = header.Value.ToString();
+                    (id, type) = (candidateId, candidateType);
+                    break;
                 }
 
-                if (header.Key == names.Type)
+                if (id is null && type is null)
                 {
-                    candidateType = header.Value.ToString();
+                    (id, type) = (candidateId, candidateType);
                 }
-            }
-            // Keep each binding's ID and type together, preferring a complete envelope.
-            if ((id is null && type is null) || (candidateId is not null && candidateType is not null))
-            {
-                id = candidateId;
-                type = candidateType;
-            }
-
-            if (candidateId is not null && candidateType is not null)
-            {
-                break;
             }
         }
 
         return new(id, type, message.Body.ToArray(), transportName: Name, destination: message.Destination,
             isTombstone: message.IsTombstone, tombstoneKey: message.IsTombstone ? message.OrderingKey : null);
+    }
+
+    private static (string? Id, string? Type) ReadIdentity(ReadOnlySpan<KeyValuePair<string, WireString>> headers, HeaderNames names)
+    {
+        string? id = null;
+        string? type = null;
+
+        foreach (var header in headers)
+        {
+            if (header.Key == names.Id)
+            {
+                id = header.Value.ToString();
+            }
+
+            if (header.Key == names.Type)
+            {
+                type = header.Value.ToString();
+            }
+        }
+
+        return (id, type);
     }
 }
