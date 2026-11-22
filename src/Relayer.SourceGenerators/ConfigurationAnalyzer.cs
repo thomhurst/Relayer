@@ -291,7 +291,10 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
     {
         if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } parameter)
         {
-            return method.TypeArguments[parameter.Ordinal];
+            // A local function's constraint can refer to a type parameter from an enclosing method.
+            return SymbolEqualityComparer.Default.Equals(parameter.DeclaringMethod, method.OriginalDefinition)
+                ? method.TypeArguments[parameter.Ordinal]
+                : type;
         }
 
         if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Type } typeParameter)

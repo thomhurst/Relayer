@@ -341,6 +341,33 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("THandler", "TLocalHandler")]
+    [Arguments("THandler, int", "TLocalHandler, TUnused")]
+    public async Task Local_handler_helper_preserves_the_enclosing_message_type(string arguments, string parameters)
+    {
+        await Verify(Imports + s_internalHandler + $$"""
+            static class Setup
+            {
+                public static void Add(IConsumerBuilder consumer)
+                {
+                    Register<H, Order>(consumer);
+                }
+
+                private static void Register<THandler, TMessage>(IConsumerBuilder consumer)
+                    where THandler : class, IHandler<TMessage>
+                {
+                    AddOne<{{arguments}}>();
+
+                    void AddOne<{{parameters}}>() where TLocalHandler : class, IHandler<TMessage>
+                    {
+                        consumer.Handler<TLocalHandler, TMessage>();
+                    }
+                }
+            }
+            """, "");
+    }
+
+    [Test]
     public async Task Handler_passed_to_a_referenced_generic_helper_is_registered()
     {
         var external = Compile(Imports + """
