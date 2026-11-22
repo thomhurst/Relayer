@@ -6,7 +6,7 @@ public sealed class DefaultFailureClassifier : IFailureClassifier
     /// <inheritdoc />
     public FailureAction Classify(Exception exception, MessageContext context)
     {
-        return exception is UnknownMessageTypeException or MessageDeserializationException or MessageEnvelopeException
+        return exception is UnknownMessageTypeException or MessageDeserializationException or MessageEnvelopeException or UnsupportedNativeBodyException
                     ? FailureAction.DeadLetter : FailureAction.Retry;
     }
 }

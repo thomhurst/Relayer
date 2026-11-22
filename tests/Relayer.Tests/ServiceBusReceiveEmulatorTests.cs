@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
+using Azure.Core.Amqp;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using DotNet.Testcontainers.Builders;
@@ -163,6 +164,66 @@ public sealed class ServiceBusReceiveEmulatorTests
             settlements.Any(settlement => settlement.SpanId == span.ParentSpanId && settlement.TraceId == span.TraceId))).IsTrue();
         await Assert.That(captured.Any(span => ReferenceEquals(span.Source, tracing.Source) &&
             Equals(span.GetTagItem("messaging.destination.subscription.name"), "audit"))).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Malformed_data_and_amqp_value_bodies_dead_letter_on_first_delivery(bool valueBody)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var token = timeout.Token;
+        var stack = await SharedBrokers.ServiceBus.Value.WaitAsync(token);
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("poison-body");
+        await stack.CreateQueueAsync(queue, false, token);
+        await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString());
+        await using var sender = client.CreateSender(queue);
+        await using var deadLetters = client.CreateReceiver(queue, new ServiceBusReceiverOptions
+        {
+            SubQueue = SubQueue.DeadLetter,
+            ReceiveMode = ServiceBusReceiveMode.ReceiveAndDelete,
+        });
+        var services = new ServiceCollection();
+        services.AddSingleton<EmulatorControl>();
+        services.AddRelayer(builder =>
+        {
+            builder.Infrastructure().MessageTypes.Add<EmulatorPayload>("servicebus.emulator-receive");
+            builder.UseJsonSerializer(ServiceBusReceiveEmulatorJson.Default);
+            builder.ServiceBus("bus", bus =>
+            {
+                bus.TopologyMode = TopologyMode.None;
+                bus.Options.Configure(options => options.Client = client);
+                bus.Consume(queue, consumer => consumer.Handler<EmulatorHandler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        await ServiceBusReceiveTests.Start(provider, token);
+
+        const string PayloadText = "not JSON";
+        var outgoing = valueBody
+            ? new ServiceBusMessage(new AmqpAnnotatedMessage(AmqpMessageBody.FromValue(PayloadText)))
+            : new ServiceBusMessage(new BinaryData(PayloadText));
+        outgoing.MessageId = "poison";
+        outgoing.ContentType = "application/json";
+        outgoing.ApplicationProperties["cloudEvents:id"] = outgoing.MessageId;
+        outgoing.ApplicationProperties["cloudEvents:type"] = "servicebus.emulator-receive;v=1";
+        await sender.SendMessageAsync(outgoing, token);
+        var failed = await deadLetters.ReceiveMessageAsync(TimeSpan.FromSeconds(40), token)
+            ?? throw new InvalidOperationException("Expected native dead-letter delivery.");
+
+        await Assert.That(failed.MessageId).IsEqualTo(outgoing.MessageId);
+        await Assert.That(failed.DeliveryCount).IsEqualTo(1);
+        await Assert.That(failed.DeadLetterReason).IsEqualTo("Processing failed");
+        await Assert.That(failed.DeadLetterErrorDescription).Contains(valueBody ? "AMQP Value" : "Cannot deserialize");
+        await Assert.That(failed.ApplicationProperties[FailureHeaders.Attempts]).IsEqualTo("1");
+
+        if (valueBody)
+        {
+            await Assert.That(failed.GetRawAmqpMessage().Body.TryGetValue(out var value)).IsTrue();
+            await Assert.That(value).IsEqualTo(PayloadText);
+        }
+
+        await ServiceBusReceiveTests.Stop(provider, token);
     }
 
     private static ServiceBusMessage Message(int value, string? session = null)

@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Threading.Tasks.Sources;
 using Relayer.Transports;
 
@@ -275,7 +276,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
 
             try
             {
-                Initialize(message);
+                Initialize(message, captureBodyFailure: true);
                 _context = _consumer.RentContext(this, cancellationToken);
                 _context.Features.Set(Native);
                 _pending = _consumer.ProcessAsync(_context).ConfigureAwait(false).GetAwaiter();
@@ -422,6 +423,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         private ConsumeDelegate? _dispatch;
         private int _attempt;
         private ReadOnlySequence<byte> _body;
+        private UnsupportedNativeBodyException? _bodyFailure;
 
         internal NativeMessage<TIncoming> Native
         {
@@ -435,11 +437,21 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
 
         internal override Disposition Disposition => Native.Disposition;
 
-        internal void Initialize(TIncoming message)
+        internal void Initialize(TIncoming message, bool captureBodyFailure = false)
         {
             Native.Message = message;
             _headers = new(message, _names);
-            _body = TBinding.GetBody(message);
+
+            try
+            {
+                _body = TBinding.GetBody(message);
+            }
+            catch (UnsupportedNativeBodyException error) when (captureBodyFailure)
+            {
+                // Keep the native delivery and headers available for the single-message failure policy.
+                _bodyFailure = error;
+            }
+
             _attempt = TBinding.GetDeliveryCount(message) ?? 1;
             ArgumentOutOfRangeException.ThrowIfLessThan(_attempt, 1);
         }
@@ -492,6 +504,11 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         {
             get
             {
+                if (_bodyFailure is { } failure)
+                {
+                    ExceptionDispatchInfo.Throw(failure);
+                }
+
                 _ = MessageType;
                 return _dispatch;
             }
@@ -534,6 +551,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
             _dispatch = null;
             _attempt = 0;
             _body = default;
+            _bodyFailure = null;
         }
     }
 }
