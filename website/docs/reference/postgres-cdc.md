@@ -67,10 +67,8 @@ The worker owns and disposes each replication connection, including on reconnect
 application-owned. Replication uses a separate native connection outside the ordinary pool; a
 single-connection pool can serve recovery transactions. Stop the host before disposing the data source.
 
-Keep maintenance registered for failed sends, expired claims, future delivery times, and retention: due times
-and claim expiry do not produce insert events. PostgreSQL can also decode a commit before a SQL snapshot on
-the primary can see its rows. A CDC pass that misses those rows leaves them pending for maintenance or a
-later outbox commit. [PostgreSQL bug #19733](https://www.postgresql.org/message-id/19733-5fcd39e85fa221a4%40postgresql.org)
+Keep maintenance registered for failed sends, expired claims, future delivery times, retention, and
+[rows that become visible after their CDC dispatch pass](#when-rows-become-visible-after-cdc).
 
 Direct commit-triggered dispatch can coexist but is not required for CDC. Fenced claims arbitrate between workers.
 
@@ -120,6 +118,19 @@ Dispatch runs inline on the replication read loop. A slow or unavailable broker 
 commits and advancing feedback, so retained WAL can grow during a send stall. Npgsql continues its native
 status timer, but that does not advance the applied/flushed position past unfinished dispatch. Size WAL
 retention for broker outages and monitor disk capacity.
+
+### When rows become visible after CDC
+
+PostgreSQL can send a decoded commit before a new SQL snapshot on the primary can see the inserted rows.
+This window can occur without synchronous replication and can last longer while the writer waits for a
+synchronous standby. [PostgreSQL bug #19733](https://www.postgresql.org/message-id/flat/19733-5fcd39e85fa221a4%40postgresql.org)
+
+If the dispatch pass misses a row, CDC can acknowledge the commit while the row remains pending in the
+outbox. A later captured outbox commit can trigger another pass. Idle checkpoint markers only advance
+replication feedback. When there are no more outbox inserts, [maintenance](postgres-maintenance.md#recovery-and-ownership)
+picks up the row on a sweep after it becomes visible, is due, and reaches the minimum age set by
+`RecoveryDelay` (30 seconds by default, measured from `created_at`). An idle worker waits `SweepInterval`
+(5 seconds by default) between scans. Sweep progress and send time also affect delivery latency.
 
 ### Checkpoint during periods without outbox inserts
 
