@@ -134,11 +134,11 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
         {
             foreach (var pair in source)
             {
-                // The copy is a new publication: stream-wide deduplication and optimistic
-                // publication checks and destructive rollups belong to the original send, including noncanonical casing.
+                // Publish controls apply to the original send. The copy uses the destination stream's retention policy.
                 if (string.Equals(pair.Key, "Nats-Msg-Id", StringComparison.OrdinalIgnoreCase) ||
                     pair.Key.StartsWith("Nats-Expected-", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(pair.Key, "Nats-Rollup", StringComparison.OrdinalIgnoreCase))
+                    string.Equals(pair.Key, "Nats-Rollup", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(pair.Key, "Nats-TTL", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
