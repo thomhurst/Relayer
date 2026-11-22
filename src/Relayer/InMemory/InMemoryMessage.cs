@@ -163,6 +163,8 @@ public readonly struct InMemoryDelivery
         _receiver.Settle(disposition);
     }
 
+    internal DispositionKind SettlementKind => _receiver?.SettlementKind ?? DispositionKind.Unset;
+
     internal ReadOnlyMemory<KeyValuePair<string, WireString>> RedeliveryHeaders => _receiver.RedeliveryHeaders;
 
     /// <summary>Manually completes this delivery. Return SettledByHandler to prevent another settlement.</summary>
@@ -243,24 +245,12 @@ public sealed class InMemoryDeadLetter
     internal InMemoryDeadLetter(InMemoryDelivery delivery, DeadLetterInfo error)
     {
         Body = delivery.Message.Body.ToArray();
-        Headers = Snapshot(delivery.Message.Headers.Span);
+        Headers = WireString.CopyHeaders(delivery.Message.Headers.Span);
         OrderingKey = delivery.Message.OrderingKey?.ToString();
         Partition = delivery.Partition;
         Position = delivery.Position;
         Attempt = delivery.Attempt;
-        Error = new(error.Reason, error.Description, Snapshot(error.Headers.Span));
-    }
-
-    private static KeyValuePair<string, WireString>[] Snapshot(ReadOnlySpan<KeyValuePair<string, WireString>> source)
-    {
-        var result = new KeyValuePair<string, WireString>[source.Length];
-
-        for (var i = 0; i < result.Length; i++)
-        {
-            result[i] = new(source[i].Key, new WireString(source[i].Value.ToString()));
-        }
-
-        return result;
+        Error = new(error.Reason, error.Description, WireString.CopyHeaders(error.Headers.Span));
     }
 
     /// <summary>Original serialized body.</summary>

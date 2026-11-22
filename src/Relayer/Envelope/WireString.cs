@@ -49,6 +49,19 @@ public readonly struct WireString
         return Encoding.UTF8.TryGetChars(_utf8.Span, destination, out charsWritten);
     }
 
+    internal static KeyValuePair<string, WireString>[] CopyHeaders(ReadOnlySpan<KeyValuePair<string, WireString>> headers)
+    {
+        var copy = new KeyValuePair<string, WireString>[headers.Length];
+
+        for (var i = 0; i < copy.Length; i++)
+        {
+            var header = headers[i];
+            copy[i] = header.Value.Text is null ? new(header.Key, new WireString(header.Value.Utf8.ToArray())) : header;
+        }
+
+        return copy;
+    }
+
     /// <summary>Returns native text, decoding and allocating only for a nonempty UTF-8 value.</summary>
     public override string ToString()
     {

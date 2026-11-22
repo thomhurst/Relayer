@@ -348,7 +348,8 @@ public class InMemoryTransportTests
     {
         await using var transport = Transport();
         var seen = Signal();
-        var errorBytes = Encoding.UTF8.GetBytes("failure");
+        byte[] originalBytes = [0x80, 0x00, 0xFF];
+        byte[] errorBytes = [0xFF, 0x00, 0x80];
         transport.RegisterConsumer("orders", (delivery, _) =>
         {
             if (Value(delivery) == 1)
@@ -360,14 +361,19 @@ public class InMemoryTransportTests
             return new(Disposition.Complete);
         });
         await transport.StartAsync(default);
-        await Send(transport, 1);
+        KeyValuePair<string, WireString>[] headers = [new("original", new(originalBytes))];
+        await transport.SendAsync(new("orders", BitConverter.GetBytes(1), headers), default);
+        Array.Clear(originalBytes);
         await Send(transport, 2);
         await seen.Task.WaitAsync(s_limit);
         var dead = await transport.DeadLetters("orders").ReadAsync().AsTask().WaitAsync(s_limit);
         Array.Clear(errorBytes);
         await Assert.That(BitConverter.ToInt32(dead.Body.Span)).IsEqualTo(1);
+        await Assert.That(dead.Headers.Span[0].Value.Text).IsNull();
+        await Assert.That(dead.Headers.Span[0].Value.Utf8.Span.SequenceEqual(new byte[] { 0x80, 0x00, 0xFF })).IsTrue();
         await Assert.That(dead.Error.Reason).IsEqualTo("invalid");
-        await Assert.That(dead.Error.Headers.Span[0].Value.ToString()).IsEqualTo("failure");
+        await Assert.That(dead.Error.Headers.Span[0].Value.Text).IsNull();
+        await Assert.That(dead.Error.Headers.Span[0].Value.Utf8.Span.SequenceEqual(new byte[] { 0xFF, 0x00, 0x80 })).IsTrue();
         await Assert.That(dead.Attempt).IsEqualTo(1);
         await transport.StopAsync(default);
     }

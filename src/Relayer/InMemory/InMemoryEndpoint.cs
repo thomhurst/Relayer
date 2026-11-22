@@ -579,6 +579,8 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
 
     internal long CommittedPosition => Interlocked.Read(ref _committed);
 
+    internal DispositionKind SettlementKind => _manual ? _settlement.Kind : DispositionKind.Unset;
+
     internal void Settle(Disposition disposition)
     {
         using var activity = endpoint.SettlementTracing?.Start(disposition, PartitionId, _pending);

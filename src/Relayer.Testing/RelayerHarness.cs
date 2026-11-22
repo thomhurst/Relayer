@@ -405,7 +405,8 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
             var finalAttemptFailed = _failing.Remove(context, out var attempt) && attempt == context.Attempt;
 
             if (!returned || finalAttemptFailed || context.Settlement.Request is { Kind: not DispositionKind.Complete } ||
-                context.FailureDisposition is { Kind: not DispositionKind.Complete })
+                context.FailureDisposition is { Kind: not DispositionKind.Complete } ||
+                context.Features.Get<NativeMessage<InMemoryDelivery>>()?.Message.SettlementKind is DispositionKind.Redeliver or DispositionKind.DeadLetter)
             {
                 return;
             }
@@ -483,12 +484,7 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
 
     private void RecordDeadLetter(HarnessMessage message, DeadLetterInfo error)
     {
-        var headers = new KeyValuePair<string, WireString>[error.Headers.Length];
-
-        for (var i = 0; i < headers.Length; i++)
-        {
-            headers[i] = new(error.Headers.Span[i].Key, new WireString(error.Headers.Span[i].Value.ToString()));
-        }
+        var headers = WireString.CopyHeaders(error.Headers.Span);
 
         lock (_gate)
         {

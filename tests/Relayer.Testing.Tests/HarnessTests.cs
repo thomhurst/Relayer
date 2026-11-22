@@ -301,22 +301,64 @@ public class HarnessTests
     }
 
     [Test]
-    public async Task Manual_native_dead_letter_is_observed()
+    public async Task Manual_native_dead_letter_is_observed_but_does_not_match_waiters()
     {
         await using var fixture = await Fixture.Start(new()
         {
-            Handle = (_, context) =>
-        {
-            var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
-            native.Message.DeadLetter(new("manual"));
-            native.Disposition = Disposition.SettledByHandler;
-            return default;
-        }
+            Handle = (message, context) =>
+            {
+                var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
+
+                if (message.Value == 1)
+                {
+                    native.Message.DeadLetter(new("manual"));
+                }
+                else
+                {
+                    native.Message.Complete();
+                }
+
+                native.Disposition = Disposition.SettledByHandler;
+                return default;
+            }
         });
+        using var cancellation = new CancellationTokenSource(s_limit);
+        var waiting = fixture.Harness.WaitForConsumedAsync<Probe>(cancellationToken: cancellation.Token);
         await fixture.Send(new Probe(1));
         await fixture.Idle();
         await Assert.That(fixture.Harness.DeadLettered.Count).IsEqualTo(1);
         await Assert.That(fixture.Harness.DeadLettered[0].Error.Reason).IsEqualTo("manual");
+
+        var afterDeadLetter = fixture.Harness.WaitForConsumedAsync<Probe>(cancellationToken: cancellation.Token);
+        await fixture.Send(new Probe(2));
+        await Assert.That((await waiting).Value).IsEqualTo(2);
+        await Assert.That((await afterDeadLetter).Value).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Harness_dead_letter_snapshot_owns_byte_valued_error_headers()
+    {
+        byte[] errorBytes = [0xFF, 0x00, 0x80];
+        KeyValuePair<string, WireString>[] errorHeaders = [new("error", new(errorBytes))];
+        await using var fixture = await Fixture.Start(new()
+        {
+            Handle = (_, context) =>
+            {
+                var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
+                native.Message.DeadLetter(new("manual", headers: errorHeaders));
+                native.Disposition = Disposition.SettledByHandler;
+                return default;
+            }
+        });
+        await fixture.Send(new Probe(1));
+        await fixture.Idle();
+        Array.Clear(errorBytes);
+        Array.Clear(errorHeaders);
+
+        var error = fixture.Harness.DeadLettered.Single().Error.Headers.Span[0];
+        await Assert.That(error.Key).IsEqualTo("error");
+        await Assert.That(error.Value.Text).IsNull();
+        await Assert.That(error.Value.Utf8.Span.SequenceEqual(new byte[] { 0xFF, 0x00, 0x80 })).IsTrue();
     }
 
     [Test]
@@ -682,21 +724,28 @@ public class HarnessTests
     [Test]
     public async Task Native_redelivery_keeps_work_pending_until_success()
     {
+        var clock = new Relayer.Tests.InMemoryTestClock();
         await using var fixture = await Fixture.Start(new()
         {
             Handle = (_, context) =>
-        {
-            if (context.Attempt == 1)
             {
-                var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
-                native.Message.Redeliver(TimeSpan.Zero);
-                native.Disposition = Disposition.SettledByHandler;
-            }
+                if (context.Attempt == 1)
+                {
+                    var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
+                    native.Message.Redeliver(TimeSpan.FromMinutes(1));
+                    native.Disposition = Disposition.SettledByHandler;
+                }
 
-            return default;
-        }
-        });
+                return default;
+            }
+        }, clock: clock);
+        using var cancellation = new CancellationTokenSource(s_limit);
+        var consumed = fixture.Harness.WaitForConsumedAsync<Probe>(cancellationToken: cancellation.Token);
         await fixture.Send(new Probe(1));
+        await clock.NextTimer();
+        await Assert.That(consumed.IsCompleted).IsFalse();
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await Assert.That((await consumed).Value).IsEqualTo(1);
         await fixture.Idle();
         await Assert.That(fixture.Harness.Consumed.Count).IsEqualTo(2);
         await Assert.That(fixture.Harness.Consumed[0].Attempt).IsEqualTo(1);
