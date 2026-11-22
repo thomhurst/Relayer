@@ -118,7 +118,9 @@ At composition the pipeline checks every configured delay and the dead-letter de
 
 1. Native redelivery, when the delay fits within `MaxRedeliveryDelay`.
 2. Otherwise a native scheduled copy, when it fits within `MaxDeliveryDelay`.
-3. Otherwise a durable scheduler (`IFailureScheduler`), supplied by an outbox integration.
+3. Otherwise a durable failure-copy scheduler, when the transport supports that fallback and the application registers an `IFailureScheduler` in dependency injection.
+
+Built-in outbox integrations do not register `IFailureScheduler`. [Scheduling outgoing messages through the outbox](sending.md#choosing-the-destination-per-message) uses a separate executor. An `IFailureScheduler` implementation must persist the copy before returning, independently of the failed handler attempt. Relayer can then complete the original delivery.
 
 Native dead-lettering is used only when the endpoint guarantees error metadata. Otherwise a copy goes to the dead-letter endpoint and the original is completed. If no mechanism is available, startup fails.
 

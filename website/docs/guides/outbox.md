@@ -67,9 +67,10 @@ kafka.Consume("orders", consumer =>
 
 ### Before starting the host
 
-Create the Kafka topics and deploy the [PostgreSQL schema](../reference/postgres-schema.md).
-Kafka checks that the topics exist at startup by default. Use the same schema and table prefix in
-the deployment and outbox registration. The defaults are `public` and `relayer_`.
+Create the Kafka topics `orders` and `orders.dead-letter` and deploy the
+[PostgreSQL schema](../reference/postgres-schema.md). Kafka checks both topics at startup by default.
+`orders.dead-letter` is the default dead-letter topic for the `orders` consumer shown above.
+Use the same schema and table prefix in the deployment and outbox registration. The defaults are `public` and `relayer_`.
 
 Use `AddDbContext` to register a scoped context and keep the Npgsql data source alive until the host
 stops. See [EF Core registration](../reference/ef-core-outbox.md#registration) for context pooling
