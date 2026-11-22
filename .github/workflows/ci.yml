@@ -95,6 +95,13 @@ jobs:
         with:
           fetch-depth: 0 # MinVer needs version tags and their history.
 
+      - name: Require Relayer.slnx
+        run: |
+          if [ ! -f Relayer.slnx ]; then
+            echo "::error::Relayer.slnx is missing. Restore it or update the CI workflow if the solution moved."
+            exit 1
+          fi
+
       # This job owns its ephemeral runner. Prepare before starting the pinned
       # daemon so Docker reads the reserved range, including for Ryuk's port.
       - name: Separate Docker publications from outbound ports
@@ -111,29 +118,20 @@ jobs:
       - name: Verify mixed-address port allocation
         run: bash scripts/Test-ContainerPortAllocation.sh
 
-      - name: Check for a solution
-        id: solution
-        run: |
-          if [ -f Relayer.slnx ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "::notice::No Relayer.slnx yet; skipping build."; fi
-
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        if: steps.solution.outputs.present == 'true'
         with:
           global-json-file: global.json
           dotnet-version: '10.0.x' # runtime for the net10.0 target; global.json selects the 11.0 SDK
 
       - name: Restore
-        if: steps.solution.outputs.present == 'true'
         run: dotnet restore
 
       - name: Build
-        if: steps.solution.outputs.present == 'true'
         run: dotnet build --no-restore -c Release
 
       - name: Test
         id: tests
         shell: bash
-        if: steps.solution.outputs.present == 'true'
         # Keep image acquisition outside Kafka's lifecycle deadline and
         # PostgreSQL/MySQL bounded docker run commands.
         run: |
@@ -182,7 +180,6 @@ jobs:
       - name: Native AOT smoke test
         id: aot-smoke
         shell: bash
-        if: steps.solution.outputs.present == 'true'
         run: |
           mkdir -p .artifacts/ci-aot-failure
           # Keep the original publish/run exit codes and logs; do not rebuild a failed image.
@@ -216,13 +213,11 @@ jobs:
           retention-days: 14
 
       - name: Native AOT dead-letter HTTP smoke
-        if: steps.solution.outputs.present == 'true'
         run: |
           dotnet publish tests/Relayer.AspNetCore.AotSmoke -c Release -f ${{ matrix.framework }} -r linux-x64 -o .artifacts/dead-letter-http-aot
           .artifacts/dead-letter-http-aot/Relayer.AspNetCore.AotSmoke
 
       - name: Google Pub/Sub Native AOT smoke test
-        if: steps.solution.outputs.present == 'true'
         env:
           PUBSUB_EMULATOR_HOST: 127.0.0.1:8085
         run: |
