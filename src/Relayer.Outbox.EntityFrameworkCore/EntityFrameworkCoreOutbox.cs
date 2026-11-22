@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -328,15 +329,20 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
 
             owner._selection = previous;
             State.SelectionDepth--;
-            // An explicit transaction keeps ownership until commit/rollback; an unsaved implicit unit is abandoned.
+            _disposed = true;
+
+            if (State.SelectionDepth == 0 && State.OwnedTransaction is { } unfinished)
+            {
+                State.DisposeOwnedTransaction(unfinished);
+                return;
+            }
+
             State.CheckTransaction();
 
             if (State.SelectionDepth == 0 && State.Transaction is null)
             {
                 State.Clear();
             }
-
-            _disposed = true;
         }
     }
 }
@@ -415,6 +421,32 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         CreatingSavepoint = false;
         SavepointCreated = false;
         SaveRecovered = false;
+    }
+
+    internal void DisposeOwnedTransaction(IDbContextTransaction transaction)
+    {
+        try
+        {
+            transaction.Dispose();
+        }
+        finally
+        {
+            Clear();
+        }
+    }
+
+    [RuntimeAsyncMethodGeneration(false)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask DisposeOwnedTransactionAsync(IDbContextTransaction transaction)
+    {
+        try
+        {
+            await transaction.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            Clear();
+        }
     }
 
     internal void Saved()
@@ -574,6 +606,7 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         SavepointCreated = false;
         SaveRecovered = false;
         Transaction = null;
+        OwnedTransaction = null;
         Failed = false;
         Detached = false;
     }

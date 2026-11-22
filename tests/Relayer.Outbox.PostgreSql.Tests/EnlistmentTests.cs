@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Data;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Configuration;
@@ -71,6 +72,63 @@ public class EnlistmentTests
             .AddRelayerOutbox(scope.ServiceProvider);
         using var context = new OrdersContext(options.Options);
         _ = context.Model;
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Implicit_save_change_detection_failure_discards_outbox_on_disposal_or_next_save(bool synchronous, bool disposeSelection)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+        using var selection = db.EnlistRelayerOutbox();
+        db.Add(new Order { Id = 1 });
+        await selection.EnqueueAsync(new Probe(1));
+
+        db.ChangeTracker.DetectingAllChanges += FailChangeDetection;
+
+        if (synchronous)
+        {
+            await Assert.That(() => db.SaveChanges()).Throws<InvalidOperationException>().WithMessageContaining("Change detection failed");
+        }
+        else
+        {
+            await Assert.That(() => db.SaveChangesAsync()).Throws<InvalidOperationException>().WithMessageContaining("Change detection failed");
+        }
+
+        db.ChangeTracker.DetectingAllChanges -= FailChangeDetection;
+
+        if (disposeSelection)
+        {
+            selection.Dispose();
+            await Assert.That(db.Database.CurrentTransaction).IsNull();
+        }
+
+        db.ChangeTracker.Clear();
+        db.Add(new Order { Id = 2 });
+
+        if (synchronous)
+        {
+            db.SaveChanges();
+        }
+        else
+        {
+            await db.SaveChangesAsync();
+        }
+
+        await Assert.That(db.Database.CurrentTransaction).IsNull();
+        await Assert.That(await database.Scalar("SELECT \"Id\"::bigint FROM orders")).IsEqualTo(2L);
+        await Assert.That(await database.Count()).IsEqualTo(0L);
+
+        static void FailChangeDetection(object? sender, DetectChangesEventArgs args)
+        {
+            throw new InvalidOperationException("Change detection failed.");
+        }
     }
 
     [Test]
