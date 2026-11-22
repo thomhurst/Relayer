@@ -80,7 +80,7 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
         }
     }
 
-    /// <summary>Completes when all native loops stop; faults on unexpected processing or settlement failures.</summary>
+    /// <summary>Completes when all native loops stop and propagates unexpected processing or settlement failures.</summary>
     public Task Completion
     {
         get; private set;
@@ -281,6 +281,7 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
 
         foreach (var task in tasks)
         {
+            // A callback throwing OperationCanceledException can cancel its task independently of shutdown.
             _ = task.ContinueWith(static (_, state) =>
             {
                 try
@@ -291,7 +292,7 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
                 { /* A completed run may already have been restarted or disposed. */
                 }
             }, _stop,
-                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                CancellationToken.None, TaskContinuationOptions.NotOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
 
         Completion = ObserveCompletionAsync(Task.WhenAll(tasks));
@@ -353,7 +354,7 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
         {
             await StopAsync(CancellationToken.None).ConfigureAwait(false);
         }
-        catch (Exception) when (Completion.IsFaulted)
+        catch (Exception) when (Completion.IsFaulted || Completion.IsCanceled)
         { /* Completion and the hosted service report processing failures. */
         }
         finally
