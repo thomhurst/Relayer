@@ -272,8 +272,9 @@ public class TenantStoreSelectionTests
         await Deliver(pipeline, Guid.CreateVersion7().ToString("D"), stores[1].Id);
         await Assert.That(scopes.Count).IsEqualTo(2);
         await Assert.That(control.Calls).IsEqualTo(2);
-        // Strategy context, two transaction/handler scopes, and native unknown-outcome verification.
-        await Assert.That(control.Authorizations).IsEqualTo(4);
+        // The strategy context and both transaction scopes authorize the tenant.
+        // The first handler fails before commit, so verification does not open another scope.
+        await Assert.That(control.Authorizations).IsEqualTo(3);
         await Verify(stores[0], 0, 0, 0);
         await Verify(stores[1], 1, 1, 1, tenantBound: true);
         await Verify(stores[2], 0, 0, 0);

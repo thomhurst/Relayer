@@ -134,14 +134,18 @@ failed-attempt business writes, inbox rows and outgoing rows roll back together.
 provider's retry count and delays as usual. Non-transient handler errors still follow
 [Relayer's consumer failure policy](../guides/failure-handling.md).
 
-When a transient commit error leaves its outcome unknown, the strategy checks the attempted inbox
-key on a fresh connection. A committed key completes processing without replaying the handler;
-buffered direct sends are retained and flushed by the outer failure pipeline. Each native attempt
-uses the outbox configuration of its fresh scoped DbContext, including reloaded schema and prefix.
-Otherwise the strategy retries the complete unit. This verification requires the inbox, either
-implicit through `AddRelayerOutbox` or explicit through `inbox: true`. Without it, unknown commits can
-replay business work. Keep external side effects idempotent even with an inbox: database rollback
-cannot undo an HTTP call.
+When a transient commit error leaves its outcome unknown, the strategy checks the inbox row and
+the attempt's PostgreSQL transaction ID on a fresh connection. Confirmation that this attempt
+committed completes processing without replaying the handler and flushes its buffered direct sends.
+A failure before commit bypasses verification. If a duplicate committed the same message after
+an attempt rolled back, the normal inbox check suppresses that message on retry and the failed
+attempt's direct sends are discarded. Each native attempt uses the outbox configuration of its fresh
+scoped DbContext, including reloaded schema and prefix.
+
+Retrying inbox consumers use PostgreSQL's transaction status functions, available since PostgreSQL 13.
+Enable the inbox through `AddRelayerOutbox` or explicitly through `inbox: true` to verify commits.
+Without an inbox, unknown commits can replay business work. Keep external side effects idempotent
+even with an inbox. Database rollback cannot undo an HTTP call.
 
 The provider-default path without configured retries retains its original transaction middleware. Retrying contexts additionally
 use native strategy callbacks and a fresh scope per attempt.

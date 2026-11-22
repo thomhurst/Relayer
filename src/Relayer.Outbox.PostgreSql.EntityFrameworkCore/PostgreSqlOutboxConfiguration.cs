@@ -1,3 +1,4 @@
+using System.Data;
 using System.Data.Common;
 using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
@@ -5,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure.Internal;
+using NpgsqlTypes;
 using Relayer.Outbox.PostgreSql;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
@@ -21,10 +23,8 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
         get;
     }
 
-    internal string InboxExistsSql
-    {
-        get;
-    }
+    private readonly string _inboxInsertWithTransactionIdSql;
+    private readonly string _verifyInboxCommitSql;
 
     internal PostgreSqlOutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null, IEnumerable<PostgreSqlSchedulingRegistration>? workers = null)
     {
@@ -62,8 +62,11 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
 
         var inbox = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "inbox");
-        InboxExistsSql = $"SELECT EXISTS (SELECT 1 FROM {inbox} WHERE consumer = @consumer AND message_id = @id)";
         InboxInsertSql = $"INSERT INTO {inbox} (consumer, message_id, processed_at) VALUES (@consumer, @id, clock_timestamp()) ON CONFLICT (consumer, message_id) DO NOTHING";
+        _inboxInsertWithTransactionIdSql = InboxInsertSql + " RETURNING pg_catalog.pg_current_xact_id()";
+        // Check the full transaction ID so a reused 32-bit xmin cannot verify an old attempt.
+        _verifyInboxCommitSql = $"SELECT EXISTS (SELECT 1 FROM {inbox} WHERE consumer = @consumer AND message_id = @id " +
+            "AND xmin = CAST(@transaction_id AS xid) AND pg_catalog.pg_xact_status(@transaction_id) = 'committed')";
         InsertSql = PostgreSqlOutboxBatch.CreateInsertSql(Table);
     }
 
@@ -128,24 +131,39 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    internal override async ValueTask<int> InsertInboxAsync(DbConnection connection, DbTransaction transaction,
-        string consumer, Guid id, CancellationToken cancellationToken)
+    internal override async ValueTask<(bool Inserted, ulong TransactionId)> InsertInboxAsync(DbConnection connection,
+        DbTransaction transaction, string consumer, Guid id, bool captureTransactionId, CancellationToken cancellationToken)
     {
-        await using var command = new NpgsqlCommand(InboxInsertSql, (NpgsqlConnection)connection, (NpgsqlTransaction)transaction);
+        var sql = captureTransactionId ? _inboxInsertWithTransactionIdSql : InboxInsertSql;
+        await using var command = new NpgsqlCommand(sql, (NpgsqlConnection)connection, (NpgsqlTransaction)transaction);
         command.Parameters.Add(new NpgsqlParameter<string>("consumer", consumer));
         command.Parameters.Add(new NpgsqlParameter<Guid>("id", id));
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!captureTransactionId)
+        {
+            return (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 0, 0);
+        }
+
+        var reader = await command.ExecuteReaderAsync(CommandBehavior.SingleRow, cancellationToken).ConfigureAwait(false);
+
+        await using (reader.ConfigureAwait(false))
+        {
+            return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                ? (true, reader.GetFieldValue<ulong>(0))
+                : (false, 0);
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    internal override async ValueTask<bool> InboxExistsAsync(DbConnection connection, string consumer, Guid id,
-        CancellationToken cancellationToken)
+    internal override async ValueTask<bool> InboxCommitVerifiedAsync(DbConnection connection, string consumer, Guid id,
+        ulong transactionId, CancellationToken cancellationToken)
     {
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = new NpgsqlCommand(InboxExistsSql, (NpgsqlConnection)connection);
+        await using var command = new NpgsqlCommand(_verifyInboxCommitSql, (NpgsqlConnection)connection);
         command.Parameters.Add(new NpgsqlParameter<string>("consumer", consumer));
         command.Parameters.Add(new NpgsqlParameter<Guid>("id", id));
+        command.Parameters.Add(new NpgsqlParameter<ulong>("transaction_id", NpgsqlDbType.Xid8) { TypedValue = transactionId });
         return (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 }

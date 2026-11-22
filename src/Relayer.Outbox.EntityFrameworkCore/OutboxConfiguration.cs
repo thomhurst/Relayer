@@ -99,9 +99,11 @@ internal abstract class OutboxConfiguration : IDbContextOptionsExtension
 
     internal abstract IExecutionStrategy CreateConflictStrategy(DbContext context);
 
-    internal abstract ValueTask<int> InsertInboxAsync(DbConnection connection, DbTransaction transaction, string consumer, Guid id, CancellationToken cancellationToken);
+    internal abstract ValueTask<(bool Inserted, ulong TransactionId)> InsertInboxAsync(DbConnection connection,
+        DbTransaction transaction, string consumer, Guid id, bool captureTransactionId, CancellationToken cancellationToken);
 
-    internal abstract ValueTask<bool> InboxExistsAsync(DbConnection connection, string consumer, Guid id, CancellationToken cancellationToken);
+    internal abstract ValueTask<bool> InboxCommitVerifiedAsync(DbConnection connection, string consumer, Guid id,
+        ulong transactionId, CancellationToken cancellationToken);
 
     internal static EntityFrameworkCoreConsumerSettings ValidateConsumer(DbContext context, bool inbox,
         OutboxConfiguration fallback, bool explicitOptions, bool requireOutbox)

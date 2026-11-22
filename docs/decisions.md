@@ -812,9 +812,12 @@ therefore redelivers safely. Retrying EF strategies are supported through the na
 `IExecutionStrategy.ExecuteAsync` operation and verification callbacks. Every strategy attempt runs
 the complete inner pipeline in a fresh scope, context and transaction; only native transient
 classification triggers these retries. Handler failures still flow to Relayer's consumer policy.
-Verification queries the exact attempted inbox key and schema using a fresh connection, resolving
-an unknown commit without replaying committed work. Without an inbox there is no commit verification
-or duplicate protection. The original delivery scope keeps the strategy's context alive and is
+Verification runs only after an attempt reaches commit. The retrying PostgreSQL inbox insert returns
+the native full transaction ID. On a fresh connection, verification matches the exact inbox row's
+`xmin` and checks `pg_xact_status` for that full ID before considering the attempt committed. A
+concurrent duplicate's row cannot authorize flushing the failed attempt's direct sends. Without
+an inbox there is no commit verification or duplicate protection. The original delivery scope keeps
+the strategy's context alive and is
 restored before ordinary failure handling. Failed-attempt sends and settlement requests are cleared
 after scope disposal. Composition selects the original middleware directly for non-retrying contexts that omit an explicit
 isolation level (D51), so their per-message work and allocations are unchanged. Retrying contexts add native strategy Task
