@@ -443,6 +443,14 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         {
             return false;
         }
+
+        DiscardUnsaved();
+        SaveRecovered = true;
+        return true;
+    }
+
+    internal void DiscardUnsaved()
+    {
         // Sends made before SavingChanges belong to this save too. The last successful
         // save, rather than native savepoint creation, establishes the buffer boundary.
         for (var i = _savedCount; i < Count; i++)
@@ -451,8 +459,6 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         }
 
         Count = _savedCount;
-        SaveRecovered = true;
-        return true;
     }
 
     internal bool FinishFailedSave()
