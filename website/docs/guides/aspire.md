@@ -86,6 +86,8 @@ Reference `Relayer.Kafka.HealthChecks` and `Relayer.AzureServiceBus.HealthChecks
 from the application and register the existing adapters explicitly:
 
 ```csharp
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Aspire;
 using Relayer.AzureServiceBus;
 using Relayer.HealthChecks;
@@ -122,6 +124,7 @@ then use `.WithReference(outbox).WaitFor(outbox)` on the application. Read its n
 connection string when constructing the data source:
 
 ```csharp
+using Microsoft.Extensions.Configuration;
 using Npgsql;
 using Relayer.HealthChecks;
 using Relayer.Outbox.PostgreSql;
