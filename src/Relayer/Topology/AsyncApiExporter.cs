@@ -19,8 +19,7 @@ internal static class AsyncApiExporter
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Title);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Version);
 
-        var contexts = registrations.Select(registration => registration.Context).ToArray();
-        var metadata = registry.CreateJsonTypes(contexts);
+        var metadata = registry.CreateJsonTypes(registrations.ToArray());
         var messageKeys = new Dictionary<MessageType, string>();
         var messages = new JsonObject();
 

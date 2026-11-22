@@ -1,6 +1,5 @@
 using System.Collections.Frozen;
 using System.Diagnostics.CodeAnalysis;
-using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Relayer.Serialization;
 
@@ -14,7 +13,7 @@ public sealed class MessageTypeRegistry
 {
     private readonly Dictionary<Type, MessageType> _byType = [];
     private readonly Dictionary<MessageType, Type> _byName = [];
-    private readonly List<(Type Type, Func<JsonSerializerContext[], JsonMessageType?> Resolve)> _jsonTypes = [];
+    private readonly List<(Type Type, Func<JsonSerializerRegistration[], JsonMessageType?> Resolve)> _jsonTypes = [];
     private FrozenDictionary<Type, MessageType>? _frozenByType;
     private FrozenDictionary<MessageType, Type>? _frozenByName;
 
@@ -52,7 +51,7 @@ public sealed class MessageTypeRegistry
 
         if (!_byType.ContainsKey(typeof(TMessage)))
         {
-            _jsonTypes.Add((typeof(TMessage), static contexts => ResolveJsonType<TMessage>(contexts)));
+            _jsonTypes.Add((typeof(TMessage), static registrations => ResolveJsonType<TMessage>(registrations)));
         }
 
         _byType[typeof(Tombstone<TMessage>)] = identity;
@@ -68,14 +67,14 @@ public sealed class MessageTypeRegistry
         _frozenByType ??= _byType.ToFrozenDictionary();
     }
 
-    internal JsonMessageType[] CreateJsonTypes(JsonSerializerContext[] contexts, HashSet<Type>? missingMetadata = null)
+    internal JsonMessageType[] CreateJsonTypes(JsonSerializerRegistration[] registrations, HashSet<Type>? missingMetadata = null)
     {
         var types = new JsonMessageType[_jsonTypes.Count];
         var count = 0;
 
         foreach (var (type, resolve) in _jsonTypes)
         {
-            if (resolve(contexts) is { } jsonType)
+            if (resolve(registrations) is { } jsonType)
             {
                 types[count++] = jsonType;
             }
@@ -98,11 +97,20 @@ public sealed class MessageTypeRegistry
         return new InvalidOperationException($"No source-generated JSON metadata exists for '{type}'. Call AddMessageTypesFromThisAssembly or UseJsonSerializer with a context covering that message type, or register an IMessageSerializer.");
     }
 
-    private static JsonMessageType? ResolveJsonType<TMessage>(JsonSerializerContext[] contexts)
+    private static JsonMessageType? ResolveJsonType<TMessage>(JsonSerializerRegistration[] registrations)
     {
-        for (var i = contexts.Length - 1; i >= 0; i--)
+        var messageType = typeof(TMessage);
+
+        for (var i = registrations.Length - 1; i >= 0; i--)
         {
-            if (contexts[i].GetTypeInfo(typeof(TMessage)) is JsonTypeInfo<TMessage> typeInfo)
+            var registration = registrations[i];
+
+            if (registration.MessageRoots is { } roots && !roots.Contains(messageType))
+            {
+                continue;
+            }
+
+            if (registration.Context.GetTypeInfo(messageType) is JsonTypeInfo<TMessage> typeInfo)
             {
                 typeInfo.MakeReadOnly();
                 return new JsonMessageType(JsonMessageType<TMessage>.Key, typeInfo);
