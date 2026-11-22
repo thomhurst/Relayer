@@ -2,15 +2,18 @@ using System.Buffers;
 using System.Collections.Frozen;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using Relayer.Pipeline;
 
 namespace Relayer.Serialization;
 
 internal sealed class JsonMessageSerializer : IMessageSerializer
 {
     private readonly FrozenDictionary<object, Entry> _messageTypes;
+    private readonly IReadOnlySet<Type>? _missingMetadata;
 
-    public JsonMessageSerializer(JsonMessageType[] messageTypes)
+    public JsonMessageSerializer(JsonMessageType[] messageTypes, IReadOnlySet<Type>? missingMetadata)
     {
+        _missingMetadata = missingMetadata;
         var entries = new Dictionary<object, Entry>(messageTypes.Length, ReferenceEqualityComparer.Instance);
         var pools = new Dictionary<JsonSerializerOptions, WriterPool>(ReferenceEqualityComparer.Instance);
 
@@ -31,6 +34,16 @@ internal sealed class JsonMessageSerializer : IMessageSerializer
     }
 
     public string ContentType => "application/json";
+
+    internal bool HasMissingMetadata => _missingMetadata is { Count: > 0 };
+
+    internal void ValidateMetadata(Type type)
+    {
+        if (_missingMetadata?.Contains(type) == true)
+        {
+            throw MessageTypeRegistry.MissingJsonMetadata(type);
+        }
+    }
 
     public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
     {

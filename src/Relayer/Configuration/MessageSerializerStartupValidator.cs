@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -42,7 +43,14 @@ internal sealed class MessageSerializerStartupValidator(IServiceProvider service
 
         foreach (var transport in transports)
         {
-            serializers.Add(services.GetMessageSerializer(transport.Name));
+            var serializer = services.GetMessageSerializer(transport.Name);
+
+            if (serializer is JsonMessageSerializer { HasMissingMetadata: true } json)
+            {
+                ValidateJsonContracts(transport, json);
+            }
+
+            serializers.Add(serializer);
         }
 
         foreach (var serializer in serializers)
@@ -59,6 +67,32 @@ internal sealed class MessageSerializerStartupValidator(IServiceProvider service
         }
 
         _initialized = true;
+    }
+
+    private void ValidateJsonContracts(TransportDefinition transport, JsonMessageSerializer json)
+    {
+        foreach (var route in transport.Routes)
+        {
+            json.ValidateMetadata(route.MessageType);
+        }
+
+        var handlers = services.GetRequiredService<HandlerRegistry>().Descriptors;
+        var upcasters = services.GetRequiredService<UpcasterRegistry>();
+
+        foreach (var handler in handlers)
+        {
+            if (handler.IsTombstone || !transport.Consumers.Any(consumer => consumer.Selects(handler)))
+            {
+                continue;
+            }
+
+            json.ValidateMetadata(handler.MessageType);
+
+            foreach (var source in upcasters.GetSources(handler.MessageType))
+            {
+                json.ValidateMetadata(source.From);
+            }
+        }
     }
 
     public Task StartedAsync(CancellationToken cancellationToken)

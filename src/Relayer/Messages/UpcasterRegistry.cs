@@ -49,27 +49,16 @@ public sealed class UpcasterRegistry
     {
         var readers = new Dictionary<MessageType, UpcastReader>();
 
-        foreach (var first in _steps.Values)
+        foreach (var first in GetSources(target))
         {
-            var current = first.To;
-            var chain = new List<UpcasterDescriptor> { first };
-
-            while (current != target && _steps.TryGetValue(current, out var next))
-            {
-                chain.Add(next);
-                current = next.To;
-            }
-
-            if (current != target)
-            {
-                continue;
-            }
-
             var reader = first.CreateReader(serializer);
+            var current = first.To;
 
-            for (var i = 1; i < chain.Count; i++)
+            while (current != target)
             {
-                reader = chain[i].Append(reader);
+                var next = _steps[current];
+                reader = next.Append(reader);
+                current = next.To;
             }
 
             messages.TryGetMessageType(first.From, out var identity);
@@ -77,6 +66,24 @@ public sealed class UpcasterRegistry
         }
 
         return readers;
+    }
+
+    internal IEnumerable<UpcasterDescriptor> GetSources(Type target)
+    {
+        foreach (var first in _steps.Values)
+        {
+            var current = first.To;
+
+            while (current != target && _steps.TryGetValue(current, out var next))
+            {
+                current = next.To;
+            }
+
+            if (current == target)
+            {
+                yield return first;
+            }
+        }
     }
 }
 
