@@ -157,6 +157,28 @@ public sealed class FailurePipeline
         }
     }
 
+    internal int GetLongestNativeRedeliveryRun()
+    {
+        var longest = 0;
+        var consecutive = 0;
+
+        foreach (var path in _paths)
+        {
+            if (path == RedeliveryPath.Native)
+            {
+                consecutive++;
+                longest = Math.Max(longest, consecutive);
+            }
+            else
+            {
+                // A copy starts a new physical message with its own native receive count.
+                consecutive = 0;
+            }
+        }
+
+        return longest;
+    }
+
     internal void ValidateSettlement(Disposition disposition)
     {
         if (disposition.Kind == DispositionKind.Redeliver)

@@ -7,9 +7,9 @@ using Microsoft.Extensions.Logging;
 
 namespace Relayer.GooglePubSub.Tests;
 
-// One proxy per test in front of the session's shared emulator, so a test can cut its own
-// connection without affecting the others. Tests name their topics and subscriptions uniquely.
-internal sealed class PubSubBroker(IContainer proxy, HttpClient control, GrpcChannel channel) : IAsyncDisposable
+// Outage tests get their own proxy so they can cut a connection without affecting
+// other tests. The rest connect directly to the session's shared emulator.
+internal sealed class PubSubBroker(GrpcChannel channel, IContainer? proxy = null, HttpClient? control = null) : IAsyncDisposable
 {
     internal const string Image = "gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935";
     internal const string ProxyImage = "ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa";
@@ -26,11 +26,16 @@ internal sealed class PubSubBroker(IContainer proxy, HttpClient control, GrpcCha
 
     internal Grpc.Core.CallInvoker Invoker => channel.CreateCallInvoker();
 
-    internal string Address => $"{proxy.Hostname}:{proxy.GetMappedPublicPort(8085)}";
-
-    internal static async Task<PubSubBroker> StartAsync(CancellationToken token, ILoggerFactory? loggerFactory = null)
+    internal static async Task<PubSubBroker> StartAsync(CancellationToken token, bool useProxy = false, ILoggerFactory? loggerFactory = null)
     {
         var emulator = await PubSubSession.Current.WaitAsync(token);
+        var channelOptions = new GrpcChannelOptions { LoggerFactory = loggerFactory };
+
+        if (!useProxy)
+        {
+            return new(GrpcChannel.ForAddress($"http://{emulator.Container.Hostname}:{emulator.Container.GetMappedPublicPort(8085)}", channelOptions));
+        }
+
         var proxy = new ContainerBuilder(ProxyImage).WithNetwork(emulator.Network).WithPortBinding(8085, true).WithPortBinding(8474, true)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(request => request.ForPort(8474).ForPath("/version"))).Build();
         HttpClient? control = null;
@@ -45,7 +50,8 @@ internal sealed class PubSubBroker(IContainer proxy, HttpClient control, GrpcCha
             using var body = new StringContent("{\"name\":\"pubsub\",\"listen\":\"0.0.0.0:8085\",\"upstream\":\"pubsub-broker:8085\"}", System.Text.Encoding.UTF8, "application/json");
             using var response = await control.PostAsync("/proxies", body, token);
             response.EnsureSuccessStatusCode();
-            return new(proxy, control, GrpcChannel.ForAddress($"http://{proxy.Hostname}:{proxy.GetMappedPublicPort(8085)}", new GrpcChannelOptions { LoggerFactory = loggerFactory }));
+            var channel = GrpcChannel.ForAddress($"http://{proxy.Hostname}:{proxy.GetMappedPublicPort(8085)}", channelOptions);
+            return new(channel, proxy, control);
         }
         catch
         {
@@ -58,15 +64,20 @@ internal sealed class PubSubBroker(IContainer proxy, HttpClient control, GrpcCha
     internal async Task SetConnectedAsync(bool connected, CancellationToken token)
     {
         using var body = new StringContent(connected ? "{\"enabled\":true}" : "{\"enabled\":false}", System.Text.Encoding.UTF8, "application/json");
-        using var response = await control.PostAsync("/proxies/pubsub", body, token);
+        var client = control ?? throw new InvalidOperationException("Disconnect and reconnect tests require a proxy.");
+        using var response = await client.PostAsync("/proxies/pubsub", body, token);
         response.EnsureSuccessStatusCode();
     }
 
     public async ValueTask DisposeAsync()
     {
         channel.Dispose();
-        control.Dispose();
-        await proxy.DisposeAsync();
+        control?.Dispose();
+
+        if (proxy is not null)
+        {
+            await proxy.DisposeAsync();
+        }
     }
 }
 
@@ -83,7 +94,7 @@ public static class PubSubSession
     {
         using var provisioning = new CancellationTokenSource(TimeSpan.FromMinutes(10));
         var network = new NetworkBuilder().Build();
-        var container = new ContainerBuilder(PubSubBroker.Image).WithNetwork(network).WithNetworkAliases("pubsub-broker")
+        var container = new ContainerBuilder(PubSubBroker.Image).WithNetwork(network).WithNetworkAliases("pubsub-broker").WithPortBinding(8085, true)
             .WithCommand("gcloud", "beta", "emulators", "pubsub", "start", "--project=relayer-test", "--host-port=0.0.0.0:8085", "--quiet")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Server started, listening on 8085"))
             .Build();

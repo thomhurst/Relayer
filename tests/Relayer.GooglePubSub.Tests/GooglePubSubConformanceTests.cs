@@ -27,7 +27,9 @@ public class GooglePubSubConformanceTests
     [Arguments(TransportConformanceCase.CleanShutdown)]
     public async Task PubSub_passes_or_explicitly_skips_unsupported_capability(TransportConformanceCase scenario)
     {
-        var suite = new TransportConformanceSuite<GooglePubSubDelivery, GooglePubSubBinding>(PubSubFixture.CreateAsync, TimeSpan.FromMinutes(2));
+        var useProxy = scenario is TransportConformanceCase.Reconnect or TransportConformanceCase.SendDuringOutage;
+        var suite = new TransportConformanceSuite<GooglePubSubDelivery, GooglePubSubBinding>(
+            (tracing, token) => PubSubFixture.CreateAsync(tracing, token, useProxy), TimeSpan.FromMinutes(2));
         var result = await suite.RunAsync(scenario);
         var unsupported = scenario is TransportConformanceCase.Retry or TransportConformanceCase.DeadLetter or TransportConformanceCase.Delay or TransportConformanceCase.RedeliveryDelay;
         await Assert.That(result.Skipped).IsEqualTo(unsupported);
@@ -156,7 +158,8 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         return settings;
     }
 
-    internal static async ValueTask<ITransportConformanceFixture<GooglePubSubDelivery>> CreateAsync(MessageTracing tracing, CancellationToken token)
+    internal static async ValueTask<ITransportConformanceFixture<GooglePubSubDelivery>> CreateAsync(
+        MessageTracing tracing, CancellationToken token, bool useProxy = false)
     {
         var logs = new ConformanceLogCapture();
         var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
@@ -164,7 +167,7 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
 
         try
         {
-            broker = await PubSubBroker.StartAsync(token, loggerFactory);
+            broker = await PubSubBroker.StartAsync(token, useProxy, loggerFactory);
         }
         catch
         {
@@ -248,9 +251,14 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
 
     public async Task ReconnectAsync(CancellationToken token)
     {
-        await Broker.SetConnectedAsync(true, token);
         var wasDisconnected = _disconnected;
-        _disconnected = false;
+
+        if (wasDisconnected)
+        {
+            await Broker.SetConnectedAsync(true, token);
+            _disconnected = false;
+        }
+
         var failure = _worker?.Completion.Exception;
 
         if (failure is null)

@@ -56,11 +56,11 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         }
     }
 
-    internal async Task ValidateRedriveAsync(ConsumerDefinition<AmazonSqsConsumerOptions> consumer, CancellationToken token)
+    internal async Task ValidateRedriveAsync(string source, int longestNativeRedeliveryRun, CancellationToken token)
     {
         var actual = await _client.GetQueueAttributesAsync(new GetQueueAttributesRequest
         {
-            QueueUrl = GetUrl(consumer.Source),
+            QueueUrl = GetUrl(source),
             AttributeNames = ["RedrivePolicy"]
         }, token).ConfigureAwait(false);
 
@@ -73,9 +73,9 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         var count = json.RootElement.GetProperty("maxReceiveCount");
         var maximum = count.ValueKind == JsonValueKind.String ? int.Parse(count.GetString()!, CultureInfo.InvariantCulture) : count.GetInt32();
 
-        if (maximum <= consumer.Failure.RedeliveryDelays.Length)
+        if (maximum <= longestNativeRedeliveryRun)
         {
-            throw new InvalidOperationException($"SQS consumer '{consumer.Source}': native RedrivePolicy.maxReceiveCount must exceed the configured redelivery count so Relayer can attach failure metadata before native redrive. Disable redrive or increase maxReceiveCount.");
+            throw new InvalidOperationException($"SQS consumer '{source}': native RedrivePolicy.maxReceiveCount must be at least {longestNativeRedeliveryRun + 1} to allow {longestNativeRedeliveryRun} consecutive visibility retries and one receive to schedule a replacement or copy failure metadata. Disable redrive or increase maxReceiveCount.");
         }
     }
 
