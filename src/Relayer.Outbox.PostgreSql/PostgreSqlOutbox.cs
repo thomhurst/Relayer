@@ -75,7 +75,8 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         ArgumentNullException.ThrowIfNull(connection);
         EnsureAvailable();
         _dispatcher?.ValidateConnection(connection);
-        PostgreSqlLocalStore.ValidateWriterConnection(_localStores, _options.Schema, _options.TablePrefix, _lanes, connection.ConnectionString);
+        PostgreSqlLocalStore.ValidateWriterConnection(_localStores, _options.Schema, _options.TablePrefix, _lanes,
+            connection, static writer => writer.ConnectionString);
         var native = await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
         return _transaction = new(this, native, null);
     }
@@ -86,7 +87,8 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     {
         ArgumentNullException.ThrowIfNull(dataSource);
         EnsureAvailable();
-        PostgreSqlLocalStore.ValidateWriterConnection(_localStores, _options.Schema, _options.TablePrefix, _lanes, dataSource.ConnectionString);
+        PostgreSqlLocalStore.ValidateWriterConnection(_localStores, _options.Schema, _options.TablePrefix, _lanes,
+            dataSource, static writer => writer.ConnectionString);
         var connection = dataSource.CreateConnection();
 
         try

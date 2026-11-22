@@ -109,14 +109,8 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
     {
         base.ValidateWriter(context);
 
-        foreach (var local in _localStores)
-        {
-            if (local.HasWriterLaneMismatch(_schema, _tablePrefix, Lanes) &&
-                local.MatchesDatabase(context.Database.GetDbConnection().ConnectionString))
-            {
-                local.ValidateWriterLanes(Lanes);
-            }
-        }
+        PostgreSqlLocalStore.ValidateWriterConnection(_localStores, _schema, _tablePrefix, Lanes,
+            context, static writer => writer.Database.GetDbConnection().ConnectionString);
     }
 
     internal override void ValidateProvider(IDbContextOptions options)

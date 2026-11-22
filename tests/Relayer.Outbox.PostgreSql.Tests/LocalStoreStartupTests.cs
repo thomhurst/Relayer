@@ -14,6 +14,8 @@ public class LocalStoreStartupTests(PostgreSqlLocalSessionFixture server)
     [Arguments("ordered", "MaxDispatchAttempts")]
     [Arguments("maintenance", "MaxDispatchAttempts")]
     [Arguments("ordered", "Lanes")]
+    [Arguments("ordered", nameof(NpgsqlDataSource))]
+    [Arguments("maintenance", nameof(NpgsqlDataSource))]
     [Arguments("writer", "Lanes")]
     public async Task Incompatible_store_options_fail_before_any_worker_starts(string worker, string setting)
     {
@@ -21,7 +23,9 @@ public class LocalStoreStartupTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        using var host = BuildHost(source, ordered: true, worker, setting, namedWriter: true);
+        var workerConnection = new NpgsqlConnectionStringBuilder(database.ConnectionString) { ApplicationName = worker };
+        await using var workerSource = NpgsqlDataSource.Create(workerConnection.ConnectionString);
+        using var host = BuildHost(source, ordered: true, worker, setting, namedWriter: true, workerSource: workerSource);
 
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var error = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
@@ -138,7 +142,7 @@ public class LocalStoreStartupTests(PostgreSqlLocalSessionFixture server)
     }
 
     private static IHost BuildHost(NpgsqlDataSource source, bool ordered, string? mismatch = null, string? setting = null,
-        bool namedWriter = false, int? efLanes = null)
+        bool namedWriter = false, int? efLanes = null, NpgsqlDataSource? workerSource = null)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -188,14 +192,21 @@ public class LocalStoreStartupTests(PostgreSqlLocalSessionFixture server)
         services.AddRelayerPostgreSqlMaintenance("maintenance", source, new PostgreSqlMaintenanceOptions
         {
             Schema = "public",
-            MaxDispatchAttempts = mismatch == "maintenance" ? 1 : 10,
+            MaxDispatchAttempts = mismatch == "maintenance" && setting == "MaxDispatchAttempts" ? 1 : 10,
             RecoveryDelay = TimeSpan.Zero,
             SweepInterval = TimeSpan.FromMilliseconds(50)
         });
 
+        if (mismatch == "maintenance" && setting == nameof(NpgsqlDataSource))
+        {
+            // Keep a valid recovery worker so the failure identifies the separate pool for local work.
+            services.AddRelayerPostgreSqlMaintenance("other-maintenance", workerSource!);
+        }
+
         if (ordered)
         {
-            services.AddRelayerPostgreSqlOrderedDispatch("ordered", source, new PostgreSqlOrderedDispatchOptions
+            var orderedSource = mismatch == "ordered" && setting == nameof(NpgsqlDataSource) ? workerSource! : source;
+            services.AddRelayerPostgreSqlOrderedDispatch("ordered", orderedSource, new PostgreSqlOrderedDispatchOptions
             {
                 Lanes = mismatch == "ordered" && setting == "Lanes" ? 1 : 2,
                 MaxDispatchAttempts = mismatch == "ordered" && setting == "MaxDispatchAttempts" ? 1 : 10,

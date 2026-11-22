@@ -18,6 +18,7 @@ internal sealed record PostgreSqlLocalStore(string Name, string DispatchStoreNam
 
     internal void ValidateWorker(PostgreSqlDispatchRegistration worker)
     {
+        // Workers can claim the same rows through separate pools, but local delivery requires the shared source.
         if (!ReferenceEquals(DataSource, worker.DataSource))
         {
             throw Conflict(worker, nameof(NpgsqlDataSource));
@@ -70,12 +71,15 @@ internal sealed record PostgreSqlLocalStore(string Name, string DispatchStoreNam
             (local.Database ?? local.Username) == (other.Database ?? other.Username);
     }
 
-    internal static void ValidateWriterConnection(PostgreSqlLocalStore[] stores, string? schema,
-        string prefix, int lanes, string connectionString)
+    internal static void ValidateWriterConnection<T>(PostgreSqlLocalStore[] stores, string? schema,
+        string prefix, int lanes, T writer, Func<T, string> getConnectionString)
     {
+        string? connectionString = null;
+
         foreach (var local in stores)
         {
-            if (local.HasWriterLaneMismatch(schema, prefix, lanes) && local.MatchesDatabase(connectionString))
+            if (local.HasWriterLaneMismatch(schema, prefix, lanes) &&
+                local.MatchesDatabase(connectionString ??= getConnectionString(writer)))
             {
                 local.ValidateWriterLanes(lanes);
             }

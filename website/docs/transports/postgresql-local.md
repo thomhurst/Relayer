@@ -36,13 +36,13 @@ services.AddRelayerPostgreSqlDeadLetters("local", source);
 
 `AddRelayerPostgreSqlOutbox("local")` selects the direct-dispatch store for commit notifications. `PostgreSqlLocal` defaults to a worker matching its transport name. Pass `dispatchStoreName:` to select another named worker.
 
-Use the same data source, schema and table prefix for the local transport and its workers. Before workers start, Relayer checks that direct dispatch, maintenance and ordered dispatch for those tables agree with the local transport on `MaxDispatchAttempts` and `RetainSentMessages`. Registration names can differ.
+Use the same `NpgsqlDataSource` instance, schema and table prefix for the local transport and its workers. Startup rejects a worker that points at the same database and tables through a separate data source because local delivery requires the shared instance. Before workers start, Relayer checks that direct dispatch, maintenance and ordered dispatch for those tables agree with the local transport on `MaxDispatchAttempts` and `RetainSentMessages`. Registration names can differ.
 
 To enable [sent-message history](../reference/postgres-maintenance.md#sent-message-history), set `RetainSentMessages = true` in the `PostgreSqlOutboxOptions` passed to `PostgreSqlLocal` and in the matching store and worker options.
 
 Every dispatching instance must declare the same local consumers. Instances compete for work; consumers are not broadcast subscriptions.
 
-For keyed routes, use `route.OrderingKey(message => message.CustomerId)` and register `AddRelayerPostgreSqlOrderedDispatch("local", source)`. Set the same `Lanes` on the local transport, outbox writer and ordered dispatcher. Relayer checks lane counts at startup for the ordered dispatcher and a named ADO.NET writer. When the database is selected later, Relayer checks the writer before beginning an ADO.NET outbox transaction or enlisting an EF Core DbContext. The ordered dispatcher preserves insertion order and parks poisoned keys until redrive or purge. Other keys continue. Register maintenance even with direct dispatch to recover after crashes, missed notifications, queue pressure and failed attempts.
+For keyed routes, use `route.OrderingKey(message => message.CustomerId)` and register `AddRelayerPostgreSqlOrderedDispatch("local", source)`. Set the same `Lanes` on the local transport, outbox writer and ordered dispatcher. Relayer checks lane counts at startup for the ordered dispatcher and an ADO.NET writer configured with a dispatch store name. Relayer checks an unnamed ADO.NET writer when it begins an outbox transaction and an EF Core writer when its DbContext enlists. The ordered dispatcher preserves insertion order and parks poisoned keys until redrive or purge. Other keys continue. Register maintenance even with direct dispatch to recover after crashes, missed notifications, queue pressure and failed attempts.
 
 ## Enqueue atomically
 

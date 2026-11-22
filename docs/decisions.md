@@ -1735,6 +1735,9 @@ and a second durable store alongside rows that already enlist in the business tr
 as its durable queue, rather than emulating an existing broker's features. Do not build another table,
 claim protocol, retry scheduler, ordering mechanism or dead-letter store. Reuse D50 lanes and the existing
 poison transitions. Notifications may only accelerate discovery; durable rows remain authoritative.
+Workers that can claim rows for a local transport must share its `NpgsqlDataSource` instance.
+Startup uses the configured database and table identifiers to detect workers that could claim those rows
+through a different pool, so a binding error is caught before a worker can park a row.
 
 First expose `PostgreSqlOutboxStore.CompleteAsync(claim, transaction, cancellationToken)` for independently
 useful application-owned workers. It executes the existing fenced deletion against the supplied native
