@@ -141,6 +141,7 @@ Custom serializers can implement `IMessageSerializerInitializer`. The host await
 Reference `Relayer.Serialization.Protobuf` to use generated Google.Protobuf contracts. Generate C# from your `.proto` files with a matching `protoc` toolchain (3.13 or newer), then register each generated parser and its stable Relayer message identity explicitly:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
 using Relayer;
 using Relayer.Transports;
 using Relayer.Serialization;
@@ -166,6 +167,7 @@ Only generated contracts implementing `IMessage<T>` and `IBufferMessage` are sup
 Reference `Relayer.Kafka.Serialization.Avro` for Dekaf's source-generated Avro codecs and Schema Registry client. The package name makes its dependency on Dekaf's Kafka client explicit; it can still serialize bodies for Service Bus, RabbitMQ or another transport. This is a Schema Registry integration, with no registry-free package. Opt each contract into generation with `[AvroRecord]`, then register its generated `AvroCodec` explicitly:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
 using Relayer;
 using Relayer.Transports;
 using Dekaf.SchemaRegistry;
@@ -205,6 +207,7 @@ Writes go directly to `IBufferWriter<byte>`. Contiguous input reads directly fro
 Reference `Relayer.Serialization.MessagePack` to use uncompressed MessagePack-CSharp 3.x bodies. Its transitive analyzer generates formatters for `[MessagePackObject]` contracts. Supply native options explicitly, including the generated resolver and each primitive formatter your contracts use:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
 using Relayer;
 using Relayer.Transports;
 using MessagePack;
