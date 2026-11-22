@@ -120,6 +120,8 @@ Call `harness.Reset()` only after idle. It clears all observations and correlati
 
 Each service provider owns its harness. Multiple named transports in one host share that host's observations and work counter. Separate hosts have independent harnesses and can run concurrently; no mutable process-wide state is used. `AddRelayer` currently has one registration per provider: configure all named transports there rather than calling it again for another bus.
 
+An existing `RelayerInstrumentation` registered with `AddSingleton(instance)` stays caller-owned. Provider disposal detaches its harness, so the instance can still publish metrics and can be reused by a later host. Give concurrent hosts separate instrumentation instances. When you build a service provider directly without a host, resolve `RelayerHarness` before using the outbox so it can observe pending rows.
+
 ## Wait for a broker round-trip
 
 Against a real broker or emulator, a message that has left the host is not outstanding work, so idle can complete before the delivery comes back. Wait for the consumed message instead:

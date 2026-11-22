@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Relayer.Pipeline;
 using Relayer.Transports;
 
@@ -27,7 +28,7 @@ public static class HarnessServiceCollectionExtensions
             throw new InvalidOperationException("Harness observation requires singleton ITransport registrations.");
         }
 
-        services.AddSingleton(static provider => new RelayerHarness(provider, provider.GetRequiredService<MessageTypeRegistry>()));
+        var callerOwnedInstrumentation = new HashSet<RelayerInstrumentation>();
 
         for (var i = 0; i < services.Count; i++)
         {
@@ -37,15 +38,38 @@ public static class HarnessServiceCollectionExtensions
             {
                 continue;
             }
+
+            if (original.ImplementationInstance is RelayerInstrumentation instance)
+            {
+                // A constant registration keeps disposal with the caller.
+                callerOwnedInstrumentation.Add(instance);
+                continue;
+            }
+
             // Outbox stores report committed and settled rows through the provider's instrumentation.
             services[i] = ServiceDescriptor.Singleton(provider =>
             {
-                var instrumentation = (RelayerInstrumentation)(original.ImplementationInstance
-                    ?? original.ImplementationFactory?.Invoke(provider)
+                var instrumentation = (RelayerInstrumentation)(original.ImplementationFactory?.Invoke(provider)
                     ?? ActivatorUtilities.CreateInstance(provider, original.ImplementationType!));
                 instrumentation.Observer = provider.GetRequiredService<RelayerHarness>();
                 return instrumentation;
             });
+        }
+
+        if (callerOwnedInstrumentation.Count == 0)
+        {
+            services.AddSingleton(CreateHarness);
+        }
+        else
+        {
+            services.AddSingleton(provider => new InstrumentationObservation(CreateHarness(provider), callerOwnedInstrumentation));
+            services.AddSingleton(static provider => provider.GetRequiredService<InstrumentationObservation>().Harness);
+            services.Insert(0, ServiceDescriptor.Singleton<IHostedService>(static provider =>
+            {
+                // The host resolves this service before running any startup callbacks.
+                _ = provider.GetRequiredService<RelayerHarness>();
+                return new HarnessStartup();
+            }));
         }
 
         services.AddSingleton<IRelayerObserver>(static provider => provider.GetRequiredService<RelayerHarness>());
@@ -70,6 +94,58 @@ public static class HarnessServiceCollectionExtensions
         }
 
         return services;
+    }
+
+    private static RelayerHarness CreateHarness(IServiceProvider provider)
+    {
+        return new(provider, provider.GetRequiredService<MessageTypeRegistry>());
+    }
+
+    private sealed class HarnessStartup : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class InstrumentationObservation : IDisposable
+    {
+        private readonly HashSet<RelayerInstrumentation> _instrumentation;
+
+        internal InstrumentationObservation(RelayerHarness harness, HashSet<RelayerInstrumentation> instrumentation)
+        {
+            Harness = harness;
+            _instrumentation = instrumentation;
+
+            foreach (var instance in instrumentation)
+            {
+                if (!instance.TryAttachObserver(harness))
+                {
+                    Dispose();
+                    throw new InvalidOperationException(
+                        "This RelayerInstrumentation is already observed by another harness. Use a separate instance for each active provider.");
+                }
+            }
+        }
+
+        internal RelayerHarness Harness
+        {
+            get;
+        }
+
+        public void Dispose()
+        {
+            foreach (var instance in _instrumentation)
+            {
+                instance.DetachObserver(Harness);
+            }
+        }
     }
 }
 
