@@ -6,7 +6,7 @@ namespace Relayer;
 
 // A bounded slot table avoids dictionary nodes, locks and UTF-8 decoding on reply dispatch.
 // Each reservation has a fresh identity: a late reply can never complete a later occupant of its slot.
-internal sealed class RequestReplies<TRequest, TResponse>(string transport, string address, RequestOptions options) : IHandlerMarker
+internal sealed class RequestReplies<TRequest, TResponse>(string transport, string source, string destination, RequestOptions options) : IHandlerMarker
 {
     private readonly Pending?[] _pending = new Pending[options.MaxPendingRequests];
 
@@ -15,10 +15,15 @@ internal sealed class RequestReplies<TRequest, TResponse>(string transport, stri
         get;
     } = transport;
 
-    internal string Address
+    internal string Source
     {
         get;
-    } = address;
+    } = source;
+
+    internal string Destination
+    {
+        get;
+    } = destination;
 
     internal TimeProvider Clock
     {

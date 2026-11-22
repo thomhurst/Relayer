@@ -125,7 +125,10 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
     }
 
     /// <summary>Declares a request send route and a dedicated, process-local reply consumer.</summary>
-    /// <remarks>Give each requesting process its own reply endpoint. The responder declares an ordinary Send route to that endpoint.</remarks>
+    /// <remarks>
+    /// Give each requesting process its own reply consumer at <paramref name="replyAddress"/>.
+    /// Set <see cref="RequestBuilder{TRequest,TConsumerOptions}.ReplyDestination"/> when publishing replies requires a different address.
+    /// </remarks>
     public TransportBuilder<TTransportOptions, TConsumerOptions> Request<TRequest, TResponse>(
         string destination, string replyAddress,
         Action<RequestBuilder<TRequest, TConsumerOptions>>? configure = null)
@@ -135,6 +138,8 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         ArgumentException.ThrowIfNullOrWhiteSpace(replyAddress);
         var request = new RequestBuilder<TRequest, TConsumerOptions>();
         configure?.Invoke(request);
+        var replyDestination = request.ReplyDestination ?? replyAddress;
+        ArgumentException.ThrowIfNullOrWhiteSpace(replyDestination, nameof(request.ReplyDestination));
         var options = request.Options;
         options.Validate();
 
@@ -143,7 +148,7 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
             throw new InvalidOperationException("This request/response pair already has a registration. Declare it once.");
         }
 
-        RegisterRequestServices<TRequest, TResponse>(replyAddress, options);
+        RegisterRequestServices<TRequest, TResponse>(replyAddress, replyDestination, options);
         Send(destination, request.ConfigureSend);
         Consume(replyAddress, consumer =>
         {
@@ -171,10 +176,10 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         Consume(source, configure);
     }
 
-    private void RegisterRequestServices<TRequest, TResponse>(string replyAddress, RequestOptions options)
+    private void RegisterRequestServices<TRequest, TResponse>(string replySource, string replyDestination, RequestOptions options)
     {
         string transportName = Name;
-        _services.AddSingleton<RequestReplies<TRequest, TResponse>>(_ => new(transportName, replyAddress, options));
+        _services.AddSingleton<RequestReplies<TRequest, TResponse>>(_ => new(transportName, replySource, replyDestination, options));
         _services.AddScoped<IRequestClient<TRequest, TResponse>, RequestClient<TRequest, TResponse>>();
         _services.AddSingleton<IRequestRegistration, RequestRegistration<TRequest, TResponse>>();
     }

@@ -41,6 +41,7 @@ Never commit production credentials.
 Keep the existing transport APIs, handlers and native options:
 
 ```csharp
+using Relayer;
 using Relayer.AzureServiceBus;
 using Relayer.Kafka;
 

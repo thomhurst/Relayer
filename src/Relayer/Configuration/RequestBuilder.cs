@@ -34,6 +34,12 @@ public sealed class RequestBuilder<TRequest, TConsumerOptions>
         }
     }
 
+    /// <summary>The fixed destination advertised to responders. Null uses the reply consumer's source address.</summary>
+    public string? ReplyDestination
+    {
+        get; set;
+    }
+
     /// <summary>Configures the ordinary request send route and its portable send settings.</summary>
     public RequestBuilder<TRequest, TConsumerOptions> Send(Action<RouteBuilder<TRequest>> configure)
     {
