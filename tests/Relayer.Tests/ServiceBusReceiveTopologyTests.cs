@@ -1,4 +1,5 @@
 using Azure.Messaging.ServiceBus;
+using Azure.Messaging.ServiceBus.Administration;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
 using Relayer.Transports;
@@ -27,6 +28,61 @@ public sealed class ServiceBusReceiveTopologyTests
         await Assert.That(client.Receiver.Peeks).IsEqualTo(2);
         await Assert.That(transport.GetCapabilities("orders").DeadLetter).IsTrue();
         await Assert.That(transport.GetCapabilities("events").MaxRedeliveryDelay).IsEqualTo(TimeSpan.Zero);
+    }
+
+    [Test]
+    public async Task Validate_rejects_missing_Listen_access_on_a_queue_used_for_sending()
+    {
+        var client = new ServiceBusSendTests.NativeClient();
+        client.Receiver.PeekFailure = new UnauthorizedAccessException("Listen claim is required.");
+        var options = new ServiceBusTransportOptions { Client = client };
+        options.Queues.Add(new("orders"));
+        var consumer = new ConsumerDefinition<ServiceBusConsumerOptions>("orders", new(), [], 1, 1, TimeSpan.FromMilliseconds(100));
+        await using var transport = new ServiceBusSendTransport("bus", client, false, options, ["orders"], TopologyMode.Validate,
+            consumers: [consumer]);
+
+        await Assert.That(async () => await transport.ApplyTopologyAsync(TopologyMode.Validate, default))
+            .Throws<UnauthorizedAccessException>().WithMessageContaining("Listen claim is required.");
+
+        await Assert.That(client.Senders.Sum(sender => sender.BatchCreations)).IsEqualTo(1);
+        await Assert.That(client.Receiver.Peeks).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Validate_probes_a_queue_used_for_sending_and_receiving_without_consuming_messages()
+    {
+        var stack = await SharedBrokers.ServiceBus.Value;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("validate-dual-role");
+        var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
+        await stack.CreateQueueAsync(queue, false, token);
+
+        try
+        {
+            await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString());
+            var options = new ServiceBusTransportOptions { Client = client };
+            options.Queues.Add(new(queue));
+            var consumer = new ConsumerDefinition<ServiceBusConsumerOptions>(queue, new(), [], 1, 1, TimeSpan.FromMilliseconds(100));
+            await using var transport = new ServiceBusSendTransport("bus", client, false, options, [queue], TopologyMode.Validate,
+                consumers: [consumer]);
+            await using var sender = client.CreateSender(queue);
+            await sender.SendMessageAsync(new ServiceBusMessage("orders"), token);
+
+            var report = await transport.ApplyTopologyAsync(TopologyMode.Validate, token);
+
+            await Assert.That(report.Differences.Count).IsEqualTo(0);
+            await using var receiver = client.CreateReceiver(queue);
+            var message = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(10), token)
+                ?? throw new InvalidOperationException("Validation consumed the queued message.");
+            await Assert.That(message.Body.ToString()).IsEqualTo("orders");
+            await Assert.That(message.DeliveryCount).IsEqualTo(1);
+            await receiver.CompleteMessageAsync(message, token);
+        }
+        finally
+        {
+            await admin.DeleteQueueAsync(queue, CancellationToken.None);
+        }
     }
 
     [Test]
