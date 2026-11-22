@@ -98,7 +98,7 @@ public class GooglePubSubTests
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = deadline.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var lease = await PubSubFixture.CreateAsync(tracing, token);
+        await using var lease = await PubSubFixture.CreateAsync(tracing, token, useProxy: reconnectWhileRunning);
         var fixture = (PubSubFixture)lease;
         var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.RegisterConsumer((_, _) =>

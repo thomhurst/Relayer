@@ -180,7 +180,7 @@ public class ChangeCaptureTests
             }
             finally
             {
-                await first.StopAsync(timeout.Token);
+                await StopAndWaitForSlotReleaseAsync(first, source);
             }
         }
         // Startup recovery must honor the persisted deadline. Simulate a later
@@ -201,7 +201,7 @@ public class ChangeCaptureTests
         }
         finally
         {
-            await second.StopAsync(timeout.Token);
+            await StopAndWaitForSlotReleaseAsync(second, source);
         }
     }
 
@@ -426,6 +426,19 @@ public class ChangeCaptureTests
         await using var connection = await source.OpenConnectionAsync(token);
         await using var command = new NpgsqlCommand($"SELECT EXISTS (SELECT 1 FROM pg_replication_slots s JOIN pg_stat_replication r ON r.pid = s.active_pid WHERE s.slot_name = '{Slot}' AND r.state = 'streaming')", connection);
         await Until(async () => (bool)(await command.ExecuteScalarAsync(token))!, token);
+    }
+
+    private static async Task StopAndWaitForSlotReleaseAsync(PostgreSqlChangeCaptureWorker worker, NpgsqlDataSource source)
+    {
+        // The scenario deadline can expire before BackgroundService finishes stopping.
+        // PostgreSQL can still own the slot after the replication socket closes.
+        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await worker.StopAsync(cleanup.Token);
+        await worker.ExecuteTask!.WaitAsync(cleanup.Token);
+
+        await using var connection = await source.OpenConnectionAsync(cleanup.Token);
+        await using var command = new NpgsqlCommand($"SELECT NOT active FROM pg_replication_slots WHERE slot_name = '{Slot}'", connection);
+        await Until(async () => await command.ExecuteScalarAsync(cleanup.Token) is true, cleanup.Token);
     }
 
     private static async Task Acknowledged(NpgsqlDataSource source, NpgsqlLogSequenceNumber position, CancellationToken token)
