@@ -838,6 +838,7 @@ public class BatchPipelineTests
     [Arguments(true)]
     public async Task Warmed_batches_add_no_allocations_beyond_identical_fresh_DI_scope_and_sender(bool bufferedSends)
     {
+        const int Iterations = 1_000;
         await using var provider = Provider(size: 10);
         provider.GetRequiredService<AllocationHandler>().BufferedSends = bufferedSends;
         using var batchCancellation = new CancellationTokenSource();
@@ -849,7 +850,7 @@ public class BatchPipelineTests
         var message = new ConsumeMessage { MessageId = "allocation", MessageType = new("batch.payload", 1), Body = new(new byte[] { 1 }) };
         var contexts = new DefaultMessageContext[10];
 
-        for (var iteration = 0; iteration < 1000; iteration++)
+        for (var iteration = 0; iteration < Iterations; iteration++)
         {
             for (var i = 0; i < contexts.Length; i++)
             {
@@ -873,40 +874,62 @@ public class BatchPipelineTests
             TimerQueueWarmup.WarmContention();
         }
 
-        var start = GC.GetAllocatedBytesForCurrentThread();
+        (int Batch, long Native, long Pipeline)? firstMismatch = null;
+        long nativeTotal = 0;
+        long pipelineTotal = 0;
 
-        for (var iteration = 0; iteration < 1000; iteration++)
+        for (var iteration = 0; iteration < Iterations; iteration++)
         {
-            using var scope = scopes.CreateScope();
-            _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
-        }
+            var start = GC.GetAllocatedBytesForCurrentThread();
 
-        var baseline = GC.GetAllocatedBytesForCurrentThread() - start;
-        start = GC.GetAllocatedBytesForCurrentThread();
+            using (var scope = scopes.CreateScope())
+            {
+                _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
+            }
 
-        for (var iteration = 0; iteration < 1000; iteration++)
-        {
+            var native = GC.GetAllocatedBytesForCurrentThread() - start;
+            start = GC.GetAllocatedBytesForCurrentThread();
+
             for (var i = 0; i < contexts.Length; i++)
             {
                 contexts[i] = consumer.RentContext(message, deliveries[i].Token);
             }
 
-            await consumer.ProcessBatchAsync(contexts, batchCancellation.Token);
+            var pending = consumer.ProcessBatchAsync(contexts, batchCancellation.Token);
+            var completedSynchronously = pending.IsCompleted;
+            await pending;
 
             for (var i = 0; i < contexts.Length; i++)
             {
                 contexts[i].Dispose();
             }
-        }
 
-        var composed = GC.GetAllocatedBytesForCurrentThread() - start;
+            if (!completedSynchronously)
+            {
+                throw new InvalidOperationException("Expected synchronous completion for the thread-local allocation comparison.");
+            }
+
+            var pipeline = GC.GetAllocatedBytesForCurrentThread() - start;
+            nativeTotal += native;
+            pipelineTotal += pipeline;
+
+            if (native != pipeline && firstMismatch is null)
+            {
+                firstMismatch = (iteration + 1, native, pipeline);
+            }
+        }
 
         foreach (var delivery in deliveries)
         {
             delivery.Dispose();
         }
 
-        await Assert.That(composed).IsEqualTo(baseline);
+        if (firstMismatch is { } mismatch)
+        {
+            Console.WriteLine($"Batch {mismatch.Batch}: native DI {mismatch.Native} B, pipeline {mismatch.Pipeline} B. " +
+                $"Totals: native DI {nativeTotal} B, pipeline {pipelineTotal} B.");
+            await Assert.That(mismatch.Pipeline).IsEqualTo(mismatch.Native);
+        }
     }
 
     [Test]
