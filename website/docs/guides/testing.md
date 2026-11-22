@@ -66,6 +66,8 @@ The collections return snapshots safe to enumerate while other work runs:
 | `Failed` | Exceptions at logical send, native dispatch and consume boundaries, identified by `HarnessOperation` |
 | `DeadLettered` | Successful native dead-letter operations, including manual in-memory native settlement |
 
+Dead-letter error headers preserve text values and own a copy of each byte-valued header.
+
 Publish/subscribe observation uses the same `ISender.SendAsync` API. A send routed to an in-memory log appears once in `Sent` and once per consumer group in `Consumed`. The harness does not change routing, settlement, ordering or native batching. If a native batch fails after partial delivery, `Dispatched` does not claim that the batch succeeded; `Failed` records the failed batch operation for each input.
 
 Consume failures remain observable when native settlement already logged the exception; logging configuration does not change `Failed`. A traced settlement failure is recorded once per consume boundary. Dispatch observation reads each route's configured envelope header names, including routes that share a destination with different bindings. When the failure pipeline sends a dead-letter copy through the harness, dispatch observation uses the original delivery's header binding. For example, a confirmed JetStream copy appears in `GetDispatched<T>()` even when its subject is configured only as a `DeadLetterEndpoint`.
@@ -127,7 +129,9 @@ var placed = await harness.WaitForConsumedAsync<OrderPlaced>(
     message => message.OrderId == orderId, deadline.Token);
 ```
 
-`WaitForConsumedAsync` completes with the first delivery of that registered message type that the consume pipeline handled successfully and that matches the optional predicate. It includes deliveries handled before the call, so start it before or after sending. A failed attempt does not match, nor does a delivery that failure handling redelivers, discards or dead-letters, or one whose handler requests a retry or dead-letter; a later successful redelivery does. Handlers that settle the native message themselves count as handled. The wait is signalled when processing finishes, not by polling. To wait for a cascade, wait for the last message in the chain.
+`WaitForConsumedAsync` completes with the first delivery of that registered message type that the consume pipeline handled successfully and that matches the optional predicate. It includes deliveries handled before the call, so start it before or after sending. A failed attempt does not match, nor does a delivery that failure handling redelivers, discards or dead-letters, or one whose handler requests a retry or dead-letter; a later successful redelivery does. The wait is signalled when processing finishes, not by polling. To wait for a cascade, wait for the last message in the chain.
+
+In-memory handlers that settle a native delivery themselves count as handled when they call `Complete()`. A native `Redeliver()` keeps the wait pending until a successful delivery, and a native `DeadLetter()` appears in `DeadLettered` without satisfying the wait. For other transports, the harness counts an otherwise successful attempt marked `SettledByHandler` as handled.
 
 The wait matches the delivery's original wire name and version and returns the original contract. If a consumer handles `Legacy` as `Current` through `Accepts<Current>` or an upcaster, `WaitForConsumedAsync<Legacy>()` matches that delivery and returns `Legacy`. `WaitForConsumedAsync<Current>()` waits for a delivery with the `Current` wire identity. To assert which handler ran or inspect the converted value, signal from the handler or one of its dependencies.
 
