@@ -16,6 +16,7 @@ which includes direct dispatch and recovery. To configure workers individually:
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Outbox.PostgreSql;
 

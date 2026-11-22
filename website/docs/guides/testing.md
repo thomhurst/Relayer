@@ -88,6 +88,9 @@ Receive and dispatch bodies are copied before native storage can be reused. Type
 Committed outbox rows also count as outstanding work. A row committed through this provider's outbox stays outstanding until its dispatcher settles it: sent, discarded by failure classification, moved to dead storage, or parked on an ordered lane. Rows behind a parked row on the same ordering key stay outstanding, because they are not delivered until you redrive or purge the parked row. A row whose send failed and will be retried stays outstanding until a later attempt settles it, so a test that expects a retry should wait with a deadline. This applies to every store's direct dispatch, ordered dispatch and recovery ([EF Core enlistment](../reference/ef-core-outbox.md), [direct dispatch](../reference/direct-dispatch.md), [ordered dispatch](../reference/ordered-dispatch.md), [leased recovery](../reference/postgres-maintenance.md)). The harness tracks rows by durable row ID. Recovering a row left by an earlier provider does not affect the current provider's outstanding rows. When several hosts share an outbox table, settlement by another host is invisible to the provider that committed the row. Give each test its own table or schema. The native dispatch must use the registered `ITransport` services for observation.
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer.Outbox.EntityFrameworkCore;
+
 await using (var scope = provider.CreateAsyncScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();

@@ -45,9 +45,10 @@ Use normal keyed DI with an explicit, case-sensitive name. This example assumes 
 `OrdersOutboxStore` that implements `IOutboxStore`; Relayer does not ship that type:
 
 ```csharp
-using Relayer.Transports;
+using Microsoft.Extensions.DependencyInjection;
 using Relayer;
 using Relayer.HealthChecks;
+using Relayer.Transports;
 
 services.AddKeyedScoped<IOutboxStore, OrdersOutboxStore>("orders-store");
 services.AddRelayerOutboxHealthProvider("orders-store");
