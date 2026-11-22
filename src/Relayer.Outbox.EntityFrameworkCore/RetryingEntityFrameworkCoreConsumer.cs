@@ -13,7 +13,7 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
 {
     public bool Inbox => boundary.Inbox;
 
-    private readonly Operation?[] _operations = new Operation[16];
+    private readonly EntityFrameworkCoreConsumeOperation?[] _operations = new EntityFrameworkCoreConsumeOperation[16];
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -24,6 +24,7 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         var db = services.GetRequiredService<TContext>();
         var settings = boundary.Resolve(db);
         IExecutionStrategy strategy;
+        bool useConflictStrategy = conflictRetries;
 
         if (boundary.ScopedValidation)
         {
@@ -35,15 +36,15 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 return;
             }
 
-            strategy = conflictRetries && !native.RetriesOnFailure ? settings.Configuration.CreateConflictStrategy(db) : native;
+            useConflictStrategy = conflictRetries && !native.RetriesOnFailure;
+            strategy = useConflictStrategy ? settings.Configuration.CreateConflictStrategy(db) : native;
         }
         else
         {
             strategy = conflictRetries ? settings.Configuration.CreateConflictStrategy(db) : db.Database.CreateExecutionStrategy();
         }
 
-        var messageId = settings.Inbox ? EntityFrameworkCoreConsumer<TContext>.ParseMessageId(context.MessageId) : default;
-        Operation? operation = null;
+        EntityFrameworkCoreConsumeOperation? operation = null;
 
         for (var i = 0; i < _operations.Length; i++)
         {
@@ -54,19 +55,18 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
             }
         }
 
-        operation ??= new Operation();
+        operation ??= new EntityFrameworkCoreConsumeOperation();
         operation.Context = incoming;
         operation.Next = next;
-        operation.Configuration = settings.Configuration;
         operation.Inbox = settings.Inbox;
         operation.Outbox = settings.Outbox;
-        operation.MessageId = messageId;
+        operation.VerifyCommit = settings.Inbox && !useConflictStrategy;
 
         try
         {
             await strategy.ExecuteAsync((Owner: this, Operation: operation),
                 static (_, state, cancellation) => state.Owner.AttemptAsync(state.Operation, cancellation),
-                settings.Inbox ? static (_, state, cancellation) => state.Owner.VerifyAsync(state.Operation, cancellation) : null,
+                operation.VerifyCommit ? static (_, state, cancellation) => state.Owner.VerifyAsync(state.Operation, cancellation) : null,
                 context.CancellationToken).ConfigureAwait(false);
             // Cleanup belongs outside both native retries and handler-failure policy.
             if (incoming.ScopeCleanupError is { } cleanup)
@@ -94,11 +94,12 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         }
     }
 
-    private async Task<bool> AttemptAsync(Operation operation, CancellationToken cancellation)
+    private async Task<bool> AttemptAsync(EntityFrameworkCoreConsumeOperation operation, CancellationToken cancellation)
     {
         var context = operation.Context;
         // A new native attempt means verification did not establish a committed result.
         context.SendBuffer.Clear();
+        operation.CommitVerification = null;
         var scopes = context.Services.GetRequiredService<IServiceScopeFactory>();
         var services = context.Services;
         var scope = scopes.CreateAsyncScope();
@@ -132,18 +133,8 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                     sender.AttemptBuffer = buffer;
                 }
 
-                try
-                {
-                    await boundary.InvokeAsync(context, operation.Next, db, settings).ConfigureAwait(false);
-                }
-                finally
-                {
-                    // The transaction interceptor registers this scope's configuration first, including
-                    // when commit throws. Verification must query that attempted inbox, not startup options.
-                    operation.Configuration = operation.Outbox
-                        ? context.Services.GetRequiredService<EntityFrameworkCoreOutbox>().Get(db, settings.Configuration).Configuration
-                        : settings.Configuration;
-                }
+                await boundary.InvokeAsync(context, operation.Next, db, settings,
+                    operation.VerifyCommit ? operation : null).ConfigureAwait(false);
             }
             finally
             {
@@ -171,7 +162,12 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         catch
         {
             context.Settlement.Clear();
-            // Preserve sends until native unknown-commit verification has finished.
+
+            if (operation.CommitVerification is null)
+            {
+                context.SendBuffer.Clear();
+            }
+
             throw;
         }
         finally
@@ -180,8 +176,14 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         }
     }
 
-    private async Task<ExecutionResult<bool>> VerifyAsync(Operation operation, CancellationToken cancellation)
+    private async Task<ExecutionResult<bool>> VerifyAsync(EntityFrameworkCoreConsumeOperation operation, CancellationToken cancellation)
     {
+        // EF can call verification for a transient failure before the transaction reached commit.
+        if (operation.CommitVerification is not { } verification)
+        {
+            return new(false, true);
+        }
+
         // Use a new connection, never the possibly broken transaction connection. EF applies its
         // native transient classification and retry policy to this verification delegate too.
         var context = operation.Context;
@@ -203,8 +205,8 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                     throw new InvalidOperationException("The verification DbContext must keep the attempted inbox and outbox capabilities.");
                 }
 
-                committed = await operation.Configuration.InboxExistsAsync(db.Database.GetDbConnection(),
-                    consumer, operation.MessageId, cancellation).ConfigureAwait(false);
+                committed = await verification.Configuration.InboxCommitVerifiedAsync(db.Database.GetDbConnection(),
+                    consumer, verification.MessageId, verification.TransactionId, cancellation).ConfigureAwait(false);
                 // Inbox rows commit only on the completion path.
                 if (committed && context.Settlement.Request is null)
                 {
@@ -233,22 +235,23 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
 
         return new(committed || context.ScopeCleanupError is not null, true);
     }
+}
 
-    private sealed class Operation
+internal sealed class EntityFrameworkCoreConsumeOperation
+{
+    internal DefaultMessageContext Context = null!;
+    internal ConsumeDelegate Next = null!;
+    internal InboxCommitVerification? CommitVerification;
+    internal bool Inbox;
+    internal bool Outbox;
+    internal bool VerifyCommit;
+
+    internal void Clear()
     {
-        internal DefaultMessageContext Context = null!;
-        internal ConsumeDelegate Next = null!;
-        internal OutboxConfiguration Configuration = null!;
-        internal Guid MessageId;
-        internal bool Inbox;
-        internal bool Outbox;
-
-        internal void Clear()
-        {
-            Context = null!;
-            Next = null!;
-            Configuration = null!;
-            MessageId = default;
-        }
+        Context = null!;
+        Next = null!;
+        CommitVerification = null;
     }
 }
+
+internal readonly record struct InboxCommitVerification(OutboxConfiguration Configuration, Guid MessageId, ulong TransactionId);

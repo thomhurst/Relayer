@@ -18,7 +18,9 @@ public class InboxBenchmarks
     private IServiceScope _scope = null!;
     private DbContext _db = null!;
     private Context _context = null!;
-    private IConsumeMiddleware _middleware = null!;
+    private EntityFrameworkCoreConsumer<DbContext> _middleware = null!;
+    private EntityFrameworkCoreConsumerSettings _settings;
+    private readonly EntityFrameworkCoreConsumeOperation _operation = new();
     private string _insert = null!;
     private string _schema = null!;
     private readonly string _duplicate = Guid.CreateVersion7().ToString("D");
@@ -57,6 +59,7 @@ public class InboxBenchmarks
         _insert = configuration.InboxInsertSql;
         _middleware = new EntityFrameworkCoreConsumer<DbContext>("benchmark", true, false, configuration,
             _provider.GetRequiredService<RelayerInstrumentation>());
+        _settings = _middleware.Resolve(_db);
         _context = new Context(_scope.ServiceProvider) { Id = _duplicate };
         await _middleware.InvokeAsync(_context, static _ => default);
     }
@@ -87,7 +90,15 @@ public class InboxBenchmarks
     public ValueTask RelayerInbox()
     {
         _context.Id = Duplicate ? _duplicate : Guid.CreateVersion7().ToString("D");
-        return _middleware.InvokeAsync(_context, static _ => default);
+        return _middleware.InvokeAsync(_context, static _ => default, _db, _settings);
+    }
+
+    [Benchmark]
+    public ValueTask RelayerInboxWithCommitVerification()
+    {
+        _context.Id = Duplicate ? _duplicate : Guid.CreateVersion7().ToString("D");
+        _operation.CommitVerification = null;
+        return _middleware.InvokeAsync(_context, static _ => default, _db, _settings, _operation);
     }
 
     [GlobalCleanup]

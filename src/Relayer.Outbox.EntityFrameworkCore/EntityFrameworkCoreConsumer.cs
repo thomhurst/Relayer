@@ -34,7 +34,8 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    internal async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next, TContext db, EntityFrameworkCoreConsumerSettings settings)
+    internal async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next, TContext db,
+        EntityFrameworkCoreConsumerSettings settings, EntityFrameworkCoreConsumeOperation? operation = null)
     {
         var cancellation = context.CancellationToken;
         var messageId = settings.Inbox ? ParseMessageId(context.MessageId) : default;
@@ -45,6 +46,7 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
         }
 
         var transaction = await db.Database.BeginTransactionAsync(_isolationLevel, cancellation).ConfigureAwait(false);
+        InboxCommitVerification? verification = null;
 
         try
         {
@@ -54,13 +56,20 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
                 // the exact configuration with this transaction; never write the inbox to a different schema.
                 var current = settings.Outbox ? context.Services.GetRequiredService<EntityFrameworkCoreOutbox>().Get(db, settings.Configuration).Configuration : settings.Configuration;
                 // The native provider insert waits on the unique key for overlapping transactions.
-                if (await current.InsertInboxAsync(db.Database.GetDbConnection(), transaction.GetDbTransaction(),
-                        consumer, messageId, cancellation).ConfigureAwait(false) == 0)
+                var insert = await current.InsertInboxAsync(db.Database.GetDbConnection(), transaction.GetDbTransaction(),
+                    consumer, messageId, operation is not null, cancellation).ConfigureAwait(false);
+
+                if (!insert.Inserted)
                 {
                     RequestCompletion(context);
                     await transaction.CommitAsync(cancellation).ConfigureAwait(false);
                     instrumentation.RecordInboxDuplicate(consumer);
                     return;
+                }
+
+                if (operation is not null)
+                {
+                    verification = new(current, messageId, insert.TransactionId);
                 }
             }
 
@@ -80,6 +89,12 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
             else
             {
                 RequestCompletion(context);
+
+                if (operation is not null)
+                {
+                    operation.CommitVerification = verification;
+                }
+
                 await transaction.CommitAsync(cancellation).ConfigureAwait(false);
             }
         }

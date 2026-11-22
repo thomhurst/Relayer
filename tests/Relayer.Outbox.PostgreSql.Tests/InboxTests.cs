@@ -485,18 +485,80 @@ public class InboxTests : InboxContractTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task Duplicate_commit_does_not_flush_rolled_back_attempt_sends(bool failDuringCommit)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services(outbox: true, retries: true,
+            interceptor: failDuringCommit ? new FailedCommit() : null);
+        var control = provider.GetRequiredService<Control>();
+        var disposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        OrdersContext? failedContext = null;
+
+        control.AfterSave = async context =>
+        {
+            if (control.Invocations == 1)
+            {
+                failedContext = context.Services.GetRequiredService<OrdersContext>();
+                await context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Probe(2));
+
+                if (!failDuringCommit)
+                {
+                    throw new TimeoutException("Injected transient handler failure");
+                }
+            }
+        };
+        control.OnDisposeAsync = async db =>
+        {
+            if (ReferenceEquals(db, failedContext) && disposed.TrySetResult())
+            {
+                await resume.Task.WaitAsync(timeout.Token);
+            }
+        };
+
+        var failures = new FailurePipeline(provider, "events", "source", "orders", new());
+        int settled = 0;
+        var pipeline = Pipeline(provider, failures: failures)
+            .Settle(_ =>
+            {
+                Interlocked.Increment(ref settled);
+                return default;
+            }).Build();
+        var message = Message();
+        var first = Deliver(pipeline, message, timeout.Token);
+
+        try
+        {
+            await disposed.Task.WaitAsync(timeout.Token);
+            await Assert.That(await database.Count("inbox")).IsEqualTo(0L);
+            await Deliver(pipeline, message, timeout.Token);
+        }
+        finally
+        {
+            resume.TrySetResult();
+            await first;
+        }
+
+        await Assert.That(control.Invocations).IsEqualTo(2);
+        await Assert.That(settled).IsEqualTo(2);
+        await Assert.That(await database.Orders()).IsEqualTo(1L);
+        await Assert.That(await database.Count("inbox")).IsEqualTo(1L);
+        await Assert.That(await database.Count("outbox")).IsEqualTo(1L);
+        await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Verification_scope_cleanup_errors_propagate_without_replaying_work(bool committed)
     {
         await using var database = new Database();
         await database.Start();
         var fault = new LostCommitResponse();
-        await using var provider = database.Services(outbox: true, retries: true, interceptor: committed ? fault : null);
+        await using var provider = database.Services(outbox: true, retries: true, interceptor: committed ? fault : new FailedCommit());
         var control = provider.GetRequiredService<Control>();
-
-        if (!committed)
-        {
-            control.AfterSave = _ => throw new NpgsqlException("Unknown transaction outcome", new IOException());
-        }
 
         var disposals = 0;
         control.OnDispose = () =>
@@ -519,7 +581,6 @@ public class InboxTests : InboxContractTests
         await Assert.That(async () => await Deliver(pipeline, message)).Throws<NpgsqlException>()
             .WithMessage("Verification cleanup failure");
         control.OnDispose = null;
-        control.AfterSave = null;
         await Assert.That(settled).IsEqualTo(0);
         await Assert.That(fault.Transactions).IsEqualTo(committed ? 1 : 0);
         await Assert.That(control.Invocations).IsEqualTo(1);
@@ -529,6 +590,22 @@ public class InboxTests : InboxContractTests
         await Deliver(pipeline, message);
         await Assert.That(control.Invocations).IsEqualTo(committed ? 1 : 2);
         await Assert.That(settled).IsEqualTo(1);
+    }
+
+    private sealed class FailedCommit : DbTransactionInterceptor
+    {
+        private int _commits;
+
+        public override ValueTask<InterceptionResult> TransactionCommittingAsync(DbTransaction transaction,
+            TransactionEventData eventData, InterceptionResult result, CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _commits) == 1)
+            {
+                throw new TimeoutException("Injected transient commit failure");
+            }
+
+            return new(result);
+        }
     }
 
     private sealed class LostCommitResponse : DbTransactionInterceptor
@@ -705,6 +782,7 @@ public class InboxTests : InboxContractTests
         public Func<MessageContext, ValueTask>? BeforeSave;
         public Func<MessageContext, ValueTask>? AfterSave;
         public Action? OnDispose;
+        public Func<OrdersContext, ValueTask>? OnDisposeAsync;
     }
 
     public sealed class Handler(OrdersContext db, ISender sender, Control control) : IHandler<Probe>
@@ -750,6 +828,11 @@ public class InboxTests : InboxContractTests
         {
             await base.DisposeAsync();
             control.OnDispose?.Invoke();
+
+            if (control.OnDisposeAsync is { } onDispose)
+            {
+                await onDispose(this);
+            }
         }
     }
 
