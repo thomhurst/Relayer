@@ -30,6 +30,12 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     private readonly byte[] _readId = new byte[16];
     private bool _disposed;
 
+    // Only the store owned by a maintenance worker borrows its active sweep session.
+    internal MySqlConnection? RecoveryConnection
+    {
+        private get; set;
+    }
+
     /// <summary>Uses an application-owned data source and snapshots the table prefix.</summary>
     public MySqlOutboxStore(MySqlDataSource dataSource, MySqlOutboxOptions? options = null)
     {
@@ -246,7 +252,11 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         CancellationToken cancellationToken)
     {
         EnsureAvailable(cancellationToken);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var recoveryConnection = RecoveryConnection;
+        await using var ownedConnection = recoveryConnection is null
+            ? await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        var connection = recoveryConnection ?? ownedConnection!;
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var command = _fail.Command;
         _fail.Claim(claim);
@@ -287,7 +297,11 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         EnsureAvailable(cancellationToken);
         operation.Claim(claim);
         operation.Now(now);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var recoveryConnection = RecoveryConnection;
+        await using var ownedConnection = recoveryConnection is null
+            ? await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        var connection = recoveryConnection ?? ownedConnection!;
         var command = operation.Command;
         command.Connection = connection;
 
@@ -367,7 +381,11 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
 
         ValidateBatch(claims.Span, now, expires);
         _claimBatch.Prepare(claims.Span, now, expires);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var recoveryConnection = RecoveryConnection;
+        await using var ownedConnection = recoveryConnection is null
+            ? await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        var connection = recoveryConnection ?? ownedConnection!;
         await _claimBatch.ExecuteAsync(connection, claimed, cancellationToken).ConfigureAwait(false);
     }
 
@@ -385,7 +403,11 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
 
         ValidateBatch(claims.Span);
         _completeBatch.Prepare(claims.Span, now, now);
-        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var recoveryConnection = RecoveryConnection;
+        await using var ownedConnection = recoveryConnection is null
+            ? await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        var connection = recoveryConnection ?? ownedConnection!;
         return await _completeBatch.ExecuteAsync(connection, default, cancellationToken).ConfigureAwait(false);
     }
 

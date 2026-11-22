@@ -148,7 +148,7 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
         await Assert.That(await store.TryClaimAsync(competitor, now, now.AddMinutes(5), default)).IsTrue();
         var outcomes = new bool[3];
         await store.ClaimBatchAsync(claims, outcomes, now, now.AddMinutes(5), default);
-        await Assert.That(outcomes).IsEquivalentTo(new[] { true, false, true });
+        await Assert.That(outcomes).IsEquivalentTo([true, false, true], TUnit.Assertions.Enums.CollectionOrdering.Matching);
         await fixture.Sql("CREATE TABLE audit_rows (value INT)");
         await fixture.Sql($"CREATE TRIGGER audit_delete AFTER DELETE ON {fixture.Table} FOR EACH ROW INSERT INTO audit_rows VALUES (1), (2)");
         await Assert.That(await store.CompleteBatchAsync(claims, now, default)).IsEqualTo(2L);

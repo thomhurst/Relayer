@@ -1683,9 +1683,9 @@ explicitly release it before returning the pooled connection. Connected passes c
 after idle leadership expiry. The database-time row preserves idle leadership between passes;
 the session lock is authoritative while a pass is connected. Release uses the native command timeout
 and logs cleanup failures without replacing a pass error; the native client discards broken sessions.
-Row claims remain independently fenced autocommit mutations;
-leadership does not replace row ownership. Session loss and broker uncertainty retain the existing
-at-least-once boundary. Support one writable primary, not independent multi-primary servers.
+Recovery uses the admission session for scans and dispatch mutations. Row claims remain
+independently fenced autocommit mutations. Leadership does not replace row ownership. Session loss
+and broker uncertainty retain the existing at-least-once boundary. Support one writable primary, not independent multi-primary servers.
 
 Recover due unordered rows through D55's dispatcher and a fixed upper UUID boundary, revisiting
 retries despite continuous inserts. Preserve ordered lanes and parked barriers. Quarantine malformed
@@ -1695,10 +1695,10 @@ completion after broker acceptance never consumes attempts. Bound indexed dead/i
 independently; preserve parked rows and their dead copies. Ordered decoding isolates malformed
 rows through the existing lane failure/parking path, retaining the original sequence and raw payload.
 
-**Consequences.** Maintenance is explicit, named, immutable configuration and needs at least two
-pooled connections. No Event Scheduler privilege or server change is required. Native transports
-still own broker retry, ordering and settlement. Deployment adds dead/lease tables without changing
-existing definitions. Registration alone does not advertise new writer scheduling capabilities.
+**Consequences.** Maintenance is explicit, named, immutable configuration. Each pass needs one
+connection. Concurrent passes can share a pool without holding one session while waiting for another.
+No Event Scheduler privilege or server change is required. Native transports still own broker retry,
+ordering and settlement. Deployment adds dead/lease tables without changing existing definitions. Registration alone does not advertise new writer scheduling capabilities.
 
 ## D66. Durable local work reuses outbox rows and native PostgreSQL transactions
 
