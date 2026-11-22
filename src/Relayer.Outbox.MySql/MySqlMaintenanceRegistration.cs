@@ -39,7 +39,8 @@ public static partial class MySqlOutboxServiceCollectionExtensions
         services.AddKeyedSingleton<MySqlMaintenanceWorker>(name, (provider, _) => new(dataSource,
             provider.GetRequiredService<IOptionsMonitor<MySqlMaintenanceOptions>>().Get(name), provider.GetServices<ITransport>(),
             provider.GetRequiredService<ILogger<MySqlMaintenanceWorker>>(), provider.GetRequiredService<ILogger<MySqlDirectDispatcher>>(),
-            provider.GetService<RelayerInstrumentation>(), storeName: name));
+            provider.GetService<RelayerInstrumentation>(), storeName: name,
+            hostLifetime: provider.GetService<IHostApplicationLifetime>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<MySqlMaintenanceWorker>(name));
         return services;
     }

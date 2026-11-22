@@ -1,6 +1,7 @@
 using System.Data;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Relayer.Transports;
@@ -28,11 +29,12 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
     [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported.")]
     internal SqlServerMaintenanceWorker(string connectionString, SqlServerMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<SqlServerMaintenanceWorker> logger,
-        ILogger<SqlServerDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null, string? storeName = null)
+        ILogger<SqlServerDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null, string? storeName = null,
+        IHostApplicationLifetime? hostLifetime = null)
         : base(2, options.BatchSize, options.CleanupBatchLimit,
             (options.DeadRetention is not null ? 1 : 0) | (options.InboxRetention is not null ? 2 : 0),
             options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider,
-            storeName is null ? null : instrumentation?.TrackOutboxDepth("microsoft.sql_server", storeName))
+            storeName is null ? null : instrumentation?.TrackOutboxDepth("microsoft.sql_server", storeName), hostLifetime)
     {
         _connectionString = connectionString;
         _options = options;

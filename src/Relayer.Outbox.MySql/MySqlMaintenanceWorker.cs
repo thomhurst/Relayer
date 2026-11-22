@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using MySqlConnector;
@@ -25,11 +26,12 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
 
     internal MySqlMaintenanceWorker(MySqlDataSource dataSource, MySqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<MySqlMaintenanceWorker> logger,
-        ILogger<MySqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null, string? storeName = null)
+        ILogger<MySqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null, string? storeName = null,
+        IHostApplicationLifetime? hostLifetime = null)
         : base(2, options.BatchSize, options.CleanupBatchLimit,
             (options.DeadRetention is not null ? 1 : 0) | (options.InboxRetention is not null ? 2 : 0),
             options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider,
-            storeName is null ? null : instrumentation?.TrackOutboxDepth("mysql", storeName))
+            storeName is null ? null : instrumentation?.TrackOutboxDepth("mysql", storeName), hostLifetime)
     {
         _dataSource = dataSource;
         ValidateDataSource(dataSource);
