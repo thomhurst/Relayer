@@ -235,6 +235,56 @@ public class ConsumerFailurePolicyTests
     }
 
     [Test]
+    [Arguments("ce_id")]
+    [Arguments(FailureHeaders.Attempts)]
+    [Arguments(FailureHeaders.Redeliveries)]
+    public async Task In_memory_revalidates_malformed_envelopes_on_retry(string invalidHeader)
+    {
+        var classifier = new FailureClassifierBuilder().On<MessageEnvelopeException>(FailureAction.Retry).Build();
+        var policy = new FailureOptions { RetryDelays = [TimeSpan.Zero] };
+        var attempts = Channel.CreateUnbounded<int>();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(attempts);
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.InMemory("local", transport =>
+                transport.Consume("source", consumer => consumer
+                    .Failures(policy)
+                    .Classify(classifier)
+                    .Handler<PolicyHandler>()));
+        });
+        using var host = builder.Build();
+        await host.StartAsync();
+
+        try
+        {
+            var headers = new List<KeyValuePair<string, WireString>>
+            {
+                new("ce_type", new("tests.consumer-policy;v=1")),
+            };
+
+            if (invalidHeader != "ce_id")
+            {
+                headers.Add(new("ce_id", new("message-1")));
+                headers.Add(new(invalidHeader, new("invalid")));
+            }
+
+            var transport = (InMemoryTransport)host.Services.GetRequiredService<ITransport>();
+            await transport.SendAsync(new("source", "{}"u8.ToArray(), headers.ToArray()), default);
+
+            var dead = await transport.DeadLetters("source").ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            await Assert.That(attempts.Reader.TryRead(out _)).IsFalse();
+            await Assert.That(dead.Error.Description).Contains(invalidHeader);
+            await Assert.That(dead.Error.Headers.ToArray().Single(pair => pair.Key == FailureHeaders.Attempts).Value.ToString()).IsEqualTo("2");
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task In_memory_executes_reused_policy_and_retains_redelivery_history_per_consumer(bool log)

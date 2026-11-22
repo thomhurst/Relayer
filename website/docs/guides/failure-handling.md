@@ -53,7 +53,7 @@ exception
 
 ## Classification
 
-`DefaultFailureClassifier` treats unknown message types and invalid bodies as permanent (`DeadLetter`) and everything else as retryable (`Retry`). Deserialization and contract failures therefore never block a partition or crash a consumer.
+`DefaultFailureClassifier` treats unknown message types, invalid bodies and malformed envelopes as permanent (`DeadLetter`). Other failures are retryable (`Retry`).
 
 Compose your own rules once and share the classifier across consumers:
 
@@ -66,6 +66,8 @@ var classifier = new FailureClassifierBuilder()
 ```
 
 Rules match the declared exception type and its derived types, in registration order. The first matching rule whose predicate returns true wins. Unmatched failures fall back to `DefaultFailureClassifier`, or to a custom `IFailureClassifier` passed to `Build`. Predicates must be thread-safe.
+
+If a custom rule retries `MessageEnvelopeException`, an in-process retry checks the missing required header or invalid failure counter again before invoking a handler. An unchanged malformed delivery follows the configured failure policy after the in-process retries are exhausted.
 
 ## Retries, redelivery and dead-letters
 

@@ -172,8 +172,8 @@ public sealed partial class ConsumePipeline
                             _stage = Stage.PolicyHandler;
                             if (_initialize)
                             {
-                                _initialize = false;
                                 _context.InitializeAttempts();
+                                _initialize = false;
                             }
 
                             if (!_owner._scopesOnDemand)

@@ -477,13 +477,13 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
                 }
 
                 var resolved = _consumer.ResolveWireIdentity(type, out _dispatch);
-                _messageType = resolved;
 
                 if (!TryGetValue(_names.Id, out _id) || _id.IsEmpty)
                 {
                     throw new MessageEnvelopeException($"The incoming message has no '{_names.Id}' header.");
                 }
 
+                _messageType = resolved;
                 return resolved;
             }
         }
