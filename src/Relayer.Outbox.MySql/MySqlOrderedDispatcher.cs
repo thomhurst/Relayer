@@ -226,6 +226,7 @@ internal sealed partial class MySqlOrderedDispatcher : BackgroundService, IOrder
             {
                 _instrumentation?.RecordOutboxParked();
                 _instrumentation?.ObserveOutboxSettled(parked);
+                return sent + 1;
             }
 
             return sent;

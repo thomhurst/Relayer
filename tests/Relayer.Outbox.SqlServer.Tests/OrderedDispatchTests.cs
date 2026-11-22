@@ -31,7 +31,7 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         var transport = new RecordingTransport();
         using var worker = Worker(data, transport, maxAttempts: 2);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(transport.Ids.SequenceEqual([Id(1), Id(4)])).IsTrue();
         await using var connection = await Open();
@@ -130,7 +130,7 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await data.Execute($"UPDATE {data.Table} SET headers = 0x00 WHERE seq = 1");
         var transport = new RecordingTransport();
         using var worker = Worker(data, transport, maxAttempts: 1);
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
         using var lane = new SqlServerOrderedLane(database.ConnectionString, data.Options, TimeSpan.FromSeconds(30), 1);
         var ready = new bool[1];
         await lane.FindReadyAsync([true], ready, default);
@@ -389,6 +389,45 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         finally
         {
             await ((IOrderedLaneWorker)ordered).ReleaseAsync(default);
+        }
+    }
+
+    [Test]
+    public async Task Committed_park_rescans_before_first_idle_poll()
+    {
+        var data = new StoreData(database);
+        await data.Create();
+
+        for (var i = 1; i <= 3; i++)
+        {
+            await data.Insert(Id(i), DateTimeOffset.UtcNow, 0, orderedHeaders: true);
+        }
+
+        await data.Execute($"UPDATE {data.Table} SET headers = 0x00 WHERE seq = 1; " +
+            $"UPDATE {data.Table} SET ordering_key = N'other' WHERE seq = 3");
+        var clock = new PollClock();
+        var transport = new RecordingTransport();
+        using var ordered = new SqlServerOrderedDispatcher(database.ConnectionString, Options(data, maxAttempts: 1), [transport],
+            NullLogger<SqlServerOrderedDispatcher>.Instance, clock);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await ordered.StartAsync(timeout.Token);
+
+        try
+        {
+            await clock.FirstPoll.Task.WaitAsync(timeout.Token);
+            await Assert.That(transport.Ids.SequenceEqual([Id(3)])).IsTrue();
+            await using var connection = await Open();
+            await using var query = new SqlCommand($"SELECT status FROM {data.Table} ORDER BY seq", connection);
+            await using var reader = await query.ExecuteReaderAsync(timeout.Token);
+            await Assert.That(await reader.ReadAsync(timeout.Token)).IsTrue();
+            await Assert.That(reader.GetString(0)).IsEqualTo("parked");
+            await Assert.That(await reader.ReadAsync(timeout.Token)).IsTrue();
+            await Assert.That(reader.GetString(0)).IsEqualTo("pending");
+            await Assert.That(await reader.ReadAsync(timeout.Token)).IsFalse();
+        }
+        finally
+        {
+            await ordered.StopAsync(timeout.Token);
         }
     }
 

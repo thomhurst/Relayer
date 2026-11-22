@@ -241,6 +241,7 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
             {
                 _instrumentation?.RecordOutboxParked();
                 _instrumentation?.ObserveOutboxSettled(parked);
+                return sent + 1;
             }
 
             return sent;

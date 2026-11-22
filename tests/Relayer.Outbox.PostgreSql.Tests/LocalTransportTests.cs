@@ -361,13 +361,27 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
 
         if (ordered)
         {
+            var clock = new IdlePollClock();
             using var worker = new PostgreSqlOrderedDispatcher(source, new()
             {
                 Lanes = 1,
-                MaxDispatchAttempts = 1
-            }, [transport], provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgreSqlOrderedDispatcher>>());
-            await worker.DispatchLaneAsync(0, default);
-            await worker.DispatchLaneAsync(0, default);
+                MaxDispatchAttempts = 1,
+                PollInterval = TimeSpan.FromMinutes(1),
+                LeaseDuration = TimeSpan.FromMinutes(10)
+            }, [transport], provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>(), clock);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await worker.StartAsync(deadline.Token);
+
+            try
+            {
+                // The first idle poll must follow the park and the healthy key's committed work.
+                await clock.FirstPoll.Task.WaitAsync(deadline.Token);
+                await Assert.That(await Count(source, "local_business")).IsEqualTo(1L);
+            }
+            finally
+            {
+                await worker.StopAsync(deadline.Token);
+            }
         }
         else
         {

@@ -72,7 +72,9 @@ expires. Every scan uses one read-only query to probe assigned lanes' first non-
 and lanes blocked by a scheduled or live-claimed head cause no lease writes. The worker re-reads under
 the lane lock before sending; a probe never grants ownership or permits overtaking a head.
 
-A worker scans its assigned lanes and sends one bounded batch per lane per cycle. After any committed progress it immediately starts another cycle, including when the time budget shortened a batch. PollInterval applies only to scans with no progress, so a backlog is not limited to one batch per polling interval.
+A worker scans its assigned lanes and sends one bounded batch per lane per cycle. It starts another cycle
+immediately after any committed progress, including when it parks a failed row or the time budget shortens a batch.
+The worker waits for `PollInterval` only after a scan makes no progress.
 
 A commit can also end an idle wait early. When the direct dispatcher and the ordered worker run in the
 committing process under the same store name and tables, a commit that writes an unscheduled keyed row to a
