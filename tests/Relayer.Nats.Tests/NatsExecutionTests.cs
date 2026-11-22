@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -6,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using NATS.Client.Core;
 using NATS.Client.JetStream;
 using NATS.Client.JetStream.Models;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -471,32 +473,48 @@ public class NatsExecutionTests
         var broker = await NatsSessionBroker.Current.WaitAsync(token);
         var events = TestContext.Current!.Isolation.GetIsolatedName("ack_events");
         var subject = TestContext.Current!.Isolation.GetIsolatedName("ack_orders");
+        var deadSubject = TestContext.Current!.Isolation.GetIsolatedName("ack_dead");
         var capture = new AckFailureCapture();
         using var logs = LoggerFactory.Create(logging => logging.SetMinimumLevel(LogLevel.Debug).AddProvider(capture));
         var services = new ServiceCollection();
         services.AddSingleton<ILoggerFactory>(logs);
-        services.AddRelayer(relayer => relayer.Nats("ack_failure", transport =>
+        services.AddRelayer(relayer =>
         {
-            transport.Options.Configure(options =>
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(NatsExecutionJson.Default);
+            relayer.Nats("ack_failure", transport =>
             {
-                options.ConnectionOptions = broker.Options() with
+                transport.Options.Configure(options =>
                 {
-                    LoggerFactory = logs
-                };
-                options.Streams.Add(new(events)
-                {
-                    Configuration = new(events, [subject])
-                });
-                options.Consumers.Add(new(events, "worker")
-                {
-                    Configuration = new("worker")
+                    options.ConnectionOptions = broker.Options() with
                     {
-                        AckWait = TimeSpan.FromMilliseconds(200)
-                    }
+                        LoggerFactory = logs
+                    };
+                    options.Streams.Add(new(events)
+                    {
+                        Configuration = new(events, [subject, deadSubject])
+                    });
+                    options.Consumers.Add(new(events, "worker")
+                    {
+                        Configuration = new("worker")
+                        {
+                            FilterSubject = subject,
+                            AckWait = TimeSpan.FromMilliseconds(200)
+                        }
+                    });
+                });
+                transport.Send<ExecutionMessage>(subject);
+                transport.Consume("worker", consumer =>
+                {
+                    consumer.Options.Stream = events;
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = deadSubject
+                    });
+                    consumer.Handler<ConfirmedAckHandler>();
                 });
             });
-            transport.Send<ExecutionMessage>(subject);
-        }));
+        });
         await using var provider = services.BuildServiceProvider();
         var adapter = (NatsNativeTransport)provider.GetRequiredService<Relayer.Transports.ITransport>();
         await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
@@ -506,6 +524,46 @@ public class NatsExecutionTests
             DrainOnCancel = true,
             Expires = TimeSpan.FromSeconds(1)
         }, 2);
+        var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
+        var processErrors = new ConcurrentQueue<string?>();
+        using var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, meterListener) =>
+            {
+                if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.process.duration")
+                {
+                    meterListener.EnableMeasurementEvents(instrument);
+                }
+            }
+        };
+        listener.SetMeasurementEventCallback<double>((_, _, tags, _) =>
+        {
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "error.type")
+                {
+                    processErrors.Enqueue((string?)tag.Value);
+                    return;
+                }
+            }
+
+            processErrors.Enqueue(null);
+        });
+        listener.Start();
+
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer("ack_failure"),
+            static (_, error, _) => ValueTask.FromException(error))
+            .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<ExecutionMessage, ConfirmedAckHandler>())
+            .Settle(worker.SettleContextAsync)
+            .Telemetry(instrumentation.CreateEndpoint(new()
+            {
+                System = "nats",
+                Destination = events,
+                Subscription = "worker"
+            }))
+            .Build(2);
+        var receive = new ReceivePipeline<NatsDelivery, NatsBinding>(pipeline, new("ce-"), 2);
         var failedAckCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var redeliveryReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var redelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -527,10 +585,12 @@ public class NatsExecutionTests
                     await redeliveryReceived.Task.WaitAsync(processing);
                     // A real native confirmed ACK request to an unsubscribed subject fails without
                     // acknowledging the original. Observe the failure, rather than assuming it happened.
+                    var message = delivery.Message;
                     var failed = new NatsJSMsg<ReadOnlyMemory<byte>>(new NatsMsg<ReadOnlyMemory<byte>>(
-                        subject, subject + ".no_ack_receiver", 0, null, delivery.Message.Data, delivery.Message.Connection),
-                        new NatsJSContext(delivery.Message.Connection!));
-                    await worker.SettleAsync(new(failed, delivery.Consumer), Disposition.Complete, processing);
+                        subject, subject + ".no_ack_receiver", message.Size, message.Headers, message.Data, message.Connection),
+                        new NatsJSContext(message.Connection!));
+                    var disposition = await receive.ProcessAsync(new(failed, delivery.Consumer), processing);
+                    await Assert.That(disposition.Kind).IsEqualTo(DispositionKind.SettledByHandler);
                     failedAckCompleted.TrySetResult();
                 }
                 else
@@ -541,8 +601,8 @@ public class NatsExecutionTests
                     await failedAckCompleted.Task.WaitAsync(token);
                     await Assert.That(metadata.Sequence.Stream).IsEqualTo(originalSequence);
                     await Assert.That(metadata.NumDelivered).IsGreaterThan(1UL);
-                    await Assert.That(delivery.Message.Data.ToArray()).IsEquivalentTo(new byte[] { 42 });
-                    await worker.SettleAsync(delivery, Disposition.Complete, processing);
+                    var disposition = await receive.ProcessAsync(delivery, processing);
+                    await Assert.That(disposition.Kind).IsEqualTo(DispositionKind.SettledByHandler);
                     redelivered.TrySetResult();
                 }
 
@@ -560,7 +620,8 @@ public class NatsExecutionTests
         await adapter.StartAsync(token);
         await using var native = new NatsConnection(broker.Options());
         var js = new NatsJSContext(native);
-        (await js.PublishAsync(subject, new byte[] { 42 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token)).EnsureSuccess();
+        using var scope = provider.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new ExecutionMessage(42), token);
 
         try
         {
@@ -579,6 +640,10 @@ public class NatsExecutionTests
             await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
             // At-least-once delivery permits more redeliveries when a runner is delayed past AckWait.
             await Assert.That(calls).IsGreaterThanOrEqualTo(2);
+            string?[] errors = processErrors.ToArray();
+            await Assert.That(errors.Length).IsEqualTo(calls);
+            await Assert.That(errors[0]).IsEqualTo("_OTHER");
+            await Assert.That(errors.Skip(1).All(error => error is null)).IsTrue();
         }
         catch (Exception error)
         {
@@ -794,6 +859,19 @@ public sealed class ExecutionHandler(ExecutionControl control) : IHandler<Execut
         }
 
         control.Completed.TrySetResult();
+        return default;
+    }
+}
+
+public sealed class ConfirmedAckHandler : IHandler<ExecutionMessage>
+{
+    public ValueTask HandleAsync(ExecutionMessage message, MessageContext context, CancellationToken cancellationToken)
+    {
+        if (message.Value != 42)
+        {
+            throw new InvalidOperationException("Unexpected payload in confirmed ACK test.");
+        }
+
         return default;
     }
 }

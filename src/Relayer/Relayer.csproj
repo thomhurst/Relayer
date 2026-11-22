@@ -34,6 +34,7 @@
     <InternalsVisibleTo Include="Relayer.Kafka" />
     <InternalsVisibleTo Include="Relayer.AmazonSqs" />
     <InternalsVisibleTo Include="Relayer.GooglePubSub" />
+    <InternalsVisibleTo Include="Relayer.Nats" />
     <InternalsVisibleTo Include="Relayer.Kafka.Tests" />
     <InternalsVisibleTo Include="Relayer.AzureServiceBus" />
     <InternalsVisibleTo Include="Relayer.RabbitMQ" />

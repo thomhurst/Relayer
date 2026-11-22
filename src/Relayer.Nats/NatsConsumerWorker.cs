@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using NATS.Client.Core;
 using NATS.Client.JetStream;
 using NATS.Client.JetStream.Models;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.Nats;
@@ -109,13 +110,13 @@ internal sealed partial class NatsConsumerWorker(string stream, string name, Nat
     internal async ValueTask SettleContextAsync(MessageContext context)
     {
         var feature = context.Features.GetRequired<NativeMessage<NatsDelivery>>();
-        await SettleAsync(feature.Message, feature.Disposition, context.CancellationToken).ConfigureAwait(false);
+        await SettleAsync(feature.Message, feature.Disposition, context.CancellationToken, context).ConfigureAwait(false);
         feature.Disposition = Disposition.SettledByHandler;
     }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    internal async ValueTask SettleAsync(NatsDelivery delivery, Disposition disposition, CancellationToken token)
+    internal async ValueTask SettleAsync(NatsDelivery delivery, Disposition disposition, CancellationToken token, MessageContext? context = null)
     {
         if (disposition.Kind == DispositionKind.SettledByHandler)
         {
@@ -141,6 +142,7 @@ internal sealed partial class NatsConsumerWorker(string stream, string name, Nat
             // Work is durable. An uncertain ACK must not stop healthy sibling consumers or
             // be retried by a parallel recovery loop: native AckWait owns redelivery.
             MessageOperationTracing.Fail(activity, "_OTHER");
+            (context as DefaultMessageContext)?.CoreProcessing.RecordSettlementFailure(error);
 
             if (logger is not null)
             {

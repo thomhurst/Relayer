@@ -477,6 +477,12 @@ public sealed partial class ConsumePipeline
             }
         }
 
+        // Called during settlement when a transport logs the failure and leaves redelivery to the broker.
+        internal void RecordSettlementFailure(Exception error)
+        {
+            _failure = error;
+        }
+
         private void Finish(Exception? error)
         {
             try
