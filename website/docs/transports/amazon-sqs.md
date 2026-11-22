@@ -105,6 +105,8 @@ await consumers.StartAsync(cancellationToken);
 
 The host still resolves queue URLs, validates redrive policies and composes every consumer at startup, so the queues must exist when the host starts; sending works while the consumers are stopped. `StartAsync` fails before the host has started or after it stops. `StopAsync` cancels the long polls and drains in-flight work like host shutdown, so the same control pauses and resumes consumption; both calls do nothing when the consumers are already in that state. A stop whose token expires aborts the drain, and the consumers cannot start again until the host is recreated. Host shutdown stops consumers that the control started. While stopped, consumer [health](#health) reports them as unavailable.
 
+If automatic or deferred consumer startup fails after polling begins, Relayer stops polling and drains active deliveries. Cancelling startup during rollback also cancels active handlers and returns the original startup error. Recreate the host after an aborted drain.
+
 ## Health
 
 Reference `Relayer.AmazonSqs.HealthChecks` and register before host startup:
