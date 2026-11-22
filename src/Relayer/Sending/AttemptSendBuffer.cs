@@ -6,6 +6,9 @@ namespace Relayer;
 // Owned by a pooled consume context, never shared across concurrent attempts.
 internal sealed class AttemptSendBuffer(Pipeline.ConsumePipeline? owner = null)
 {
+    // Keep warmed batches reusable while bounding idle storage independently of burst size (D52).
+    private const int MaxRetainedEntries = 8 * Segment.Size;
+
     private readonly Segment _entries = new();
     private int _count;
 
@@ -56,16 +59,44 @@ internal sealed class AttemptSendBuffer(Pipeline.ConsumePipeline? owner = null)
 
     internal void Clear()
     {
-        var segment = _entries;
+        Segment? segment = _entries;
+        int remaining = _count;
+        int offset = 0;
 
-        for (var i = 0; i < _count; i++)
+        while (segment is not null && remaining > 0)
         {
-            if (i > 0 && i % Segment.Size == 0)
+            Segment? next = segment.Next;
+            int used = Math.Min(remaining, Segment.Size);
+            bool retain = offset < MaxRetainedEntries;
+
+            for (var i = 0; i < used; i++)
             {
-                segment = segment.Next!;
+                Entry? entry = segment.Items[i];
+
+                if (entry is null)
+                {
+                    continue;
+                }
+
+                if (retain && entry.CanRetain)
+                {
+                    entry.Clear();
+                }
+                else
+                {
+                    entry.DisposeTimeout();
+                    segment.Items[i] = null;
+                }
             }
 
-            segment.Items[i % Segment.Size]?.Clear();
+            if (offset == MaxRetainedEntries - Segment.Size)
+            {
+                segment.Next = null;
+            }
+
+            remaining -= used;
+            offset += used;
+            segment = next;
         }
 
         _count = 0;
@@ -92,6 +123,13 @@ internal sealed class AttemptSendBuffer(Pipeline.ConsumePipeline? owner = null)
         private TimeSpan _timeoutDelay;
         private ITransport? _transport;
         private OutgoingMessage _message;
+
+        internal bool CanRetain => _bytes.Length <= 64 * 1024 && _headers.Length <= 64 && _options.CanRetain;
+
+        internal void DisposeTimeout()
+        {
+            _timeout.Dispose();
+        }
 
         internal void Copy(ITransport transport, OutgoingMessage message, TimeSpan timeout)
         {
