@@ -31,13 +31,16 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
 
             if (mode == TopologyMode.Validate)
             {
-                if (consumers?.Any(consumer => consumer.Source == queue.Name) == true && destinations?.Contains(queue.Name) != true)
-                {
-                    await ValidateReceiveAsync(queue.Name, null, differences, cancellationToken).ConfigureAwait(false);
-                }
-                else
+                bool hasConsumer = consumers?.Any(consumer => consumer.Source == queue.Name) == true;
+
+                if (!hasConsumer || destinations?.Contains(queue.Name) == true)
                 {
                     await ValidateSendAsync(queue.Name, differences, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (hasConsumer)
+                {
+                    await ValidateReceiveAsync(queue.Name, null, differences, cancellationToken).ConfigureAwait(false);
                 }
 
                 if (queue.RequiresSession && !options.TrustedSessionEntities.Contains(queue.Name))

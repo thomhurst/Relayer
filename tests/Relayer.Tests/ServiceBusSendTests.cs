@@ -827,6 +827,11 @@ public class ServiceBusSendTests
             return sender;
         }
 
+        public override ServiceBusReceiver CreateReceiver(string queueName)
+        {
+            return Receiver;
+        }
+
         public override ServiceBusReceiver CreateReceiver(string topicName, string subscriptionName, ServiceBusReceiverOptions? options = null)
         {
             return Receiver;
@@ -928,11 +933,15 @@ public class ServiceBusSendTests
     {
         internal int Peeks;
         internal int Disposals;
+        internal Exception? PeekFailure;
 
         public override Task<ServiceBusReceivedMessage> PeekMessageAsync(long? fromSequenceNumber = null, CancellationToken cancellationToken = default)
         {
             Peeks++;
-            return Task.FromResult<ServiceBusReceivedMessage>(null!);
+
+            return PeekFailure is { } failure
+                ? Task.FromException<ServiceBusReceivedMessage>(failure)
+                : Task.FromResult<ServiceBusReceivedMessage>(null!);
         }
 
         public override ValueTask DisposeAsync()
