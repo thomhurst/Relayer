@@ -7,7 +7,7 @@ namespace Relayer;
 public static class ReplyExtensions
 {
     /// <summary>Sends a correlated reply to the request's explicitly declared reply address.</summary>
-    /// <remarks>Uses the active outbox or handler send buffer. The response's Send route must match the reply address.</remarks>
+    /// <remarks>The response's Send route must match the reply address. A registered outbox must be active in the current scope.</remarks>
     public static ValueTask ReplyAsync<TResponse>(this MessageContext context, TResponse response)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -15,7 +15,7 @@ public static class ReplyExtensions
     }
 
     /// <summary>Sends a correlated reply using the supplied cancellation token, including CancellationToken.None.</summary>
-    /// <remarks>The response's Send route must match the reply address.</remarks>
+    /// <remarks>The response's Send route must match the reply address. A registered outbox must be active in the current scope.</remarks>
     public static ValueTask ReplyAsync<TResponse>(this MessageContext context, TResponse response, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);

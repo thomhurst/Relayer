@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Relayer.Transports;
 
 namespace Relayer;
@@ -11,6 +12,8 @@ internal enum SendMode
 
 internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) : ISender
 {
+    private const string OutboxActivationHint = "Begin an outbox transaction or, with EF Core, call db.EnlistRelayerOutbox() before sending.";
+
     internal IOutboxEnlistment? Outbox
     {
         get; set;
@@ -33,7 +36,13 @@ internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) :
 
     internal ValueTask ReplyAsync<TMessage>(TMessage message, WireString correlationId, CancellationToken cancellationToken)
     {
-        return pipeline.GetRoute<TMessage>().SendAsync(message, null, Outbox is { IsActive: true } ? Outbox : null,
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return ValueTask.FromCanceled(cancellationToken);
+        }
+
+        var enlistment = ResolveOutbox(SendMode.Automatic, "ReplyAsync requires an active outbox transaction when an outbox is registered. " + OutboxActivationHint);
+        return pipeline.GetRoute<TMessage>().SendAsync(message, null, enlistment,
                     cancellationToken, AttemptBuffer, new(default, correlationId), Tenant?.Id ?? default);
     }
 
@@ -76,7 +85,15 @@ internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) :
             return ValueTask.FromCanceled(cancellationToken);
         }
 
-        var enlistment = mode != SendMode.Direct && Outbox is { IsActive: true } ? Outbox : null;
+        var enlistment = ResolveOutbox(mode, "SendAsync requires an active outbox transaction when an outbox is registered. " +
+            OutboxActivationHint + " Use SendWithoutOutboxAsync for an intentional direct send.");
+        return pipeline.GetTarget<TMessage>().SendAsync(message, configure, enlistment, cancellationToken, AttemptBuffer, tenant: Tenant?.Id ?? default);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private IOutboxEnlistment? ResolveOutbox(SendMode mode, string inactiveOutboxMessage)
+    {
+        var enlistment = mode != SendMode.Direct && Outbox is { IsActive: true } active ? active : null;
 
         if (mode == SendMode.Outbox && enlistment is null)
         {
@@ -85,9 +102,9 @@ internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) :
 
         if (mode == SendMode.Automatic && Outbox is not null && enlistment is null)
         {
-            throw new InvalidOperationException("SendAsync requires an active outbox transaction when an outbox is registered. Begin an outbox transaction or, with EF Core, call db.EnlistRelayerOutbox() before sending. Use SendWithoutOutboxAsync for an intentional direct send.");
+            throw new InvalidOperationException(inactiveOutboxMessage);
         }
 
-        return pipeline.GetTarget<TMessage>().SendAsync(message, configure, enlistment, cancellationToken, AttemptBuffer, tenant: Tenant?.Id ?? default);
+        return enlistment;
     }
 }

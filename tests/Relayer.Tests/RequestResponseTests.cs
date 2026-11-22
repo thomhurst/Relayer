@@ -337,9 +337,11 @@ public class RequestResponseTests
     }
 
     [Test]
-    public async Task Reply_preserves_an_explicit_cancellation_token()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Reply_preserves_an_explicit_cancellation_token(bool inactiveOutbox)
     {
-        await using var fixture = new Fixture();
+        await using var fixture = new Fixture(inactiveOutbox: inactiveOutbox);
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         using var context = fixture.ReplyContext(CancellationToken.None);
@@ -372,6 +374,26 @@ public class RequestResponseTests
         pipeline = fixture.Pipeline(new EchoDescriptor(headers, false));
         using var rejected = pipeline.RentContext(fixture.Message(new RpcRequest(8), headers, "tests.rpc.request"));
         await Assert.That(async () => await pipeline.ProcessAsync(rejected)).Throws<InvalidOperationException>();
+        await Assert.That(fixture.Transport.Sent.Reader.TryRead(out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task Reply_with_an_inactive_outbox_fails_the_attempt_without_sending()
+    {
+        await using var fixture = new Fixture(inactiveOutbox: true);
+        var headers = new Dictionary<string, WireString>
+        {
+            [fixture.Names.ReplyTo] = new("replies"),
+            [fixture.Names.CorrelationId] = new("test-correlation"),
+        };
+        var pipeline = fixture.Pipeline(new EchoDescriptor(headers, false), durable: true);
+        using var context = pipeline.RentContext(fixture.Message(new RpcRequest(1), headers, "tests.rpc.request"));
+
+        await pipeline.ProcessAsync(context);
+
+        var disposition = context.ObservedDisposition;
+        await Assert.That(disposition.Kind).IsEqualTo(DispositionKind.DeadLetter);
+        await Assert.That(disposition.DeadLetter.Description!).Contains("ReplyAsync requires an active outbox transaction");
         await Assert.That(fixture.Transport.Sent.Reader.TryRead(out _)).IsFalse();
     }
 
@@ -434,11 +456,17 @@ public class RequestResponseTests
             get;
         }
 
-        internal Fixture(TimeProvider? clock = null, string prefix = "ce_")
+        internal Fixture(TimeProvider? clock = null, string prefix = "ce_", bool inactiveOutbox = false)
         {
             Names = new(prefix);
             var services = new ServiceCollection();
             services.AddSingleton<ITransport>(Transport);
+
+            if (inactiveOutbox)
+            {
+                services.AddScoped<IOutboxEnlistment, InactiveOutbox>();
+            }
+
             services.AddRelayer(builder =>
             {
                 builder.AddMessageTypesFromThisAssembly();
@@ -521,6 +549,16 @@ public class RequestResponseTests
         {
             _scope.Dispose();
             await _provider.DisposeAsync();
+        }
+    }
+
+    private sealed class InactiveOutbox : IOutboxEnlistment
+    {
+        public bool IsActive => false;
+
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
         }
     }
 

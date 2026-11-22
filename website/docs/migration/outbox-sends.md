@@ -8,6 +8,10 @@ but no outbox transaction or pending unit of work is active in the current scope
 directly to the broker. This is an approved breaking change for the next pre-release version after v0.1.2.
 The check applies to both `SendAsync` overloads, before per-send configuration, middleware or serialization.
 
+`MessageContext.ReplyAsync` also requires an active outbox transaction or selected EF Core unit of work
+when an outbox is registered. Activate the outbox in the responder's scope before replying.
+See [reply durability](../guides/request-response.md#metadata-and-durability).
+
 ## Keep business data and messages atomic
 
 Keep `SendAsync`, but activate the outbox before sending. For EF Core, resolve the context and sender
