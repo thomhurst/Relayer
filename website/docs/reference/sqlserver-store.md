@@ -61,6 +61,7 @@ Register one scoped enlistment using the options and database connection string 
 
 ```csharp
 using Dapper;
+using Relayer;
 using Relayer.Outbox.SqlServer;
 
 services.AddRelayerSqlServerOutbox(options);
