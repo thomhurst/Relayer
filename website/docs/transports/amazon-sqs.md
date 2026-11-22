@@ -240,7 +240,7 @@ options.Subscriptions.Add(new Amazon.SimpleNotificationService.Model.SubscribeRe
 
 Default `Validate` uses read APIs for topics, tags, subscriptions and optional queues, and reports missing resources or declared attribute drift. `Provision` creates only missing topics, queues and subscriptions with the native declarations. It never updates policies, subscription attributes, tags or existing resources; reconcile reported differences through infrastructure configuration. `None` skips topology checks; startup still resolves declared topics. Unconfirmed subscriptions are reported rather than treated as ready. There is no SNS receiver: consume from the subscribed queue with the SQS receiver above.
 
-On a running SNS transport, single and batch sends keep using the previous topic ARNs while validation or provisioning runs. Relayer refreshes the cached ARNs when the operation completes. If the operation is canceled or throws, the previous ARNs stay cached.
+On a running SNS transport, Relayer refreshes the cached topic ARNs after validation or provisioning completes. If either operation is canceled or throws, the previous ARNs stay cached. Each single send or batch group for one destination uses the ARN it captured at the start, across all native requests in that group. Later sends use the refreshed cache. Amazon SNS determines whether the topic still exists when it receives each request.
 
 SNS send spans and native metrics use `messaging.system = aws.sns`, with `aws.sns.topic.arn` and native `aws.request_id` on sends. Duration covers each native request through acknowledgement or failure; partial batch failures remain failures, and native attempt counts include each submitted entry.
 

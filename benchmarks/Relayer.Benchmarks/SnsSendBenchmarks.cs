@@ -34,6 +34,7 @@ public class SnsSendBenchmarks
     private KeyValuePair<string, WireString>[] _headers = null!;
     private OutgoingMessage _message;
     private OutgoingMessage[] _batch = null!;
+    private OutgoingMessage[] _chunkedBatch = null!;
     private PublishRequest _rawSingle = null!;
     private PublishBatchRequest _rawBatch = null!;
 
@@ -77,6 +78,7 @@ public class SnsSendBenchmarks
             new("ce_source", new("/benchmarks")), new("ce_specversion", new("1.0")), new("content-type", new("application/json"))];
         _message = new(_topic, _body, _headers);
         _batch = Enumerable.Repeat(_message, 10).ToArray();
+        _chunkedBatch = Enumerable.Repeat(_message, 20).ToArray();
         _rawSingle = new()
         {
             TopicArn = _arn,
@@ -128,6 +130,8 @@ public class SnsSendBenchmarks
         await RelayerSingle();
         await RawBatch();
         await RelayerBatch();
+        await RawChunkedBatch();
+        await RelayerChunkedBatch();
     }
 
     private Dictionary<string, MessageAttributeValue> Attributes()
@@ -183,6 +187,19 @@ public class SnsSendBenchmarks
     public ValueTask RelayerBatch()
     {
         return _transport.SendBatchAsync(_batch, default);
+    }
+
+    [Benchmark(Baseline = true, OperationsPerInvoke = 20), BenchmarkCategory("ChunkedBatch")]
+    public async Task RawChunkedBatch()
+    {
+        await RawBatch();
+        await RawBatch();
+    }
+
+    [Benchmark(OperationsPerInvoke = 20), BenchmarkCategory("ChunkedBatch")]
+    public ValueTask RelayerChunkedBatch()
+    {
+        return _transport.SendBatchAsync(_chunkedBatch, default);
     }
 
     [Benchmark(Baseline = true), BenchmarkCategory("DefaultJson")]
