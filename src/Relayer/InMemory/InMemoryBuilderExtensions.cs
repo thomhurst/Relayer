@@ -64,6 +64,12 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
         _transport = (InMemoryTransport)ITransportWrapper.Unwrap(registered);
         var configuration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(transport => transport.Name == name);
         var handlers = provider.GetRequiredService<HandlerRegistry>();
+        var headerNames = new HeaderNames();
+        ValidateHostedRouteHeaders(configuration, headerNames);
+
+        // Compose every pipeline before registering any native receivers so a failed composition can be retried.
+        var receivers = new List<(string Source, InMemoryReceiveDelegate Receive, string? Group, int Concurrency)>(
+            configuration.Consumers.Count);
 
         foreach (var declaration in configuration.Consumers)
         {
@@ -102,12 +108,32 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
                 }
             }
 
-            var receive = new ReceivePipeline<InMemoryDelivery, InMemoryMessageBinding>(pipeline.Build(consumer.Concurrency), new HeaderNames(), consumer.Concurrency);
-            _transport.RegisterConsumer(consumer.Source, receive.ProcessAsync, consumer.Options.Group, consumer.Concurrency);
+            var receive = new ReceivePipeline<InMemoryDelivery, InMemoryMessageBinding>(
+                pipeline.Build(consumer.Concurrency), headerNames, consumer.Concurrency);
+            receivers.Add((consumer.Source, receive.ProcessAsync, consumer.Options.Group, consumer.Concurrency));
+        }
+
+        foreach (var receiver in receivers)
+        {
+            _transport.RegisterConsumer(receiver.Source, receiver.Receive, receiver.Group, receiver.Concurrency);
         }
 
         await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void ValidateHostedRouteHeaders(TransportDefinition configuration, HeaderNames receiveHeaders)
+    {
+        foreach (var route in configuration.Routes)
+        {
+            if (route.SendOptions.EnvelopeMode == MessageEnvelopeMode.CloudEvents &&
+                route.SendOptions.HeaderNames.Type != receiveHeaders.Type &&
+                configuration.Consumers.Any(consumer => consumer.Source == route.Destination))
+            {
+                throw new InvalidOperationException(
+                    $"In-memory transport '{configuration.Name}': the CloudEvents send route for '{route.MessageType.Name}' to endpoint '{route.Destination}' writes '{route.SendOptions.HeaderNames.Type}', but hosted consumers require '{receiveHeaders.Type}'. Use the default SendRouteOptions.HeaderNames.");
+            }
+        }
     }
 
     private static OutgoingMessage Copy(MessageContext context, string destination)
