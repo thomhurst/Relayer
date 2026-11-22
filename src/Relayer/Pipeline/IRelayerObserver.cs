@@ -25,8 +25,11 @@ internal interface IRelayerObserver
 
 internal interface ITransportWrapper
 {
-    Transports.ITransport InnerTransport
+    ITransport InnerTransport
     {
         get;
     }
+
+    // Preserve observation when a consumer supplies its own send target. The caller owns the target.
+    ITransport WrapSendTarget(ITransport target);
 }

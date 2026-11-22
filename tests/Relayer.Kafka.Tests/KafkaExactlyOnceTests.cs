@@ -9,6 +9,7 @@ using Dekaf.Protocol.Messages;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Relayer.Testing;
 using Relayer.Transports;
 
 namespace Relayer.Kafka.Tests;
@@ -18,7 +19,9 @@ namespace Relayer.Kafka.Tests;
 public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
 {
     [Test]
-    public async Task Handler_sends_and_dead_letter_copies_commit_once_with_the_consumed_offsets()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Handler_sends_and_dead_letter_copies_commit_once_with_the_consumed_offsets(bool observe)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -26,16 +29,29 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
         await ProduceAsync(topics.Input, 1, token, Enumerable.Range(0, 10).ToArray());
         var control = new ExactlyOnceControl { Poison = 3 };
 
-        using (var host = BuildHost(topics, control, TimeSpan.FromMilliseconds(200)))
+        using (var host = BuildHost(topics, control, TimeSpan.FromMinutes(5), observe: observe))
         {
             await host.StartAsync(token);
 
-            while (await CommittedAsync(topics.Input, 0, token) != 10)
+            // Wait until the broker has the copy and all successful handlers have reached their send.
+            while (control.Handled.Count != 9 ||
+                (await ReadOutputAsync(topics.DeadLetter, 1, token, IsolationLevel.ReadUncommitted)).Count == 0)
             {
                 await Task.Delay(50, token);
             }
 
+            await Assert.That(await CommittedAsync(topics.Input, 0, token)).IsNull();
+            await Assert.That(await ReadOutputAsync(topics.DeadLetter, 1, token)).IsEmpty();
             await host.StopAsync(token);
+            await Assert.That(await CommittedAsync(topics.Input, 0, token)).IsEqualTo(10L);
+
+            if (observe)
+            {
+                var harness = host.Services.GetRequiredService<RelayerHarness>();
+                await Assert.That(harness.GetDispatched<ExactlyOnceOutput>().Select(message => message.Number))
+                    .IsEquivalentTo(Enumerable.Range(0, 10).Where(number => number != 3));
+                await Assert.That(harness.Dispatched.Count(message => message.Destination == topics.DeadLetter)).IsEqualTo(1);
+            }
         }
 
         var output = await ReadOutputAsync(topics.Output, 1, token);
@@ -44,7 +60,9 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
     }
 
     [Test]
-    public async Task A_failed_run_aborts_its_output_and_the_next_run_produces_it_once()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task A_failed_run_aborts_its_output_and_the_next_run_produces_it_once(bool observe)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -53,7 +71,7 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
         // The dead-letter copy of record 5 cannot be written, so the run fails inside its first transaction.
         var failing = new ExactlyOnceControl { Poison = 5 };
 
-        using (var host = BuildHost(topics, failing, TimeSpan.FromMinutes(5), missingDeadLetter: true))
+        using (var host = BuildHost(topics, failing, TimeSpan.FromMinutes(5), missingDeadLetter: true, observe: observe))
         {
             await host.StartAsync(token);
             var receiver = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
@@ -281,7 +299,7 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
     }
 
     private IHost BuildHost(Topics topics, ExactlyOnceControl control, TimeSpan commitInterval, bool missingDeadLetter = false,
-        bool inbox = false, string? transactionalId = null)
+        bool inbox = false, string? transactionalId = null, bool observe = false)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -329,6 +347,12 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
                 });
             });
         });
+
+        if (observe)
+        {
+            builder.Services.AddRelayerHarness();
+        }
+
         return builder.Build();
     }
 

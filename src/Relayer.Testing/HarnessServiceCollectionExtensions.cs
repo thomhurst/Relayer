@@ -78,14 +78,16 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
     private readonly ITransport _inner;
     private readonly RelayerHarness _harness;
     private readonly bool _ownsTransport;
-    private readonly Dictionary<string, List<HeaderNames>> _names = new(StringComparer.Ordinal);
-    private readonly List<HeaderNames> _defaultNames = [new()];
+    private readonly Dictionary<string, List<HeaderNames>> _names;
+    private readonly List<HeaderNames> _defaultNames;
 
     internal HarnessTransport(ITransport inner, RelayerHarness harness, RelayerConfiguration configuration, bool ownsTransport)
     {
         _inner = inner;
         _harness = harness;
         _ownsTransport = ownsTransport;
+        _names = new(StringComparer.Ordinal);
+        _defaultNames = [new()];
 
         foreach (var transport in configuration.Transports)
         {
@@ -109,9 +111,23 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
         }
     }
 
+    private HarnessTransport(ITransport target, HarnessTransport original)
+    {
+        _inner = target;
+        _harness = original._harness;
+        _ownsTransport = false;
+        _names = original._names;
+        _defaultNames = original._defaultNames;
+    }
+
     public string Name => _inner.Name;
 
     public ITransport InnerTransport => _inner;
+
+    public ITransport WrapSendTarget(ITransport target)
+    {
+        return new HarnessTransport(target, this);
+    }
 
     public SendTracing? GetSendTracing(string destination)
     {
