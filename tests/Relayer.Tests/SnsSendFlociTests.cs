@@ -1,9 +1,9 @@
+using System.Text;
 using Amazon.Runtime;
 using Amazon.SimpleNotificationService;
 using Amazon.SimpleNotificationService.Model;
 using Amazon.SQS;
 using Amazon.SQS.Model;
-using DotNet.Testcontainers.Builders;
 using Relayer.AmazonSqs;
 using Relayer.Transports;
 
@@ -11,6 +11,37 @@ namespace Relayer.Tests;
 
 public class SnsSendFlociTests
 {
+    [Test]
+    public async Task Externally_configured_large_topic_accepts_single_sends_and_split_batches()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        var url = Environment.GetEnvironmentVariable("RELAYER_SNS_SERVICE_URL") ?? await SharedBrokers.FlociUrlAsync(token);
+        using var sns = new AmazonSimpleNotificationServiceClient(new BasicAWSCredentials("test", "test"),
+            new AmazonSimpleNotificationServiceConfig { ServiceURL = url, AuthenticationRegion = "us-east-1" });
+        var name = TestContext.Current!.Isolation.GetIsolatedName("large-sns");
+        var topic = await sns.CreateTopicAsync(new CreateTopicRequest(name)
+        {
+            Attributes = new() { ["MaximumMessageSize"] = "1048576" }
+        }, token);
+
+        try
+        {
+            var options = new AmazonSnsTransportOptions { SnsClient = sns };
+            options.Topics.Add(new(name));
+            await using var transport = new SnsSendTransport("floci", sns, false, options);
+            await transport.StartAsync(token);
+            await Assert.That(transport.GetCapabilities(name).MaxMessageBytes).IsEqualTo(1_048_576L);
+            var message = new OutgoingMessage(name, Encoding.UTF8.GetBytes(new string('x', 300 * 1024)));
+            await transport.SendAsync(message, token);
+            await transport.SendBatchAsync(new[] { message, message, message, message }, token);
+        }
+        finally
+        {
+            await sns.DeleteTopicAsync(topic.TopicArn, CancellationToken.None);
+        }
+    }
+
     [Test]
     public async Task Topics_raw_subscriptions_queue_policies_fifo_and_read_only_topology_round_trip()
     {
@@ -31,7 +62,10 @@ public class SnsSendFlociTests
             var queueArn = "arn:aws:sqs:us-east-1:000000000000:" + destination;
             options.Topics.Add(new(destination)
             {
-                Attributes = suffix.Length == 0 ? null : new()
+                Attributes = suffix.Length == 0 ? new()
+                {
+                    ["MaximumMessageSize"] = "1048576"
+                } : new()
                 {
                     ["FifoTopic"] = "true"
                 },
@@ -73,10 +107,11 @@ public class SnsSendFlociTests
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(0);
             await transport.StartAsync(token);
             KeyValuePair<string, WireString>[] headers = [new("ce_id", new("event-1")), new("ce_type", new("orders.created;v=1")), new("content-type", new("application/json")), new("traceparent", new("creation-context"))];
-            await transport.SendAsync(new(name, "{\"value\":1}"u8.ToArray(), headers), token);
+            var largeBody = "{\"value\":\"" + new string('x', 300 * 1024) + "\"}";
+            await transport.SendAsync(new(name, Encoding.UTF8.GetBytes(largeBody), headers), token);
             var queueUrl = (await sqs.GetQueueUrlAsync(name, token)).QueueUrl;
             var received = await ReceiveAsync(sqs, queueUrl, token);
-            await Assert.That(received.Body).IsEqualTo("{\"value\":1}");
+            await Assert.That(received.Body).IsEqualTo(largeBody);
             await Assert.That(received.MessageAttributes["ce_type"].StringValue).IsEqualTo("orders.created;v=1");
             await Assert.That(received.MessageAttributes["content-type"].StringValue).IsEqualTo("application/json");
             await Assert.That(received.MessageAttributes["traceparent"].StringValue).IsEqualTo("creation-context");
