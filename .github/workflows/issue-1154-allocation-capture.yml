@@ -1,0 +1,124 @@
+name: Buffered batch allocation capture (#1154)
+
+on:
+  push:
+    branches: [diagnostics/issue-1154-capture-recovery]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  capture:
+    name: Buffered allocation ownership (${{ matrix.framework }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - framework: net10.0
+            runtime: 10.0.15
+          - framework: net11.0
+            runtime: 11.0.0
+    env:
+      FRAMEWORK: ${{ matrix.framework }}
+      RUNTIME_VERSION: ${{ matrix.runtime }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      TEST_FILTER: '/*/*/(BatchPipelineTests|ConcurrentReceiveAllocationTests|InMemoryTransportTests|JsonSerializerTests|RabbitMqSendTests|SendRetentionTests)/*'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: dotnet/samples
+          ref: 3810558800760fc39282cc939bac645735514209
+          path: profiler-sdk
+          sparse-checkout: core/profiling
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+        with:
+          dotnet-version: |
+            10.0.404
+            11.0.100
+      - name: Prepare broker networking
+        run: sudo bash scripts/Prepare-ContainerTests.sh
+      - uses: docker/setup-docker-action@3f1ab1ab0e29231562e4db4ca600c1a49653bac6
+        with:
+          version: v29.10.0
+          set-host: true
+          daemon-config: '{"userland-proxy": false}'
+      - name: Build the core tests and existing allocation profiler
+        id: build
+        run: |
+          mkdir -p results/counter-only results/profiled .artifacts/history
+          dotnet --info > results/runtime.txt
+          dotnet --list-runtimes > results/runtimes.txt
+          uname -a > results/host.txt
+          cat /etc/os-release >> results/host.txt
+          nproc >> results/host.txt
+          git rev-parse HEAD > results/commit.txt
+          printf '%s\n' "$TEST_FILTER" > results/filter.txt
+          git archive 489ce7079df1f92788b76dd8c8e191f46707b827 \
+            tools/FrozenAllocationProfiler .github/scripts/read_native_allocations.py \
+            .github/scripts/read_allocation_stacks.py | tar -x -C .artifacts/history
+          CXX=clang++ cmake -S .artifacts/history/tools/FrozenAllocationProfiler \
+            -B .artifacts/profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release
+          cmake --build .artifacts/profiler
+          dotnet build tests/Relayer.Tests -c Release -f "$FRAMEWORK"
+          cp "tests/Relayer.Tests/bin/Release/$FRAMEWORK/Relayer.Tests.runtimeconfig.json" results/
+      - name: Measure the same parallel workload without profiler callbacks
+        run: |
+          timeout --kill-after=10s 4m \
+            dotnet --fx-version "$RUNTIME_VERSION" "tests/Relayer.Tests/bin/Release/$FRAMEWORK/Relayer.Tests.dll" \
+            --results-directory "$PWD/results/counter-only" --treenode-filter "$TEST_FILTER" --output Detailed \
+            2>&1 | tee results/counter-only/tests.log
+      - name: Capture batch counters and caller allocation stacks
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          profiler="$PWD/.artifacts/profiler/libFrozenAllocationProfiler.so"
+          timeout --kill-after=10s 4m env \
+            CORECLR_ENABLE_PROFILING=1 CORECLR_PROFILER='{32B7EF07-25E8-4AC7-B011-9A4321D702C8}' \
+            CORECLR_PROFILER_PATH="$profiler" RELAYER_ALLOCATION_PROFILER="$profiler" \
+            RELAYER_ALLOCATION_OUTPUT="$PWD/results/profiled/objects.jsonl" \
+            RELAYER_ALLOCATION_STACKS="$PWD/results/profiled/stacks.jsonl" \
+            dotnet --fx-version "$RUNTIME_VERSION" "tests/Relayer.Tests/bin/Release/$FRAMEWORK/Relayer.Tests.dll" \
+            --results-directory "$PWD/results/profiled" --treenode-filter "$TEST_FILTER" --output Detailed \
+            2>&1 | tee results/profiled/tests.log
+      - name: Validate the allocation report even if the test host timed out
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          reports=results/profiled
+          python3 .artifacts/history/.github/scripts/read_native_allocations.py "$reports/objects.jsonl" \
+            | jq 'map_values(.coverage)' > "$reports/validated-native.json"
+          # Report caller-local evidence even when stack walking fails on another thread.
+          python3 .github/scripts/summarize-issue-1154.py "$reports" | tee "$reports/caller-summary.txt"
+          python3 .artifacts/history/.github/scripts/read_allocation_stacks.py "$reports/stacks.jsonl" "$reports/objects.jsonl" \
+            | jq '{coverage, unresolved_frames}' > "$reports/validated-stacks.json"
+      - name: Inventory captured inputs and results
+        if: always()
+        run: |
+          paths=()
+          for path in results "tests/Relayer.Tests/bin/Release/$FRAMEWORK" .artifacts/profiler/libFrozenAllocationProfiler.so; do
+            if [ -e "$path" ]; then paths+=("$path"); fi
+          done
+          if [ "${#paths[@]}" -gt 0 ]; then
+            find "${paths[@]}" -type f -exec sha256sum {} + > results-sha256.txt
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: allocation-owners-${{ matrix.framework }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            results-sha256.txt
+            tests/Relayer.Tests/bin/Release/${{ matrix.framework }}/
+            .artifacts/profiler/libFrozenAllocationProfiler.so
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
