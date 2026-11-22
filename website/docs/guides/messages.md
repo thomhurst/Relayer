@@ -112,6 +112,20 @@ Single-message consumers cache their typed JSON reader when the pipeline is comp
 
 Serialization writes to pooled `IBufferWriter<byte>` storage and deserialization reads the `ReadOnlySequence<byte>` directly. Null bodies and trailing JSON values are rejected.
 
+### Payload types that need distinct metadata names
+
+System.Text.Json derives metadata property names from payload type names. Two DTOs with the same short name can produce `SYSLIB1031`. A type named after a C# keyword, such as `@event`, can produce a compiler error in the generated context.
+
+Add a `GenerateMessageJsonType` assembly attribute in the project that owns the `[Message]` contracts. For example, if `Shopping.Line` and `Logistics.Line` both appear in the same context, give `Logistics.Line` its own generated name.
+
+```csharp
+using Relayer;
+
+[assembly: GenerateMessageJsonType(typeof(Logistics.Line))]
+```
+
+Repeat the attribute for each type that needs a distinct name. If closed collection types also collide, add an attribute for one of the collections, such as `typeof(IReadOnlyList<Logistics.Line>)`. This applies to both `AddMessageTypesFromThisAssembly()` and exported registration methods. The attribute adds metadata to the Relayer-generated context.
+
 ## Custom serializers
 
 Register your own `IMessageSerializer` in the service collection, before, inside or after `AddRelayer`, to replace JSON. The default uses a lazy DI factory, so the final registration decides whether JSON metadata is needed at all.

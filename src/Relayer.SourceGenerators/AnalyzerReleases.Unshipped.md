@@ -17,3 +17,4 @@ RLYM005 | Relayer | Error | Message name cannot be null
 RLYM006 | Relayer | Error | Message name must contain a non-whitespace character
 RLYM007 | Relayer | Error | Message version must be at least 1
 RLYM008 | Relayer | Error | Exported message registration name must be a valid unique method identifier
+RLYM009 | Relayer | Error | Explicit JSON metadata type must be closed and accessible to the generated context
