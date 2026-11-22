@@ -161,6 +161,12 @@ await db.SaveChangesAsync(cancellationToken);
 
 `EnqueueAsync` uses the configured routes and send middleware. Each selection targets its own context, including when another context is selected in the same scope. Await each send before saving or disposing the selection.
 
+If a save fails during EF change detection, EF can skip its failure callbacks. Disposing the final
+selection for the context rolls back the transaction Relayer opened and discards its messages. A later
+save also cleans up an unfinished transaction before saving. Before retrying business changes and
+enqueuing their messages, dispose the failed selection, clear or repair the tracked changes, and start a
+new selection.
+
 `SaveChangesAsync` creates an owned transaction when rows are buffered, even for a single business
 command or an outbox-only save. It commits business changes and outgoing rows together. Synchronous
 `SaveChanges` works too. Disposing the selection before saving discards unsaved messages. A second save

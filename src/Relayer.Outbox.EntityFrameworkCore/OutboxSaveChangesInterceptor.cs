@@ -26,6 +26,13 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
     {
         Configuration.TenantBinding?.Validate();
         var state = Outbox.Get(eventData.Context!, Configuration);
+
+        // EF can throw during change detection before it reports save failures.
+        if (state.OwnedTransaction is { } unfinished)
+        {
+            state.DisposeOwnedTransaction(unfinished);
+        }
+
         state.CheckTransaction();
         state.EnsureTransactionAvailable();
 
@@ -54,6 +61,12 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
     {
         Configuration.TenantBinding?.Validate();
         var state = Outbox.Get(eventData.Context!, Configuration);
+
+        if (state.OwnedTransaction is { } unfinished)
+        {
+            await state.DisposeOwnedTransactionAsync(unfinished).ConfigureAwait(false);
+        }
+
         state.CheckTransaction();
         state.EnsureTransactionAvailable();
 
@@ -99,7 +112,6 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
             finally
             {
                 transaction.Dispose();
-                state.OwnedTransaction = null;
                 state.Clear();
             }
         }
@@ -124,7 +136,6 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
             finally
             {
                 await transaction.DisposeAsync().ConfigureAwait(false);
-                state.OwnedTransaction = null;
                 state.Clear();
             }
         }
@@ -158,15 +169,7 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
 
         if (state.OwnedTransaction is { } transaction)
         {
-            try
-            {
-                transaction.Dispose();
-            }
-            finally
-            {
-                state.OwnedTransaction = null;
-                state.Clear();
-            }
+            state.DisposeOwnedTransaction(transaction);
         }
         else if (state.Transaction is { } explicitTransaction)
         {
@@ -187,15 +190,7 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
 
         if (state.OwnedTransaction is { } transaction)
         {
-            try
-            {
-                await transaction.DisposeAsync().ConfigureAwait(false);
-            }
-            finally
-            {
-                state.OwnedTransaction = null;
-                state.Clear();
-            }
+            await state.DisposeOwnedTransactionAsync(transaction).ConfigureAwait(false);
         }
         else if (state.Transaction is { } explicitTransaction)
         {

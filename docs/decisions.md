@@ -598,6 +598,10 @@ with buffered rows reject retrying strategies with an actionable error before op
 PostgreSQL is implemented first. Its versioned header codec retains all name/value pairs; deterministic
 FNV-1a lane hashing uses UTF-8 ordering keys. Tenant metadata is preserved when explicitly supplied; an application-authorized scoped binding supplies and validates it for tenant stores (D45).
 
+EF Core 10.0.15 runs change detection outside its save failure callbacks. If a save leaves a
+Relayer-owned transaction open, disposing the final selection or starting another save disposes that
+transaction and discards its buffer.
+
 **Consequences.** No SaveChanges override, entity mapping, header scanning, or process-wide mutable
 state is required. Native transaction rollback/disposal abandons buffered sends. Each context's last
 successful SaveChanges (including an empty save) establishes its retained-send boundary, initially zero.
