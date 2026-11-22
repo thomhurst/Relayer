@@ -811,7 +811,10 @@ public class HarnessTests
     private sealed record Marker(int Value);
 
     [Test]
-    public async Task Batch_consumption_records_each_delivery_and_partial_failure()
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(false, false)]
+    public async Task Batch_consumption_records_each_delivery_and_partial_failure(bool handlerFails, bool settlementFails)
     {
         var services = new ServiceCollection();
         services.AddRelayer(builder =>
@@ -825,9 +828,18 @@ public class HarnessTests
         var serializer = provider.GetRequiredService<IMessageSerializer>();
         var declaration = provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0];
         var descriptor = provider.GetRequiredService<HandlerRegistry>().Descriptors.Single();
-        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
-            provider.GetRequiredService<MessageTypeRegistry>(), serializer,
-            static (_, _, _) => default).BuildBatch(descriptor, declaration);
+        var settlementError = new InvalidOperationException("settlement");
+        var pipelineBuilder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), serializer, static (_, _, _) => default);
+
+        if (!handlerFails)
+        {
+            pipelineBuilder.Settle(context => settlementFails && context.MessageId == "two"
+                ? ValueTask.FromException(settlementError)
+                : default);
+        }
+
+        var pipeline = pipelineBuilder.BuildBatch(descriptor, declaration);
         var body = new ArrayBufferWriter<byte>();
         serializer.Serialize(new Probe(1), body);
         using var first = pipeline.RentContext(new ConsumeMessage
@@ -836,25 +848,56 @@ public class HarnessTests
             MessageType = new("harness.probe", 1),
             Body = new(body.WrittenMemory),
         });
-        var failedBody = new ArrayBufferWriter<byte>();
-        serializer.Serialize(new Probe(2), failedBody);
+        int secondValue = handlerFails ? 2 : 3;
+        var secondBody = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new Probe(secondValue), secondBody);
         using var second = pipeline.RentContext(new ConsumeMessage
         {
             MessageId = "two",
             MessageType = new("harness.probe", 1),
-            Body = new(failedBody.WrittenMemory),
+            Body = new(secondBody.WrittenMemory),
         });
         var harness = provider.GetRequiredService<RelayerHarness>();
-        var failedItem = harness.WaitForConsumedAsync<Probe>(message => message.Value == 2);
-        await pipeline.ProcessBatchAsync(new[] { first, second });
+        using var cancellation = new CancellationTokenSource();
+        var firstWait = harness.WaitForConsumedAsync<Probe>(message => message.Value == 1, cancellation.Token);
+        var secondWait = harness.WaitForConsumedAsync<Probe>(message => message.Value == secondValue, cancellation.Token);
+        var batch = new[] { first, second };
+
+        if (settlementFails)
+        {
+            await Assert.That(async () => await pipeline.ProcessBatchAsync(batch))
+                .Throws<InvalidOperationException>().WithMessage("settlement");
+        }
+        else
+        {
+            await pipeline.ProcessBatchAsync(batch);
+        }
+
         await harness.WaitForIdleAsync().WaitAsync(s_limit);
+        await Assert.That((await firstWait.WaitAsync(s_limit)).Value).IsEqualTo(1);
         await Assert.That((await harness.WaitForConsumedAsync<Probe>().WaitAsync(s_limit)).Value).IsEqualTo(1);
-        await Assert.That(failedItem.IsCompleted).IsFalse();
         await Assert.That(harness.Consumed.Count).IsEqualTo(2);
-        await Assert.That(harness.GetConsumed<Probe>().Select(message => message.Value).ToArray()).IsEquivalentTo(new[] { 1, 2 });
-        await Assert.That(harness.Read<Probe>(harness.Failed[0].Message).Value).IsEqualTo(2);
+        await Assert.That(harness.GetConsumed<Probe>().Select(message => message.Value).ToArray())
+            .IsEquivalentTo(new[] { 1, secondValue });
+
+        if (!handlerFails && !settlementFails)
+        {
+            await Assert.That((await secondWait.WaitAsync(s_limit)).Value).IsEqualTo(secondValue);
+            await Assert.That(harness.Failed.Count).IsEqualTo(0);
+            return;
+        }
+
+        await Assert.That(secondWait.IsCompleted).IsFalse();
+        cancellation.Cancel();
+        await Assert.That(async () => await secondWait).Throws<OperationCanceledException>();
         await Assert.That(harness.Failed.Count).IsEqualTo(1);
         await Assert.That(harness.Failed[0].Message.MessageId).IsEqualTo("two");
+        await Assert.That(harness.Read<Probe>(harness.Failed[0].Message).Value).IsEqualTo(secondValue);
+
+        if (settlementFails)
+        {
+            await Assert.That(harness.Failed[0].Error).IsSameReferenceAs(settlementError);
+        }
     }
 
     [Test]
@@ -891,6 +934,72 @@ public class HarnessTests
         await Assert.That(afterReset.IsCompleted).IsFalse();
         await fixture.Send(new Probe(4));
         await Assert.That((await afterReset.WaitAsync(s_limit)).Value).IsEqualTo(4);
+    }
+
+    [Test]
+    [Arguments(true, false)]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    public async Task Wait_for_consumed_checks_history_before_deliveries_recorded_during_the_scan(
+        bool historyMatches, bool cancelDuringHistory)
+    {
+        await using var fixture = await Fixture.Start();
+        await fixture.Send(new Probe(1));
+        await fixture.Idle();
+
+        var entered = Signal();
+        using var release = new ManualResetEventSlim();
+        using var cancellation = new CancellationTokenSource(s_limit);
+        int liveCalls = 0;
+        var wait = Task.Run(() => fixture.Harness.WaitForConsumedAsync<Probe>(message =>
+        {
+            if (message.Value != 1)
+            {
+                Interlocked.Increment(ref liveCalls);
+                return true;
+            }
+
+            entered.SetResult();
+
+            if (!release.Wait(s_limit))
+            {
+                throw new TimeoutException("The historical predicate was not released.");
+            }
+
+            return historyMatches;
+        }, cancellation.Token));
+
+        int callsDuringHistory;
+
+        try
+        {
+            await entered.Task.WaitAsync(s_limit);
+            await fixture.Send(new Probe(2));
+            await fixture.Send(new Probe(3));
+            await fixture.Idle();
+            callsDuringHistory = Volatile.Read(ref liveCalls);
+
+            if (cancelDuringHistory)
+            {
+                cancellation.Cancel();
+            }
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        if (cancelDuringHistory)
+        {
+            await Assert.That(async () => await wait.WaitAsync(s_limit)).Throws<OperationCanceledException>();
+        }
+        else
+        {
+            await Assert.That((await wait.WaitAsync(s_limit)).Value).IsEqualTo(historyMatches ? 1 : 2);
+        }
+
+        await Assert.That(callsDuringHistory).IsEqualTo(0);
+        await Assert.That(Volatile.Read(ref liveCalls)).IsEqualTo(historyMatches || cancelDuringHistory ? 0 : 1);
     }
 
     [Test]
@@ -1340,7 +1449,11 @@ public sealed class BatchProbeHandler : IBatchHandler<Probe>
 {
     public ValueTask<BatchResult> HandleAsync(Batch<Probe> batch, CancellationToken cancellationToken)
     {
-        batch.Items[1].Fail(new InvalidOperationException("partial"));
+        if (batch.Items[1].Message.Value == 2)
+        {
+            batch.Items[1].Fail(new InvalidOperationException("partial"));
+        }
+
         return new(BatchResult.Success);
     }
 }
