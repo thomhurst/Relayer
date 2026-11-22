@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
 
@@ -37,6 +38,26 @@ public class LocalStoreStartupTests(PostgreSqlLocalSessionFixture server)
         await Assert.That(host.Services.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("direct").ExecuteTask is null).IsTrue();
         await Assert.That(host.Services.GetRequiredKeyedService<PostgreSqlOrderedDispatcher>("ordered").ExecuteTask is null).IsTrue();
         await Assert.That(host.Services.GetRequiredKeyedService<PostgreSqlMaintenanceWorker>("maintenance").ExecuteTask is null).IsTrue();
+    }
+
+    [Test]
+    public async Task Native_required_local_route_fails_startup()
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source, new()
+        {
+            Lanes = 2
+        });
+        using var host = BuildHost(source, ordered: false, transactionRequirement: SendTransactionRequirement.Native);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await Assert.That(async () =>
+        {
+            await host.StartAsync(deadline.Token);
+            await host.StopAsync(deadline.Token);
+        }).Throws<OptionsValidationException>().WithMessageContaining("native Transactions are unavailable");
     }
 
     [Test]
@@ -142,7 +163,8 @@ public class LocalStoreStartupTests(PostgreSqlLocalSessionFixture server)
     }
 
     private static IHost BuildHost(NpgsqlDataSource source, bool ordered, string? mismatch = null, string? setting = null,
-        bool namedWriter = false, int? efLanes = null, NpgsqlDataSource? workerSource = null)
+        bool namedWriter = false, int? efLanes = null, NpgsqlDataSource? workerSource = null,
+        SendTransactionRequirement transactionRequirement = SendTransactionRequirement.None)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -156,6 +178,11 @@ public class LocalStoreStartupTests(PostgreSqlLocalSessionFixture server)
             {
                 transport.Send<LocalTransportTests.LocalWork>("work", route =>
                 {
+                    route.SendOptions = new()
+                    {
+                        TransactionRequirement = transactionRequirement
+                    };
+
                     if (ordered)
                     {
                         route.OrderingKey(message => message.Value.ToString());

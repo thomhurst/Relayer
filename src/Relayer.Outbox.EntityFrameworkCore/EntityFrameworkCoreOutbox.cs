@@ -217,6 +217,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
 
             if (state.Count != 0)
             {
+                state.Configuration.ValidateTransaction(transaction);
                 participants++;
             }
         }

@@ -50,8 +50,12 @@ If you use `NpgsqlSlimDataSourceBuilder`, call `EnableArrays()` before `Build()`
 operations use native UUID array parameters. The regular `NpgsqlDataSource` builder enables these mappings by default.
 
 Set `DispatchStoreName` on each participating context. Names are case-sensitive. A missing dispatcher
-or mismatched schema/prefix fails when the DbContext options are built. Omitting the name keeps
-enlistment-only behavior. The EF Core options also bind this name from configuration.
+or mismatched schema/prefix fails when the DbContext options are built. Before committing an
+EF Core transaction with buffered outbox rows, Relayer checks that its configured PostgreSQL
+host, port and database match the selected dispatcher. Separate data sources with the same
+target are supported. Roll back the transaction and correct the connection settings if the
+check fails. Omitting the name keeps enlistment-only behavior. The EF Core options also bind
+this name from configuration.
 
 For dispatch limits from configuration, use
 `services.AddRelayerPostgreSqlDirectDispatch("orders", dataSource, configuration.GetSection("Dispatch"), storeOptions)`.

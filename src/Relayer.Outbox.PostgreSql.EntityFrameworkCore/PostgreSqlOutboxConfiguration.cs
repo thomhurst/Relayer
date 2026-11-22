@@ -28,6 +28,7 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
     private readonly string? _schema;
     private readonly string _tablePrefix;
     private readonly PostgreSqlLocalStore[] _localStores;
+    private string? _validatedWriterConnectionString;
 
     internal PostgreSqlOutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null,
         IEnumerable<PostgreSqlSchedulingRegistration>? workers = null, PostgreSqlLocalStore[]? localStores = null)
@@ -127,6 +128,23 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
     internal override OutboxConfiguration? FindConfiguration(IDbContextOptions options)
     {
         return options.FindExtension<PostgreSqlOutboxConfiguration>();
+    }
+
+    internal override void ValidateTransaction(DbTransaction transaction)
+    {
+        if (Dispatcher is null)
+        {
+            return;
+        }
+
+        var writer = ((NpgsqlTransaction)transaction).Connection!;
+        var connectionString = writer.ConnectionString;
+
+        if (connectionString != _validatedWriterConnectionString)
+        {
+            Dispatcher.ValidateConnection(writer);
+            _validatedWriterConnectionString = connectionString;
+        }
     }
 
     internal override IOutboxBatch CreateBatch()
