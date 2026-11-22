@@ -136,7 +136,7 @@ var placed = await harness.WaitForConsumedAsync<OrderPlaced>(
 
 `WaitForConsumedAsync` completes with the first successful delivery of the registered message type that matches the optional predicate, in harness recording order. It checks deliveries handled before the call first, including when new deliveries finish during the check, so start it before or after sending. A failed attempt does not match, nor does a delivery that failure handling redelivers, discards or dead-letters, or one whose handler requests a retry or dead-letter; a later successful redelivery does. The wait is signalled when processing finishes, not by polling. To wait for a cascade, wait for the last message in the chain.
 
-If native settlement fails partway through a batch, deliveries already settled successfully can satisfy the wait.
+If a JetStream confirmed acknowledgement fails, the harness records the exception in `Failed` as a consume failure. Only a later successful delivery can satisfy the wait. If native settlement fails partway through a batch, deliveries already settled successfully can satisfy the wait.
 
 In-memory handlers that settle a native delivery themselves count as handled when they call `Complete()`. A native `Redeliver()` keeps the wait pending until a successful delivery, and a native `DeadLetter()` appears in `DeadLettered` without satisfying the wait. For other transports, the harness counts an otherwise successful attempt marked `SettledByHandler` as handled.
 
