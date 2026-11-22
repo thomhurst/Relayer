@@ -316,6 +316,7 @@ Reference `Relayer.Kafka.HealthChecks` for the optional native adapters:
 ```csharp
 using Relayer.Kafka;
 using Relayer.HealthChecks;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 builder.Services.AddRelayerKafkaHealthProviders("events", admin =>
