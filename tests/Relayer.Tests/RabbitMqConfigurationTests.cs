@@ -74,6 +74,40 @@ public class RabbitMqConfigurationTests
     }
 
     [Test]
+    [Arguments("orders", "orders")]
+    [Arguments("orders", ":orders")]
+    [Arguments("orders:eu", ":orders:eu")]
+    public async Task Default_exchange_dead_letter_route_to_source_is_rejected(string source, string destination)
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.RabbitMQ("rabbit", rabbit =>
+            rabbit.Consume(source, consumer => consumer.Handler<SampleHandler>().Failures(new()
+            {
+                RetryDelays = [],
+                DeadLetterEndpoint = destination
+            }))));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<InvalidOperationException>()
+            .WithMessageContaining($"RabbitMQ consumer '{source}': DeadLetterEndpoint '{destination}' routes to the source queue");
+    }
+
+    [Test]
+    [Arguments("Orders")]
+    [Arguments(":orders.errors")]
+    [Arguments("errors:orders")]
+    public async Task Other_dead_letter_routes_are_accepted(string destination)
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.RabbitMQ("rabbit", rabbit =>
+            rabbit.Consume("orders", consumer => consumer.Handler<SampleHandler>().Failures(new()
+            {
+                DeadLetterEndpoint = destination
+            }))));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(provider.GetRequiredService<ITransport>().GetCapabilities(destination).DeadLetter).IsFalse();
+    }
+
+    [Test]
     public async Task Direct_send_requires_a_declared_destination()
     {
         await using var provider = Provider(_ =>

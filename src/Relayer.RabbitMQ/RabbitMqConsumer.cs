@@ -83,6 +83,18 @@ internal sealed partial class RabbitMqConsumer
         {
             throw new NotSupportedException($"RabbitMQ consumer '{consumer.Source}': nack cannot persist retry metadata. Use RetryDelays for in-process retries and confirmed dead-letter copies.");
         }
+
+        if (consumer.Failure.DeadLetterEndpoint is not { } destination)
+        {
+            return;
+        }
+
+        var (exchange, routingKey) = RabbitMqSendEndpoint.ParseDestination(destination);
+
+        if (exchange.Length == 0 && string.Equals(routingKey, consumer.Source, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"RabbitMQ consumer '{consumer.Source}': DeadLetterEndpoint '{destination}' routes to the source queue. Choose a separate destination or leave DeadLetterEndpoint unset.");
+        }
     }
 
     internal async Task StartAsync(IConnection connection, CancellationToken token)

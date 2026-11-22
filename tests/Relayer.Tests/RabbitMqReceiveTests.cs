@@ -59,6 +59,25 @@ public class RabbitMqReceiveTests
     }
 
     [Test]
+    public async Task Hosted_consumer_rejects_a_dead_letter_route_back_to_its_queue()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var factory = broker.Factory();
+        await using var connection = await factory.CreateConnectionAsync(token);
+        await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
+        await channel.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
+        using var host = Host(factory, new(), ordersFailure: new()
+        {
+            RetryDelays = [],
+            DeadLetterEndpoint = ":orders"
+        });
+        await Assert.That(async () => await host.StartAsync(token)).Throws<InvalidOperationException>()
+            .WithMessageContaining("DeadLetterEndpoint ':orders' routes to the source queue");
+    }
+
+    [Test]
     public async Task Poison_copies_are_confirmed_before_ack_and_healthy_messages_continue()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -761,7 +780,7 @@ public class RabbitMqReceiveTests
     }
 
     internal static IHost Host(ConnectionFactory factory, RabbitMqReceiveControl control, bool declareDeadLetter = true, RabbitMqClock? clock = null, int concurrency = 1, bool autoStart = true, bool secondConsumer = false, bool thirdConsumer = false,
-        Action<ConsumePipelineBuilder>? configureOrdersPipeline = null)
+        Action<ConsumePipelineBuilder>? configureOrdersPipeline = null, FailureOptions? ordersFailure = null)
     {
         return new HostBuilder().ConfigureServices(services =>
                 {
@@ -816,6 +835,11 @@ public class RabbitMqReceiveTests
                                 consumer.Options.ChannelOptions = new(false, false, consumerDispatchConcurrency: (ushort)concurrency);
                                 consumer.Options.PrefetchCount = (ushort)concurrency;
                                 consumer.Handler<RabbitMqReceiveHandler>();
+
+                                if (ordersFailure is not null)
+                                {
+                                    consumer.Failures(ordersFailure);
+                                }
 
                                 if (configureOrdersPipeline is not null)
                                 {

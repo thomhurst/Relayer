@@ -21,9 +21,7 @@ internal sealed class RabbitMqSendEndpoint
         Func<OutgoingMessage, CancellationToken, ValueTask> send,
         Func<ReadOnlyMemory<OutgoingMessage>, CancellationToken, ValueTask> batch)
     {
-        var separator = destination.IndexOf(':');
-        Exchange = separator < 0 ? "" : destination[..separator];
-        RoutingKey = separator < 0 ? destination : destination[(separator + 1)..];
+        (Exchange, RoutingKey) = ParseDestination(destination);
         _tracing = tracing;
         var name = Exchange + ":" + RoutingKey;
         Telemetry = instrumentation?.CreateEndpoint(new()
@@ -47,6 +45,12 @@ internal sealed class RabbitMqSendEndpoint
         {
             Tracing = new(tracing, _tracingEndpoint, send, batch, headerNames: new("cloudEvents:"));
         }
+    }
+
+    internal static (string Exchange, string RoutingKey) ParseDestination(string destination)
+    {
+        int separator = destination.IndexOf(':');
+        return separator < 0 ? ("", destination) : (destination[..separator], destination[(separator + 1)..]);
     }
 
     internal SendTracing CreateTracing(Func<OutgoingMessage, CancellationToken, ValueTask> send)
