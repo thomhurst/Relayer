@@ -215,13 +215,9 @@ public sealed class SqsReceiveTests
         await using var transport = new SqsSendTransport("sqs", client, false, options);
         await transport.ResolveUrlsAsync(default);
         client.Redrive = "{\"maxReceiveCount\":\"1\",\"deadLetterTargetArn\":\"arn\"}";
-        var declaration = new ConsumerDefinition<AmazonSqsConsumerOptions>("orders", new(), [], 1, 1, default, failure: new()
-        {
-            RedeliveryDelays = new[] { TimeSpan.Zero }
-        });
-        await Assert.That(async () => await transport.ValidateRedriveAsync(declaration, default)).Throws<InvalidOperationException>();
+        await Assert.That(() => transport.ValidateRedriveAsync("orders", 1, default)).Throws<InvalidOperationException>();
         client.Redrive = "{\"maxReceiveCount\":2,\"deadLetterTargetArn\":\"arn\"}";
-        await transport.ValidateRedriveAsync(declaration, default);
+        await transport.ValidateRedriveAsync("orders", 1, default);
     }
 
     [Test]

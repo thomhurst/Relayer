@@ -42,13 +42,13 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
             foreach (var declaration in definition.Consumers)
             {
                 var consumer = (ConsumerDefinition<AmazonSqsConsumerOptions>)declaration;
-                await _transport.ValidateRedriveAsync(consumer, cancellationToken).ConfigureAwait(false);
                 var endpoint = new MessagingEndpoint { System = "aws_sqs", Destination = consumer.Source };
                 var settlement = new SqsSettlement(tracing, endpoint);
                 var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Source,
                     nativeRedeliveryOnly: false, consumer.Failure,
                     (context, destination) => Copy(context, consumer.Options.HeaderNames.Id, _transport.GetIdentityHeader(destination)),
                     provider.GetService<IFailureScheduler>(), timeProvider: null);
+                await _transport.ValidateRedriveAsync(consumer.Source, failures.GetLongestNativeRedeliveryRun(), cancellationToken).ConfigureAwait(false);
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                     provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
                     consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>());

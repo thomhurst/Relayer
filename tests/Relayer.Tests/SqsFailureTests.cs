@@ -219,10 +219,41 @@ public sealed class SqsFailureTests
     }
 
     [Test]
+    [Arguments(0, 0, 0, 3, false)]
+    [Arguments(0, 0, 0, 4, true)]
+    [Arguments(0, 46_800, 0, 2, true)]
+    [Arguments(46_800, 0, 0, 2, false)]
+    [Arguments(46_800, 0, 0, 3, true)]
+    [Arguments(46_800, 50_400, 46_800, 1, true)]
+    public async Task Redrive_budget_covers_the_longest_run_of_visibility_retries(
+        int firstSeconds, int secondSeconds, int thirdSeconds, int maxReceiveCount, bool starts)
+    {
+        using var client = new SqsReceiveTests.ReceiveClient
+        {
+            Redrive = $$"""{"maxReceiveCount":{{maxReceiveCount}},"deadLetterTargetArn":"arn"}"""
+        };
+        using var host = Host(client,
+            [TimeSpan.FromSeconds(firstSeconds), TimeSpan.FromSeconds(secondSeconds), TimeSpan.FromSeconds(thirdSeconds)],
+            new Scheduler());
+
+        if (starts)
+        {
+            await host.StartAsync();
+            await host.StopAsync();
+        }
+        else
+        {
+            var thrown = await Assert.That(() => host.StartAsync()).Throws<InvalidOperationException>();
+            await Assert.That(thrown!.Message).Contains("RedrivePolicy.maxReceiveCount");
+            await Assert.That(client.Polls).IsEqualTo(0);
+        }
+    }
+
+    [Test]
     public async Task Largest_whole_second_below_twelve_hours_is_accepted_without_a_scheduler()
     {
         using var client = new SqsReceiveTests.ReceiveClient();
-        using var host = Host(client, TimeSpan.FromSeconds(43_199));
+        using var host = Host(client, [TimeSpan.FromSeconds(43_199)]);
         await host.StartAsync();
         await host.StopAsync();
     }
@@ -233,7 +264,7 @@ public sealed class SqsFailureTests
     public async Task Delay_that_rounds_to_twelve_hours_requires_a_scheduler_at_startup(long delayTicks)
     {
         using var client = new SqsReceiveTests.ReceiveClient();
-        using var host = Host(client, TimeSpan.FromTicks(delayTicks));
+        using var host = Host(client, [TimeSpan.FromTicks(delayTicks)]);
         await Assert.That(() => host.StartAsync()).Throws<InvalidOperationException>();
         await Assert.That(client.Polls).IsEqualTo(0);
     }
@@ -244,10 +275,13 @@ public sealed class SqsFailureTests
     [Arguments(46_800 * TimeSpan.TicksPerSecond)]
     public async Task Unsupported_native_delay_waits_for_durable_outbox_before_deletion(long delayTicks)
     {
-        using var client = new SqsReceiveTests.ReceiveClient();
+        using var client = new SqsReceiveTests.ReceiveClient
+        {
+            Redrive = """{"maxReceiveCount":1,"deadLetterTargetArn":"arn"}"""
+        };
         var scheduler = new Scheduler();
         var delay = TimeSpan.FromTicks(delayTicks);
-        using var host = Host(client, delay, scheduler);
+        using var host = Host(client, [delay], scheduler);
         await host.StartAsync();
         var before = DateTimeOffset.UtcNow;
         await client.Deliveries.Writer.WriteAsync(SqsReceiveTests.Message("{\"Value\":1}", 1));
@@ -282,8 +316,14 @@ public sealed class SqsFailureTests
         var suffix = fifo ? ".fifo" : "";
         var source = TestContext.Current!.Isolation.GetIsolatedName("source") + suffix;
         var dead = TestContext.Current!.Isolation.GetIsolatedName("dead") + suffix;
-        var sourceUrl = (await client.CreateQueueAsync(Queue(source), token)).QueueUrl;
-        await client.CreateQueueAsync(Queue(dead), token);
+        var deadUrl = (await client.CreateQueueAsync(Queue(dead), token)).QueueUrl;
+        var deadArn = (await client.GetQueueAttributesAsync(deadUrl, ["QueueArn"], token)).QueueARN;
+        var sourceQueue = Queue(source);
+        sourceQueue.Attributes["RedrivePolicy"] = $$"""{"maxReceiveCount":"2","deadLetterTargetArn":"{{deadArn}}"}""";
+        var sourceUrl = (await client.CreateQueueAsync(sourceQueue, token)).QueueUrl;
+        var redrive = await client.GetQueueAttributesAsync(sourceUrl, ["RedrivePolicy"], token);
+        await Assert.That(redrive.Attributes["RedrivePolicy"]).Contains(deadArn);
+
         var deleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         client.AfterResponseEvent += (_, args) =>
         {
@@ -295,7 +335,7 @@ public sealed class SqsFailureTests
 
         var scheduler = new Scheduler();
         var delay = TimeSpan.FromHours(fifo ? 13 : 12);
-        using var host = Host(client, delay, scheduler, source, dead, fifoSourcePrefix);
+        using var host = Host(client, [delay, TimeSpan.FromHours(14)], scheduler, source, dead, fifoSourcePrefix);
 
         try
         {
@@ -351,7 +391,7 @@ public sealed class SqsFailureTests
         };
     }
 
-    private static IHost Host(IAmazonSQS client, TimeSpan? redeliveryDelay = null, Scheduler? scheduler = null,
+    private static IHost Host(IAmazonSQS client, TimeSpan[]? redeliveryDelays = null, Scheduler? scheduler = null,
         string source = "orders", string dead = "dead", string? fifoSourcePrefix = null)
     {
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
@@ -407,7 +447,7 @@ public sealed class SqsFailureTests
                         DeadLetterEndpoint = dead,
                         RetryDelays = [],
                         Jitter = 0,
-                        RedeliveryDelays = redeliveryDelay is { } delay ? [delay] : []
+                        RedeliveryDelays = redeliveryDelays ?? []
                     });
                 });
             });
