@@ -1457,6 +1457,10 @@ still waits for native shutdown, including handler cleanup. Bound the host's wai
 retain the shutdown task for disposal. Disposal joins that task and treats cancellation-only completion
 as expected when the host deadline requested the hard stop.
 
+If a later subscriber cannot start, the named transport requests native shutdown for every subscriber
+started by that attempt and joins their shutdown before reporting the startup error. If rollback also
+fails, report the startup and shutdown errors together.
+
 Nack cannot change broker attributes, and native DeadLetterPolicy cannot supply on-demand dead-lettering
 with Relayer error history. Keep these capabilities unavailable to the core durable failure policy. Reuse
 the existing core retry and acknowledged dead-letter-copy path, with explicit destination topics. Native

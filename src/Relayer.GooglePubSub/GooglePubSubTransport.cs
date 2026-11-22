@@ -386,22 +386,43 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
         return worker;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
+        var startedCount = 0;
 
-        foreach (var worker in Consumers)
+        try
         {
-            worker.Start();
+            for (; startedCount < Consumers.Count; startedCount++)
+            {
+                Consumers[startedCount].Start();
+            }
         }
+        catch (Exception startError) when (startedCount > 0)
+        {
+            try
+            {
+                // Await rollback even if the startup token has since been canceled.
+                await StopConsumersAsync(Consumers.Take(startedCount), CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception stopError)
+            {
+                throw new AggregateException("Pub/Sub startup and subscriber rollback both failed.", startError, stopError);
+            }
 
-        return Task.CompletedTask;
+            throw;
+        }
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    public Task StopAsync(CancellationToken cancellationToken)
     {
-        var stopTasks = Consumers.Select(worker => worker.StopAsync(cancellationToken)).ToArray();
+        return StopConsumersAsync(Consumers, cancellationToken);
+    }
+
+    private static async Task StopConsumersAsync(IEnumerable<GooglePubSubConsumer> consumers, CancellationToken cancellationToken)
+    {
+        var stopTasks = consumers.Select(worker => worker.StopAsync(cancellationToken)).ToArray();
         List<Exception>? errors = null;
 
         foreach (var stop in stopTasks)
