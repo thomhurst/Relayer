@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -543,6 +544,101 @@ public class NatsExecutionTests
         {
             DoubleAck = true
         }, token);
+        // Graceful stop waits for the original delivery's confirmed ACK after the durable copy.
+        await host.StopAsync(token);
+        var settled = await js.GetConsumerAsync(events, "worker", token);
+        await Assert.That(settled.Info.NumAckPending).IsEqualTo(0L);
+        await Assert.That(settled.Info.AckFloor.ConsumerSeq).IsEqualTo(1UL);
+    }
+
+    [Test]
+    public async Task Poison_copy_uses_dead_letter_stream_retention()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var events = TestContext.Current!.Isolation.GetIsolatedName("ttl_events");
+        var deadStream = events + "_dead";
+        var orders = TestContext.Current!.Isolation.GetIsolatedName("ttl_orders");
+        var deadSubject = TestContext.Current!.Isolation.GetIsolatedName("ttl_dead");
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(new ExecutionControl());
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(NatsExecutionJson.Default);
+            relayer.Nats("ttl", transport =>
+            {
+                transport.TopologyMode = TopologyMode.Provision;
+                transport.Options.Configure(options =>
+                {
+                    options.ConnectionOptions = broker.Options();
+                    options.Streams.Add(new(events)
+                    {
+                        Configuration = new(events, [orders])
+                        {
+                            AllowMsgTTL = true
+                        }
+                    });
+                    options.Streams.Add(new(deadStream)
+                    {
+                        Configuration = new(deadStream, [deadSubject])
+                    });
+                    options.Consumers.Add(new(events, "worker")
+                    {
+                        Configuration = new("worker")
+                        {
+                            FilterSubject = orders
+                        }
+                    });
+                });
+                transport.Send<ExecutionMessage>(orders);
+                transport.Consume("worker", consumer =>
+                {
+                    consumer.Options.Stream = events;
+                    consumer.Failures(new()
+                    {
+                        RetryDelays = [],
+                        DeadLetterEndpoint = deadSubject
+                    });
+                    consumer.Handler<ExecutionHandler>();
+                });
+            });
+        });
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+        await host.StartAsync(token);
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        var reader = await js.CreateConsumerAsync(deadStream, new("dead_reader")
+        {
+            FilterSubject = deadSubject
+        }, token);
+        var message = new ExecutionMessage(42);
+        using var scope = host.Services.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(message,
+            options => options.Nats(headers =>
+            {
+                headers["Nats-TTL"] = "10m";
+                headers["ce-id"] = "ttl-message";
+                headers["custom"] = "native";
+            }), token);
+
+        var copy = await reader.NextAsync(NatsRawSerializer<byte[]>.Default, new()
+        {
+            Expires = TimeSpan.FromSeconds(5)
+        }, token);
+        await Assert.That(copy).IsNotNull();
+        await Assert.That(copy!.Data).IsEquivalentTo(JsonSerializer.SerializeToUtf8Bytes(message, NatsExecutionJson.Default.ExecutionMessage));
+        await Assert.That(copy.Headers!.ContainsKey("Nats-TTL")).IsFalse();
+        await Assert.That(copy.Headers["ce-id"].ToString()).IsEqualTo("ttl-message");
+        await Assert.That(copy.Headers["custom"].ToString()).IsEqualTo("native");
+        await Assert.That(copy.Headers[FailureHeaders.Attempts].ToString()).IsEqualTo("1");
+        using var history = JsonDocument.Parse(copy.Headers[FailureHeaders.History].ToString());
+        await Assert.That(history.RootElement.GetProperty("OriginalMessageId").GetString()).IsEqualTo("ttl-message");
+        await Assert.That(history.RootElement.GetProperty("Attempts")[0].GetProperty("Message").GetString())
+            .IsEqualTo("Expected in-process retry.");
+
         // Graceful stop waits for the original delivery's confirmed ACK after the durable copy.
         await host.StopAsync(token);
         var settled = await js.GetConsumerAsync(events, "worker", token);
