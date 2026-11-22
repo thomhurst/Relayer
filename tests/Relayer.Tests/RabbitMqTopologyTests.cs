@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using Microsoft.Extensions.DependencyInjection;
@@ -210,8 +212,13 @@ public class RabbitMqTopologyTests
     // to simulate an outage asks for a dedicated one instead.
     internal sealed class Broker : IAsyncDisposable
     {
+        private const ushort ManagementPort = 15672;
+        private const string UserName = "relayer";
+        private const string Password = "relayer";
         private readonly IContainer _container;
         private readonly bool _dedicated;
+
+        private string EscapedVirtualHost => Uri.EscapeDataString(VirtualHost);
 
         internal string VirtualHost
         {
@@ -234,21 +241,40 @@ public class RabbitMqTopologyTests
 
             var container = await (delayedPlugin ? SharedBrokers.RabbitMqWithDelayedPlugin : SharedBrokers.RabbitMq).Value.WaitAsync(token);
             var broker = new Broker(container, TestContext.Current!.Isolation.GetIsolatedName(Guid.NewGuid().ToString("N")[..8]), false);
-            await broker.CommandAsync(["rabbitmqctl", "add_vhost", broker.VirtualHost], token);
-            await broker.CommandAsync(["rabbitmqctl", "set_permissions", "-p", broker.VirtualHost, "relayer", ".*", ".*", ".*"], token);
-            return broker;
+
+            try
+            {
+                using var management = broker.CreateManagementClient();
+                using var vhost = new StringContent("{}", Encoding.UTF8, "application/json");
+                using var created = await management.PutAsync($"api/vhosts/{broker.EscapedVirtualHost}", vhost, token);
+                created.EnsureSuccessStatusCode();
+
+                using var permissions = new StringContent("""{"configure":".*","write":".*","read":".*"}""", Encoding.UTF8, "application/json");
+                using var granted = await management.PutAsync($"api/permissions/{broker.EscapedVirtualHost}/{UserName}", permissions, token);
+                granted.EnsureSuccessStatusCode();
+                return broker;
+            }
+            catch
+            {
+                await broker.DisposeAsync();
+                throw;
+            }
         }
 
         internal static async Task<IContainer> StartContainerAsync(bool delayedPlugin, bool shared, CancellationToken token)
         {
-            // Expand the native CLI's eleven distribution ports so parallel virtual-host
-            // provisioning can use independent ports.
             var builder = new ContainerBuilder("rabbitmq:4.1.4-alpine")
-                .WithEnvironment("RABBITMQ_DEFAULT_USER", "relayer")
-                .WithEnvironment("RABBITMQ_DEFAULT_PASS", "relayer")
-                .WithEnvironment("RABBITMQ_CTL_DIST_PORT_MAX", "45672")
-                .WithPortBinding(5672, true)
-                .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Server startup complete"));
+                .WithEnvironment("RABBITMQ_DEFAULT_USER", UserName)
+                .WithEnvironment("RABBITMQ_DEFAULT_PASS", Password)
+                .WithPortBinding(5672, true);
+            var wait = Wait.ForUnixContainer().UntilMessageIsLogged("Server startup complete");
+
+            // HTTP provisioning avoids starting a separate Erlang CLI node for each virtual-host operation.
+            if (shared)
+            {
+                builder = builder.WithPortBinding(ManagementPort, true);
+                wait = wait.UntilHttpRequestIsSucceeded(request => request.ForPort(ManagementPort).ForPath("/"));
+            }
 
             // A dedicated broker serves one test; keep its Erlang VM small.
             if (!shared)
@@ -260,16 +286,31 @@ public class RabbitMqTopologyTests
             {
                 using var http = new HttpClient();
                 var plugin = await http.GetByteArrayAsync("https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v4.1.0/rabbitmq_delayed_message_exchange-4.1.0.ez", token);
-                builder = builder.WithResourceMapping(plugin, FilePath.Of("/opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange-4.1.0.ez"))
-                    .WithResourceMapping("[rabbitmq_delayed_message_exchange]."u8.ToArray(), FilePath.Of("/etc/rabbitmq/enabled_plugins"));
+                builder = builder.WithResourceMapping(plugin, FilePath.Of("/opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange-4.1.0.ez"));
+            }
+
+            if (shared || delayedPlugin)
+            {
+                var plugins = (shared, delayedPlugin) switch
+                {
+                    (true, true) => "[rabbitmq_management,rabbitmq_delayed_message_exchange]."u8.ToArray(),
+                    (true, false) => "[rabbitmq_management]."u8.ToArray(),
+                    _ => "[rabbitmq_delayed_message_exchange]."u8.ToArray(),
+                };
+                builder = builder.WithResourceMapping(plugins, FilePath.Of("/etc/rabbitmq/enabled_plugins"));
             }
 
             if (OperatingSystem.IsLinux())
             {
                 builder = builder.WithPortBinding("20000-29999", "5672");
+
+                if (shared)
+                {
+                    builder = builder.WithPortBinding("20000-29999", "15672");
+                }
             }
 
-            var container = builder.Build();
+            var container = builder.WithWaitStrategy(wait).Build();
 
             try
             {
@@ -289,8 +330,8 @@ public class RabbitMqTopologyTests
             {
                 HostName = _container.Hostname,
                 Port = _container.GetMappedPublicPort(5672),
-                UserName = "relayer",
-                Password = "relayer",
+                UserName = UserName,
+                Password = Password,
                 VirtualHost = VirtualHost,
             };
         }
@@ -305,6 +346,16 @@ public class RabbitMqTopologyTests
             }
         }
 
+        private HttpClient CreateManagementClient()
+        {
+            var client = new HttpClient
+            {
+                BaseAddress = new UriBuilder(Uri.UriSchemeHttp, _container.Hostname, _container.GetMappedPublicPort(ManagementPort)).Uri,
+            };
+            client.DefaultRequestHeaders.Authorization = new("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{UserName}:{Password}")));
+            return client;
+        }
+
         public async ValueTask DisposeAsync()
         {
             if (_dedicated)
@@ -315,7 +366,14 @@ public class RabbitMqTopologyTests
             // Throwing here would replace an exception unwinding through await using; the session removes the broker.
             try
             {
-                await CommandAsync(["rabbitmqctl", "delete_vhost", VirtualHost], CancellationToken.None);
+                using var management = CreateManagementClient();
+                using var deleted = await management.DeleteAsync($"api/vhosts/{EscapedVirtualHost}");
+
+                // Setup can fail before the virtual host exists.
+                if (deleted.StatusCode != HttpStatusCode.NotFound)
+                {
+                    deleted.EnsureSuccessStatusCode();
+                }
             }
             catch (Exception exception)
             {
