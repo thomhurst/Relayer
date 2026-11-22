@@ -5,9 +5,9 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -158,7 +158,7 @@ public sealed class DeadLetterEndpointTests
             var manager = new Manager();
             var builder = WebApplication.CreateSlimBuilder();
             builder.Logging.ClearProviders();
-            builder.WebHost.UseUrls("http://127.0.0.1:0");
+            builder.WebHost.UseTestServer();
             builder.Services.AddKeyedSingleton<IDeadLetterManager>("bus", manager);
             builder
                 .Services
@@ -178,7 +178,7 @@ public sealed class DeadLetterEndpointTests
             }
 
             await app.StartAsync();
-            return new(app, new HttpClient { BaseAddress = new Uri(app.Urls.Single()) }, manager);
+            return new(app, app.GetTestClient(), manager);
         }
 
         public async ValueTask DisposeAsync()

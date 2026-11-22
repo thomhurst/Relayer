@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks.Sources;
+using Azure.Core.Amqp;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -134,6 +135,40 @@ public sealed class ServiceBusReceiveTests
         await Assert.That(receiver.Properties!.Count > 0).IsTrue();
         await processor.Emit(Args(receiver, 2));
         await Assert.That(receiver.Operations.Last()).IsEqualTo("complete");
+        await Stop(provider);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Unsupported_amqp_bodies_use_poison_policy_without_retries(bool sequence)
+    {
+        var client = new NativeClient();
+        await using var provider = Provider(client, consumer => consumer.Failures(new() { RetryDelays = [TimeSpan.Zero] }));
+        var handled = 0;
+        provider.GetRequiredService<Control>().Handle = (_, _, _) =>
+        {
+            handled++;
+            return default;
+        };
+        await Start(provider);
+        var processor = client.Processors.Single();
+        var receiver = new NativeReceiver();
+        var callback = Args(receiver);
+        callback.Message.GetRawAmqpMessage().Body = sequence
+            ? AmqpMessageBody.FromSequence(new[] { new object[] { 42 } })
+            : AmqpMessageBody.FromValue("{\"Value\":42}");
+
+        await processor.Emit(callback);
+
+        await Assert.That(receiver.Operations.Single()).IsEqualTo("dead_letter");
+        await Assert.That(receiver.Reason).IsEqualTo("Processing failed");
+        await Assert.That(receiver.Description).Contains(sequence ? "Sequence" : "Value");
+        await Assert.That(receiver.Properties![FailureHeaders.Attempts]).IsEqualTo("1");
+        await Assert.That(handled).IsEqualTo(0);
+        await processor.Emit(Args(receiver));
+        await Assert.That(receiver.Operations.Last()).IsEqualTo("complete");
+        await Assert.That(handled).IsEqualTo(1);
         await Stop(provider);
     }
 

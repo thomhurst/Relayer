@@ -10,9 +10,10 @@ public readonly struct ServiceBusMessageBinding : IMessageBinding<ProcessMessage
 {
     /// <inheritdoc />
     /// <remarks>
-    /// Borrows a single indexed AMQP data section. Other body layouts use the SDK's Body conversion,
-    /// which may allocate and combine sections; Relayer adds no body copy.
+    /// Borrows a single indexed AMQP Data section. The SDK's Body conversion handles other
+    /// Data bodies and may combine sections.
     /// </remarks>
+    /// <exception cref="NotSupportedException">The underlying AMQP body is not a Data body.</exception>
     public static ReadOnlySequence<byte> GetBody(ProcessMessageEventArgs message)
     {
         return GetBody(message.Message);
@@ -20,13 +21,19 @@ public readonly struct ServiceBusMessageBinding : IMessageBinding<ProcessMessage
 
     internal static ReadOnlySequence<byte> GetBody(ServiceBusReceivedMessage message)
     {
-        // The SDK's Body getter materializes a BinaryData on each access. Borrow a single AMQP data section directly.
-        if (message.GetRawAmqpMessage().Body.TryGetData(out var data) &&
-            data is IReadOnlyList<ReadOnlyMemory<byte>> { Count: 1 } sections)
+        var body = message.GetRawAmqpMessage().Body;
+
+        if (!body.TryGetData(out var data))
+        {
+            throw new UnsupportedNativeBodyException($"Relayer requires an AMQP Data body. This Service Bus message has an AMQP {body.BodyType} body.");
+        }
+
+        // The SDK's Body getter materializes a BinaryData. Borrow a single Data section directly.
+        if (data is IReadOnlyList<ReadOnlyMemory<byte>> { Count: 1 } sections)
         {
             return new(sections[0]);
         }
-        // Preserve SDK handling of multi-section data and other native body forms.
+
         return new(message.Body.ToMemory());
     }
 
