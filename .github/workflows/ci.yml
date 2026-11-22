@@ -114,8 +114,10 @@ jobs:
         with:
           version: v29.10.0
           set-host: true
+          # Use kernel forwarding so network teardown has no docker-proxy process to wait for (#1197).
+          daemon-config: '{"userland-proxy": false}'
 
-      - name: Verify mixed-address port allocation
+      - name: Verify mixed-address port allocation and forwarding
         run: bash scripts/Test-ContainerPortAllocation.sh
 
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
