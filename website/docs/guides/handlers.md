@@ -127,6 +127,8 @@ services.AddRelayer(relayer => relayer.Kafka("events", kafka =>
 
 `consumer.Handler<THandler>()` both selects the handler for that consumer and registers its generated descriptors and scoped DI service. No separate builder registration or assembly-wide handler registration is needed. The generator supports inherited contracts, explicit interface implementations, and handlers with several message or batch contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent, and an existing DI lifetime is preserved. Each assembly gets its own generated `Handler<THandler>()` and `AddMessageTypesFromThisAssembly()`, hidden from other assemblies even through `InternalsVisibleTo`, so a library and its test project can both register handlers.
 
+Marking a handler with warning-level `[Obsolete]` leaves its generated descriptor available without emitting the standard obsolete warnings (`CS0612` and `CS0618`). Selecting that handler with `Handler<THandler>()` in your code still reports the warning.
+
 When a project reference exposes a handler or its message types only through a C# `extern alias`, use that alias in your registration. Relayer includes the required aliases in its generated dispatch code.
 
 ```csharp

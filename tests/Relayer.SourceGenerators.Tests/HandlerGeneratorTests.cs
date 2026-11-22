@@ -9,6 +9,39 @@ namespace Relayer.SourceGenerators.Tests;
 public class HandlerGeneratorTests
 {
     [Test]
+    [Arguments("System.Obsolete", "CS0612")]
+    [Arguments("System.Obsolete(\"Use a current handler.\")", "CS0618")]
+    public async Task Obsolete_handlers_compile_without_explicit_registration(string attribute, string diagnosticId)
+    {
+        var compilation = CreateCompilation($$"""
+            using Relayer;
+            using System.Threading;
+            using System.Threading.Tasks;
+
+            [{{attribute}}]
+            public sealed class LegacyHandler : IHandler<int>
+            {
+                public ValueTask HandleAsync(int message, MessageContext context, CancellationToken token) => default;
+            }
+            """);
+        var driver = Run(compilation.WithOptions(compilation.Options.WithGeneralDiagnosticOption(ReportDiagnostic.Error)),
+            out var output);
+        await Assert.That(Generated(driver)).Contains("TryAddScoped<global::LegacyHandler>");
+
+        var usage = CSharpSyntaxTree.ParseText("""
+            using Relayer;
+
+            public static class Registration
+            {
+                public static void Add(IConsumerBuilder builder) => builder.Handler<LegacyHandler>();
+            }
+            """, path: "Registration.cs");
+        var diagnostic = output.AddSyntaxTrees(usage).GetDiagnostics().Single(d => d.Severity == DiagnosticSeverity.Error);
+        await Assert.That(diagnostic.Id).IsEqualTo(diagnosticId);
+        await Assert.That(diagnostic.Location.SourceTree).IsEqualTo(usage);
+    }
+
+    [Test]
     public async Task Inherited_saga_registers_one_typed_execution_pool_per_registration()
     {
         const string Source = """
