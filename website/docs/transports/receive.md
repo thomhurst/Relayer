@@ -3,18 +3,13 @@ title: Receiving messages
 description: "Adapt a composed consume pipeline to a native receive callback with a struct binding, and settle from the returned disposition."
 ---
 
-Compose a `ConsumePipeline` once with generated handler descriptors, the serializer, middleware, and an explicit durable failure delegate. Adapt it to the native callback with a struct binding:
+Compose a [consume pipeline](consume-pipeline.md) once with generated handler descriptors, the serializer, middleware, and an explicit durable failure delegate. Adapt it to the native callback with a struct binding:
 
 ```csharp
-using Relayer.Transports;
+using System.Buffers;
+using Relayer;
 using Relayer.Pipeline;
-public readonly struct BrokerBinding : IMessageBinding<BrokerDelivery>
-{
-    public static ReadOnlySequence<byte> GetBody(BrokerDelivery message) => message.Body;
-    public static int? GetDeliveryCount(BrokerDelivery message) => message.DeliveryCount;
-    public static bool TryGetHeader(BrokerDelivery message, string name, out WireString value)
-        => message.TryGetHeader(name, out value);
-}
+using Relayer.Transports;
 
 // Once at startup. Match both pool capacities to the consumer's concurrency.
 var receive = new ReceivePipeline<BrokerDelivery, BrokerBinding>(
@@ -23,6 +18,14 @@ var receive = new ReceivePipeline<BrokerDelivery, BrokerBinding>(
 // In the native callback. The adapter owns settlement and any native property mapping.
 var disposition = await receive.ProcessAsync(delivery, cancellationToken).ConfigureAwait(false);
 await SettleNativelyAsync(delivery, disposition, cancellationToken).ConfigureAwait(false);
+
+public readonly struct BrokerBinding : IMessageBinding<BrokerDelivery>
+{
+    public static ReadOnlySequence<byte> GetBody(BrokerDelivery message) => message.Body;
+    public static int? GetDeliveryCount(BrokerDelivery message) => message.DeliveryCount;
+    public static bool TryGetHeader(BrokerDelivery message, string name, out WireString value)
+        => message.TryGetHeader(name, out value);
+}
 ```
 
 `BrokerDelivery` and `SettleNativelyAsync` stand for the native client's delivery type and settlement calls. The binding passes the original delivery and borrowed body through unchanged. It inherits `IMessageHeaderReader<TIncoming>`; no separate header model or reader is needed. A binding returns a delivery count starting at one, or `null` when unavailable. The latter gives `MessageContext.Attempt` a value of one.

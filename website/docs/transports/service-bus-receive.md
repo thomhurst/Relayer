@@ -8,8 +8,10 @@ description: "Use the native Service Bus callback with Relayer's receive pipelin
 Compose a [consume pipeline](consume-pipeline.md) with generated handlers, serialization and an explicit durable failure delegate. Then adapt your existing native processor:
 
 ```csharp
-using Relayer.Pipeline;
+using System;
+using Azure.Messaging.ServiceBus;
 using Relayer.AzureServiceBus;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 // consumerPipeline is the composed ConsumePipeline, built once at startup.
