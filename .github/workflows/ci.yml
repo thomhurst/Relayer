@@ -79,7 +79,7 @@ jobs:
           dir=$(dirname "${DOCKER_HOST#unix://}")
           mkdir -p .artifacts/docker-exit-probe
           sudo cat "$dir/dockerd.log" > .artifacts/docker-exit-probe/daemon.log
-          sudo find "$dir/data" -maxdepth 1 -type f -name 'goroutine-stacks-*.log' \
+          sudo find "$dir/execroot" -maxdepth 1 -type f -name 'goroutine-stacks-*.log' \
             -exec cp {} .artifacts/docker-exit-probe/ \;
           sudo chmod a+r .artifacts/docker-exit-probe/*
 
