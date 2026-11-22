@@ -307,6 +307,8 @@ Cancellation stops isolation, and no new send starts after known claim expiry. N
 be uncertain, so isolation can duplicate delivery under at-least-once semantics.
 Explicit low-level `RecordFailureAsync` calls retain the poison transition. Completion errors after broker
 success do not consume send attempts.
+Grant the store's database principal `INSERT` and `UPDATE` permissions on the dead table for
+terminal failure recording.
 
 Dead rows expire from their failure time and inbox records from their processing time.
 Pending and parked outbox rows never expire; dead payloads referenced by parked rows are protected.
@@ -396,6 +398,10 @@ original row, preserving its sequence and error. Later rows with exactly the sam
 in the lane can proceed. SQL Server dead-letter inspection/redrive/purge APIs remain planned; operate on
 parked rows only with application-owned tooling that preserves the row and sequence. The worker records
 `relayer.outbox.poison` when parking; it does not add an unordered recovery or retention worker.
+
+If your tooling makes a parked row pending again, it can retain any existing `outbox_dead` snapshot.
+When `SqlServerOutboxStore.RecordFailureAsync` parks that row again at the attempt limit, it updates
+the snapshot for the same message ID with the latest failed row, error, attempt count and failure time.
 
 A native sequence range is reserved immediately before each ordered bulk flush and assigned in send
 position order. Sequential transactions therefore dispatch in commit order even when their UUIDv7 values

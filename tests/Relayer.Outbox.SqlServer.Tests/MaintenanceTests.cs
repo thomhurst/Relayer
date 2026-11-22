@@ -372,6 +372,51 @@ public sealed class MaintenanceTests(SqlServerFixture database)
     }
 
     [Test]
+    public async Task Repaired_ordered_row_parks_again_and_refreshes_its_retained_dead_snapshot()
+    {
+        var data = new StoreData(database, new()
+        {
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("repark") + "_",
+            MaxDispatchAttempts = 1
+        });
+        await data.Create();
+        var id = Guid.CreateVersion7();
+        var now = DateTimeOffset.UtcNow;
+        await data.Insert(id, now, lane: 3);
+        var storedId = Convert.ToHexString(id.ToByteArray(bigEndian: true));
+        var sequence = await Scalar($"SELECT seq FROM {data.Table}");
+        var dead = SqlServerOutboxSchema.DeadTable(data.Options);
+        var store = data.Store();
+
+        var first = new OutboxClaim(id, Guid.NewGuid());
+        await Assert.That(await store.TryClaimAsync(first, now, now.AddMinutes(1), default)).IsTrue();
+        await Assert.That(await store.RecordFailureAsync(first, "first failure", now, default)).IsTrue();
+        await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {dead} WHERE last_error = 'first failure'")).IsEqualTo(1L);
+
+        await data.Execute($"""
+            UPDATE {data.Table} SET status = 'pending', attempts = 0, last_error = NULL, body = 0x00FF02;
+            UPDATE {dead} SET failed_at = '2000-01-01T00:00:00+00:00';
+            """);
+        var second = new OutboxClaim(id, Guid.NewGuid());
+        await Assert.That(await store.TryClaimAsync(second, now, now.AddMinutes(1), default)).IsTrue();
+        await Assert.That(await store.RecordFailureAsync(first, "stale failure", now, default)).IsFalse();
+        await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {dead} WHERE last_error = 'first failure'")).IsEqualTo(1L);
+
+        await Assert.That(await store.RecordFailureAsync(second, "second failure", now, default)).IsTrue();
+        await Assert.That(await Scalar($"""
+            SELECT COUNT_BIG(*) FROM {data.Table} AS live
+            JOIN {dead} AS snapshot ON snapshot.id = live.id
+            WHERE live.id = 0x{storedId} AND live.status = 'parked' AND live.seq = {sequence} AND live.lane = 3
+              AND live.claim_token IS NULL AND live.claim_expires_at IS NULL
+              AND live.attempts = 1 AND live.last_error = 'second failure'
+              AND snapshot.lane = live.lane AND snapshot.attempts = live.attempts
+              AND snapshot.last_error = live.last_error AND snapshot.body = 0x00FF02
+              AND snapshot.failed_at > '2000-01-01T00:00:00+00:00'
+            """)).IsEqualTo(1L);
+        await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {dead}")).IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Unregistered_transport_consumes_recovery_attempts_without_stalling_other_groups()
     {
         var data = new StoreData(database, new()
