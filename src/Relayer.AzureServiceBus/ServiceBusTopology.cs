@@ -33,7 +33,7 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
             {
                 bool hasConsumer = consumers?.Any(consumer => consumer.Source == queue.Name) == true;
 
-                if (!hasConsumer || destinations?.Contains(queue.Name) == true)
+                if (!hasConsumer || destinations?.Contains(queue.Name, StringComparer.OrdinalIgnoreCase) == true)
                 {
                     await ValidateSendAsync(queue.Name, differences, cancellationToken).ConfigureAwait(false);
                 }
@@ -60,7 +60,7 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
 
             if (mode == TopologyMode.Validate)
             {
-                if (consumers?.Any(consumer => consumer.Source == topic.Name) != true || destinations?.Contains(topic.Name) == true)
+                if (consumers?.Any(consumer => consumer.Source == topic.Name) != true || destinations?.Contains(topic.Name, StringComparer.OrdinalIgnoreCase) == true)
                 {
                     await ValidateSendAsync(topic.Name, differences, cancellationToken).ConfigureAwait(false);
                 }

@@ -167,9 +167,17 @@ public static class MySqlSession
             await server.StartAsync();
             return new(server, new(server.ConnectionString));
         }
-        catch
+        catch (Exception startupFailure)
         {
-            await server.DisposeAsync();
+            try
+            {
+                await server.DisposeAsync();
+            }
+            catch (Exception cleanupFailure)
+            {
+                startupFailure.Data["CleanupFailure"] = cleanupFailure;
+            }
+
             throw;
         }
     }

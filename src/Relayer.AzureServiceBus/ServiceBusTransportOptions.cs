@@ -31,7 +31,7 @@ public sealed class ServiceBusTransportOptions
         get; set;
     }
 
-    /// <summary>Native queue declarations. Names must match send destinations.</summary>
+    /// <summary>Native queue declarations. Names match send destinations case-insensitively.</summary>
     public IList<CreateQueueOptions> Queues
     {
         get;
@@ -48,7 +48,7 @@ public sealed class ServiceBusTransportOptions
         get;
     } = new HashSet<string>(StringComparer.Ordinal);
 
-    /// <summary>Native topic declarations. Names must match send destinations.</summary>
+    /// <summary>Native topic declarations. Names match send destinations case-insensitively.</summary>
     public IList<CreateTopicOptions> Topics
     {
         get;
@@ -126,7 +126,7 @@ public sealed class ServiceBusTransportOptions
 
             if (options.Subscription is not { } subscription)
             {
-                if (!implied.Declares(consumer.Source))
+                if (!implied.Declares(consumer.Source, StringComparison.Ordinal))
                 {
                     implied.Queues.Add(new(consumer.Source)
                     {
@@ -137,7 +137,7 @@ public sealed class ServiceBusTransportOptions
                 continue;
             }
 
-            if (!implied.Declares(consumer.Source))
+            if (!implied.Declares(consumer.Source, StringComparison.Ordinal))
             {
                 implied.Topics.Add(new(consumer.Source));
             }
@@ -153,7 +153,7 @@ public sealed class ServiceBusTransportOptions
         // A trusted name asserts sessions on a whole topic; any other destination is a queue. The sender is the same for both.
         foreach (var destination in destinations)
         {
-            if (!implied.Declares(destination))
+            if (!implied.Declares(destination, StringComparison.OrdinalIgnoreCase))
             {
                 if (TrustedSessionEntities.Contains(destination))
                 {
@@ -169,8 +169,9 @@ public sealed class ServiceBusTransportOptions
         return implied;
     }
 
-    private bool Declares(string entity)
+    private bool Declares(string entity, StringComparison comparison)
     {
-        return Queues.Any(queue => queue.Name == entity) || Topics.Any(topic => topic.Name == entity);
+        return Queues.Any(queue => string.Equals(queue.Name, entity, comparison)) ||
+            Topics.Any(topic => string.Equals(topic.Name, entity, comparison));
     }
 }

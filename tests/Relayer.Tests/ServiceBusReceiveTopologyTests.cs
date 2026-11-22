@@ -38,7 +38,7 @@ public sealed class ServiceBusReceiveTopologyTests
         var options = new ServiceBusTransportOptions { Client = client };
         options.Queues.Add(new("orders"));
         var consumer = new ConsumerDefinition<ServiceBusConsumerOptions>("orders", new(), [], 1, 1, TimeSpan.FromMilliseconds(100));
-        await using var transport = new ServiceBusSendTransport("bus", client, false, options, ["orders"], TopologyMode.Validate,
+        await using var transport = new ServiceBusSendTransport("bus", client, false, options, ["ORDERS"], TopologyMode.Validate,
             consumers: [consumer]);
 
         await Assert.That(async () => await transport.ApplyTopologyAsync(TopologyMode.Validate, default))

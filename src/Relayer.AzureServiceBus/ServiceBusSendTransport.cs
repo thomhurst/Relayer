@@ -34,13 +34,13 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
 
     internal static void ValidateDeclarations(string name, ServiceBusTransportOptions options, IEnumerable<string> destinations)
     {
-        var entities = new HashSet<string>(StringComparer.Ordinal);
+        var entities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var queue in options.Queues)
         {
             if (!entities.Add(queue.Name))
             {
-                throw new InvalidOperationException($"Service Bus transport '{name}': duplicate entity '{queue.Name}'.");
+                throw new InvalidOperationException($"Service Bus transport '{name}': duplicate entity '{queue.Name}'. Queue and topic names are case-insensitive.");
             }
         }
 
@@ -48,7 +48,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         {
             if (!entities.Add(topic.Name))
             {
-                throw new InvalidOperationException($"Service Bus transport '{name}': duplicate entity '{topic.Name}'.");
+                throw new InvalidOperationException($"Service Bus transport '{name}': duplicate entity '{topic.Name}'. Queue and topic names are case-insensitive.");
             }
         }
 
@@ -115,19 +115,20 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                 continue;
             }
 
-            var queue = options.Queues.SingleOrDefault(item => item.Name == destination);
-            var topic = options.Topics.SingleOrDefault(item => item.Name == destination);
+            var queue = options.Queues.SingleOrDefault(item => string.Equals(item.Name, destination, StringComparison.OrdinalIgnoreCase));
+            var topic = options.Topics.SingleOrDefault(item => string.Equals(item.Name, destination, StringComparison.OrdinalIgnoreCase));
 
             if ((queue is null) == (topic is null))
             {
                 throw new InvalidOperationException($"Service Bus transport '{name}': destination '{destination}' needs exactly one native queue or topic declaration.");
             }
             // Link attachment cannot establish session requirements. Trust is explicit per native entity.
+            var entityName = queue?.Name ?? topic!.Name;
             var ordered = queue is not null
-                ? queue.RequiresSession && (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(queue.Name))
-                : options.TrustedSessionEntities.Contains(destination) ||
-                  options.Subscriptions.Any(item => item.TopicName == destination) &&
-                  options.Subscriptions.Where(item => item.TopicName == destination).All(item => item.RequiresSession &&
+                ? queue.RequiresSession && (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(entityName))
+                : options.TrustedSessionEntities.Contains(entityName) ||
+                  options.Subscriptions.Any(item => item.TopicName == entityName) &&
+                  options.Subscriptions.Where(item => item.TopicName == entityName).All(item => item.RequiresSession &&
                       (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(item.TopicName + "/Subscriptions/" + item.SubscriptionName)));
             var endpoint = new Endpoint(client.CreateSender(destination), SubjectHeaders(options, destination, routes), IdHeaders(destination, routes),
                 RouteCallbacks(name, destination, routes, types), new()

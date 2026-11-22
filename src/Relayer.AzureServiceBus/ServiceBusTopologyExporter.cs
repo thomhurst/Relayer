@@ -164,10 +164,7 @@ public sealed class ServiceBusTopologyExporter
                 continue;
             }
 
-            if (!endpoints.TryAdd(resource.Name, resource))
-            {
-                throw new InvalidOperationException($"Entities '{endpoints[resource.Name].Name}' and '{resource.Name}' have the same case-insensitive Service Bus name. Use distinct queue and topic names before exporting.");
-            }
+            endpoints.Add(resource.Name, resource);
         }
 
         foreach (var resource in resources)
