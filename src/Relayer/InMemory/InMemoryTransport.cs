@@ -153,6 +153,12 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
         var endpoint = Endpoint(message.Destination);
+
+        if (message.IsTombstone)
+        {
+            throw new NotSupportedException($"Endpoint '{message.Destination}': in-memory endpoints cannot preserve native null values.");
+        }
+
         await endpoint.ReserveAsync(cancellationToken).ConfigureAwait(false);
         var native = endpoint.Rent();
 
