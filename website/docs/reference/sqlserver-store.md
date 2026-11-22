@@ -36,7 +36,9 @@ using Relayer.Outbox.SqlServer;
 var options = new SqlServerOutboxOptions
 {
     Schema = "messaging", // null selects dbo
-    TablePrefix = "orders_"
+    TablePrefix = "orders_",
+    Lanes = 32,
+    MaxDispatchAttempts = 10
 };
 var sql = SqlServerOutboxSchema.CreateScript(options);
 // Execute sql through your normal deployment tooling before using the store.
@@ -55,13 +57,13 @@ The optional `Relayer.HealthChecks` package can adapt this named store through
 
 ## ADO.NET and Dapper transactions
 
-Register one scoped enlistment and explicitly deploy the schema using the same options:
+Register one scoped enlistment using the options and database connection string from schema deployment:
 
 ```csharp
 using Dapper;
 using Relayer.Outbox.SqlServer;
 
-services.AddRelayerSqlServerOutbox(new SqlServerOutboxOptions { Lanes = 32 });
+services.AddRelayerSqlServerOutbox(options);
 
 // In an application DI scope:
 var outbox = serviceProvider.GetRequiredService<SqlServerOutbox>();
@@ -171,6 +173,8 @@ var options = new SqlServerOutboxOptions
 {
     Schema = "messaging",
     TablePrefix = "orders_",
+    Lanes = 32,
+    MaxDispatchAttempts = 10,
     DispatchStoreName = "orders"
 };
 services.AddRelayerSqlServerOutbox(options);
@@ -218,12 +222,15 @@ configuration remains separate from this worker.
 
 Deploy `SqlServerOutboxSchema.CreateScript(options)` explicitly, including on existing stores: it now
 creates missing `outbox_dead` and `leases` tables and retention indexes without changing existing columns.
-Register a named worker against the same database, schema, prefix and `MaxDispatchAttempts` as direct dispatch:
+Register a named worker using the connection string and store settings from the direct-dispatch example:
 
 ```csharp
 services.AddRelayerSqlServerMaintenance("orders", connectionString,
     new SqlServerMaintenanceOptions
     {
+        Schema = options.Schema,
+        TablePrefix = options.TablePrefix,
+        MaxDispatchAttempts = options.MaxDispatchAttempts,
         BatchSize = 100,
         RecoveryDelay = TimeSpan.FromSeconds(30),
         SweepInterval = TimeSpan.FromSeconds(5),
@@ -231,7 +238,6 @@ services.AddRelayerSqlServerMaintenance("orders", connectionString,
         ClaimDuration = TimeSpan.FromSeconds(30),
         CleanupInterval = TimeSpan.FromMinutes(1),
         CleanupBatchLimit = 10,
-        MaxDispatchAttempts = 10,
         DeadRetention = TimeSpan.FromDays(30),
         InboxRetention = TimeSpan.FromDays(7)
     });
@@ -346,18 +352,21 @@ reject native callbacks, which cannot be persisted. Use the scoped transaction i
 
 ## Ordered dispatch
 
-Deploy the schema, register named native `ITransport` adapters, and add a worker:
+Use the same options and connection string as in [schema deployment](#deployment-and-registration).
+Register the named native `ITransport` adapters and add an ordered worker:
 
 ```csharp
-services.AddRelayerSqlServerOutbox(new SqlServerOutboxOptions { Lanes = 32 });
+services.AddRelayerSqlServerOutbox(options);
 services.AddRelayerSqlServerOrderedDispatch("orders", connectionString,
     new SqlServerOrderedDispatchOptions
     {
-        Lanes = 32,
+        Schema = options.Schema,
+        TablePrefix = options.TablePrefix,
+        Lanes = options.Lanes,
+        MaxDispatchAttempts = options.MaxDispatchAttempts,
         BatchSize = 100,
         LeaseDuration = TimeSpan.FromSeconds(30),
-        PollInterval = TimeSpan.FromSeconds(1),
-        MaxDispatchAttempts = 10
+        PollInterval = TimeSpan.FromSeconds(1)
     });
 ```
 
@@ -420,9 +429,11 @@ Parked rows stay excluded. Body and header buffers are reused after their high-w
 borrowed rows before the next read and clear caller-owned destination slots when finished.
 
 Claiming uses one conditional SQL `UPDATE`. Renewal never shortens an expiry. Renewal, completion and
-failure recording require the current fencing token and a live claim. Completion deletes the row;
-failure increments attempts, stores the error and releases the claim in one statement. Repeating a failed
-attempt with its released token cannot increment attempts again. Row claims alone do not establish ordering.
+failure recording require the current fencing token and a live claim. Completion deletes the row.
+Failure increments attempts, stores the error and releases the claim atomically. At `MaxDispatchAttempts`,
+failure recording also writes a dead record and removes the unordered row or parks the ordered row.
+Repeating a failed attempt with its released token cannot increment attempts again. Row claims alone
+do not establish ordering.
 
 Operations use native autocommit so mutations are durable before returning. An ambient `TransactionScope`
 is rejected before opening a connection. Database errors and cancellation propagate instead of becoming

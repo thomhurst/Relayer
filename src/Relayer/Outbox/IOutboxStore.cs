@@ -45,7 +45,10 @@ public interface IOutboxStore
     /// <remarks>
     /// Return false without mutation on absent rows, expired claims or token mismatch. Reject empty IDs/tokens
     /// and a null error. Repeating this operation with the released token must not increment attempts again.
-    /// Poison-row movement and key parking are separate operations supplied by the poison-row integration.
+    /// A provider can also apply its poison policy atomically with the failure record. At the configured
+    /// attempt limit, the PostgreSQL, SQL Server and MySQL stores write a dead record and either remove the
+    /// unordered row or park the ordered row in place. A result of true confirms the failure was recorded.
+    /// The row may already be parked or removed.
     /// </remarks>
     ValueTask<bool> RecordFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
         CancellationToken cancellationToken);
