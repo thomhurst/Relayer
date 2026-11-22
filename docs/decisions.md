@@ -1625,6 +1625,9 @@ or track their completion.
 across native sends, using MySQL database time and conditional statements with explicit ownership
 checks. Native identity follows the existing batch flush's send order (D48). Core shares the
 capability cache and sequence-header projection. No parallel notification engine is introduced.
+When a MySQL writer selects a store by name, host startup checks its lane count against any
+local ordered worker with the same name. New writer scopes also check the running worker's
+count when resolving reloaded writer options.
 
 **Consequences.** Live lanes are fenced across workers, including slow or cancelling sends.
 Native statement-level auto-increment locking remains unchanged; no per-key writer lock is added.

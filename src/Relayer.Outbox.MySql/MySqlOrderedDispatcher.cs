@@ -84,7 +84,7 @@ internal sealed partial class MySqlOrderedDispatcher : BackgroundService, IOrder
         }
     }
 
-    int IOrderedLaneWorker.Lanes => _options.Lanes;
+    public int Lanes => _options.Lanes;
 
     bool IOrderedLaneWorker.StopRequested => false;
 

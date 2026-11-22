@@ -10,6 +10,7 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
     private readonly MySqlDirectDispatchOptions _options;
     private readonly MySqlConnector.MySqlConnectionStringBuilder _target;
     private readonly string _prefix;
+    private readonly int? _orderedLaneCount;
     private readonly MySqlOrderedDispatcher? _ordered;
 
     internal MySqlDirectDispatcher(MySqlConnector.MySqlDataSource dataSource, MySqlOutboxOptions storeOptions,
@@ -21,6 +22,8 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
         _target = ValidateDataSource(dataSource);
         _prefix = storeOptions.TablePrefix;
         _options = options;
+        _orderedLaneCount = ordered?.Lanes;
+
         // An in-process ordered worker for the same tables is woken after commit instead of waiting for its poll.
         if (ordered is not null && ordered.Matches(_prefix))
         {
@@ -41,11 +44,16 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
         return target;
     }
 
-    internal void ValidateStore(string prefix)
+    internal void ValidateStore(MySqlOutboxOptions writer)
     {
-        if (_prefix != prefix)
+        if (_prefix != writer.TablePrefix)
         {
             throw new InvalidOperationException("The MySQL outbox and its direct dispatcher must use identical table prefixes.");
+        }
+
+        if (_orderedLaneCount is { } orderedLaneCount)
+        {
+            MySqlOutbox.ValidateOrderedLanes(writer, orderedLaneCount);
         }
     }
 
