@@ -14,6 +14,32 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 public class OutboxRegistrationTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Keyed_enlistment_coexists_with_the_default_outbox(bool useEntityFrameworkCore)
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedScoped<IOutboxEnlistment, IndependentEnlistment>("independent");
+
+        if (useEntityFrameworkCore)
+        {
+            services.AddRelayerEntityFrameworkCoreOutbox();
+        }
+        else
+        {
+            services.AddRelayerPostgreSqlOutbox();
+        }
+
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var enlistment = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+        var keyed = scope.ServiceProvider.GetRequiredKeyedService<IOutboxEnlistment>("independent");
+
+        await Assert.That(keyed).IsTypeOf<IndependentEnlistment>();
+        await Assert.That(ReferenceEquals(enlistment, keyed)).IsFalse();
+    }
+
+    [Test]
     public async Task Neutral_EF_assembly_has_no_database_client_dependency()
     {
         var references = typeof(EntityFrameworkCoreOutboxOptions).Assembly.GetReferencedAssemblies();
@@ -504,6 +530,16 @@ public class OutboxRegistrationTests
         public ValueTask DisposeAsync()
         {
             return default;
+        }
+    }
+
+    private sealed class IndependentEnlistment : IOutboxEnlistment
+    {
+        public bool IsActive => false;
+
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
         }
     }
 }

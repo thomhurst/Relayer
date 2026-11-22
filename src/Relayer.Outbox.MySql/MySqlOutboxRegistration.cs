@@ -15,8 +15,8 @@ public static class MySqlOutboxRegistration
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        if (services.Any(static descriptor => descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
-            !services.Any(static descriptor => descriptor.ServiceType == typeof(MySqlOutbox)))
+        if (services.Any(static descriptor => !descriptor.IsKeyedService && descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
+            !services.Any(static descriptor => !descriptor.IsKeyedService && descriptor.ServiceType == typeof(MySqlOutbox)))
         {
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
         }

@@ -11,6 +11,22 @@ public sealed class DirectDispatchRegistrationTests
     private const string ConnectionString = "Server=localhost;Database=orders;Integrated Security=True;Encrypt=False";
 
     [Test]
+    public async Task Keyed_enlistment_coexists_with_the_default_outbox()
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedScoped<IOutboxEnlistment, IndependentEnlistment>("independent");
+        services.AddRelayerSqlServerOutbox();
+
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var enlistment = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+        var keyed = scope.ServiceProvider.GetRequiredKeyedService<IOutboxEnlistment>("independent");
+
+        await Assert.That(enlistment).IsTypeOf<SqlServerOutbox>();
+        await Assert.That(keyed).IsTypeOf<IndependentEnlistment>();
+    }
+
+    [Test]
     public async Task Named_workers_bind_immutable_options_and_register_hosted_services()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
@@ -77,5 +93,15 @@ public sealed class DirectDispatchRegistrationTests
         await using var missingProvider = missing.BuildServiceProvider();
         using var missingScope = missingProvider.CreateScope();
         await Assert.That(() => missingScope.ServiceProvider.GetRequiredService<SqlServerOutbox>()).Throws<InvalidOperationException>();
+    }
+
+    private sealed class IndependentEnlistment : IOutboxEnlistment
+    {
+        public bool IsActive => false;
+
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

@@ -62,6 +62,9 @@ does not depend on health abstractions. Register stores separately from scoped `
 enlistment writes through the application's native transaction, while `IOutboxStore` serves dispatch and health.
 Neither registration enables a background dispatcher.
 
+The SQL integrations register one unkeyed `IOutboxEnlistment` for `ISender`.
+An application can register a separate keyed `IOutboxEnlistment` alongside it and resolve that service by key.
+
 The send pipeline calls `IOutboxEnlistment.EnlistAsync(OutboxRecord, CancellationToken)` with the original
 identity, wire type and creation time. The enlistment takes owned copies of borrowed payload memory before
 returning and persists buffered rows before transaction commit. These metadata fields remain available in raw
