@@ -58,6 +58,18 @@ public sealed class ServiceBusDeadLetterTests
     }
 
     [Test]
+    public async Task Failed_peek_preserves_error_when_receiver_disposal_fails()
+    {
+        var client = new Client();
+        client.Receiver.PeekFailure = new InvalidOperationException("peek");
+        client.Receiver.DisposeFailure = new InvalidOperationException("receiver close");
+
+        await Assert.That(async () => await Manager(client).PeekAsync("orders"))
+            .Throws<InvalidOperationException>().WithMessage("peek");
+        await Assert.That(client.Receiver.Disposals).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Filtered_redrive_sends_before_complete_and_preserves_native_properties()
     {
         var client = new Client();
@@ -85,6 +97,42 @@ public sealed class ServiceBusDeadLetterTests
         await Assert.That(async () => await Manager(client).RedriveAsync("orders", _ => throw new InvalidOperationException())).Throws<InvalidOperationException>();
         await Assert.That(client.Events.ToArray()).IsEquivalentTo(new[] { "abandon:copy" });
         await Assert.That(client.Receiver.Disposals).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task Failed_send_preserves_error_when_native_link_disposal_fails(bool senderFails, bool receiverFails)
+    {
+        var client = new Client();
+        client.Receiver.Messages = [Message("copy", 1), Message("remaining", 2)];
+        client.Sender.Fail = true;
+        client.Sender.DisposeFailure = senderFails ? new InvalidOperationException("sender close") : null;
+        client.Receiver.DisposeFailure = receiverFails ? new InvalidOperationException("receiver close") : null;
+
+        await Assert.That(async () => await Manager(client).RedriveAsync("orders"))
+            .Throws<InvalidOperationException>().WithMessage("send");
+        await Assert.That(client.Events).IsEquivalentTo(new[] { "send:copy", "abandon:copy", "abandon:remaining" });
+        await Assert.That(client.Sender.Disposals).IsEqualTo(1);
+        await Assert.That(client.Receiver.Disposals).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false, "receiver close")]
+    [Arguments(true, "sender close")]
+    public async Task Successful_redrive_propagates_first_close_error_and_disposes_both_links(bool senderFails, string error)
+    {
+        var client = new Client();
+        client.Receiver.Messages = [Message("copy", 1)];
+        client.Sender.DisposeFailure = senderFails ? new InvalidOperationException("sender close") : null;
+        client.Receiver.DisposeFailure = new InvalidOperationException("receiver close");
+
+        await Assert.That(async () => await Manager(client).RedriveAsync("orders"))
+            .Throws<InvalidOperationException>().WithMessage(error);
+        await Assert.That(client.Events).IsEquivalentTo(new[] { "send:copy", "complete:copy" });
+        await Assert.That(client.Sender.Disposals).IsEqualTo(1);
+        await Assert.That(client.Receiver.Disposals).IsEqualTo(1);
     }
 
     [Test]
@@ -124,11 +172,13 @@ public sealed class ServiceBusDeadLetterTests
     public async Task Cancellation_reaches_native_receive_without_sending_or_settling()
     {
         var client = new Client();
+        client.Receiver.DisposeFailure = new InvalidOperationException("receiver close");
         using var cancellation = new CancellationTokenSource();
         await cancellation.CancelAsync();
         await Assert.That(async () => await Manager(client).RedriveAsync("orders", cancellationToken: cancellation.Token))
             .Throws<OperationCanceledException>();
         await Assert.That(client.Events.Count).IsEqualTo(0);
+        await Assert.That(client.Receiver.Disposals).IsEqualTo(1);
     }
 
     [Test]
@@ -244,11 +294,13 @@ public sealed class ServiceBusDeadLetterTests
         internal int Disposals;
         internal string? FailComplete;
         internal string? FailAbandon;
+        internal Exception? PeekFailure;
+        internal Exception? DisposeFailure;
 
         public override Task<IReadOnlyList<ServiceBusReceivedMessage>> PeekMessagesAsync(int maxMessages, long? fromSequenceNumber = null, CancellationToken cancellationToken = default)
         {
             From = fromSequenceNumber;
-            return Task.FromResult(Messages);
+            return PeekFailure is { } failure ? Task.FromException<IReadOnlyList<ServiceBusReceivedMessage>>(failure) : Task.FromResult(Messages);
         }
 
         public override Task<IReadOnlyList<ServiceBusReceivedMessage>> ReceiveMessagesAsync(int maxMessages, TimeSpan? maxWaitTime = null, CancellationToken cancellationToken = default)
@@ -274,7 +326,7 @@ public sealed class ServiceBusDeadLetterTests
         public override ValueTask DisposeAsync()
         {
             Disposals++;
-            return default;
+            return DisposeFailure is { } failure ? ValueTask.FromException(failure) : default;
         }
     }
 
@@ -282,6 +334,8 @@ public sealed class ServiceBusDeadLetterTests
     {
         internal ServiceBusMessage? Sent;
         internal bool Fail;
+        internal int Disposals;
+        internal Exception? DisposeFailure;
 
         public override Task SendMessageAsync(ServiceBusMessage message, CancellationToken cancellationToken = default)
         {
@@ -292,7 +346,8 @@ public sealed class ServiceBusDeadLetterTests
 
         public override ValueTask DisposeAsync()
         {
-            return default;
+            Disposals++;
+            return DisposeFailure is { } failure ? ValueTask.FromException(failure) : default;
         }
     }
 }
