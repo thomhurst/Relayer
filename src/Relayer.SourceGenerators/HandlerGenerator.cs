@@ -10,6 +10,9 @@ namespace Relayer.SourceGenerators;
 [Generator(LanguageNames.CSharp)]
 public sealed class HandlerGenerator : IIncrementalGenerator
 {
+    private static readonly SymbolDisplayFormat s_nullableTypeFormat = SymbolDisplayFormat.FullyQualifiedFormat
+        .AddMiscellaneousOptions(SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
+
     private static readonly DiagnosticDescriptor s_inaccessibleMessage = new(
         "RLYH001", "Handler message type is inaccessible",
         "Handler '{0}' uses message type '{1}', which generated dispatch cannot access. Make the message type assembly-accessible and non-file-local.",
@@ -81,13 +84,13 @@ public sealed class HandlerGenerator : IIncrementalGenerator
 
             var aliases = new SortedSet<string>(StringComparer.Ordinal);
             var message = contract.TypeArguments[0];
-            var handlerName = FormatType(type, compilation, aliases);
-            var messageName = message is IDynamicTypeSymbol ? "global::System.Object" : FormatType(message, compilation, aliases);
+            var handlerName = FormatDispatchType(type.WithNullableAnnotation(NullableAnnotation.NotAnnotated), compilation, aliases);
+            var messageName = FormatDispatchType(message, compilation, aliases);
             var tombstoneMessage = !isBatch && message is INamedTypeSymbol named
                 && SymbolEqualityComparer.Default.Equals(named.OriginalDefinition, compilation.GetTypeByMetadataName("Relayer.Tombstone`1"))
-                ? FormatType(named.TypeArguments[0], compilation, aliases) : null;
+                ? FormatType(named.TypeArguments[0], compilation, aliases, s_nullableTypeFormat) : null;
             var sagaState = !isBatch && sagaBase is not null && SymbolEqualityComparer.Default.Equals(sagaBase.TypeArguments[1], message)
-                ? FormatType(sagaBase.TypeArguments[0], compilation, aliases) : null;
+                ? FormatType(sagaBase.TypeArguments[0], compilation, aliases, s_nullableTypeFormat) : null;
 
             result.Add(new DispatchModel(handlerName, messageName, isBatch, CanReference(message, compilation),
                 tombstoneMessage, sagaState, string.Join("\n", aliases)));
@@ -96,12 +99,25 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         return result.ToImmutable();
     }
 
-    private static string FormatType(ITypeSymbol type, Compilation compilation, SortedSet<string> aliases)
+    private static TypeName FormatDispatchType(ITypeSymbol type, Compilation compilation, SortedSet<string> aliases)
+    {
+        if (type is IDynamicTypeSymbol)
+        {
+            const string ObjectType = "global::System.Object";
+            var source = type.NullableAnnotation == NullableAnnotation.Annotated ? ObjectType + "?" : ObjectType;
+            return new TypeName(source, ObjectType);
+        }
+
+        return new TypeName(FormatType(type, compilation, aliases, s_nullableTypeFormat),
+            FormatType(type, compilation, aliases, SymbolDisplayFormat.FullyQualifiedFormat));
+    }
+
+    private static string FormatType(ITypeSymbol type, Compilation compilation, SortedSet<string> aliases, SymbolDisplayFormat format)
     {
         var builder = new StringBuilder();
 
         // Roslyn attaches the owning namespace to each global qualifier, including those inside type arguments.
-        foreach (var part in type.ToDisplayParts(SymbolDisplayFormat.FullyQualifiedFormat))
+        foreach (var part in type.ToDisplayParts(format))
         {
             if (part.Symbol is INamespaceSymbol { IsGlobalNamespace: true, ContainingAssembly: { } assembly }
                 && compilation.GetMetadataReference(assembly) is { } reference
@@ -146,14 +162,18 @@ public sealed class HandlerGenerator : IIncrementalGenerator
     private static void Emit(SourceProductionContext context, ImmutableArray<DispatchModel> models)
     {
         foreach (var invalid in models.Where(static m => !m.IsAccessible)
-                     .Select(static m => (m.Handler, m.Message)).Distinct())
+                     .Select(static m => (Handler: m.Handler.Identity, Message: m.Message.Identity)).Distinct())
         {
             context.ReportDiagnostic(Diagnostic.Create(s_inaccessibleMessage, Location.None, invalid.Handler, invalid.Message));
         }
 
-        var contracts = models.Where(static m => m.IsAccessible).Distinct()
-            .OrderBy(static m => m.Handler, StringComparer.Ordinal)
-            .ThenBy(static m => m.Message, StringComparer.Ordinal).ThenBy(static m => m.IsBatch).ToArray();
+        // Nullable reference annotations affect the source signature but not the registered CLR types.
+        var contracts = models.Where(static m => m.IsAccessible)
+            .GroupBy(static m => (m.Handler.Identity, m.Message.Identity, m.IsBatch))
+            .Select(static group => group.OrderBy(static m => m.Handler.Source, StringComparer.Ordinal)
+                .ThenBy(static m => m.Message.Source, StringComparer.Ordinal).First())
+            .OrderBy(static m => m.Handler.Identity, StringComparer.Ordinal)
+            .ThenBy(static m => m.Message.Identity, StringComparer.Ordinal).ThenBy(static m => m.IsBatch).ToArray();
 
         if (contracts.Length == 0)
         {
@@ -183,12 +203,12 @@ public sealed class HandlerGenerator : IIncrementalGenerator
             builder.AppendLine();
             builder.Append("    private sealed class Dispatcher").Append(i).Append(" : global::Relayer.Pipeline.")
                 .Append(model.IsBatch ? "BatchHandlerDescriptor<" : model.TombstoneMessage is not null ? "TombstoneHandlerDescriptor<" : "HandlerDescriptor<")
-                .Append(model.TombstoneMessage ?? model.Message).AppendLine(">");
+                .Append(model.TombstoneMessage ?? model.Message.Source).AppendLine(">");
             builder.AppendLine("    {");
-            builder.Append("        public Dispatcher").Append(i).Append("() : base(typeof(").Append(model.Handler).AppendLine(")) { }");
+            builder.Append("        public Dispatcher").Append(i).Append("() : base(typeof(").Append(model.Handler.Source).AppendLine(")) { }");
             builder.AppendLine("        public override global::Relayer.IHandlerMarker Resolve(global::System.IServiceProvider services)");
             builder.Append("            => global::Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<")
-                .Append(model.Handler).AppendLine(">(services);");
+                .Append(model.Handler.Source).AppendLine(">(services);");
             builder.Append("        public override global::System.Threading.Tasks.ValueTask");
 
             if (model.IsBatch)
@@ -200,16 +220,16 @@ public sealed class HandlerGenerator : IIncrementalGenerator
 
             if (model.IsBatch)
             {
-                builder.Append("global::Relayer.Batch<").Append(model.Message).Append("> batch, ");
+                builder.Append("global::Relayer.Batch<").Append(model.Message.Source).Append("> batch, ");
             }
             else
             {
-                builder.Append(model.Message).Append(" message, global::Relayer.MessageContext context, ");
+                builder.Append(model.Message.Source).Append(" message, global::Relayer.MessageContext context, ");
             }
 
             builder.AppendLine("global::System.Threading.CancellationToken cancellationToken)");
             builder.Append("            => ((global::Relayer.").Append(model.IsBatch ? "IBatchHandler<" : "IHandler<")
-                .Append(model.Message).Append(">)(").Append(model.Handler).Append(")handler).HandleAsync(")
+                .Append(model.Message.Source).Append(">)(").Append(model.Handler.Source).Append(")handler).HandleAsync(")
                 .Append(model.IsBatch ? "batch, " : "message, context, ").AppendLine("cancellationToken);");
             builder.AppendLine("    }");
         }
@@ -233,14 +253,15 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         builder.AppendLine("    {");
         builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(builder);");
 
-        foreach (var handler in contracts.Select(static m => m.Handler).Distinct())
+        foreach (var handlerGroup in contracts.GroupBy(static m => m.Handler.Identity))
         {
+            var handler = handlerGroup.First().Handler.Source;
             builder.Append("        if (typeof(THandler) == typeof(").Append(handler).AppendLine("))");
             builder.AppendLine("        {");
 
             for (var i = 0; i < contracts.Length; i++)
             {
-                if (contracts[i].Handler == handler)
+                if (contracts[i].Handler.Identity == handlerGroup.Key)
                 {
                     builder.Append("            global::Relayer.Pipeline.ConsumerInfrastructureExtensions.AddHandler(builder, new Dispatcher")
                         .Append(i).AppendLine("());");
@@ -250,7 +271,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
                         // The user's saga declaration supplies the opt-in; its pragma does not cover generated files.
                         builder.AppendLine("#pragma warning disable RLYEXP001");
                         builder.Append("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<global::Relayer.Sagas.SagaExecution<")
-                            .Append(state).Append(", ").Append(contracts[i].Message).AppendLine(">>(builder.Services);");
+                            .Append(state).Append(", ").Append(contracts[i].Message.Source).AppendLine(">>(builder.Services);");
                         builder.AppendLine("#pragma warning restore RLYEXP001");
                     }
                 }
@@ -266,6 +287,8 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         builder.AppendLine("    }");
     }
 
+    private sealed record TypeName(string Source, string Identity);
+
     private sealed record DispatchModel(
-        string Handler, string Message, bool IsBatch, bool IsAccessible, string? TombstoneMessage, string? SagaState, string Aliases);
+        TypeName Handler, TypeName Message, bool IsBatch, bool IsAccessible, string? TombstoneMessage, string? SagaState, string Aliases);
 }
