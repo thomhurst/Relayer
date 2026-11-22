@@ -61,6 +61,7 @@ Register one scoped enlistment using the options and database connection string 
 
 ```csharp
 using Dapper;
+using Microsoft.Extensions.DependencyInjection;
 using Relayer;
 using Relayer.Outbox.SqlServer;
 
@@ -421,6 +422,9 @@ insert order cannot be recovered, creates the ordered index and `ordered_leases`
 after the migrated maximum. Test your deployment/rollback procedure on a database copy first.
 
 ```csharp
+using Microsoft.Data.SqlClient;
+using Relayer.Outbox.SqlServer;
+
 await using var connection = new SqlConnection(connectionString);
 await connection.OpenAsync();
 await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
