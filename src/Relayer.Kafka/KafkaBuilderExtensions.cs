@@ -89,8 +89,17 @@ public static class KafkaBuilderExtensions
 
             var options = provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get(name);
             var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
-            return new KafkaProducerTransport(name, KafkaProducerTransport.CreateProducerBuilder(options, loggerFactory).Build(), endpoints,
-                provider.GetRequiredService<MessageTracing>(), loggerFactory, options);
+            var native = KafkaProducerTransport.CreateProducerBuilder(options, loggerFactory);
+            var producer = native.Build();
+            // Dekaf has producer-wide acknowledgments and defaults to Acks.All. A custom builder can
+            // change that setting, so give non-transactional failure copies their own acknowledged producer.
+            var failureCopyProducer = options.ConfigureProducer is not null &&
+                definition.Consumers.Any(static declaration =>
+                    !KafkaProcessing.IsExactlyOnce(((ConsumerDefinition<KafkaConsumerOptions>)declaration).Options))
+                ? native.WithAcks(Acks.All).Build()
+                : null;
+            return new KafkaProducerTransport(name, producer, endpoints, provider.GetRequiredService<MessageTracing>(),
+                loggerFactory, options, failureCopyProducer);
         });
         builder.Services.AddKeyedSingleton<IDeadLetterManager>(name, (provider, _) =>
         {

@@ -108,6 +108,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
         foreach (var declaration in definition.Consumers)
         {
             var consumer = (ConsumerDefinition<KafkaConsumerOptions>)declaration;
+            var exactlyOnce = KafkaProcessing.IsExactlyOnce(consumer.Options);
             var policy = consumer.Failure;
             var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Options.Group!, new()
             {
@@ -116,7 +117,11 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 Jitter = policy.Jitter,
                 CopyTimeout = policy.CopyTimeout,
                 DeadLetterEndpoint = KafkaBuilderExtensions.GetDeadLetterTopic(consumer),
-            }, Copy);
+            }, Copy)
+            {
+                // Transactional copies follow the same redirect as handler sends so offsets and outputs commit together.
+                CopyTransport = exactlyOnce ? null : _transport.FailureCopyTransport,
+            };
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
                 consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>());
@@ -129,7 +134,6 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             });
             pipeline.Tracing(tracing, endpoint).Telemetry(telemetry);
             pipeline.ConfigureConsumer(provider, consumer);
-            var exactlyOnce = KafkaProcessing.IsExactlyOnce(consumer.Options);
             // The inbox row commits before the Kafka transaction, so after an abort the replay would skip the
             // handler and its aborted output would never be produced.
             if (exactlyOnce && pipeline.HasInbox)
