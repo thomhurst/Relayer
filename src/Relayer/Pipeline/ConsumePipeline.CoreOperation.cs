@@ -481,6 +481,7 @@ public sealed partial class ConsumePipeline
         internal void RecordSettlementFailure(Exception error)
         {
             _failure = error;
+            _owner.Observer?.Failed(_context, error);
         }
 
         private void Finish(Exception? error)

@@ -857,8 +857,10 @@ public class NatsExecutionTests
                 });
             });
         });
+        services.AddRelayerHarness();
         await using var provider = services.BuildServiceProvider();
-        var adapter = (NatsNativeTransport)provider.GetRequiredService<Relayer.Transports.ITransport>();
+        var harness = provider.GetRequiredService<RelayerHarness>();
+        var adapter = provider.GetRequiredKeyedService<NatsNativeTransport>("ack_failure");
         await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
         var worker = adapter.AddConsumer(events, "worker", new()
         {
@@ -910,6 +912,12 @@ public class NatsExecutionTests
         var redeliveryReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var redelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbackFailure = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool matched = false;
+        var consumed = harness.WaitForConsumedAsync<ExecutionMessage>(_ =>
+        {
+            matched = true;
+            return true;
+        }, token);
         var calls = 0;
         ulong originalSequence = 0;
         worker.Receive = async (delivery, processing) =>
@@ -933,6 +941,12 @@ public class NatsExecutionTests
                         new NatsJSContext(message.Connection!));
                     var disposition = await receive.ProcessAsync(new(failed, delivery.Consumer), processing);
                     await Assert.That(disposition.Kind).IsEqualTo(DispositionKind.SettledByHandler);
+                    // The redelivery cannot process until this callback releases it.
+                    await Assert.That(matched).IsFalse();
+                    IReadOnlyList<HarnessFailure> failures = harness.Failed;
+                    await Assert.That(failures.Count).IsEqualTo(1);
+                    await Assert.That(failures[0].Operation).IsEqualTo(HarnessOperation.Consume);
+                    await Assert.That(failures[0].Error).IsSameReferenceAs(await capture.Failure.Task.WaitAsync(processing));
                     failedAckCompleted.TrySetResult();
                 }
                 else
@@ -971,6 +985,7 @@ public class NatsExecutionTests
             await Assert.That(capture.Failure.Task.IsCompletedSuccessfully).IsTrue();
             await Assert.That(await capture.Failure.Task).IsTypeOf<NatsNoRespondersException>();
             await WaitForStageAsync(redelivered.Task, "confirmed native redelivery");
+            await Assert.That(await consumed).IsEqualTo(new ExecutionMessage(42));
             await adapter.StopAsync(token);
 
             if (callbackFailure.Task.IsCompleted)
