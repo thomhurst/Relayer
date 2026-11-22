@@ -241,6 +241,59 @@ public class SnsSendTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Cancelled_topology_validation_preserves_single_and_batch_publishing(bool cancelDuringAttributeLookup)
+    {
+        using var client = new SnsTestClient();
+        await using var transport = Transport(client);
+        await transport.StartAsync(default);
+
+        const string RefreshedArn = "arn:aws:sns:us-east-1:111111111111:orders";
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ListTopicsOverride = async (request, token) =>
+        {
+            var firstPage = request.NextToken is null;
+
+            if (!cancelDuringAttributeLookup && !firstPage)
+            {
+                await gate.Task.WaitAsync(token);
+            }
+
+            return new()
+            {
+                Topics = [new() { TopicArn = firstPage ? RefreshedArn : SnsTestClient.Arn("ordered.fifo") }],
+                NextToken = firstPage ? "next" : null
+            };
+        };
+        client.TopicAttributesGate = cancelDuringAttributeLookup ? gate : null;
+        var message = new OutgoingMessage("orders", "{}"u8.ToArray());
+        await transport.SendAsync(message, default);
+
+        using var cancellation = new CancellationTokenSource();
+        var validation = transport.ApplyTopologyAsync(TopologyMode.Validate, cancellation.Token).AsTask();
+
+        try
+        {
+            await Assert.That(validation.IsCompleted).IsFalse();
+            await transport.SendAsync(message, default);
+            await Assert.That(client.Sent[1].Arn).IsEqualTo(SnsTestClient.Arn("orders"));
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await Assert.That(async () => await validation).Throws<OperationCanceledException>();
+        }
+
+        await transport.SendBatchAsync(new[] { message }, default);
+        await Assert.That(client.Batches.Single().Single().Message.Arn).IsEqualTo(SnsTestClient.Arn("orders"));
+        gate.SetResult();
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, default)).Differences.Count).IsEqualTo(0);
+        await transport.SendAsync(message, default);
+        await Assert.That(client.Sent[^1].Arn).IsEqualTo(RefreshedArn);
+    }
+
+    [Test]
     public async Task Declaration_validation_rejects_missing_topics_fifo_mismatch_and_non_raw_subscriptions()
     {
         var options = new AmazonSnsTransportOptions();
@@ -466,6 +519,8 @@ internal sealed class SnsTestClient() : AmazonSimpleNotificationServiceClient(ne
     internal int Lookups;
     internal int Disposals;
     internal TaskCompletionSource? Gate;
+    internal Func<ListTopicsRequest, CancellationToken, Task<ListTopicsResponse>>? ListTopicsOverride;
+    internal TaskCompletionSource? TopicAttributesGate;
 
     internal static string Arn(string name)
     {
@@ -522,6 +577,12 @@ internal sealed class SnsTestClient() : AmazonSimpleNotificationServiceClient(ne
     public override Task<ListTopicsResponse> ListTopicsAsync(ListTopicsRequest request, CancellationToken cancellationToken = default)
     {
         Lookups++;
+
+        if (ListTopicsOverride is not null)
+        {
+            return ListTopicsOverride(request, cancellationToken);
+        }
+
         var names = Missing ? Creates.Select(topic => topic.Name) : new[] { "orders", "ordered.fifo" };
 
         if (Paginate)
@@ -538,9 +599,20 @@ internal sealed class SnsTestClient() : AmazonSimpleNotificationServiceClient(ne
         return Task.FromResult(new CreateTopicResponse { TopicArn = Arn(request.Name) });
     }
 
-    public override Task<GetTopicAttributesResponse> GetTopicAttributesAsync(GetTopicAttributesRequest request, CancellationToken cancellationToken = default)
+    public override async Task<GetTopicAttributesResponse> GetTopicAttributesAsync(GetTopicAttributesRequest request, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(new GetTopicAttributesResponse { Attributes = new() { ["FifoTopic"] = "true" } });
+        if (TopicAttributesGate is not null)
+        {
+            await TopicAttributesGate.Task.WaitAsync(cancellationToken);
+        }
+
+        return new()
+        {
+            Attributes = new()
+            {
+                ["FifoTopic"] = "true"
+            }
+        };
     }
 
     public override Task<ListSubscriptionsByTopicResponse> ListSubscriptionsByTopicAsync(ListSubscriptionsByTopicRequest request, CancellationToken cancellationToken = default)
