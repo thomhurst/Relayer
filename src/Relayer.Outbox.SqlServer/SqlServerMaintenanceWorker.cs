@@ -246,13 +246,21 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
         await using var command = new SqlCommand(sql, connection, transaction);
         command.Parameters.AddWithValue("@limit", _options.BatchSize);
         AddDuration(command, "@days", "@remainder", retention);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        return (int)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 
     private string DeleteSql(string table, string column)
     {
         var preserve = column == "failed_at" ? $" AND NOT EXISTS (SELECT 1 FROM {_table} p WHERE p.id=d.id AND p.status='parked')" : "";
-        return $";WITH expired AS (SELECT TOP (@limit) * FROM {table} d WHERE {column} <= DATEADD(millisecond, -@remainder, DATEADD(day, -@days, SYSUTCDATETIME())){preserve} ORDER BY {column}) DELETE FROM expired";
+        return $"""
+            ;WITH expired AS (
+                SELECT TOP (@limit) * FROM {table} d
+                WHERE {column} <= DATEADD(millisecond, -@remainder, DATEADD(day, -@days, SYSUTCDATETIME())){preserve}
+                ORDER BY {column}
+            )
+            DELETE FROM expired;
+            SELECT @@ROWCOUNT;
+            """;
     }
 
     private static void AddDuration(SqlCommand command, string daysName, string remainderName, TimeSpan duration)

@@ -458,6 +458,56 @@ public sealed class MaintenanceTests(SqlServerFixture database)
     }
 }
 
+public sealed class MaintenanceNoCountTests
+{
+    [Test]
+    public async Task Retention_cleans_multiple_batches_when_connections_inherit_nocount()
+    {
+        // Server user options affect every new session, so use a dedicated server.
+        await using var database = new SqlServerFixture();
+        await database.InitializeAsync();
+        var data = new StoreData(database);
+        await data.Create();
+        var dead = SqlServerOutboxSchema.DeadTable(data.Options);
+        var inbox = SqlServerOutboxSchema.InboxTable(data.Options);
+        await data.Execute($"""
+            INSERT INTO {dead} (id, transport, destination, message_type, headers, body, created_at, attempts, failed_at)
+                SELECT CONVERT(binary(16), NEWID()), 'events', 'orders', 'order', 0x, 0x,
+                    DATEADD(day, -age.days, SYSUTCDATETIME()), 1, DATEADD(day, -age.days, SYSUTCDATETIME())
+                FROM (VALUES (31), (32), (33)) AS age(days);
+            INSERT INTO {inbox} (consumer, message_id, processed_at)
+                SELECT 'orders', NEWID(), DATEADD(day, -age.days, SYSUTCDATETIME())
+                FROM (VALUES (8), (9), (10)) AS age(days);
+            EXEC sp_configure 'user options', 512;
+            RECONFIGURE;
+            """);
+
+        var connectionString = new SqlConnectionStringBuilder(database.ConnectionString)
+        {
+            InitialCatalog = "master",
+            Pooling = false
+        }.ConnectionString;
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new SqlCommand("SELECT @@OPTIONS & 512", connection);
+        await Assert.That((int)(await command.ExecuteScalarAsync())!).IsEqualTo(512);
+
+        using var worker = new SqlServerMaintenanceWorker(connectionString, new()
+        {
+            TablePrefix = data.Options.TablePrefix,
+            BatchSize = 1,
+            CleanupBatchLimit = 5,
+            DeadRetention = TimeSpan.FromDays(30),
+            InboxRetention = TimeSpan.FromDays(7)
+        }, [], NullLogger<SqlServerMaintenanceWorker>.Instance);
+        await Assert.That(await worker.CleanupAsync()).IsEqualTo(6);
+        await Assert.That(worker.CleanupPending).IsFalse();
+
+        command.CommandText = $"SELECT (SELECT COUNT(*) FROM {dead}) + (SELECT COUNT(*) FROM {inbox})";
+        await Assert.That((int)(await command.ExecuteScalarAsync())!).IsEqualTo(0);
+    }
+}
+
 public sealed class MaintenanceRegistrationTests
 {
     [Test]

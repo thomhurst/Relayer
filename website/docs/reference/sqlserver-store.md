@@ -303,6 +303,7 @@ that turn when a delete removes fewer than `BatchSize` rows. Each batch commits 
 connection and native admission lock before the next batch rechecks leadership. Cancellation or
 lease loss stops further admission; already committed batches remain deleted. The first table
 rotates between turns so a busy table cannot repeatedly prevent other tables from making progress.
+The same batch limits apply when SQL Server sessions use `SET NOCOUNT ON`.
 
 A failed cleanup waits for `CleanupInterval` before retrying, while recovery sweeps continue.
 A full final batch schedules another cleanup after the next recovery sweep, rather than waiting
