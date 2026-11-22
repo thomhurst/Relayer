@@ -1,0 +1,111 @@
+name: Buffered batch allocation capture (#1154)
+
+on:
+  push:
+    branches: [diagnostics/issue-1154]
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    name: Buffered allocation ownership (${{ matrix.framework }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - framework: net10.0
+            runtime: 10.0.15
+          - framework: net11.0
+            runtime: 11.0.0
+    env:
+      FRAMEWORK: ${{ matrix.framework }}
+      RUNTIME_VERSION: ${{ matrix.runtime }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: dotnet/samples
+          ref: 3810558800760fc39282cc939bac645735514209
+          path: profiler-sdk
+          sparse-checkout: core/profiling
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+        with:
+          dotnet-version: |
+            10.0.404
+            11.0.100
+      - name: Prepare broker networking
+        run: sudo bash scripts/Prepare-ContainerTests.sh
+      - uses: docker/setup-docker-action@3f1ab1ab0e29231562e4db4ca600c1a49653bac6
+        with:
+          version: v29.10.0
+          set-host: true
+          daemon-config: '{"userland-proxy": false}'
+      - name: Prepare core test broker images
+        run: |
+          docker pull mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04
+          docker pull ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa
+      - name: Build the core tests and existing allocation profiler
+        run: |
+          mkdir -p results .artifacts/history
+          dotnet --info > results/runtime.txt
+          dotnet --list-runtimes > results/runtimes.txt
+          uname -a > results/host.txt
+          cat /etc/os-release >> results/host.txt
+          nproc >> results/host.txt
+          git rev-parse HEAD > results/commit.txt
+          git archive 489ce7079df1f92788b76dd8c8e191f46707b827 \
+            tools/FrozenAllocationProfiler .github/scripts/read_native_allocations.py \
+            .github/scripts/read_allocation_stacks.py | tar -x -C .artifacts/history
+          CXX=clang++ cmake -S .artifacts/history/tools/FrozenAllocationProfiler \
+            -B .artifacts/profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release
+          cmake --build .artifacts/profiler
+          dotnet build tests/Relayer.Tests -c Release -f "$FRAMEWORK"
+          cp "tests/Relayer.Tests/bin/Release/$FRAMEWORK/Relayer.Tests.runtimeconfig.json" results/
+      - name: Capture batch counters and caller allocation stacks in the parallel core test host
+        env:
+          CORECLR_ENABLE_PROFILING: '1'
+          CORECLR_PROFILER: '{32B7EF07-25E8-4AC7-B011-9A4321D702C8}'
+        run: |
+          profiler="$PWD/.artifacts/profiler/libFrozenAllocationProfiler.so"
+          export CORECLR_PROFILER_PATH="$profiler" RELAYER_ALLOCATION_PROFILER="$profiler"
+          export RELAYER_ALLOCATION_OUTPUT="$PWD/results/objects.jsonl"
+          export RELAYER_ALLOCATION_STACKS="$PWD/results/stacks.jsonl"
+          result=0
+          dotnet --fx-version "$RUNTIME_VERSION" "tests/Relayer.Tests/bin/Release/$FRAMEWORK/Relayer.Tests.dll" \
+            --results-directory "$PWD/results" --output Detailed 2>&1 | tee results/tests.log || result=$?
+          unset CORECLR_ENABLE_PROFILING
+          python3 .artifacts/history/.github/scripts/read_native_allocations.py results/objects.jsonl \
+            | jq 'map_values(.coverage)' > results/validated-native.json
+          python3 .artifacts/history/.github/scripts/read_allocation_stacks.py results/stacks.jsonl results/objects.jsonl \
+            | jq '{coverage, unresolved_frames}' > results/validated-stacks.json
+          python3 .github/scripts/summarize-issue-1154.py results | tee results/caller-summary.txt
+          exit "$result"
+      - name: Inventory captured inputs and results
+        if: always()
+        run: |
+          paths=()
+          for path in results "tests/Relayer.Tests/bin/Release/$FRAMEWORK" .artifacts/profiler/libFrozenAllocationProfiler.so; do
+            if [ -e "$path" ]; then paths+=("$path"); fi
+          done
+          if [ "${#paths[@]}" -gt 0 ]; then
+            find "${paths[@]}" -type f -exec sha256sum {} + > results-sha256.txt
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: allocation-owners-${{ matrix.framework }}-${{ github.run_id }}
+          path: |
+            results/
+            results-sha256.txt
+            tests/Relayer.Tests/bin/Release/${{ matrix.framework }}/
+            .artifacts/profiler/libFrozenAllocationProfiler.so
+          include-hidden-files: true
+          retention-days: 14
