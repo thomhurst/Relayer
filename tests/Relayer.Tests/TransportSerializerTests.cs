@@ -73,15 +73,16 @@ public class TransportSerializerTests
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddRelayer(relayer =>
         {
+            relayer.AddMessageTypesFromThisAssembly();
             relayer.Infrastructure().MessageTypes.Add<NoJsonMetadata>("manual");
             relayer.InMemory("first", transport => transport.UseSerializer(_ => shared).Send<NoJsonMetadata>("first"));
 
             if (shareInstance)
             {
-                relayer.InMemory("second", transport => transport.UseSerializer(_ => shared).Send<NoJsonMetadata>("second"));
+                relayer.InMemory("second", transport => transport.UseSerializer(_ => shared).Send<JsonValue>("second"));
             }
 
-            relayer.InMemory("independent", transport => transport.UseSerializer(_ => independent).Send<NoJsonMetadata>("independent"));
+            relayer.InMemory("independent", transport => transport.UseSerializer(_ => independent).Send<JsonOrder>("independent"));
         });
 
         var host = builder.Build();
