@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Relayer.Pipeline;
 using Relayer.Serialization;
@@ -24,11 +25,9 @@ internal abstract class SendRouteRegistration
         get;
     }
 
-    internal abstract object? BuildTombstone(object route);
+    internal abstract object CreateTarget(List<object> routes, bool hasOutbox);
 
-    internal abstract object CreateTarget(List<object> routes);
-
-    internal abstract object CreateTombstoneTarget(List<object> routes);
+    internal abstract object? CreateTombstoneTarget(List<object> routes);
 
     internal abstract object Build(MessageTypeRegistry types, Dictionary<string, ITransport> transports,
         IMessageSerializer serializer, SendDelegate pipeline, EndpointCapabilityCache capabilitiesCache, OutboxCapabilities outbox);
@@ -75,36 +74,43 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
 
     internal override object TombstoneKey => SendRouteKey<Tombstone<TMessage>>.Value;
 
-    internal override object? BuildTombstone(object route)
+    internal override object CreateTarget(List<object> routes, bool hasOutbox)
     {
-        return ((SendRoute<TMessage>)route).CreateTombstoneRoute();
-    }
+        var first = (SendRoute<TMessage>)routes[0];
 
-    internal override object CreateTarget(List<object> routes)
-    {
-        return CreateTarget<TMessage>(routes);
-    }
-
-    internal override object CreateTombstoneTarget(List<object> routes)
-    {
-        return CreateTarget<Tombstone<TMessage>>(routes);
-    }
-
-    private static SendTarget<T> CreateTarget<T>(List<object> routes)
-    {
         if (routes.Count == 1)
         {
-            return (SendRoute<T>)routes[0];
+            return first;
         }
 
-        var array = new SendRoute<T>[routes.Count];
-
-        for (var i = 0; i < array.Length; i++)
+        if (!hasOutbox)
         {
-            array[i] = (SendRoute<T>)routes[i];
+            throw new OptionsValidationException(Options.DefaultName, typeof(SendRouteOptions),
+                [$"Message '{first.MessageType}' has several send routes. Register an outbox integration with IOutboxEnlistment or configure one logical send route."]);
         }
 
-        return new FanOutSendTarget<T>(array);
+        var fanOut = new SendRoute<TMessage>[routes.Count];
+
+        for (var i = 0; i < fanOut.Length; i++)
+        {
+            var route = (SendRoute<TMessage>)routes[i];
+
+            if (route.Options.TransactionRequirement == SendTransactionRequirement.Native)
+            {
+                throw new OptionsValidationException(Options.DefaultName, typeof(SendRouteOptions),
+                    [$"Message '{first.MessageType}' has several send routes. TransactionRequirement.Native is incompatible with outbox fan-out. Remove the native transaction requirement or configure one logical send route."]);
+            }
+
+            fanOut[i] = route;
+        }
+
+        return new FanOutSendTarget<TMessage>(fanOut);
+    }
+
+    internal override object? CreateTombstoneTarget(List<object> routes)
+    {
+        var first = (SendRoute<TMessage>)routes[0];
+        return routes.Count == 1 ? first.CreateTombstoneRoute() : new UnsupportedFanOutTombstoneTarget<TMessage>(first.MessageType);
     }
 
     internal override object Build(MessageTypeRegistry types, Dictionary<string, ITransport> transports,
@@ -194,7 +200,7 @@ internal sealed class SendPipeline
 
         // Several Send<T> declarations fan one message out. Reject a repeated destination here too, because a
         // sender resolved without the hosted startup validator would otherwise enlist duplicate rows.
-        var declared = new Dictionary<object, (SendRouteRegistration Registration, List<object> Routes, bool Tombstone)>(ReferenceEqualityComparer.Instance);
+        var declared = new Dictionary<object, (SendRouteRegistration Registration, List<object> Routes)>(ReferenceEqualityComparer.Instance);
         var destinations = new HashSet<(Type, string, string)>();
 
         foreach (var transport in configuration.Transports)
@@ -227,36 +233,39 @@ internal sealed class SendPipeline
                 }
 
                 var route = registration.Build(types, namedTransports, serializer, pipeline, capabilitiesCache, outbox);
-                Add(declared, registration, registration.Key, route, tombstone: false);
 
-                if (registration.BuildTombstone(route) is { } tombstone)
+                if (declared.TryGetValue(registration.Key, out var entry))
                 {
-                    Add(declared, registration, registration.TombstoneKey, tombstone, tombstone: true);
+                    entry.Routes.Add(route);
+                }
+                else
+                {
+                    declared.Add(registration.Key, (registration, [route]));
                 }
             }
         }
 
         var routes = new Dictionary<object, object>(declared.Count, ReferenceEqualityComparer.Instance);
+        bool? hasOutbox = null;
 
         foreach (var (key, entry) in declared)
         {
-            routes.Add(key, entry.Tombstone ? entry.Registration.CreateTombstoneTarget(entry.Routes) : entry.Registration.CreateTarget(entry.Routes));
+            if (entry.Routes.Count > 1)
+            {
+                // Fan-out requires a registration. The sender separately checks that its scoped executor is active.
+                hasOutbox ??= services.GetService<IServiceProviderIsService>()?.IsService(typeof(IOutboxEnlistment))
+                    ?? outbox.Get().Transactions;
+            }
+
+            routes.Add(key, entry.Registration.CreateTarget(entry.Routes, hasOutbox == true));
+
+            if (entry.Registration.CreateTombstoneTarget(entry.Routes) is { } tombstone)
+            {
+                routes.Add(entry.Registration.TombstoneKey, tombstone);
+            }
         }
 
         _routes = routes.ToFrozenDictionary(ReferenceEqualityComparer.Instance);
-    }
-
-    private static void Add(Dictionary<object, (SendRouteRegistration, List<object>, bool)> declared,
-        SendRouteRegistration registration, object key, object route, bool tombstone)
-    {
-        if (declared.TryGetValue(key, out var entry))
-        {
-            entry.Item2.Add(route);
-        }
-        else
-        {
-            declared.Add(key, (registration, [route], tombstone));
-        }
     }
 
     internal SendTarget<TMessage> GetTarget<TMessage>()

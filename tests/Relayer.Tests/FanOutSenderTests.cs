@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -45,6 +47,70 @@ public class FanOutSenderTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Startup_rejects_fan_out_without_a_compatible_outbox(bool registerOutbox, bool nativeFirst)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        var broker = new CountingTransport("broker", transactions: true);
+        var local = new CountingTransport("local");
+        builder.Services.AddSingleton<ITransport>(broker);
+        builder.Services.AddSingleton<ITransport>(local);
+
+        if (registerOutbox)
+        {
+            builder.Services.AddScoped<IOutboxEnlistment>(_ => new RecordingOutbox { IsActive = true });
+        }
+
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+
+            if (!nativeFirst)
+            {
+                AddSelectorRoute(relayer);
+            }
+
+            relayer.DeclareRoute<OrderPlaced>("broker", "orders", route => route.SendOptions = new()
+            {
+                TransactionRequirement = registerOutbox ? SendTransactionRequirement.Native : SendTransactionRequirement.None
+            });
+
+            if (nativeFirst)
+            {
+                AddSelectorRoute(relayer);
+            }
+        });
+        using var host = builder.Build();
+        var expected = registerOutbox ? "TransactionRequirement.Native is incompatible with outbox fan-out" : "Register an outbox integration with IOutboxEnlistment";
+
+        await Assert.That(async () => await host.StartAsync()).Throws<OptionsValidationException>().WithMessageContaining(expected);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Typed_tombstones_reject_fan_out_before_any_send(bool allRoutesSupportTombstones)
+    {
+        var (provider, broker, local, outbox) = Build(active: true, localSupportsTombstones: allRoutesSupportTombstones);
+        using var _ = provider;
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
+        await Assert.That(outbox.Rows.Count).IsEqualTo(2);
+
+        var tombstone = Tombstone.For<OrderPlaced>("customer-1");
+        await Assert.That(async () => await sender.SendWithoutOutboxAsync(tombstone))
+            .Throws<InvalidOperationException>().WithMessageContaining("Typed tombstones require a single fixed send route");
+        await Assert.That(async () => await sender.SendAsync(tombstone))
+            .Throws<InvalidOperationException>().WithMessageContaining("Typed tombstones require a single fixed send route");
+        await Assert.That(broker.Count + local.Count).IsEqualTo(0);
+        await Assert.That(outbox.Rows.Count).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Repeated_destination_is_rejected_when_the_sender_is_resolved_without_a_host()
     {
         var services = new ServiceCollection();
@@ -63,10 +129,16 @@ public class FanOutSenderTests
             .Throws<InvalidOperationException>().WithMessageContaining("'orders' is declared more than once");
     }
 
-    private static (ServiceProvider, CountingTransport, CountingTransport, RecordingOutbox) Build(bool active)
+    private static void AddSelectorRoute(IRelayerBuilder relayer)
     {
-        var broker = new CountingTransport("broker");
-        var local = new CountingTransport("local");
+        relayer.AddTransport<SenderTransportOptions, SenderTransportOptions>("local", transport =>
+            transport.Send<OrderPlaced>(["local-a", "local-b"], static _ => "local-b"));
+    }
+
+    private static (ServiceProvider, CountingTransport, CountingTransport, RecordingOutbox) Build(bool active, bool localSupportsTombstones = false)
+    {
+        var broker = new CountingTransport("broker", tombstones: true);
+        var local = new CountingTransport("local", tombstones: localSupportsTombstones);
         var outbox = new RecordingOutbox { IsActive = active };
         var services = new ServiceCollection();
         services.AddSingleton<ITransport>(broker);
@@ -81,7 +153,7 @@ public class FanOutSenderTests
         return (services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true }), broker, local, outbox);
     }
 
-    private sealed class CountingTransport(string name) : ITransport
+    private sealed class CountingTransport(string name, bool transactions = false, bool tombstones = false) : ITransport
     {
         public int Count
         {
@@ -94,7 +166,9 @@ public class FanOutSenderTests
         {
             return new()
             {
-                OrderedByKey = true
+                OrderedByKey = true,
+                Transactions = transactions,
+                Tombstones = tombstones
             };
         }
 

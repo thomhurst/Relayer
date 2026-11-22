@@ -71,7 +71,9 @@ await sender.SendAsync(new OrderPlaced(customerId), cancellationToken);
 
 Each send enlists one outbox row per route in the same transaction, in declaration order. Every row carries the same envelope identity (`ce_id`) and time, so consumers can deduplicate by message ID. The first row's outbox ID is the message ID; each later row gets its own UUIDv7 outbox ID, which dead-letter tools and dispatch failures report for that row. Each route keeps its own ordering key, capability checks and send span. A per-send `configure` callback runs once for each route. If enlisting a later route fails, the exception reaches the caller before commit; roll back the transaction rather than committing the rows already enlisted.
 
-Sending to several routes needs an active outbox transaction. A direct send cannot be atomic across destinations, so `SendWithoutOutboxAsync`, and `SendAsync` without an active transaction, fail before anything is sent. Request and response types need exactly one route. A repeated route to the same destination fails at startup.
+At startup and when composing a standalone `ISender`, several routes for one message type require a registered `IOutboxEnlistment`. Any route with `TransactionRequirement.Native` makes that fan-out invalid. Each send still needs an active outbox transaction. A direct send cannot be atomic across destinations, so `SendWithoutOutboxAsync`, and `SendAsync` without an active transaction, fail before anything is sent. Request and response types need exactly one route. A repeated route to the same destination fails at startup.
+
+Typed tombstones require one fixed route on a transport that supports them. A tombstone for a message type with several routes fails before sending to any destination.
 
 ## Choosing the destination per message
 
