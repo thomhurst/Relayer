@@ -130,7 +130,8 @@ public static class PostgreSqlLocalBuilderExtensions
                     System = "postgresql",
                     Destination = consumer.Source
                 });
-                pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(PostgreSqlLocalTransport.SettleAsync);
+                pipeline.Tracing(tracing, endpoint).Telemetry(telemetry)
+                    .Settle(PostgreSqlLocalTransport.SettleAsync, PostgreSqlLocalTransport.ValidateSettlement);
                 pipeline.ConfigureConsumer(provider, consumer);
 
                 foreach (var handler in handlers.Descriptors)
