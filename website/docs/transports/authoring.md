@@ -195,7 +195,7 @@ Run the reusable [transport conformance suite](conformance.md) against the real 
 
 ## Asynchronous capability evidence
 
-An adapter that needs broker I/O before it can declare endpoint capabilities implements `ITransportCapabilityInitializer.InitializeCapabilitiesAsync(TopologyMode, CancellationToken)`. Hosted startup awaits that evidence before caching `GetCapabilities` results, validating route scheduling requirements or composing send routes, including when hosted services start concurrently. Initialize once per adapter instance and report failures before receive execution starts.
+An adapter that needs broker I/O before it can declare endpoint capabilities implements `ITransportCapabilityInitializer.InitializeCapabilitiesAsync(TopologyMode, CancellationToken)`. Hosted startup awaits that evidence before caching `GetCapabilities` results, validating route scheduling requirements or composing send routes, including when hosted services start concurrently. Honor cancellation and allow a later start of the same host to retry capability initialization after cancellation. Report failures before receive execution starts.
 
 `None` and `Validate` must remain read-only. Do not publish probes or create temporary entities to discover capabilities in those modes. When AMQP cannot inspect a feature read-only, keep conservative capabilities and select an existing core fallback. For example, RabbitMQ only advertises a delayed exchange after an explicit native declaration succeeds in `Provision`. Unverified capability state must not be cached through an early send-pipeline resolution.
 

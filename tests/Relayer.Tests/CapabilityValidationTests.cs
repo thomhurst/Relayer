@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Relayer.InMemory;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -418,7 +419,88 @@ public class CapabilityValidationTests
         await Assert.That(await Start(provider)).IsNotNull();
     }
 
-    private sealed class SchedulingOutbox(bool scheduled, bool ordered = false) : IOutboxEnlistment
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Startup_awaits_async_disposal_of_the_outbox_probe(bool disposeDependency)
+    {
+        var disposalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowDisposal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resolutions = 0;
+        var disposals = 0;
+
+        async ValueTask DisposeProbeAsync()
+        {
+            disposalStarted.TrySetResult();
+            await allowDisposal.Task;
+            disposals++;
+        }
+
+        using var host = new HostBuilder().ConfigureServices(services =>
+        {
+            services.Configure<HostOptions>(options => options.ServicesStartConcurrently = true);
+            services.AddScoped(_ => new AsyncDependency(DisposeProbeAsync));
+            services.AddScoped<IOutboxEnlistment>(provider =>
+            {
+                resolutions++;
+
+                if (disposeDependency)
+                {
+                    _ = provider.GetRequiredService<AsyncDependency>();
+                    return new SchedulingOutbox(true);
+                }
+
+                return new AsyncSchedulingOutbox(DisposeProbeAsync);
+            });
+            services.AddRelayer(builder =>
+            {
+                builder.AddMessageTypesFromThisAssembly();
+                builder.InMemory("memory", memory => memory.Send<OrderPlaced>("orders", route => route.SendOptions = new()
+                {
+                    TransactionRequirement = SendTransactionRequirement.Outbox,
+                    RequiredDeliveryDelay = TimeSpan.FromMinutes(1)
+                }));
+            });
+        }).Build();
+        await using var lifetime = (IAsyncDisposable)host;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var starting = host.StartAsync(timeout.Token);
+
+        try
+        {
+            var first = await Task.WhenAny(disposalStarted.Task, starting).WaitAsync(timeout.Token);
+            await first;
+            await Assert.That(first).IsSameReferenceAs(disposalStarted.Task);
+            await Assert.That(starting.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            allowDisposal.TrySetResult();
+        }
+
+        await starting.WaitAsync(timeout.Token);
+        await Assert.That(resolutions).IsEqualTo(1);
+        await Assert.That(disposals).IsEqualTo(1);
+        await host.StopAsync(timeout.Token);
+    }
+
+    private sealed class AsyncDependency(Func<ValueTask> dispose) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            return dispose();
+        }
+    }
+
+    private sealed class AsyncSchedulingOutbox(Func<ValueTask> dispose) : SchedulingOutbox(true), IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            return dispose();
+        }
+    }
+
+    private class SchedulingOutbox(bool scheduled, bool ordered = false) : IOutboxEnlistment
     {
         public bool IsActive => false;
 
