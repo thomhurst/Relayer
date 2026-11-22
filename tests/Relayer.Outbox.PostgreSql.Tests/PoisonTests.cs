@@ -108,7 +108,8 @@ public class PoisonTests
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         var options = new PostgreSqlOutboxOptions { MaxDispatchAttempts = 1 };
-        await PostgreSqlOutboxStoreTests.Insert(source, options, Guid.CreateVersion7(), DateTimeOffset.UtcNow);
+        var rowId = Guid.CreateVersion7();
+        await PostgreSqlOutboxStoreTests.Insert(source, options, rowId, DateTimeOffset.UtcNow);
 
         await using (var unordered = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL"))
         {
@@ -131,6 +132,7 @@ public class PoisonTests
         var harness = new RelayerHarness();
         instrumentation.Observer = harness;
         // Stands for the commit that wrote the row in this provider.
+        instrumentation.Observer.OutboxCommitting([rowId]);
         instrumentation.AddOutboxPending(1);
         var idle = harness.WaitForIdleAsync();
         var store = new PostgreSqlOutboxStore(source, options);
@@ -162,7 +164,8 @@ public class PoisonTests
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         var options = new PostgreSqlOutboxOptions();
-        await PostgreSqlOutboxStoreTests.Insert(source, options, Guid.CreateVersion7(), DateTimeOffset.UtcNow);
+        var rowId = Guid.CreateVersion7();
+        await PostgreSqlOutboxStoreTests.Insert(source, options, rowId, DateTimeOffset.UtcNow);
 
         await using (var unordered = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL"))
         {
@@ -173,6 +176,7 @@ public class PoisonTests
         var harness = new RelayerHarness();
         instrumentation.Observer = harness;
         // Stands for the commit that wrote the row in this provider.
+        instrumentation.Observer.OutboxCommitting([rowId]);
         instrumentation.AddOutboxPending(1);
         var idle = harness.WaitForIdleAsync();
         var store = new PostgreSqlOutboxStore(source, options);
@@ -274,7 +278,7 @@ public class PoisonTests
         var idle = harness.WaitForIdleAsync();
         await Assert.That(idle.IsCompleted).IsFalse();
         // Stands for the dispatcher settling the redriven row.
-        instrumentation.AddOutboxPending(-1);
+        instrumentation.Observer.OutboxSettled(redriven);
         await idle.WaitAsync(TimeSpan.FromSeconds(30));
 
         await using (var sent = source.CreateCommand("DELETE FROM relayer_outbox"))

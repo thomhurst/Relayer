@@ -49,6 +49,7 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
         try
         {
             outbox.Prepare(transaction)?.Execute();
+            outbox.ObserveCommit(transaction);
         }
         catch
         {
@@ -69,6 +70,7 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
             if (outbox.Prepare(transaction) is { } batch)
             {
                 await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+                outbox.ObserveCommit(transaction);
             }
         }
         catch

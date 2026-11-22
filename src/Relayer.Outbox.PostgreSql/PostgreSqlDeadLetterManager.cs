@@ -1,4 +1,5 @@
 using Npgsql;
+using Relayer.Outbox;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
@@ -68,6 +69,8 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
         // Lock bounded dead rows, then restore their original durable rows. Never send from management.
         var messages = await ReadAsync(connection, transaction, maxMessages, null, cancellationToken).ConfigureAwait(false);
         int changed = 0, restored = 0, parked = 0;
+        var observer = purge ? null : _instrumentation?.Observer;
+        List<Guid>? redriven = observer is null ? null : [];
 
         foreach (var message in messages)
         {
@@ -113,10 +116,15 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
                 await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
 
+            redriven?.Add(row.Id);
             changed++;
         }
 
+        using var observation = observer is not null && redriven is { Count: > 0 }
+            ? new OutboxCommitObservation(observer, redriven.ToArray())
+            : null;
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        observation?.Commit();
 
         if (_instrumentation is { } instrumentation)
         {
@@ -127,16 +135,9 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
                 instrumentation.AddOutboxPending(restored);
             }
 
-            if (parked != 0)
+            if (parked != 0 && purge)
             {
-                if (purge)
-                {
-                    instrumentation.RecordOutboxParkedPurged(parked);
-                }
-                else
-                {
-                    instrumentation.RecordOutboxUnparked(parked);
-                }
+                instrumentation.RecordOutboxParkedPurged(parked);
             }
         }
 

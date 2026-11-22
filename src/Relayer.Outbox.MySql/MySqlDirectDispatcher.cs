@@ -160,7 +160,7 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
 
             if (await _store.TryClaimForDispatchAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
             {
-                (await _store.RecordDispatchFailureAsync(claim, OutboxErrorText.Describe(error), now, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
+                (await _store.RecordDispatchFailureAsync(claim, OutboxErrorText.Describe(error), now, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation, claim.MessageId);
             }
         }
         while (offset < batch.Count && batch.Rows[offset].Transport == first.Transport &&
@@ -176,7 +176,8 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
 
     protected override ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken)
     {
-        return _store.CompleteBatchAsync(_claims.AsMemory(offset, count), DateTimeOffset.UtcNow, cancellationToken);
+        return _store.CompleteBatchAsync(_claims.AsMemory(offset, count), DateTimeOffset.UtcNow, cancellationToken,
+            _instrumentation?.Observer);
     }
 
     protected override ValueTask<bool> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,

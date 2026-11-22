@@ -206,7 +206,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
                     {
                         if (await _store.QuarantineAsync(claim, row.LastError!, cancellationToken).ConfigureAwait(false))
                         {
-                            _dispatcher.RecoveredQuarantine();
+                            _dispatcher.RecoveredQuarantine(row.Id);
                             Quarantined(_logger, row.Id, row.LastError!);
                         }
                     }

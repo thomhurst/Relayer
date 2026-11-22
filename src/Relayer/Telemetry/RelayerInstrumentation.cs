@@ -1,6 +1,8 @@
 using System.Diagnostics.Metrics;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Relayer.Outbox;
 using Relayer.Pipeline;
 
 namespace Relayer.Transports;
@@ -80,6 +82,7 @@ public sealed class RelayerInstrumentation : IDisposable
     private readonly ObservableGauge<long> _outboxParked;
     private readonly Lock _depthLock = new();
     private OutboxDepth[] _depths = [];
+    private ConditionalWeakTable<object, OutboxCommitObservation>? _observedCommits;
 
     // Test harness only: committed outbox rows are outstanding work until dispatch settles them.
     private IRelayerObserver? _observer;
@@ -169,7 +172,92 @@ public sealed class RelayerInstrumentation : IDisposable
     public void AddOutboxPending(long delta)
     {
         OutboxPending.Add(delta);
-        Observer?.OutboxPending(delta);
+    }
+
+    internal OutboxCommitObservation? ObserveOutboxCommit(List<BufferedOutboxMessage> rows, int count)
+    {
+        return ObserveOutboxCommit(rows, count, static row => row.Id);
+    }
+
+    internal OutboxCommitObservation? ObserveOutboxCommit<T>(List<T> rows, int count, Func<T, Guid> getId)
+    {
+        if (Observer is not { } observer || count == 0)
+        {
+            return null;
+        }
+
+        var ids = new Guid[count];
+
+        for (var i = 0; i < count; i++)
+        {
+            ids[i] = getId(rows[i]);
+        }
+
+        return new(observer, ids);
+    }
+
+    // EF Core resumes in a separate transaction callback. Keep its observation out of the scoped context state.
+    internal void ObserveOutboxCommit(object owner, List<BufferedOutboxMessage> rows, int count)
+    {
+        if (Observer is null || count == 0)
+        {
+            return;
+        }
+
+        var commits = LazyInitializer.EnsureInitialized(ref _observedCommits);
+
+        if (!commits.TryGetValue(owner, out _) && ObserveOutboxCommit(rows, count) is { } observation)
+        {
+            commits.Add(owner, observation);
+        }
+    }
+
+    internal void FinishOutboxCommit(object owner, bool committed)
+    {
+        var commits = _observedCommits;
+
+        if (commits is null || !commits.Remove(owner, out var observation))
+        {
+            return;
+        }
+
+        if (committed)
+        {
+            observation.Commit();
+        }
+
+        observation.Dispose();
+    }
+
+    internal void ObserveOutboxSettled(Guid rowId)
+    {
+        Observer?.OutboxSettled(rowId);
+    }
+
+    internal void ObserveOutboxSettlements(List<Guid> rows)
+    {
+        if (Observer is not { } observer)
+        {
+            return;
+        }
+
+        foreach (var row in rows)
+        {
+            observer.OutboxSettled(row);
+        }
+    }
+
+    internal void ObserveOutboxSettlements(OutboxRecord[] rows, int start, int count)
+    {
+        if (Observer is not { } observer)
+        {
+            return;
+        }
+
+        foreach (var row in rows.AsSpan(start, count))
+        {
+            observer.OutboxSettled(row.Id);
+        }
     }
 
     /// <summary>Records an outbox send attempt's start time minus its durable enqueue time, in seconds.</summary>
@@ -240,13 +328,6 @@ public sealed class RelayerInstrumentation : IDisposable
     internal void RecordOutboxParked()
     {
         OutboxPoison.Add(1);
-        Observer?.OutboxPending(-1);
-    }
-
-    // Redrive makes parked rows outstanding again; they never left the pending row count.
-    internal void RecordOutboxUnparked(long count)
-    {
-        Observer?.OutboxPending(count);
     }
 
     // Purge deletes parked rows, which the harness already settled when they parked.

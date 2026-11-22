@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Relayer.InMemory;
+using Relayer.Outbox;
 using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Testing;
@@ -655,22 +656,35 @@ public class HarnessTests
     }
 
     [Test]
-    public async Task Committed_outbox_rows_are_outstanding_until_this_provider_settles_them()
+    public async Task Committing_outbox_rows_are_tracked_by_id_and_failed_commits_withdraw_work()
     {
         await using var fixture = await Fixture.Start();
         var instrumentation = fixture.Provider.GetRequiredService<RelayerInstrumentation>();
-        // A dispatcher can settle a row before its commit is reported; the later commit then balances it.
-        instrumentation.AddOutboxPending(-1);
-        await fixture.Harness.WaitForIdleAsync().WaitAsync(s_limit);
-        instrumentation.AddOutboxPending(1);
-        await fixture.Harness.WaitForIdleAsync().WaitAsync(s_limit);
-        instrumentation.AddOutboxPending(2);
+        var observer = instrumentation.Observer!;
+        var fast = Guid.CreateVersion7();
+        var pending = Guid.CreateVersion7();
+        var rolledBack = Guid.CreateVersion7();
+
+        observer.OutboxSettled(Guid.CreateVersion7());
+
+        using (var commit = new OutboxCommitObservation(observer, [fast, pending]))
+        {
+            observer.OutboxSettled(fast);
+            commit.Commit();
+        }
+
         var idle = fixture.Harness.WaitForIdleAsync();
+        observer.OutboxSettled(Guid.CreateVersion7());
         await Assert.That(idle.IsCompleted).IsFalse();
         await Assert.That(() => fixture.Harness.Reset()).Throws<InvalidOperationException>();
-        instrumentation.AddOutboxPending(-1);
-        await Assert.That(idle.IsCompleted).IsFalse();
-        instrumentation.AddOutboxPending(-1);
+
+        using (new OutboxCommitObservation(observer, [rolledBack]))
+        {
+            observer.OutboxSettled(pending);
+            observer.OutboxSettled(fast);
+            await Assert.That(idle.IsCompleted).IsFalse();
+        }
+
         await idle.WaitAsync(s_limit);
         fixture.Harness.Reset();
     }

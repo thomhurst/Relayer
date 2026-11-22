@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
+using Relayer.Outbox;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
@@ -175,6 +176,11 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         }
 
         return _batch;
+    }
+
+    internal OutboxCommitObservation? ObserveCommit()
+    {
+        return _instrumentation?.ObserveOutboxCommit(_rows, _count);
     }
 
     internal void Committed()

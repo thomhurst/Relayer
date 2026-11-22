@@ -49,6 +49,7 @@ public class OrderedDispatchTests
         var harness = new Relayer.Testing.RelayerHarness();
         instrumentation.Observer = harness;
         // Stands for the commit of the three rows.
+        instrumentation.Observer.OutboxCommitting([Id(1), Id(2), Id(3)]);
         instrumentation.AddOutboxPending(3);
         var failing = new RecordingTransport((_, _) => throw new PostgreSqlLocalFailure(new InvalidOperationException("poison"), FailureAction.DeadLetter));
 

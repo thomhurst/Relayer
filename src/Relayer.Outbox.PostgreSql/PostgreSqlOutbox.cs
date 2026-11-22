@@ -2,6 +2,7 @@ using System.Data;
 using System.Data.Common;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using Relayer.Outbox;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
@@ -179,6 +180,11 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         }
 
         return _batch;
+    }
+
+    internal OutboxCommitObservation? ObserveCommit()
+    {
+        return _instrumentation?.ObserveOutboxCommit(_rows, _count);
     }
 
     internal void Committed()

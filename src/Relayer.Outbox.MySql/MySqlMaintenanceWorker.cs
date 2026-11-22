@@ -209,7 +209,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
                     if (await _store.TryClaimForDispatchAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
                     {
                         var outcome = await _store.QuarantineAsync(claim, row.LastError!, cancellationToken).ConfigureAwait(false);
-                        outcome.RecordTelemetry(_instrumentation);
+                        outcome.RecordTelemetry(_instrumentation, claim.MessageId);
 
                         if (outcome.Accepted)
                         {

@@ -172,7 +172,7 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
 
         var count = 0;
         var sent = 0;
-        var poisoned = false;
+        Guid? poisoned = null;
 
         try
         {
@@ -216,7 +216,11 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
                         throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
                     }
 
-                    poisoned = !retryable && row.Attempts + 1 >= _options.MaxDispatchAttempts;
+                    if (!retryable && row.Attempts + 1 >= _options.MaxDispatchAttempts)
+                    {
+                        poisoned = row.Id;
+                    }
+
                     DispatchFailed(_logger, error);
                     break;
                 }
@@ -231,10 +235,12 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _instrumentation?.AddOutboxPending(-sent);
+            _instrumentation?.ObserveOutboxSettlements(_rows, 0, sent);
 
-            if (poisoned)
+            if (poisoned is { } parked)
             {
                 _instrumentation?.RecordOutboxParked();
+                _instrumentation?.ObserveOutboxSettled(parked);
             }
 
             return sent;

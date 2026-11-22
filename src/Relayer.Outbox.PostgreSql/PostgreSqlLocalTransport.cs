@@ -382,7 +382,10 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
             state.Batch.Add(state.Rows[0]);
             GetSendTracing(message.Destination)?.RecordNativeSend();
             await state.Batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            var observation = _instrumentation?.ObserveOutboxCommit(state.Rows, 1);
+            await (observation is null
+                ? transaction.CommitAsync(cancellationToken)
+                : observation.CommitAsync(transaction, cancellationToken)).ConfigureAwait(false);
             _instrumentation?.AddOutboxPending(1);
             Dispatcher?.Committed(state.Rows, 1);
         }

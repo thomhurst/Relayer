@@ -37,7 +37,7 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     private readonly List<IConsumedWaiter> _waiters = [];
     private TaskCompletionSource _idle = CompletedSignal();
     private int _work;
-    private long _outboxRows;
+    private readonly Dictionary<Guid, int> _outboxRows = [];
 
     /// <summary>Successful logical sends, including outbox enlistments and publish/subscribe routes.</summary>
     public IReadOnlyList<HarnessMessage> Sent
@@ -533,19 +533,43 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         }
     }
 
-    // A dispatcher can settle a row before its producer reports the commit, so the count may briefly go negative.
-    void IRelayerObserver.OutboxPending(long delta)
+    void IRelayerObserver.OutboxCommitting(ReadOnlySpan<Guid> rows)
     {
         lock (_gate)
         {
-            var before = _outboxRows;
-            _outboxRows += delta;
+            var wasEmpty = _outboxRows.Count == 0;
 
-            if (before <= 0 && _outboxRows > 0)
+            foreach (var row in rows)
+            {
+                // Redrive can reinsert the same ID before its previous settlement reaches the harness.
+                _outboxRows[row] = _outboxRows.GetValueOrDefault(row) + 1;
+            }
+
+            if (wasEmpty && _outboxRows.Count != 0)
             {
                 WorkStarted();
             }
-            else if (before > 0 && _outboxRows <= 0)
+        }
+    }
+
+    void IRelayerObserver.OutboxSettled(Guid rowId)
+    {
+        lock (_gate)
+        {
+            if (!_outboxRows.TryGetValue(rowId, out var reservations))
+            {
+                return;
+            }
+
+            if (reservations > 1)
+            {
+                _outboxRows[rowId] = reservations - 1;
+                return;
+            }
+
+            _outboxRows.Remove(rowId);
+
+            if (_outboxRows.Count == 0)
             {
                 WorkCompleted();
             }
