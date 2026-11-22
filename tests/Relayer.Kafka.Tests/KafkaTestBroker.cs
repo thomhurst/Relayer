@@ -16,11 +16,11 @@ internal static class KafkaTestBroker
 
     internal static KafkaBuilder AfterStartupCopy(this KafkaBuilder builder)
     {
+        // Testcontainers releases its entrypoint after the script copy:
+        // https://github.com/testcontainers/testcontainers-dotnet/pull/1810
         return builder
                 .ForSmallWorkload()
                 .WithKRaft()
-                // Testcontainers releases its entrypoint after the script copy:
-                // https://github.com/testcontainers/testcontainers-dotnet/pull/1810
                 .WithWaitStrategy(Wait.ForUnixContainer()
                     .UntilMessageIsLogged(".*Transitioning from RECOVERY to RUNNING.*"));
     }
