@@ -154,6 +154,16 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
         }
     }
 
+    internal void AssertAcknowledgements(int expected)
+    {
+        var count = _acks.Count;
+
+        if (count != expected)
+        {
+            throw new InvalidOperationException($"Expected {expected} broker-confirmed native acknowledgements, observed {count}.");
+        }
+    }
+
     internal void AssertClean(bool requireClosure = false)
     {
         if (!_violations.IsEmpty)
@@ -161,10 +171,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
             throw new InvalidOperationException(string.Join("; ", _violations));
         }
 
-        if (_acks.Count != 1)
-        {
-            throw new InvalidOperationException($"Expected one broker-confirmed native Ack, observed {_acks.Count}.");
-        }
+        AssertAcknowledgements(1);
 
         if (Volatile.Read(ref _streams) == 0)
         {
@@ -234,14 +241,6 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
                 if (initial)
                 {
                     initialWriteCompleted.TrySetResult();
-                }
-            }
-
-            if (message is StreamingPullRequest pull)
-            {
-                foreach (var ack in pull.AckIds)
-                {
-                    owner._acks.TryAdd(ack, 0);
                 }
             }
         }

@@ -358,6 +358,13 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
                 : failure.Flatten().InnerExceptions.Any(observed => ReferenceEquals(observed, error));
     }
 
+    public ValueTask VerifySettlementAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        _native.AssertAcknowledgements(2);
+        return ValueTask.CompletedTask;
+    }
+
     public async ValueTask VerifyShutdownAsync(CancellationToken token)
     {
         _verifyShutdown = true;

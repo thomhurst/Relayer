@@ -42,22 +42,24 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
     internal KafkaRestartableBroker()
     {
         var builder = new KafkaBuilder("apache/kafka:4.0.2").WithVendor(KafkaVendor.ApacheSoftwareFoundation)
-            .ForSmallWorkload()
-            // A consumer stopped during an outage cannot leave its group, and its KIP-848 member keeps the
-            // partition until the broker's session timeout (default and minimum 45 s) evicts it. Shorten it
-            // so recovery assigns the restarted consumer well inside the conformance deadline.
-            .WithEnvironment("KAFKA_GROUP_CONSUMER_MIN_SESSION_TIMEOUT_MS", "10000")
+            .ForSmallWorkload();
+
+        // A consumer stopped during an outage cannot leave its group, and its KIP-848 member keeps the
+        // partition until the broker's session timeout (default and minimum 45 s) evicts it. Shorten it
+        // so recovery assigns the restarted consumer well inside the conformance deadline.
+        builder = builder.WithEnvironment("KAFKA_GROUP_CONSUMER_MIN_SESSION_TIMEOUT_MS", "10000")
             .WithEnvironment("KAFKA_GROUP_CONSUMER_SESSION_TIMEOUT_MS", "10000")
             .WithEnvironment("KAFKA_GROUP_CONSUMER_MIN_HEARTBEAT_INTERVAL_MS", "1000")
             .WithEnvironment("KAFKA_GROUP_CONSUMER_HEARTBEAT_INTERVAL_MS", "1000")
-            .WithKRaft().WithWaitStrategy(Wait.ForUnixContainer())
-            // KafkaBuilder.Build installs its own entrypoint and command when it registers
-            // the script-copy callback. Override the Docker create parameters after Build.
-            .WithCreateParameterModifier(static parameters =>
-            {
-                parameters.Entrypoint = ["/bin/bash", "-c"];
-                parameters.Cmd = [Supervisor.ReplaceLineEndings("\n")];
-            });
+            .WithKRaft().WithWaitStrategy(Wait.ForUnixContainer());
+
+        // KafkaBuilder.Build installs its own entrypoint and command when it registers
+        // the script-copy callback. Override the Docker create parameters after Build.
+        builder = builder.WithCreateParameterModifier(static parameters =>
+        {
+            parameters.Entrypoint = ["/bin/bash", "-c"];
+            parameters.Cmd = [Supervisor.ReplaceLineEndings("\n")];
+        });
 
         if (OperatingSystem.IsLinux())
         {

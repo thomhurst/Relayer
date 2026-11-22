@@ -170,6 +170,11 @@ internal sealed class RabbitMqFixture : ITransportConformanceFixture<RabbitMqDel
         await Assert.That(_consumer!.Completion.IsCompletedSuccessfully).IsTrue();
         await Assert.That(Volatile.Read(ref _settlements)).IsEqualTo(1);
         Volatile.Write(ref _closed, 1);
+        await VerifySettlementAsync(cancellationToken);
+    }
+
+    public async ValueTask VerifySettlementAsync(CancellationToken cancellationToken)
+    {
         await using var connection = await _factory.CreateConnectionAsync(cancellationToken);
         await using var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
         await Assert.That((await channel.QueueDeclarePassiveAsync(Destination, cancellationToken)).MessageCount).IsEqualTo(0u);

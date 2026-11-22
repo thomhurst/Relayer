@@ -292,12 +292,25 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
         return _transport.StartAsync(cancellationToken);
     }
 
+    public ValueTask VerifySettlementAsync(CancellationToken cancellationToken)
+    {
+        return VerifyCompletionsAsync(2, cancellationToken);
+    }
+
     public ValueTask VerifyShutdownAsync(CancellationToken cancellationToken)
     {
+        return VerifyCompletionsAsync(1, cancellationToken);
+    }
+
+    private ValueTask VerifyCompletionsAsync(int expected, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         // Completion is the production native-loop task; it includes handler execution and settlement.
-        if (!_transport.Completion.IsCompletedSuccessfully || Volatile.Read(ref _completed) != 1)
+        var completed = Volatile.Read(ref _completed);
+
+        if (!_transport.Completion.IsCompletedSuccessfully || completed != expected)
         {
-            throw new InvalidOperationException("In-memory shutdown did not drain and complete the in-flight delivery.");
+            throw new InvalidOperationException($"Expected {expected} in-memory completions after drain, observed {completed}.");
         }
 
         return ValueTask.CompletedTask;

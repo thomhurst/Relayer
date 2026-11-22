@@ -398,6 +398,9 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Start().ConfigureAwait(false);
                 await Send(2).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 2);
+                await Stop().ConfigureAwait(false);
+                progress.Phase = "native settlement verification";
+                await fixture.VerifySettlementAsync(token).AsTask().WaitAsync(token).ConfigureAwait(false);
                 break;
             case TransportConformanceCase.FailureHandlingFailure:
                 await Send(1, creation: true).ConfigureAwait(false);

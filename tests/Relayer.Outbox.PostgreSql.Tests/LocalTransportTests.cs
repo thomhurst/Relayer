@@ -1099,10 +1099,10 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         }
     }
 
-    internal static async Task<long> Count(NpgsqlDataSource source, string table)
+    internal static async Task<long> Count(NpgsqlDataSource source, string table, CancellationToken cancellationToken = default)
     {
         await using var command = source.CreateCommand("SELECT count(*) FROM " + table);
-        return (long)(await command.ExecuteScalarAsync())!;
+        return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
     }
 
     private sealed class ErrorLogs : ILoggerProvider, ILogger

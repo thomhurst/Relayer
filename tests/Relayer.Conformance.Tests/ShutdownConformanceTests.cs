@@ -98,32 +98,36 @@ public class ShutdownConformanceTests
     }
 
     [Test]
-    public async Task Pending_native_verification_fails_on_cancellation_and_runs_cleanup()
+    [Arguments(TransportConformanceCase.CleanShutdown, "native shutdown verification", 2)]
+    [Arguments(TransportConformanceCase.SendReceiveSettle, "native settlement verification", 3)]
+    public async Task Pending_native_verification_fails_on_cancellation_and_runs_cleanup(
+        TransportConformanceCase scenario, string phase, int stopCalls)
     {
         using var cancellation = new CancellationTokenSource();
-        var verificationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var verificationStarted = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
         var verification = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         BrokenFixture? fixture = null;
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
             new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
-                fixture = new BrokenFixture(tracing, false, false, false, verifyShutdown: () =>
+                fixture = new BrokenFixture(tracing, false, false, false, verifyNative: token =>
                 {
-                    verificationStarted.SetResult();
+                    verificationStarted.SetResult(token);
                     return new ValueTask(verification.Task);
                 })));
 
-        var run = suite.RunAsync(TransportConformanceCase.CleanShutdown, cancellation.Token);
+        var run = suite.RunAsync(scenario, cancellation.Token);
 
         try
         {
-            await verificationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var scenarioToken = await verificationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
             cancellation.Cancel();
 
             var error = await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
                 .Throws<InvalidOperationException>();
-            await Assert.That(error!.Message).Contains("native shutdown verification");
+            await Assert.That(error!.Message).Contains(phase);
             await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
-            await Assert.That(fixture!.StopCalls).IsEqualTo(2);
+            await Assert.That(scenarioToken.IsCancellationRequested).IsTrue();
+            await Assert.That(fixture!.StopCalls).IsEqualTo(stopCalls);
             await Assert.That(fixture.Disposed).IsTrue();
             await Assert.That(verification.Task.IsCompleted).IsFalse();
         }
@@ -165,7 +169,7 @@ public class ShutdownConformanceTests
 
     private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation,
         bool asynchronousEarlyStop = false, Action? cancelScenarioAfterReceive = null,
-        Action? cancelPendingLifecycle = null, bool stallRestart = false, Func<ValueTask>? verifyShutdown = null,
+        Action? cancelPendingLifecycle = null, bool stallRestart = false, Func<CancellationToken, ValueTask>? verifyNative = null,
         TaskCompletionSource? startEntered = null, TaskCompletionSource? startRelease = null)
         : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture, ITransport
     {
@@ -326,11 +330,16 @@ public class ShutdownConformanceTests
             }
         }
 
+        public ValueTask VerifySettlementAsync(CancellationToken token)
+        {
+            return verifyNative?.Invoke(token) ?? _inner.VerifySettlementAsync(token);
+        }
+
         public ValueTask VerifyShutdownAsync(CancellationToken token)
         {
             return nativeViolation
                         ? ValueTask.FromException(new InvalidOperationException("settlement after native close"))
-                        : verifyShutdown?.Invoke() ?? _inner.VerifyShutdownAsync(token);
+                        : verifyNative?.Invoke(token) ?? _inner.VerifyShutdownAsync(token);
         }
 
         public async ValueTask DisposeAsync()

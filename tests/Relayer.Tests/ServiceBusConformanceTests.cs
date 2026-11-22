@@ -270,6 +270,13 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
         return _broker.ReconnectAsync(cancellationToken);
     }
 
+    public ValueTask VerifySettlementAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _events.AssertCompletions(2);
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask VerifyShutdownAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();

@@ -64,6 +64,16 @@ public interface ITransportConformanceFixture<TIncoming> : IAsyncDisposable
     /// <summary>Applies a decision using production native settlement, including its instrumentation.</summary>
     ValueTask SettleAsync(TIncoming incoming, Disposition disposition, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// For SendReceiveSettle, verifies that both messages, including the post-restart marker,
+    /// were durably completed. Called after the consumer drains, before fixture disposal.
+    /// Check native state or broker-confirmed completion, and throw if settlement cannot be verified.
+    /// </summary>
+    ValueTask VerifySettlementAsync(CancellationToken cancellationToken)
+    {
+        throw new NotSupportedException("SendReceiveSettle requires the fixture to implement VerifySettlementAsync with native settlement evidence.");
+    }
+
     /// <summary>Reads an owned snapshot from the actual native dead-letter destination.</summary>
     ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken);
 

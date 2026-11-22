@@ -215,9 +215,19 @@ internal sealed class NatsFixture : ITransportConformanceFixture<NatsDelivery>, 
     public async ValueTask VerifyShutdownAsync(CancellationToken token)
     {
         await _worker!.Completion.WaitAsync(token);
+        await VerifyAckFloorAsync(1, token);
+    }
+
+    public ValueTask VerifySettlementAsync(CancellationToken token)
+    {
+        return VerifyAckFloorAsync(2, token);
+    }
+
+    private async ValueTask VerifyAckFloorAsync(ulong expectedStreamSequence, CancellationToken token)
+    {
         var consumer = await _js.GetConsumerAsync(_stream, "orders", token);
         await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
-        await Assert.That(consumer.Info.AckFloor.ConsumerSeq).IsGreaterThan(0UL);
+        await Assert.That(consumer.Info.AckFloor.StreamSeq).IsEqualTo(expectedStreamSequence);
     }
 
     public async ValueTask DisposeAsync()
