@@ -34,8 +34,10 @@ public class SqsSendBenchmarks
     private KeyValuePair<string, WireString>[] _headers = null!;
     private OutgoingMessage _message;
     private OutgoingMessage[] _batch = null!;
+    private OutgoingMessage[] _scheduledBatch = null!;
     private SendMessageRequest _rawSingle = null!;
     private SendMessageBatchRequest _rawBatch = null!;
+    private SendMessageBatchRequest _rawScheduledBatch = null!;
 
     private DirectJsonSend _json = null!;
     private SendMessageRequest _jsonRequest = null!;
@@ -78,25 +80,15 @@ public class SqsSendBenchmarks
             new("ce_source", new("/benchmarks")), new("ce_specversion", new("1.0")), new("content-type", new("application/json"))];
         _message = new(_queue, _body, _headers);
         _batch = Enumerable.Repeat(_message, 10).ToArray();
+        var deliverAt = DateTimeOffset.UtcNow.AddMinutes(10);
+        _scheduledBatch = Enumerable.Repeat(new OutgoingMessage(_queue, _body, _headers, deliverAt: deliverAt), 10).ToArray();
         _rawSingle = new()
         {
             QueueUrl = _url,
             MessageAttributes = Attributes()
         };
-        _rawBatch = new()
-        {
-            QueueUrl = _url,
-            Entries = new(10)
-        };
-
-        for (var i = 0; i < 10; i++)
-        {
-            _rawBatch.Entries.Add(new()
-            {
-                Id = i.ToString(),
-                MessageAttributes = Attributes()
-            });
-        }
+        _rawBatch = CreateRawBatch(null);
+        _rawScheduledBatch = CreateRawBatch(600);
 
         _json = new(_instrumentation, builder => builder.AmazonSqs("benchmark-json", transport =>
         {
@@ -129,6 +121,29 @@ public class SqsSendBenchmarks
         await RelayerSingle();
         await RawBatch();
         await RelayerBatch();
+        await RawScheduledBatch();
+        await RelayerScheduledBatch();
+    }
+
+    private SendMessageBatchRequest CreateRawBatch(int? delaySeconds)
+    {
+        var request = new SendMessageBatchRequest
+        {
+            QueueUrl = _url,
+            Entries = new(10)
+        };
+
+        for (var i = 0; i < 10; i++)
+        {
+            request.Entries.Add(new()
+            {
+                Id = i.ToString(),
+                DelaySeconds = delaySeconds,
+                MessageAttributes = Attributes()
+            });
+        }
+
+        return request;
     }
 
     private Dictionary<string, MessageAttributeValue> Attributes()
@@ -171,19 +186,36 @@ public class SqsSendBenchmarks
     [Benchmark(Baseline = true, OperationsPerInvoke = 10), BenchmarkCategory("Batch")]
     public Task<SendMessageBatchResponse> RawBatch()
     {
-        foreach (var entry in _rawBatch.Entries)
-        {
-            entry.MessageBody = Encoding.UTF8.GetString(_body);
-            Prepare(entry.MessageAttributes);
-        }
-
-        return _client.SendMessageBatchAsync(_rawBatch);
+        return SendRawBatch(_rawBatch);
     }
 
     [Benchmark(OperationsPerInvoke = 10), BenchmarkCategory("Batch")]
     public ValueTask RelayerBatch()
     {
         return _transport.SendBatchAsync(_batch, default);
+    }
+
+    [Benchmark(Baseline = true, OperationsPerInvoke = 10), BenchmarkCategory("ScheduledBatch")]
+    public Task<SendMessageBatchResponse> RawScheduledBatch()
+    {
+        return SendRawBatch(_rawScheduledBatch);
+    }
+
+    [Benchmark(OperationsPerInvoke = 10), BenchmarkCategory("ScheduledBatch")]
+    public ValueTask RelayerScheduledBatch()
+    {
+        return _transport.SendBatchAsync(_scheduledBatch, default);
+    }
+
+    private Task<SendMessageBatchResponse> SendRawBatch(SendMessageBatchRequest request)
+    {
+        foreach (var entry in request.Entries)
+        {
+            entry.MessageBody = Encoding.UTF8.GetString(_body);
+            Prepare(entry.MessageAttributes);
+        }
+
+        return _client.SendMessageBatchAsync(request);
     }
 
     [Benchmark(Baseline = true), BenchmarkCategory("DefaultJson")]

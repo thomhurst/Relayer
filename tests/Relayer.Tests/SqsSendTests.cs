@@ -325,6 +325,54 @@ public class SqsSendTests
     }
 
     [Test]
+    public async Task Batch_timers_use_time_at_native_submission_after_byte_flush()
+    {
+        var clock = new InMemoryTestClock();
+        using var client = new SqsTestClient { Gate = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        await using var transport = new SqsSendTransport("test", client, false, Options(client), time: clock);
+        await transport.StartAsync(default);
+        var large = Encoding.UTF8.GetBytes(new string('x', 600_000));
+        var small = "{}"u8.ToArray();
+        var calls = 0;
+        var nativeTimer = new SendOptions().AmazonSqs(request =>
+        {
+            if (++calls == 2)
+            {
+                clock.Advance(TimeSpan.FromSeconds(1));
+            }
+
+            request.DelaySeconds = 23;
+        });
+        var now = clock.GetUtcNow();
+        OutgoingMessage[] messages =
+        [
+            new("orders", large),
+            new("orders", large, deliverAt: now.AddSeconds(2), options: nativeTimer),
+            new("orders", small, deliverAt: now.AddSeconds(5.5)),
+            new("orders", small, options: nativeTimer),
+            new("orders", small),
+        ];
+
+        var send = transport.SendBatchAsync(messages, default);
+        var submittedBeforeAdvance = client.Batches.Count;
+        var configuredBeforeAdvance = calls;
+        clock.Advance(TimeSpan.FromSeconds(3));
+        client.Gate.SetResult();
+        await send;
+
+        await Assert.That(submittedBeforeAdvance).IsEqualTo(1);
+        await Assert.That(configuredBeforeAdvance).IsEqualTo(1);
+        await Assert.That(client.Batches.Count).IsEqualTo(2);
+        var delays = client.Batches[1].Select(entry => entry.Message.Delay).ToArray();
+        await Assert.That(delays.Length).IsEqualTo(4);
+        await Assert.That(delays[0]).IsEqualTo(0);
+        await Assert.That(delays[1]).IsEqualTo(2);
+        await Assert.That(delays[2]).IsEqualTo(23);
+        await Assert.That(delays[3]).IsNull();
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Partial_batch_failure_exposes_native_response_and_does_not_retry_successes()
     {
         using var client = new SqsTestClient { FailBatch = true };

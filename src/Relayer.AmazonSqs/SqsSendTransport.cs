@@ -16,6 +16,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
     private readonly bool _ownsClient;
     private readonly FrozenDictionary<string, Endpoint> _endpoints;
     private readonly MessageTracing? _tracing;
+    private readonly TimeProvider _time;
     private readonly SqsOperationPool _operations = new();
     private int _disposed;
 
@@ -137,12 +138,14 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
     }
 
     internal SqsSendTransport(string name, IAmazonSQS client, bool ownsClient, AmazonSqsTransportOptions options,
-        MessageTracing? tracing = null, ILoggerFactory? logging = null, IReadOnlyDictionary<string, string>? identityHeaders = null)
+        MessageTracing? tracing = null, ILoggerFactory? logging = null, IReadOnlyDictionary<string, string>? identityHeaders = null,
+        TimeProvider? time = null)
     {
         Name = name;
         _client = client;
         _ownsClient = ownsClient;
         _tracing = tracing;
+        _time = time ?? TimeProvider.System;
         var endpoints = new Dictionary<string, Endpoint>(StringComparer.Ordinal);
 
         foreach (var declaration in options.Queues)
@@ -297,7 +300,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
 
         try
         {
-            var size = state.Messages[0].Prepare(message, endpoint.Url!, endpoint.Fifo, endpoint.IdentityHeader);
+            var size = state.Messages[0].Prepare(message, endpoint.Url!, endpoint.Fifo, endpoint.IdentityHeader, _time);
             ValidateSize(endpoint, size);
             endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
@@ -382,6 +385,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         var count = 0;
         var bytes = 0;
         var batchStart = 0;
+        var hasPortableTimers = false;
         state.Batch.QueueUrl = endpoint.Url;
 
         try
@@ -392,7 +396,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
 
                 if (count == 10)
                 {
-                    await FlushAsync(state, endpoint, batchStart, cancellationToken).ConfigureAwait(false);
+                    await FlushAsync(state, endpoint, messages, batchStart, hasPortableTimers, cancellationToken).ConfigureAwait(false);
 
                     for (var j = 0; j < count; j++)
                     {
@@ -402,17 +406,18 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
                     state.Batch.Entries.Clear();
                     state.Used = 0;
                     count = bytes = 0;
+                    hasPortableTimers = false;
                     batchStart = i;
                 }
 
                 var pending = state.Messages[count];
                 state.Used = count + 1;
-                var size = pending.Prepare(messages.Span[i], endpoint.Url!, endpoint.Fifo, endpoint.IdentityHeader);
+                var size = pending.Prepare(messages.Span[i], endpoint.Url!, endpoint.Fifo, endpoint.IdentityHeader, _time);
                 ValidateSize(endpoint, size);
 
                 if (count > 0 && bytes + size > 1_048_576)
                 {
-                    await FlushAsync(state, endpoint, batchStart, cancellationToken).ConfigureAwait(false);
+                    await FlushAsync(state, endpoint, messages, batchStart, hasPortableTimers, cancellationToken).ConfigureAwait(false);
 
                     for (var j = 0; j < count; j++)
                     {
@@ -424,11 +429,13 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
                     (state.Messages[0], state.Messages[count]) = (pending, state.Messages[0]);
                     state.Used = 1;
                     count = bytes = 0;
+                    hasPortableTimers = false;
                     batchStart = i;
                 }
 
                 pending.CopyToEntry();
                 pending.Entry.Id = state.Ids[count];
+                hasPortableTimers |= messages.Span[i].DeliverAt.HasValue;
                 state.Batch.Entries.Add(pending.Entry);
                 count++;
                 bytes += size;
@@ -436,7 +443,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
 
             if (count > 0)
             {
-                await FlushAsync(state, endpoint, batchStart, cancellationToken).ConfigureAwait(false);
+                await FlushAsync(state, endpoint, messages, batchStart, hasPortableTimers, cancellationToken).ConfigureAwait(false);
             }
         }
         finally
@@ -447,7 +454,8 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask FlushAsync(SqsOperationState state, Endpoint endpoint, int offset, CancellationToken cancellationToken)
+    private async ValueTask FlushAsync(SqsOperationState state, Endpoint endpoint, ReadOnlyMemory<OutgoingMessage> messages,
+        int offset, bool hasPortableTimers, CancellationToken cancellationToken)
     {
         var activity = CurrentActivity();
         Enrich(activity, state.Batch.QueueUrl, null);
@@ -457,6 +465,22 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
 
         try
         {
+            if (hasPortableTimers && !endpoint.Fifo)
+            {
+                // Earlier byte flushes and intervening preparation can age a prepared entry.
+                var entries = state.Batch.Entries;
+                var outgoing = messages.Span.Slice(offset, entries.Count);
+                var now = _time.GetUtcNow();
+
+                for (var i = 0; i < entries.Count; i++)
+                {
+                    if (outgoing[i].DeliverAt is { } deliverAt)
+                    {
+                        entries[i].DelaySeconds = SqsSendState.CalculateDelaySeconds(deliverAt - now, fifo: false);
+                    }
+                }
+            }
+
             var response = await _client.SendMessageBatchAsync(state.Batch, cancellationToken).ConfigureAwait(false);
             Enrich(activity, state.Batch.QueueUrl, response.ResponseMetadata?.RequestId);
 
