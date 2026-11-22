@@ -1,5 +1,6 @@
 using System.Data.Common;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using MySqlConnector;
 using Relayer.TestFixtures;
 using Relayer.Transports;
@@ -9,6 +10,27 @@ namespace Relayer.Outbox.MySql.Tests;
 [InheritsTests]
 public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchContractTests
 {
+    [Test]
+    public async Task Queue_overflow_logging_failure_does_not_fail_a_committed_transaction()
+    {
+        var transport = new RecordingTransport { Block = true };
+        using var logger = new ThrowingOverflowLogger();
+        await using var fixture = new Fixture(transport);
+        await fixture.Start(1, 1, logger: logger);
+        await fixture.CommitAsync(Record(1));
+        await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await fixture.CommitAsync(Record(2));
+
+        var overflow = Record(3);
+        await fixture.CommitAsync(overflow);
+        await Assert.That(logger.Attempts).IsEqualTo(1);
+
+        transport.Release.TrySetResult();
+        await fixture.StopAsync();
+        await Assert.That(transport.Received.Select(message => message.Body[0])).IsEquivalentTo(new byte[] { 1, 2 });
+        await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[] { new Row(overflow.Id, 0, null, false, false) });
+    }
+
     [Test]
     public async Task Startup_rejects_dispatch_sessions_with_autocommit_disabled()
     {
@@ -294,14 +316,20 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
         internal MySqlDirectDispatcher? Worker => _worker;
 
         internal async Task Start(int batchSize, int queueCapacity, bool startWorker = true,
-            MySqlConnectionOpenedCallback? openDispatcherConnection = null)
+            MySqlConnectionOpenedCallback? openDispatcherConnection = null, ILoggerProvider? logger = null)
         {
             await _database.StartAsync();
             await using var connection = await Source.OpenConnectionAsync();
             await using var create = new MySqlCommand(MySqlOutboxSchema.CreateScript(_options), connection);
             await create.ExecuteNonQueryAsync();
             var services = new ServiceCollection();
-            services.AddLogging();
+            services.AddLogging(logging =>
+            {
+                if (logger is not null)
+                {
+                    logging.AddProvider(logger);
+                }
+            });
             services.AddSingleton<ITransport>(transport);
             services.AddSingleton<RelayerInstrumentation>();
             services.AddRelayerMySqlOutbox(_options);
@@ -420,6 +448,43 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
                     await _database.DisposeAsync();
                 }
             }
+        }
+    }
+
+    private sealed class ThrowingOverflowLogger : ILoggerProvider, ILogger
+    {
+        internal int Attempts
+        {
+            get; private set;
+        }
+
+        public ILogger CreateLogger(string categoryName)
+        {
+            return this;
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return logLevel == LogLevel.Error;
+        }
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Name == "NotQueued")
+            {
+                Attempts++;
+                throw new IOException("The logging sink is unavailable.");
+            }
+        }
+
+        public void Dispose()
+        {
         }
     }
 

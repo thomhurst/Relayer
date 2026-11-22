@@ -210,9 +210,11 @@ native batch failure isolation is described below. A completion failure after a 
 the claim without incrementing send attempts.
 
 **This worker does not poll or recover rows.** Ordered rows, future schedules, overflow and commits
-after shutdown remain durable. A full or stopped queue logs an error without making an already committed
-transaction fail. Shutdown drains queued work until the host's cancellation deadline. Applications must
-register the maintenance worker below to recover missed sends. Future scheduled `ISender` calls still fail explicitly: this worker cannot establish scheduling support.
+after shutdown remain durable. A full or stopped queue attempts to log an error. A logging failure leaves
+the commit result intact. Shutdown drains queued work until the host's cancellation deadline. Hosted
+[RabbitMQ](../transports/rabbitmq.md) publishers stay available during this drain regardless of registration
+order. Applications must register the maintenance worker below to recover missed sends. Future scheduled
+`ISender` calls still fail explicitly because this worker cannot establish scheduling support.
 
 Commit notification is local to this process. It does not enable Service Broker or query notifications,
 create conversation queues or claim cross-process wakeup support. Application-owned native Service Broker

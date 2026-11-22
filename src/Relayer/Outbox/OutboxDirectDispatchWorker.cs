@@ -145,7 +145,14 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                 return;
             }
 
-            OutboxDirectDispatchLog.NotQueued(_logger, count);
+            try
+            {
+                OutboxDirectDispatchLog.NotQueued(_logger, count);
+            }
+            catch (Exception)
+            {
+                // The transaction already committed. A logging provider cannot change its outcome.
+            }
         }
 
         Return(batch);
