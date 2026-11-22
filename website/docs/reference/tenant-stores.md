@@ -74,6 +74,10 @@ Keep the usual `AddRelayer` message and route registrations. After authenticatin
 request, select its tenant **before** resolving the DbContext or any dependency that resolves it:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+using Relayer.Outbox.EntityFrameworkCore;
+
 await using var scope = serviceScopeFactory.CreateAsyncScope();
 var provider = scope.ServiceProvider;
 provider.GetRequiredService<AuthorizedTenant>().Id = authorizedTenantId;
@@ -136,6 +140,9 @@ a startup DbContext. The incoming header is restored before the scoped native fa
 authorization in that factory (or a scoped dependency it resolves), before selecting any database:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+
 services.AddRelayerTenancy();
 services.AddScoped<AuthorizedTenant>(provider =>
 {
