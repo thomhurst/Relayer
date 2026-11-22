@@ -58,13 +58,14 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var helperRegistration = compilation.GetTypeByMetadataName("Relayer.RegistersMessageIdentityAttribute");
             var startupAttribute = compilation.GetTypeByMetadataName("Relayer.MessageIdentitiesRegisteredAtStartupAttribute");
             var tombstone = compilation.GetTypeByMetadataName("Relayer.Tombstone`1");
+            var identityComparer = new MessageIdentityTypeComparer(compilation);
             var registeredAtStartup = compilation.Assembly.GetAttributes()
                 .Where(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, startupAttribute))
                 .Select(static a => a.ConstructorArguments.Length == 1 ? a.ConstructorArguments[0].Value as ITypeSymbol : null)
                 .Where(static t => t is not null)
                 .Select(static t => t is INamedTypeSymbol { IsUnboundGenericType: true } generic ? generic.OriginalDefinition : t!)
-                .ToImmutableHashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
-            var explicitIdentities = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
+                .ToImmutableHashSet<ITypeSymbol>(identityComparer);
+            var explicitIdentities = new ConcurrentDictionary<ITypeSymbol, byte>(identityComparer);
             var handlers = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
             var registered = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
             var messages = new ConcurrentDictionary<INamedTypeSymbol, AttributeData>(SymbolEqualityComparer.Default);
@@ -248,6 +249,28 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 }
             });
         });
+    }
+
+    private sealed class MessageIdentityTypeComparer(Compilation compilation) : IEqualityComparer<ITypeSymbol>
+    {
+        public bool Equals(ITypeSymbol? x, ITypeSymbol? y)
+        {
+            // Roslyn's C# identity conversion ignores tuple element names and dynamic annotations,
+            // including inside constructed types. Keep the original symbols for diagnostics.
+            return SymbolEqualityComparer.Default.Equals(x, y)
+                || (x is not null && y is not null && compilation.ClassifyCommonConversion(x, y).IsIdentity);
+        }
+
+        public int GetHashCode(ITypeSymbol type)
+        {
+            // Hash the metadata name without type arguments so CLR-equivalent spellings share a bucket.
+            return type switch
+            {
+                IArrayTypeSymbol array => unchecked(GetHashCode(array.ElementType) * 31 + array.Rank),
+                IDynamicTypeSymbol => StringComparer.Ordinal.GetHashCode(nameof(Object)),
+                _ => StringComparer.Ordinal.GetHashCode(type.MetadataName),
+            };
+        }
     }
 
     // A helper marked [RegistersMessageIdentity(nameof(T))] registers its type argument, even

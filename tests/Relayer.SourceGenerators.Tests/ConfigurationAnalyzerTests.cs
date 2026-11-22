@@ -119,6 +119,61 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("ValueTuple<int, string>", "(int Id, string Account)", "")]
+    [Arguments("(int Id, string Account)", "ValueTuple<int, string>", "")]
+    [Arguments("ValueTuple<int, string>", "OrderKey", "")]
+    [Arguments("object", "dynamic", "")]
+    [Arguments("dynamic", "object", "")]
+    [Arguments("Envelope<object>", "Envelope<dynamic>", "")]
+    [Arguments("ValueTuple<int, object>[,][]", "(int Id, dynamic Account)[,][]", "")]
+    [Arguments("Outer<object>.Nested<ValueTuple<int, object>[,][]>",
+        "Outer<dynamic>.Nested<(int Id, dynamic Account)[,][]>", "")]
+    [Arguments("ValueTuple<int, string>", "(long Id, string Account)", "RLY001")]
+    [Arguments("object[]", "dynamic[,]", "RLY001")]
+    [Arguments("object[]", "string[]", "RLY001")]
+    public async Task Explicit_identity_matches_clr_type(string registeredType, string routedType, string expected)
+    {
+        await Verify(Imports + $$"""
+            using System;
+            using OrderKey = (int Id, string Account);
+            public record Envelope<T>;
+            public class Outer<T>
+            {
+                public record Nested<U>;
+            }
+            static class Setup
+            {
+                public static void Add(Broker broker, IRelayerBuilder builder)
+                {
+                    builder.Infrastructure().MessageTypes.Add<{{registeredType}}>("orders");
+                    broker.Send<{{routedType}}>("orders");
+                }
+            }
+            """, expected);
+    }
+
+    [Test]
+    public async Task Declared_startup_and_helper_identities_match_clr_types()
+    {
+        await Verify(Imports + """
+            using System;
+            [assembly: MessageIdentitiesRegisteredAtStartup(typeof(ValueTuple<int, object>))]
+            public record Envelope<T>;
+            static class Setup
+            {
+                public static void Add(Broker broker, IRelayerBuilder builder)
+                {
+                    Register<Envelope<object>>(builder);
+                    broker.Send<(int Id, dynamic Account)>("orders");
+                    broker.Send<Tombstone<Envelope<dynamic>>>("envelopes");
+                }
+                [RegistersMessageIdentity(nameof(T))]
+                static void Register<T>(IRelayerBuilder builder) => builder.Infrastructure().MessageTypes.Add<T>("envelopes");
+            }
+            """, "");
+    }
+
+    [Test]
     public async Task Unrelated_Add_does_not_supply_message_identity()
     {
         await Verify(Imports + """
