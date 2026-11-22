@@ -16,16 +16,22 @@ dotnet test -c Release
 Do not run this setup on a shared Docker host: it changes host networking settings
 and starts or restarts Docker. Ordinary local test runs do not require this setup.
 
-CI starts a pinned Docker 28.5.1 daemon with `docker/setup-docker-action` after
+CI starts a pinned Docker 29.10.0 daemon with `docker/setup-docker-action` after
 preparation. Its `set-host: true` exports `DOCKER_HOST`, so both Testcontainers
 and the PostgreSQL fixture's Docker CLI use that daemon. Docker 28.0.4 does not
 track conflicts between its loopback and wildcard publications correctly: ten
 PostgreSQL ports can exhaust Kafka's wildcard bind attempts in the same reserved
 range. Docker 28.5.1's allocator checks all addresses when allocating a wildcard
-port. The smoke script holds ten Docker-owned loopback publications and then
-starts custom-range and automatic wildcard publications. It removes only its two test
-containers on exit. See the upstream
+port. The smoke script holds ten Docker-owned loopback publications, starts
+custom-range and automatic wildcard publications, and checks host-to-container
+IPv4 forwarding for both binding styles. It removes its two containers on exit.
+See the upstream
 [allocator implementation](https://github.com/moby/moby/blob/v28.5.1/libnetwork/portallocator/portallocator.go).
+
+CI sets `userland-proxy: false` on its dedicated Docker daemon. Linux forwards
+published ports through Docker's firewall rules, so container network teardown
+does not wait for a `docker-proxy` process. A stalled proxy reproduced the removal
+timeout locally in [#1197](https://github.com/thomhurst/Relayer/issues/1197).
 
 Docker reads Linux's dynamic port range when its allocator initializes. The script
 sets that range to 20000–60999 and adds 20000–29999 to the kernel's existing reserved
