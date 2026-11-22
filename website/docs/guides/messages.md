@@ -8,6 +8,8 @@ description: "Stable message names and versions, source-generated System.Text.Js
 Messages are identified by a stable string name and version, never by the CLR type name:
 
 ```csharp
+using Relayer;
+
 [Message("billing.charge-card", Version = 2)]
 public sealed record ChargeCard(Guid OrderId, decimal Amount);
 ```
@@ -25,6 +27,8 @@ A `ref struct` or `readonly ref struct` is stack-only and cannot be a wire messa
 Register message types explicitly, or with the source-generated method that lists every `[Message]` type in the assembly:
 
 ```csharp
+using Relayer;
+
 services.AddRelayer(relayer => relayer.AddMessageTypesFromThisAssembly());
 ```
 

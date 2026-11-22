@@ -8,6 +8,8 @@ description: "Run the reusable native transport contracts against a Relayer adap
 Add `Relayer.Testing` to your test project and implement `ITransportConformanceFixture<TIncoming>` using your native adapter. Use its existing `IMessageBinding<TIncoming>` as `TBinding`. The fixture receives the suite's isolated `MessageTracing` owner: pass it to the adapter's production tracing integration and enable the native client's instrumentation. The suite captures only that owner's `Relayer` source, so parallel fixtures do not share results.
 
 ```csharp
+using Relayer.Testing;
+
 var suite = new TransportConformanceSuite<NativeDelivery, NativeBinding>(
     async (tracing, cancellationToken) =>
         await BrokerFixture.CreateAsync(tracing, cancellationToken),
