@@ -125,15 +125,18 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
-        var endpoint = Validate(message, cancellationToken);
+        Check(cancellationToken);
+        var endpoint = GetEndpoint(message.Destination);
+        var arn = GetTopicArn(endpoint);
+        ValidateMessage(message, endpoint);
         var state = _operations.Rent();
         state.Used = 1;
         var activity = CurrentActivity();
-        Enrich(activity, endpoint.Arn!, null);
+        Enrich(activity, arn, null);
 
         try
         {
-            var size = state.Messages[0].Prepare(message, endpoint.Arn!, endpoint.Fifo, endpoint.IdentityHeader);
+            var size = state.Messages[0].Prepare(message, arn, endpoint.Fifo, endpoint.IdentityHeader);
             ValidateSize(endpoint, size);
             endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
@@ -143,7 +146,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
             {
                 var response = await _client.PublishAsync(state.Messages[0].Request, cancellationToken).ConfigureAwait(false);
                 failed = false;
-                Enrich(activity, endpoint.Arn!, response.ResponseMetadata?.RequestId);
+                Enrich(activity, arn, response.ResponseMetadata?.RequestId);
             }
             finally
             {
@@ -152,7 +155,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
         catch (AmazonSimpleNotificationServiceException error)
         {
-            Enrich(activity, endpoint.Arn!, error.RequestId);
+            Enrich(activity, arn, error.RequestId);
             throw;
         }
         finally
@@ -214,17 +217,19 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
 
         var endpoint = GetEndpoint(messages.Span[0].Destination);
+        var arn = GetTopicArn(endpoint);
         var state = _operations.Rent();
         var count = 0;
         var bytes = 0;
         var batchStart = 0;
-        state.Batch.TopicArn = endpoint.Arn;
+        state.Batch.TopicArn = arn;
 
         try
         {
             for (var i = 0; i < messages.Length; i++)
             {
-                Validate(messages.Span[i], cancellationToken);
+                Check(cancellationToken);
+                ValidateMessage(messages.Span[i], endpoint);
 
                 if (count == 10)
                 {
@@ -243,7 +248,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
 
                 var pending = state.Messages[count];
                 state.Used = count + 1;
-                var size = pending.Prepare(messages.Span[i], endpoint.Arn!, endpoint.Fifo, endpoint.IdentityHeader);
+                var size = pending.Prepare(messages.Span[i], arn, endpoint.Fifo, endpoint.IdentityHeader);
                 ValidateSize(endpoint, size);
 
                 if (count > 0 && bytes + size > 262_144)
@@ -329,16 +334,13 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
     }
 
-    private Endpoint Validate(OutgoingMessage message, CancellationToken cancellationToken)
+    private string GetTopicArn(Endpoint endpoint)
     {
-        Check(cancellationToken);
-        var endpoint = GetEndpoint(message.Destination);
+        return endpoint.Arn ?? throw new InvalidOperationException($"SNS transport '{Name}': start the host or apply topology before sending.");
+    }
 
-        if (endpoint.Arn is null)
-        {
-            throw new InvalidOperationException($"SNS transport '{Name}': start the host or apply topology before sending.");
-        }
-
+    private static void ValidateMessage(OutgoingMessage message, Endpoint endpoint)
+    {
         if (message.IsTombstone)
         {
             throw new NotSupportedException("SNS does not support tombstones.");
@@ -348,8 +350,6 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         {
             throw new NotSupportedException("SNS ordering keys require a FIFO topic.");
         }
-
-        return endpoint;
     }
 
     private static void ValidateSize(Endpoint endpoint, int size)
@@ -574,6 +574,8 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
 
     private sealed class Endpoint(CreateTopicRequest declaration, string identityHeader)
     {
+        private string? _arn;
+
         internal CreateTopicRequest Declaration
         {
             get;
@@ -591,7 +593,14 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
 
         internal string? Arn
         {
-            get; set;
+            get
+            {
+                return Volatile.Read(ref _arn);
+            }
+            set
+            {
+                Volatile.Write(ref _arn, value);
+            }
         }
 
         internal TransportCapabilities Capabilities

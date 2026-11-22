@@ -294,6 +294,114 @@ public class SnsSendTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task In_flight_batch_keeps_its_arn_when_topology_changes(bool topicMissing)
+    {
+        const string Topic = "ordered.fifo";
+        const string RefreshedArn = "arn:aws:sns:us-east-1:111111111111:ordered.fifo";
+        var originalArn = SnsTestClient.Arn(Topic);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var client = new SnsTestClient { Gate = gate };
+        await using var transport = Transport(client);
+        await transport.StartAsync(default);
+        var preparedArns = new List<string>();
+        var options = new SendOptions().AmazonSns(request => preparedArns.Add(request.TopicArn));
+        var message = new OutgoingMessage(Topic, "{}"u8.ToArray(), orderingKey: new WireString("group"), options: options);
+        var pending = transport.SendBatchAsync(Enumerable.Repeat(message, 12).ToArray(), default);
+
+        try
+        {
+            await Assert.That(client.Batches.Count).IsEqualTo(1);
+            client.ListTopicsOverride = (_, _) => Task.FromResult(new ListTopicsResponse
+            {
+                Topics = topicMissing ? [new() { TopicArn = SnsTestClient.Arn("orders") }]
+                    : [new() { TopicArn = SnsTestClient.Arn("orders") }, new() { TopicArn = RefreshedArn }]
+            });
+            var report = await transport.ApplyTopologyAsync(TopologyMode.Validate, default);
+            await Assert.That(report.Differences.Count).IsEqualTo(topicMissing ? 1 : 0);
+        }
+        finally
+        {
+            gate.SetResult();
+            await pending;
+        }
+
+        await Assert.That(client.Batches.Select(batch => batch.Length).ToArray()).IsEquivalentTo(new[] { 10, 2 });
+        await Assert.That(client.Batches.SelectMany(batch => batch).All(entry => entry.Message.Arn == originalArn)).IsTrue();
+        await Assert.That(preparedArns).IsEquivalentTo(Enumerable.Repeat(originalArn, 12).ToArray());
+
+        if (topicMissing)
+        {
+            await Assert.That(async () => await transport.SendBatchAsync(new[] { message }, default))
+                .Throws<InvalidOperationException>();
+            await Assert.That(client.Batches.Count).IsEqualTo(2);
+        }
+        else
+        {
+            await transport.SendBatchAsync(new[] { message }, default);
+            await Assert.That(client.Batches[^1].Single().Message.Arn).IsEqualTo(RefreshedArn);
+            await Assert.That(preparedArns[^1]).IsEqualTo(RefreshedArn);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task In_flight_single_send_keeps_its_arn_in_telemetry_when_topology_changes(bool fail)
+    {
+        const string RefreshedArn = "arn:aws:sns:us-east-1:111111111111:orders";
+        using var tracing = new MessageTracing(Microsoft.Extensions.Options.Options.Create(new TracingOptions()), []);
+        var activities = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = activities.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var client = new SnsTestClient { Gate = gate };
+        await using var transport = new SnsSendTransport("sns", client, false, Options(client), tracing);
+        await transport.StartAsync(default);
+        var message = new OutgoingMessage("orders", "{}"u8.ToArray());
+        var pending = transport.SendAsync(message, default);
+
+        try
+        {
+            await Assert.That(client.Sent.Single().Arn).IsEqualTo(SnsTestClient.Arn("orders"));
+            client.ListTopicsOverride = (_, _) => Task.FromResult(new ListTopicsResponse
+            {
+                Topics = [new() { TopicArn = RefreshedArn }, new() { TopicArn = SnsTestClient.Arn("ordered.fifo") }]
+            });
+            await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, default)).Differences.Count).IsEqualTo(0);
+        }
+        finally
+        {
+            if (fail)
+            {
+                gate.SetException(new AmazonSimpleNotificationServiceException("publish failed") { RequestId = "failed-request" });
+                await Assert.That(async () => await pending).Throws<AmazonSimpleNotificationServiceException>();
+            }
+            else
+            {
+                gate.SetResult();
+                await pending;
+            }
+        }
+
+        var activity = activities.Single();
+        await Assert.That(activity.GetTagItem("aws.sns.topic.arn")).IsEqualTo(client.Sent.Single().Arn);
+        await Assert.That(activity.GetTagItem("aws.request_id")).IsEqualTo(fail ? "failed-request" : "request-1");
+
+        client.Gate = null;
+        await transport.SendAsync(message, default);
+        await Assert.That(client.Sent[^1].Arn).IsEqualTo(RefreshedArn);
+        await Assert.That(activities[^1].GetTagItem("aws.sns.topic.arn")).IsEqualTo(RefreshedArn);
+    }
+
+    [Test]
     public async Task Declaration_validation_rejects_missing_topics_fifo_mismatch_and_non_raw_subscriptions()
     {
         var options = new AmazonSnsTransportOptions();
