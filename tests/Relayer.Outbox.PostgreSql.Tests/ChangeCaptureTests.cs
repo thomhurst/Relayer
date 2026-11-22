@@ -149,6 +149,7 @@ public class ChangeCaptureTests
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Sql(source, "CREATE EXTENSION pg_walinspect");
         await Provision(source, fixture.ConnectionString);
         var accepted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var transport = new RecordingTransport(async (_, token) =>
@@ -157,7 +158,7 @@ public class ChangeCaptureTests
             await Task.Delay(Timeout.InfiniteTimeSpan, token);
         });
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        NpgsqlLogSequenceNumber position;
+        NpgsqlLogSequenceNumber commitEnd;
 
         using (var first = Worker(source, fixture.ConnectionString, transport, idleCheckpointInterval: TimeSpan.FromMilliseconds(100)))
         {
@@ -166,7 +167,7 @@ public class ChangeCaptureTests
             try
             {
                 await Streaming(source, timeout.Token);
-                position = await Insert(source, Id(1));
+                commitEnd = await CommitInsertAfterIdleCheckpoint(source, timeout.Token);
                 await accepted.Task.WaitAsync(timeout.Token);
                 // Force a marker behind the blocked commit and observe fresh feedback from this reader.
                 await Sql(source, "SELECT pg_logical_emit_message(true, 'checkpoint-test', '')");
@@ -179,13 +180,13 @@ public class ChangeCaptureTests
                 feedback.Parameters.AddWithValue("previous", NpgsqlDbType.TimestampTz, previous ?? DBNull.Value);
                 await Until(async () => await feedback.ExecuteScalarAsync(timeout.Token) is true, timeout.Token);
 
-                await using var checkpoint = source.CreateCommand($"SELECT confirmed_flush_lsn < @position FROM pg_replication_slots WHERE slot_name = '{Slot}'");
-                checkpoint.Parameters.AddWithValue("position", NpgsqlDbType.PgLsn, position);
+                await using var checkpoint = source.CreateCommand($"SELECT confirmed_flush_lsn < @commit_end FROM pg_replication_slots WHERE slot_name = '{Slot}'");
+                checkpoint.Parameters.AddWithValue("commit_end", NpgsqlDbType.PgLsn, commitEnd);
                 await Assert.That(await checkpoint.ExecuteScalarAsync(timeout.Token) is true).IsTrue();
             }
             finally
             {
-                await first.StopAsync(timeout.Token);
+                await StopAndWaitForSlotReleaseAsync(first, source);
             }
         }
 
@@ -197,7 +198,7 @@ public class ChangeCaptureTests
 
         try
         {
-            await Acknowledged(source, position, timeout.Token);
+            await Acknowledged(source, commitEnd, timeout.Token);
             await Assert.That(await Count(source)).IsEqualTo(0L);
             await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
             await Assert.That(replay.Ids.SequenceEqual([Id(1)])).IsTrue();
@@ -502,20 +503,35 @@ public class ChangeCaptureTests
         await connection.CreatePgOutputReplicationSlot(Slot);
     }
 
+    private static async Task<NpgsqlLogSequenceNumber> CommitInsertAfterIdleCheckpoint(NpgsqlDataSource source, CancellationToken token)
+    {
+        await using var writer = await source.OpenConnectionAsync(token);
+        await using var transaction = await writer.BeginTransactionAsync(token);
+        var insertEnd = await Insert(writer, transaction, Id(1));
+        await using var transactionId = new NpgsqlCommand("SELECT pg_current_xact_id()::xid", writer, transaction);
+        var xid = (uint)(await transactionId.ExecuteScalarAsync(token))!;
+
+        // Force a marker acknowledgement between the row write and the transaction commit.
+        await Acknowledged(source, insertEnd, token);
+        await transaction.CommitAsync(token);
+
+        // Read the exact end LSN of this transaction even when other sessions write WAL concurrently.
+        await using var commit = new NpgsqlCommand("""
+            SELECT end_lsn
+            FROM pg_get_wal_records_info(@insert_end, pg_current_wal_flush_lsn())
+            WHERE xid = @xid AND resource_manager = 'Transaction' AND record_type = 'COMMIT'
+            """, writer);
+        commit.Parameters.AddWithValue("insert_end", NpgsqlDbType.PgLsn, insertEnd);
+        commit.Parameters.AddWithValue("xid", NpgsqlDbType.Xid, xid);
+        return (NpgsqlLogSequenceNumber)(await commit.ExecuteScalarAsync(token))!;
+    }
+
     private static async Task<NpgsqlLogSequenceNumber> Insert(NpgsqlDataSource source, Guid id,
         bool commit = true, int? lane = null, bool future = false)
     {
-        var headers = new ArrayBufferWriter<byte>();
-        OutboxHeaderCodec.Write(headers, [new("ce_id", new(id.ToString()))]);
         await using var connection = await source.OpenConnectionAsync();
         await using var transaction = await connection.BeginTransactionAsync();
-        await using var command = new NpgsqlCommand("INSERT INTO relayer_outbox (id, transport, destination, message_type, headers, body, created_at, lane, deliver_at) VALUES (@id, 'events', 'orders', 'order;v=1', @headers, @body, clock_timestamp(), @lane, @due); SELECT pg_current_wal_insert_lsn()", connection, transaction);
-        command.Parameters.AddWithValue("id", id);
-        command.Parameters.AddWithValue("headers", headers.WrittenMemory.ToArray());
-        command.Parameters.AddWithValue("body", new byte[] { 7, 8, 9 });
-        command.Parameters.Add(new NpgsqlParameter<int?>("lane", NpgsqlDbType.Integer) { TypedValue = lane });
-        command.Parameters.Add(new NpgsqlParameter<DateTimeOffset?>("due", NpgsqlDbType.TimestampTz) { TypedValue = future ? DateTimeOffset.UtcNow.AddDays(1) : null });
-        var position = (NpgsqlLogSequenceNumber)(await command.ExecuteScalarAsync())!;
+        var position = await Insert(connection, transaction, id, lane, future);
 
         if (commit)
         {
@@ -523,6 +539,20 @@ public class ChangeCaptureTests
         }
 
         return position;
+    }
+
+    private static async Task<NpgsqlLogSequenceNumber> Insert(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        Guid id, int? lane = null, bool future = false)
+    {
+        var headers = new ArrayBufferWriter<byte>();
+        OutboxHeaderCodec.Write(headers, [new("ce_id", new(id.ToString()))]);
+        await using var command = new NpgsqlCommand("INSERT INTO relayer_outbox (id, transport, destination, message_type, headers, body, created_at, lane, deliver_at) VALUES (@id, 'events', 'orders', 'order;v=1', @headers, @body, clock_timestamp(), @lane, @due); SELECT pg_current_wal_insert_lsn()", connection, transaction);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("headers", headers.WrittenMemory.ToArray());
+        command.Parameters.AddWithValue("body", new byte[] { 7, 8, 9 });
+        command.Parameters.Add(new NpgsqlParameter<int?>("lane", NpgsqlDbType.Integer) { TypedValue = lane });
+        command.Parameters.Add(new NpgsqlParameter<DateTimeOffset?>("due", NpgsqlDbType.TimestampTz) { TypedValue = future ? DateTimeOffset.UtcNow.AddDays(1) : null });
+        return (NpgsqlLogSequenceNumber)(await command.ExecuteScalarAsync())!;
     }
 
     private static async Task Streaming(NpgsqlDataSource source, CancellationToken token)
