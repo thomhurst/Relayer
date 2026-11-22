@@ -19,7 +19,7 @@ public static partial class MySqlOutboxServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(dataSource);
-        MySqlMaintenanceWorker.ValidateDataSource(dataSource);
+        _ = MySqlDirectDispatcher.ValidateDataSource(dataSource);
         options ??= new();
         _ = options.Validate();
 

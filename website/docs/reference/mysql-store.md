@@ -336,10 +336,10 @@ services.AddRelayerMySqlMaintenance("orders", dataSource, new MySqlMaintenanceOp
 
 The overload taking an `IConfiguration` section snapshots immutable named options through the
 Options pattern. Use `infinite` for either retention setting to retain records indefinitely.
-Invalid settings, duplicate names and a pooled `MaximumPoolSize` below two fail before connecting.
-Workers do not create tables.
-Keep the data source alive until workers stop. Allow at least two pooled connections: one
-native session admits a pass while the existing dispatcher claims and sends rows.
+Invalid settings and duplicate names fail before connecting. Workers do not create tables.
+Keep the data source alive until workers stop. Each pass uses one connection for admission, scans,
+and dispatch mutations. Multiple workers can share a pool. Size it for the number of passes
+and other database operations you want to run concurrently.
 
 Separate database-time `sweeper` and `cleanup` leases elect leaders across instances. Native
 `GET_LOCK(..., 0)` admission avoids waiting behind a connected pass even after its idle lease

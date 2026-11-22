@@ -34,7 +34,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
             storeName is null ? null : instrumentation?.TrackOutboxDepth("mysql", storeName), hostLifetime)
     {
         _dataSource = dataSource;
-        ValidateDataSource(dataSource);
+        var target = MySqlDirectDispatcher.ValidateDataSource(dataSource);
         _options = options;
         var settings = options.Validate();
         _store = new(dataSource, settings);
@@ -51,7 +51,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         _dead = MySqlOutboxSchema.DeadTable(settings);
         _inbox = MySqlOutboxSchema.InboxTable(settings);
         _rows = new OutboxRecord[options.BatchSize];
-        var resource = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(new MySqlConnectionStringBuilder(dataSource.ConnectionString).Database + ":" + _leases)));
+        var resource = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(target.Database + ":" + _leases)));
         _sweeperResource = resource[..48] + ":sweeper";
         _cleanupResource = resource[..48] + ":cleanup";
         _highWater = $"SELECT HEX(id) FROM {_table} WHERE lane IS NULL AND status='pending' ORDER BY id DESC LIMIT 1";
@@ -75,16 +75,6 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
                 AND (claim_expires_at IS NULL OR claim_expires_at <= UTC_TIMESTAMP(6))
                 AND (@after IS NULL OR id > @after) AND id <= @through ORDER BY id LIMIT @limit
             """;
-    }
-
-    internal static void ValidateDataSource(MySqlDataSource dataSource)
-    {
-        var target = MySqlDirectDispatcher.ValidateDataSource(dataSource);
-
-        if (target.Pooling && target.MaximumPoolSize < 2)
-        {
-            throw new ArgumentException("MySQL maintenance requires MaximumPoolSize >= 2: one connection holds admission while another dispatches rows.", nameof(dataSource));
-        }
     }
 
     protected override ValueTask<int> RecoverAsync(CancellationToken cancellationToken)
@@ -193,6 +183,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         command.Parameters.Add("@after", MySqlDbType.Binary, 16).Value = _hasAfter ? _after : DBNull.Value;
         command.Parameters.Add("@through", MySqlDbType.Binary, 16).Value = _through;
         var count = await _store.ReadRecoveryAsync(command, _rows, cancellationToken).ConfigureAwait(false);
+        _store.RecoveryConnection = connection;
 
         try
         {
@@ -243,6 +234,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         }
         finally
         {
+            _store.RecoveryConnection = null;
             _batch.Clear();
             Array.Clear(_rows, 0, count);
         }

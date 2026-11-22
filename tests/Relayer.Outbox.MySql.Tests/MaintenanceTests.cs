@@ -1,4 +1,6 @@
 using System.Diagnostics.Metrics;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -11,6 +13,64 @@ namespace Relayer.Outbox.MySql.Tests;
 
 public sealed class MaintenanceTests
 {
+    [Test]
+    public async Task Overlapping_sweeps_dispatch_with_two_shared_pool_connections()
+    {
+        await using var data = new MySqlFixture();
+        await data.StartAsync();
+        var other = new MySqlOutboxOptions { TablePrefix = "other_" };
+        var firstTable = MySqlOutboxSchema.Table(data.Options);
+        var secondTable = MySqlOutboxSchema.Table(other);
+        await data.Execute(MySqlOutboxSchema.CreateScript(other));
+        await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
+        await data.Execute($"INSERT INTO {secondTable} SELECT * FROM {firstTable}");
+
+        await using var source = new MySqlDataSource(data.Source.ConnectionString + ";MaximumPoolSize=2");
+        var firstTransport = new Transport();
+        var secondTransport = new Transport();
+        using var first = new MySqlMaintenanceWorker(source, new()
+        {
+            RecoveryDelay = TimeSpan.Zero
+        }, [firstTransport], NullLogger<MySqlMaintenanceWorker>.Instance);
+        using var second = new MySqlMaintenanceWorker(source, new()
+        {
+            TablePrefix = other.TablePrefix,
+            RecoveryDelay = TimeSpan.Zero
+        }, [secondTransport], NullLogger<MySqlMaintenanceWorker>.Instance);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using var blockingSession = await data.Source.OpenConnectionAsync(timeout.Token);
+        await using var gate = new MySqlCommand($"LOCK TABLES {firstTable} WRITE, {secondTable} WRITE", blockingSession);
+        await using var observerSession = await data.Source.OpenConnectionAsync(timeout.Token);
+        await using var observe = new MySqlCommand(
+            "SELECT IS_USED_LOCK(@first) IS NOT NULL AND IS_USED_LOCK(@second) IS NOT NULL", observerSession);
+        observe.Parameters.AddWithValue("first", SweeperResource(data.Database, data.Options));
+        observe.Parameters.AddWithValue("second", SweeperResource(data.Database, other));
+
+        // Hold both scans behind the table locks until both sweeps hold admission.
+        await gate.ExecuteNonQueryAsync(timeout.Token);
+        var sweeps = Task.WhenAll(first.SweepAsync(timeout.Token).AsTask(), second.SweepAsync(timeout.Token).AsTask());
+
+        try
+        {
+            while (!Convert.ToBoolean(await observe.ExecuteScalarAsync(timeout.Token)))
+            {
+                await Task.Delay(20, timeout.Token);
+            }
+        }
+        finally
+        {
+            gate.CommandText = "UNLOCK TABLES";
+            await gate.ExecuteNonQueryAsync();
+            await sweeps;
+        }
+
+        await Assert.That(firstTransport.Sent).IsEqualTo(1);
+        await Assert.That(secondTransport.Sent).IsEqualTo(1);
+        await Assert.That(await Scalar(data, $"SELECT (SELECT COUNT(*) FROM {firstTable}) + (SELECT COUNT(*) FROM {secondTable})"))
+            .IsEqualTo(0L);
+    }
+
     [Test]
     [Arguments("malformed")]
     [Arguments("transport")]
@@ -258,7 +318,7 @@ public sealed class MaintenanceTests
             await Task.Delay(Timeout.InfiniteTimeSpan, token);
         });
         // Session reset is application configuration. Cleanup cannot rely on pool reset to drop named locks.
-        await using var source = new MySqlDataSource(data.Source.ConnectionString + ";ConnectionReset=false;MaximumPoolSize=2");
+        await using var source = new MySqlDataSource(data.Source.ConnectionString + ";ConnectionReset=false;MaximumPoolSize=1");
         using var first = new MySqlMaintenanceWorker(source, new()
         {
             BatchSize = 4,
@@ -285,8 +345,7 @@ public sealed class MaintenanceTests
         await data.StartAsync();
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
         using var stop = new CancellationTokenSource();
-        var resource = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(data.Database + ":" + MySqlOutboxSchema.LeaseTable(new()))))[..48] + ":sweeper";
+        var resource = SweeperResource(data.Database, data.Options);
         var transport = new Transport(async _ =>
         {
             await using var connection = await data.Source.OpenConnectionAsync();
@@ -352,6 +411,12 @@ public sealed class MaintenanceTests
                     RecoveryDelay = TimeSpan.Zero,
                     MaxDispatchAttempts = 2
                 }, [transport], NullLogger<MySqlMaintenanceWorker>.Instance);
+    }
+
+    private static string SweeperResource(string database, MySqlOutboxOptions options)
+    {
+        var identity = database + ":" + MySqlOutboxSchema.LeaseTable(options);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..48] + ":sweeper";
     }
 
     private static async Task<long> Scalar(MySqlFixture data, string sql)
@@ -442,8 +507,8 @@ public sealed class MaintenanceRegistrationTests
         await Assert.That(options.InboxRetention).IsEqualTo(TimeSpan.FromDays(2));
         await Assert.That(provider.GetServices<IHostedService>().Count()).IsEqualTo(1);
         await Assert.That(() => services.AddRelayerMySqlMaintenance("a", source)).Throws<InvalidOperationException>();
-        await using var undersized = new MySqlDataSource("Server=unused;Database=orders;MaximumPoolSize=1");
-        await Assert.That(() => services.AddRelayerMySqlMaintenance("small", undersized)).Throws<ArgumentException>();
+        await using var singleConnection = new MySqlDataSource("Server=unused;Database=orders;MaximumPoolSize=1");
+        services.AddRelayerMySqlMaintenance("small", singleConnection);
         await Assert.That(() => new MySqlMaintenanceOptions { CleanupBatchLimit = 0 }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new MySqlMaintenanceOptions { CleanupBatchLimit = 101 }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new MySqlMaintenanceOptions { BatchSize = 0 }.Validate()).Throws<ArgumentOutOfRangeException>();
