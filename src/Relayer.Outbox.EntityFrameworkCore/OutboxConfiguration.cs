@@ -89,6 +89,8 @@ internal abstract class OutboxConfiguration : IDbContextOptionsExtension
 
     internal abstract void ValidateProvider(IDbContextOptions options);
 
+    internal abstract void ValidateTransaction(DbTransaction transaction);
+
     internal abstract OutboxConfiguration? FindConfiguration(IDbContextOptions options);
 
     internal abstract IOutboxBatch CreateBatch();

@@ -1776,6 +1776,8 @@ means it must roll back all associated business work. No transaction is retained
 Native row locks serialize deletion with competing claims. Rollback restores both business work and the row;
 a successful deletion remains provisional until commit. This permits atomic completion only for work in
 that same transaction, not exactly-once external effects. Existing broker dispatch and settlement are unchanged.
+Standalone local sends own their PostgreSQL transaction. Startup rejects `SendTransactionRequirement.Native`
+for local routes. For application-owned transactions, enlist sends through the PostgreSQL outbox.
 
 
 ## D67. SQS visibility retries retain native receive semantics

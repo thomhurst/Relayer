@@ -36,7 +36,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
             Batch.Dispose();
         }
     }
-    private readonly TransportCapabilities _capabilities = new() { OrderedByKey = true, MaxBatchSize = 1, Transactions = true };
+    private readonly TransportCapabilities _capabilities = new() { OrderedByKey = true, MaxBatchSize = 1 };
 
     internal PostgreSqlLocalTransport(string name, NpgsqlDataSource source, PostgreSqlOutboxOptions options, IEnumerable<string> endpoints, MessageTracing? tracing = null)
     {

@@ -90,6 +90,64 @@ public class DirectDispatchTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task Ef_commit_requires_the_named_dispatchers_database(bool mismatch)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var other = new Database();
+
+        if (mismatch)
+        {
+            await other.Start();
+        }
+
+        var writer = mismatch ? other : database;
+
+        await using (var create = writer.Source.CreateCommand("CREATE TABLE business (id integer PRIMARY KEY)"))
+        {
+            await create.ExecuteNonQueryAsync();
+        }
+
+        var connection = new NpgsqlConnectionStringBuilder(writer.ConnectionString) { ApplicationName = "ef-writer" };
+        await using var writerSource = NpgsqlDataSource.Create(connection.ConnectionString);
+        var transport = new Transport();
+        await using var provider = database.Services(transport, writerSource: writerSource);
+        var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
+        await worker.StartAsync(default);
+
+        try
+        {
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<TestContext>();
+            await using var transaction = await db.Database.BeginTransactionAsync();
+            await db.Database.ExecuteSqlRawAsync("INSERT INTO business (id) VALUES (1)");
+            await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(7));
+
+            if (mismatch)
+            {
+                await Assert.That(() => transaction.CommitAsync()).Throws<InvalidOperationException>()
+                    .WithMessageContaining("same PostgreSQL host, port and database");
+                await transaction.RollbackAsync();
+            }
+            else
+            {
+                await transaction.CommitAsync();
+            }
+        }
+        finally
+        {
+            await Stop(worker);
+        }
+
+        await Assert.That(await writer.Scalar("SELECT count(*) FROM business")).IsEqualTo(mismatch ? 0L : 1L);
+        await Assert.That(await writer.Count()).IsEqualTo(0L);
+        await Assert.That(await database.Count()).IsEqualTo(0L);
+        await Assert.That(transport.Received.Count).IsEqualTo(mismatch ? 0 : 1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Implicit_commit_starts_dispatch_without_waiting_for_broker_and_outlives_scope(bool synchronous)
     {
         await using var database = new Database();
@@ -569,6 +627,8 @@ public class DirectDispatchTests
         internal const string Table = "\"Dispatch\"\"Schema\".\"test_outbox\"";
         private readonly PostgreSqlFixture _fixture = new();
 
+        internal string ConnectionString => _fixture.ConnectionString;
+
         internal NpgsqlDataSource Source
         {
             get; private set;
@@ -594,7 +654,7 @@ public class DirectDispatchTests
         }
 
         internal ServiceProvider Services(Transport transport, PostgreSqlDirectDispatchOptions? options = null,
-            bool enableDispatch = true, CaptureLogger? logger = null)
+            bool enableDispatch = true, CaptureLogger? logger = null, NpgsqlDataSource? writerSource = null)
         {
             var services = new ServiceCollection();
             services.AddLogging();
@@ -614,13 +674,24 @@ public class DirectDispatchTests
                 }, options);
             }
 
-            services.AddDbContext<TestContext>((provider, builder) => builder.UseNpgsql(_fixture.ConnectionString)
-                .AddRelayerOutbox(provider, new EntityFrameworkCoreOutboxOptions
+            services.AddDbContext<TestContext>((provider, builder) =>
+            {
+                if (writerSource is null)
+                {
+                    builder.UseNpgsql(_fixture.ConnectionString);
+                }
+                else
+                {
+                    builder.UseNpgsql(writerSource);
+                }
+
+                builder.AddRelayerOutbox(provider, new EntityFrameworkCoreOutboxOptions
                 {
                     Schema = Schema,
                     TablePrefix = "test_",
                     DispatchStoreName = enableDispatch ? "store" : null
-                }));
+                });
+            });
             services.AddRelayer(builder =>
             {
                 builder.Infrastructure().MessageTypes.Add<Probe>("dispatch.probe");
