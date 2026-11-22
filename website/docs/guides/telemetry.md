@@ -8,8 +8,11 @@ description: Send, outbox, delivery and settlement spans, messaging metrics, and
 Transport authors compose endpoint telemetry at startup, alongside generated dispatch. For example, after registering and freezing handlers:
 
 ```csharp
-using Relayer.Transports;
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Pipeline;
+using Relayer.Serialization;
+using Relayer.Transports;
+
 var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
 var process = instrumentation.CreateEndpoint(new EndpointTelemetryOptions
 {
