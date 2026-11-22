@@ -1,9 +1,13 @@
 from collections import Counter, defaultdict
+import argparse
 import json
 from pathlib import Path
-import sys
 
-root = Path(sys.argv[1])
+parser = argparse.ArgumentParser()
+parser.add_argument("root", type=Path)
+parser.add_argument("--caller-only", action="store_true")
+args = parser.parse_args()
+root = args.root
 windows = {}
 types = {}
 with (root / "objects.jsonl").open() as source:
@@ -31,6 +35,8 @@ with (root / "stacks.jsonl").open() as source:
             continue
         index = row["index"]
         is_caller = row["thread"] == windows[index][1]
+        if args.caller_only and not is_caller:
+            raise ValueError(f"Callback on non-caller thread in window {index}")
         if row["snapshotResult"] != 0 or not row["frames"] or not row["thread"]:
             if is_caller:
                 owner = "caller"

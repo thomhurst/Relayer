@@ -10,6 +10,7 @@ if [[ "$CAPTURE_MODE" == profiled ]]; then
     --environment "CORECLR_PROFILER={32B7EF07-25E8-4AC7-B011-9A4321D702C8}"
     --environment "CORECLR_PROFILER_PATH=$profiler"
     --environment "RELAYER_ALLOCATION_TARGET=Relayer.Tests"
+    --environment "RELAYER_ALLOCATION_CALLER_ONLY=1"
     --environment "RELAYER_ALLOCATION_PROFILER=$profiler"
     --environment "RELAYER_ALLOCATION_OUTPUT=$results/objects.jsonl"
     --environment "RELAYER_ALLOCATION_STACKS=$results/stacks.jsonl"
