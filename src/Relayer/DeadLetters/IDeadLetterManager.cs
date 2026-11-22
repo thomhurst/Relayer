@@ -31,7 +31,13 @@ public sealed class DeadLetterMessage
         get; init;
     }
 
-    /// <summary>Owned body storage, valid after the management call returns.</summary>
+    /// <summary>Whether the snapshot exposes body bytes. A zero-byte payload can still have a byte body.</summary>
+    public bool HasByteBody
+    {
+        get; init;
+    } = true;
+
+    /// <summary>Owned body storage, valid after the management call returns. Empty when <see cref="HasByteBody"/> is false.</summary>
     public ReadOnlyMemory<byte> Body
     {
         get; init;

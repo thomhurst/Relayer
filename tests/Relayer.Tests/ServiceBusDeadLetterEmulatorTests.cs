@@ -1,3 +1,4 @@
+using Azure.Core.Amqp;
 using Azure.Messaging.ServiceBus;
 using Relayer.AzureServiceBus;
 using Relayer.Transports;
@@ -6,6 +7,58 @@ namespace Relayer.Tests;
 
 public sealed class ServiceBusDeadLetterEmulatorTests
 {
+    [Test]
+    [Arguments(AmqpMessageBodyType.Value)]
+    [Arguments(AmqpMessageBodyType.Sequence)]
+    public async Task Native_body_is_available_for_inspection_and_preserved_by_filtered_redrive(AmqpMessageBodyType bodyType)
+    {
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("dlq-native-body");
+        await using var broker = await ServiceBusReceiveBroker.StartAsync([queue]);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var client = new ServiceBusClient(broker.ConnectionString);
+        await using var sender = client.CreateSender(queue);
+        await using var receiver = client.CreateReceiver(queue);
+        var body = bodyType == AmqpMessageBodyType.Value
+            ? AmqpMessageBody.FromValue("poison")
+            : AmqpMessageBody.FromSequence([new List<object> { "poison" }]);
+        await sender.SendMessageAsync(new ServiceBusMessage(new AmqpAnnotatedMessage(body)) { MessageId = "native" }, token);
+        var original = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(10), token)
+            ?? throw new InvalidOperationException("Expected original delivery.");
+        await receiver.DeadLetterMessageAsync(original, "poison", cancellationToken: token);
+
+        var manager = new ServiceBusDeadLetterManager(client,
+            [new ConsumerDefinition<ServiceBusConsumerOptions>(queue, new(), [], 1, 1, TimeSpan.Zero)]);
+        var page = await manager.PeekAsync(queue, cancellationToken: token);
+
+        var snapshot = page.Messages.Single();
+        await Assert.That(snapshot.MessageId).IsEqualTo("native");
+        await Assert.That(snapshot.HasByteBody).IsFalse();
+        await Assert.That(snapshot.Body.IsEmpty).IsTrue();
+        var native = snapshot.Features.GetRequired<ServiceBusReceivedMessage>();
+        await Assert.That(native.DeadLetterReason).IsEqualTo("poison");
+        await Assert.That(native.GetRawAmqpMessage().Body.BodyType).IsEqualTo(bodyType);
+
+        var count = await manager.RedriveAsync(queue, message => message.MessageId == "native", cancellationToken: token);
+        await Assert.That(count).IsEqualTo(1);
+        var redriven = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(10), token)
+            ?? throw new InvalidOperationException("Expected redriven delivery.");
+        await Assert.That(redriven.MessageId).IsEqualTo("native");
+        var redrivenBody = redriven.GetRawAmqpMessage().Body;
+        await Assert.That(redrivenBody.BodyType).IsEqualTo(bodyType);
+
+        if (bodyType == AmqpMessageBodyType.Value)
+        {
+            await Assert.That(redrivenBody.TryGetValue(out var value) && Equals(value, "poison")).IsTrue();
+        }
+        else
+        {
+            await Assert.That(redrivenBody.TryGetSequence(out var sequence) && Equals(sequence?.Single().Single(), "poison")).IsTrue();
+        }
+
+        await Assert.That((await manager.PeekAsync(queue, cancellationToken: token)).Messages.Count).IsEqualTo(0);
+    }
+
     [Test]
     public async Task Queue_subscription_and_session_DLQs_support_peek_redrive_and_purge()
     {

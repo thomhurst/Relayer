@@ -102,6 +102,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D89](#d89-registered-outboxes-require-enlistment-for-automatic-sends) | Registered outboxes require enlistment for automatic sends | Accepted |
 | [D90](#d90-ef-core-outbox-selections-own-their-sends) | EF Core outbox selections own their sends | Accepted |
 | [D91](#d91-jetstream-consumers-reject-dead-letter-subjects-they-receive) | JetStream consumers reject dead-letter subjects they receive | Accepted |
+| [D92](#d92-dead-letter-snapshots-indicate-when-body-bytes-are-unavailable) | Dead-letter snapshots indicate when body bytes are unavailable | Accepted |
 
 ---
 
@@ -2107,3 +2108,11 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 **Decision.** Check the broker's consumer filters before starting native pulls, including for externally managed topology. Use a startup-only token comparison for `FilterSubject` and `FilterSubjects` until a native matcher is available. When the filters permit the dead-letter subject, ask JetStream which streams capture the subject. Reject startup if the consumer's own stream is among them. An unfiltered consumer permits every subject in its stream.
 
 **Consequences.** Filtered consumers can still use a dead-letter subject excluded by their filter in the same stream. A subject captured by another stream remains usable. Stream membership lookup is read-only and requires access to the native stream names API when the filter permits the subject. There is no steady-state per-message cost.
+
+## D92. Dead-letter snapshots indicate when body bytes are unavailable
+
+**Context.** Service Bus exposes AMQP Data as bytes. Its SDK exposes AMQP Value and Sequence through the native message. Reading the byte accessor for either layout prevented peek and filtered redrive (#1209).
+
+**Decision.** Keep `DeadLetterMessage.Body` as owned byte memory. Use `HasByteBody` to indicate when a snapshot has no byte representation. Service Bus exposes the native message through `Features` ([D6](#d6-native-access-through-a-feature-collection)). The HTTP snapshot uses JSON null for unavailable body bytes and base64 for available bytes.
+
+**Consequences.** One native delivery with a Value or Sequence body can be inspected and selected by ID. An empty Data body remains distinguishable from unavailable bytes. Redrive uses the SDK's received-message copy constructor for all layouts.

@@ -104,7 +104,9 @@ public static class DeadLetterEndpointRouteBuilderExtensions
 
                 for (var i = 0; i < messages.Length; i++)
                 {
-                    messages[i] = new(page.Messages[i].MessageId, page.Messages[i].Body);
+                    var message = page.Messages[i];
+                    ReadOnlyMemory<byte>? body = message.HasByteBody ? message.Body : (ReadOnlyMemory<byte>?)null;
+                    messages[i] = new(message.MessageId, body);
                 }
 
                 await context.Response.WriteAsJsonAsync(new PageSnapshot(messages, page.NextCursor),

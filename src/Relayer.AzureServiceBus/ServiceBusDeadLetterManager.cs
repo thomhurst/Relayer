@@ -1,4 +1,5 @@
 using System.Globalization;
+using Azure.Core.Amqp;
 using Azure.Messaging.ServiceBus;
 using Relayer.Transports;
 
@@ -199,7 +200,13 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
 
     private static DeadLetterMessage Snapshot(ServiceBusReceivedMessage message)
     {
-        var result = new DeadLetterMessage { MessageId = message.MessageId, Body = message.Body.ToArray() };
+        var hasByteBody = message.GetRawAmqpMessage().Body.BodyType == AmqpMessageBodyType.Data;
+        var result = new DeadLetterMessage
+        {
+            MessageId = message.MessageId,
+            HasByteBody = hasByteBody,
+            Body = hasByteBody ? message.Body.ToArray() : default
+        };
         result.Features.Set(message);
         return result;
     }
