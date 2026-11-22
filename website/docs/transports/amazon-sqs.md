@@ -97,6 +97,7 @@ SQS redrive cannot attach application failure metadata. `Failure.DeadLetterEndpo
 Consumers start polling with the host by default. Set `AutoStartConsumers = false` to bring the host up first and start the long polls yourself through the transport's keyed `IConsumerControl`:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
 
 sqs.Options.Configure(options => options.AutoStartConsumers = false);

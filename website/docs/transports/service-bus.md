@@ -101,6 +101,8 @@ The SDK cancels its callback token as soon as processor shutdown starts. The com
 Processors start with the host by default. Set `AutoStartConsumers = false` to bring the host up first, for example while other infrastructure creates the queues and subscriptions, and start the processors yourself through the transport's keyed `IConsumerControl`:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
 using Relayer.Transports;
 
 bus.TopologyMode = TopologyMode.None; // the entities may not exist yet when the host starts
