@@ -87,7 +87,9 @@ from the application and register the existing adapters explicitly:
 
 ```csharp
 using Relayer.Aspire;
+using Relayer.AzureServiceBus;
 using Relayer.HealthChecks;
+using Relayer.Kafka;
 
 builder.Services.AddRelayerHealthChecks();
 builder.Services.AddRelayerKafkaHealthProviders("events");
