@@ -250,7 +250,10 @@ public class GooglePubSubTests
     }
 
     [Test]
-    public async Task Hosted_pipeline_sends_generated_json_and_copies_poison_before_ack()
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Hosted_pipeline_validates_ordering_and_copies_poison_before_ack(bool keyedRoute, bool orderedSubscription)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = deadline.Token;
@@ -285,6 +288,7 @@ public class GooglePubSubTests
                     {
                         Name = subscription,
                         Topic = topic,
+                        EnableMessageOrdering = orderedSubscription,
                         AckDeadlineSeconds = 10
                     });
                     options.Subscriptions.Add(new()
@@ -294,7 +298,14 @@ public class GooglePubSubTests
                         AckDeadlineSeconds = 10
                     });
                 });
-                transport.Send<PubSubOrder>(topic);
+                transport.Send<PubSubOrder>(topic, route =>
+                {
+                    if (keyedRoute)
+                    {
+                        route.OrderingKey(static order => order.Value);
+                    }
+                });
+
                 transport.Consume(subscription, consumer =>
                 {
                     consumer.Failures(new()
@@ -308,6 +319,14 @@ public class GooglePubSubTests
             });
         });
         using var host = builder.Build();
+
+        if (keyedRoute && !orderedSubscription)
+        {
+            await Assert.That(() => host.StartAsync(token)).Throws<OptionsValidationException>()
+                .WithMessageContaining("OrderedByKey is unavailable");
+            return;
+        }
+
         await host.StartAsync(token);
 
         using (var scope = host.Services.CreateScope())
@@ -334,6 +353,7 @@ public class GooglePubSubTests
         await Assert.That(poison.Attributes.ContainsKey("ce-type")).IsTrue();
         await host.StopAsync(token);
         var transport = host.Services.GetRequiredService<ITransport>();
+        await Assert.That(transport.GetCapabilities(deadLetter).OrderedByKey).IsFalse();
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(0);
         // Existing subscriptions are never rewritten to satisfy a changed declaration.
