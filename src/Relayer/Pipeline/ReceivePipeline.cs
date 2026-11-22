@@ -435,7 +435,9 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
             Native.Disposition = disposition;
         }
 
-        internal override Disposition Disposition => Native.Disposition;
+        internal override Disposition Disposition => TBinding.HasSettledNatively(Native.Message)
+            ? Disposition.SettledByHandler
+            : Native.Disposition;
 
         internal void Initialize(TIncoming message, bool captureBodyFailure = false)
         {

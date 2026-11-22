@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using Relayer.Pipeline;
 using Relayer.Transports;
@@ -697,33 +698,41 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                 _manual = false;
                 var delivery = new InMemoryDelivery(this, _pending);
                 Disposition disposition;
+                Exception? receiveError = null;
 
                 try
                 {
                     disposition = await receive(delivery, abort).ConfigureAwait(false);
                 }
-                catch
+                catch (Exception error)
                 {
-                    Attempt++;
-                    throw;
+                    if (!_manual)
+                    {
+                        Attempt++;
+                        throw;
+                    }
+
+                    // Keep the borrowed message alive through the callback, then honor its accepted settlement.
+                    receiveError = error;
+                    disposition = Disposition.SettledByHandler;
                 }
                 finally
                 {
                     _loggedSettlementError = null;
                 }
 
-                if (disposition.Kind == DispositionKind.SettledByHandler)
+                if (_manual)
                 {
-                    if (!_manual)
+                    if (disposition.Kind != DispositionKind.SettledByHandler)
                     {
-                        throw new InvalidOperationException("SettledByHandler requires successful native settlement through InMemoryDelivery.");
+                        receiveError = new InvalidOperationException("Return SettledByHandler after manually settling InMemoryDelivery.");
                     }
 
                     disposition = _settlement;
                 }
-                else if (_manual)
+                else if (disposition.Kind == DispositionKind.SettledByHandler)
                 {
-                    throw new InvalidOperationException("Return SettledByHandler after manually settling InMemoryDelivery.");
+                    throw new InvalidOperationException("SettledByHandler requires successful native settlement through InMemoryDelivery.");
                 }
 
                 var redeliveryAt = _manual ? _settlementRedeliveryAt : endpoint.ValidateSettlement(disposition);
@@ -743,7 +752,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                         _redeliveryHeaders = default;
                         _pending.QueueAttempt = Attempt;
                         _pending.DeliverAt = redeliveryAt ?? endpoint.Clock.GetUtcNow();
-                        await endpoint.EnqueueAsync(_pending, abort).ConfigureAwait(false);
+                        await endpoint.EnqueueAsync(_pending, _manual ? CancellationToken.None : abort).ConfigureAwait(false);
                         _pending = null;
                     }
                     else
@@ -756,21 +765,26 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                             _retryStarted = endpoint.Clock.GetTimestamp();
                         }
                     }
-
-                    continue;
                 }
-
-                if (disposition.Kind == DispositionKind.DeadLetter)
+                else
                 {
-                    endpoint.DeadLetters.Writer.TryWrite(new(delivery, disposition.DeadLetter));
-                    endpoint.Observer?.DeadLettered(delivery, disposition.DeadLetter, endpoint.ReceiveEndpoint);
+                    if (disposition.Kind == DispositionKind.DeadLetter)
+                    {
+                        endpoint.DeadLetters.Writer.TryWrite(new(delivery, disposition.DeadLetter));
+                        endpoint.Observer?.DeadLettered(delivery, disposition.DeadLetter, endpoint.ReceiveEndpoint);
+                    }
+
+                    Interlocked.Exchange(ref _committed, _pending.Position);
+                    endpoint.Release(_pending);
+                    _pending = null;
+                    _redeliveryHeaders = default;
+                    Attempt = 1;
                 }
 
-                Interlocked.Exchange(ref _committed, _pending.Position);
-                endpoint.Release(_pending);
-                _pending = null;
-                _redeliveryHeaders = default;
-                Attempt = 1;
+                if (receiveError is not null)
+                {
+                    ExceptionDispatchInfo.Throw(receiveError);
+                }
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested || abort.IsCancellationRequested)
