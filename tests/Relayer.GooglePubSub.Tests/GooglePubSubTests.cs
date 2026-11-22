@@ -190,6 +190,66 @@ public class GooglePubSubTests
     }
 
     [Test]
+    public async Task Shutdown_drains_later_subscription_while_first_handler_is_inflight()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = deadline.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var lease = await PubSubFixture.CreateAsync(tracing, token);
+        var fixture = (PubSubFixture)lease;
+        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.RegisterConsumer(async (_, cancellation) =>
+        {
+            firstEntered.TrySetResult();
+            await releaseFirst.Task.WaitAsync(cancellation);
+            return Disposition.Complete;
+        });
+
+        var secondName = SubscriptionName.FromProjectSubscription(
+            "relayer-test", TestContext.Current!.Isolation.GetIsolatedName("shutdown-second"));
+        var subscriber = fixture.Broker.Subscriber;
+        await subscriber.CreateSubscriptionAsync(new Subscription
+        {
+            SubscriptionName = secondName,
+            Topic = fixture.Destination,
+            AckDeadlineSeconds = 10
+        }, token);
+        var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = new GooglePubSubConsumer(
+            () => new SubscriberClientImpl(secondName, [subscriber], new(), static () => Task.CompletedTask),
+            tracing, fixture.Destination, fixture.Adapter, secondName.ToString());
+        second.Receive = (_, _) =>
+        {
+            secondEntered.TrySetResult();
+            return new(Disposition.Complete);
+        };
+        fixture.Adapter.Consumers.Add(second);
+
+        Task? stopping = null;
+
+        try
+        {
+            await fixture.Transport.StartAsync(token);
+            await fixture.Transport.SendAsync(new(fixture.Destination, "in flight"u8.ToArray()), token);
+            await Task.WhenAll(firstEntered.Task, secondEntered.Task).WaitAsync(token);
+
+            stopping = fixture.Transport.StopAsync(token);
+            await second.Completion.WaitAsync(TimeSpan.FromSeconds(15), token);
+            await Assert.That(stopping.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+
+            if (stopping is not null)
+            {
+                await stopping;
+            }
+        }
+    }
+
+    [Test]
     public async Task Hosted_pipeline_sends_generated_json_and_copies_poison_before_ack()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
