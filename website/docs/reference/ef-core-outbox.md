@@ -8,6 +8,13 @@ It depends on `Relayer.Outbox.EntityFrameworkCore` for provider-neutral transact
 `Relayer.Outbox.PostgreSql` for native PostgreSQL persistence and dispatch. The neutral package has no
 Npgsql or PostgreSQL package dependency; installing it alone does not configure a database provider.
 
+Use EF Core and the Npgsql provider version 10 on .NET 10 or version 11 on .NET 11.
+The Npgsql 11 provider targets PostgreSQL 16 by default. If your application connects to an older
+PostgreSQL server, set its version with `SetPostgresVersion` in your `UseNpgsql` options.
+With the default execution strategy, provider 11 also exposes transient failures without the outer
+`InvalidOperationException`. Serialization failures and deadlocks during `SaveChanges` now surface as
+`DbUpdateConcurrencyException`. See the [Npgsql EF Core 11 release notes](https://www.npgsql.org/efcore/release-notes/11.0.html#breaking-changes).
+
 The provider split moves registration and migration extensions into the PostgreSQL EF package.
 `EntityFrameworkCoreOutboxOptions` and the transaction coordinator belong to the neutral
 `Relayer.Outbox.EntityFrameworkCore` package. Registration extensions (`AddRelayerOutbox`,
