@@ -6,6 +6,9 @@ description: "Restore tenant headers before handler dependencies resolve and pro
 Register tenant propagation explicitly, before building your service provider:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+
 services.AddRelayerTenancy(contextPoolCapacity: 64);
 services.AddRelayer(builder =>
 {
