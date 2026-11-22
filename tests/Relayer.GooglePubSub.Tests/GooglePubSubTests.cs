@@ -250,6 +250,85 @@ public class GooglePubSubTests
     }
 
     [Test]
+    public async Task Hosted_startup_failure_stops_earlier_subscribers()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = deadline.Token;
+        await using var broker = await PubSubBroker.StartAsync(token);
+        var name = TestContext.Current!.Isolation.GetIsolatedName("startup-rollback");
+        var topic = TopicName.FromProjectTopic("relayer-test", name);
+        var deadLetter = TopicName.FromProjectTopic("relayer-test", name + "-dead");
+        var first = SubscriptionName.FromProjectSubscription("relayer-test", name + "-first");
+        var second = SubscriptionName.FromProjectSubscription("relayer-test", name + "-second");
+        var handled = new PubSubControl();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(handled);
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(PubSubJson.Default);
+            relayer.GooglePubSub("events", transport =>
+            {
+                transport.TopologyMode = TopologyMode.Provision;
+                transport.Options.Configure(options =>
+                {
+                    options.Publisher = broker.Publisher;
+                    options.Subscriber = broker.Subscriber;
+                    options.PublisherSettings.EnableMessageOrdering = true;
+                    options.Topics.Add(topic);
+                    options.Topics.Add(deadLetter);
+                    options.Subscriptions.Add(new()
+                    {
+                        SubscriptionName = first,
+                        TopicAsTopicName = topic
+                    });
+                    options.Subscriptions.Add(new()
+                    {
+                        SubscriptionName = second,
+                        TopicAsTopicName = topic
+                    });
+                });
+                transport.Consume(first.ToString(), consumer =>
+                {
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = deadLetter.ToString()
+                    });
+                    consumer.Handler<PubSubHandler>();
+                });
+                transport.Consume(second.ToString(), consumer =>
+                {
+                    consumer.Options.Settings.AckDeadline = TimeSpan.FromSeconds(1);
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = deadLetter.ToString()
+                    });
+                    consumer.Handler<PubSubHandler>();
+                });
+            });
+        });
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+
+        await Assert.That(() => host.StartAsync(token)).Throws<ArgumentOutOfRangeException>();
+        var transport = host.Services.GetRequiredKeyedService<GooglePubSubTransport>("events");
+        var firstStopped = transport.Consumers[0].Completion.IsCompletedSuccessfully;
+
+        var message = new PubsubMessage { Data = ByteString.CopyFromUtf8("""{"Value":42}""") };
+        message.Attributes.Add("ce-id", "after-startup-failure");
+        message.Attributes.Add("ce-source", "/startup-rollback");
+        message.Attributes.Add("ce-specversion", "1.0");
+        message.Attributes.Add("ce-type", "tests.pubsub.order");
+        var published = await broker.Publisher.PublishAsync(topic, [message], token);
+        await host.StopAsync(token);
+
+        await Assert.That(firstStopped).IsTrue();
+        await Assert.That(handled.Values.Reader.TryRead(out _)).IsFalse();
+        var pending = await broker.Subscriber.PullAsync(first, 1, token);
+        await Assert.That(pending.ReceivedMessages.Single().Message.MessageId).IsEqualTo(published.MessageIds.Single());
+    }
+
+    [Test]
     public async Task Hosted_stop_deadline_releases_caller_while_disposal_joins_native_cleanup()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
