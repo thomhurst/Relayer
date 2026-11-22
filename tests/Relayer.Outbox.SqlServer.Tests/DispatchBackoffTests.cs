@@ -31,10 +31,10 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
 
         for (var index = 0; index < delays.Length; index++)
         {
-            // Unordered fenced mutations use the caller's clock; ordered transactions use SQL's clock.
-            var before = mode == "ordered" ? await DatabaseTime() : DateTimeOffset.UtcNow;
+            // Every dispatch path computes the persisted retry deadline using SQL Server time.
+            var before = await DatabaseTime();
             await Dispatch(mode, data, transport, ordered);
-            var after = mode == "ordered" ? await DatabaseTime() : DateTimeOffset.UtcNow;
+            var after = await DatabaseTime();
             var row = await Read(data);
             await Assert.That(row.Attempts).IsEqualTo(index + 1);
             await Assert.That(row.Error).IsEqualTo("System.IO.IOException: broker offline");
