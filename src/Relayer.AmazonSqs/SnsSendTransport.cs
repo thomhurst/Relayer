@@ -18,6 +18,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
     private readonly AmazonSnsTransportOptions _options;
     private readonly MessageTracing? _tracing;
     private readonly SnsOperationPool _operations = new();
+    private readonly Lock _topicArnLock = new();
     private SqsSendTransport? _queues;
     private int _disposed;
 
@@ -368,25 +369,23 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         Check(cancellationToken);
-        await ResolveTopicsAsync(cancellationToken).ConfigureAwait(false);
+        var topicArns = await ResolveTopicsAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (var endpoint in _endpoints.Values)
         {
-            if (endpoint.Arn is null)
+            if (!topicArns.ContainsKey(endpoint))
             {
                 throw new InvalidOperationException($"Missing SNS topic '{endpoint.Declaration.Name}'. Provision topology explicitly before sending.");
             }
         }
+
+        UpdateTopicArnCache(topicArns, cancellationToken);
     }
 
-    private async Task ResolveTopicsAsync(CancellationToken cancellationToken)
+    private async Task<Dictionary<Endpoint, string>> ResolveTopicsAsync(CancellationToken cancellationToken)
     {
         // Native pagination is null-safe in SDK v4, unlike FindTopicAsync (aws/aws-sdk-net#4586).
-        foreach (var endpoint in _endpoints.Values)
-        {
-            endpoint.Arn = null;
-        }
-
+        var topicArns = new Dictionary<Endpoint, string>(_endpoints.Count);
         var topics = _client.Paginators.ListTopics(new ListTopicsRequest()).Topics;
 
         await foreach (var topic in topics.WithCancellation(cancellationToken).ConfigureAwait(false))
@@ -395,9 +394,11 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
 
             if (_endpoints.TryGetValue(name, out var endpoint))
             {
-                endpoint.Arn = topic.TopicArn;
+                topicArns[endpoint] = topic.TopicArn;
             }
         }
+
+        return topicArns;
     }
 
     public async ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
@@ -428,11 +429,11 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
             differences.AddRange((await _queues.ApplyTopologyAsync(mode, cancellationToken).ConfigureAwait(false)).Differences);
         }
 
-        await ResolveTopicsAsync(cancellationToken).ConfigureAwait(false);
+        var topicArns = await ResolveTopicsAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (var endpoint in _endpoints.Values)
         {
-            if (endpoint.Arn is null)
+            if (!topicArns.TryGetValue(endpoint, out var arn))
             {
                 if (mode == TopologyMode.Validate)
                 {
@@ -440,15 +441,16 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
                     continue;
                 }
 
-                endpoint.Arn = (await _client.CreateTopicAsync(endpoint.Declaration, cancellationToken).ConfigureAwait(false)).TopicArn;
+                arn = (await _client.CreateTopicAsync(endpoint.Declaration, cancellationToken).ConfigureAwait(false)).TopicArn;
+                topicArns[endpoint] = arn;
             }
 
-            var actual = await _client.GetTopicAttributesAsync(new GetTopicAttributesRequest { TopicArn = endpoint.Arn }, cancellationToken).ConfigureAwait(false);
+            var actual = await _client.GetTopicAttributesAsync(new GetTopicAttributesRequest { TopicArn = arn }, cancellationToken).ConfigureAwait(false);
             CompareAttributes(endpoint.Declaration.Attributes, actual.Attributes, $"SNS topic '{endpoint.Declaration.Name}'", differences);
 
             if (endpoint.Declaration.Tags is { Count: > 0 } tags)
             {
-                var actualTags = await _client.ListTagsForResourceAsync(new ListTagsForResourceRequest { ResourceArn = endpoint.Arn }, cancellationToken).ConfigureAwait(false);
+                var actualTags = await _client.ListTagsForResourceAsync(new ListTagsForResourceRequest { ResourceArn = arn }, cancellationToken).ConfigureAwait(false);
 
                 foreach (var tag in tags)
                 {
@@ -504,7 +506,22 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
             CompareAttributes(declaration.Attributes, attributes.Attributes, $"SNS subscription '{declaration.Endpoint}'", differences);
         }
 
-        return new(differences);
+        var report = new TopologyReport(differences);
+        UpdateTopicArnCache(topicArns, cancellationToken);
+        return report;
+    }
+
+    private void UpdateTopicArnCache(Dictionary<Endpoint, string> topicArns, CancellationToken cancellationToken)
+    {
+        lock (_topicArnLock)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            foreach (var endpoint in _endpoints.Values)
+            {
+                endpoint.Arn = topicArns.GetValueOrDefault(endpoint);
+            }
+        }
     }
 
     private static void CompareAttributes(Dictionary<string, string>? expected, Dictionary<string, string>? actual, string description, List<string> differences)
