@@ -148,7 +148,7 @@ These compiler diagnostics come from `ExperimentalAttribute`. Preview APIs may c
 
 ## RLYEXP001
 
-Sagas, diagram tooling and EF Core saga persistence requires explicit preview opt-in. Suppress `RLYEXP001` only after accepting the preview compatibility boundary. A pragma around your saga declarations is sufficient: generated saga registrations suppress the diagnostic for their internal preview API use.
+Sagas, diagram tooling and EF Core saga persistence require explicit preview opt-in. Suppress `RLYEXP001` only after accepting the preview compatibility boundary. When opting in with pragmas, cover your saga declarations, EF model configuration that uses preview properties, and explicit preview calls such as `consumer.Saga<TContext, TState>()`. The generated `consumer.Handler<THandler>()` already suppresses the diagnostic for its internal preview API use. See the [saga registration example](../guides/sagas.md#explicit-registration).
 
 ## RLYEXP002
 

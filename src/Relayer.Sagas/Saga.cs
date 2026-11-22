@@ -4,7 +4,7 @@ namespace Relayer.Sagas;
 
 /// <summary>Runs an explicit typed transition with application- or integration-provided persistence.</summary>
 /// <remarks>Persistence must share the consumer inbox/outbox boundary. Use the EF Core integration for PostgreSQL.</remarks>
-public abstract class Saga<TState, TMessage> : IHandler<TMessage>
+public abstract class Saga<TState, TMessage> : IHandler<TMessage>, ISagaHandler
     where TState : SagaData
 {
     /// <summary>Validates the consumer's transaction before loading state or invoking application code.</summary>

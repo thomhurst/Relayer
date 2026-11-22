@@ -15,8 +15,9 @@ class and a generated `IHandler<T>` dispatcher. There is no scanning, independen
 lock provider, second inbox or second outbox.
 
 Register process handlers through the generated `Handler<T>()` API. This also registers their
-typed execution services. Use the [test harness](testing.md) or a composed consumer to invoke them
-with the delivery's service scope.
+typed execution services. The generic helper overload `Handler<THandler, TMessage>()` rejects
+process handlers during configuration. Use the [test harness](testing.md) or a composed consumer
+to invoke them with the delivery's service scope.
 
 ## Handler and state
 
@@ -26,6 +27,7 @@ using Relayer;
 using Relayer.Kafka;
 using Relayer.Sagas.EntityFrameworkCore;
 
+#pragma warning disable RLYEXP001
 public sealed class OrderState : EntityFrameworkCoreSagaData
 {
     public int ItemsReceived { get; set; }
@@ -51,6 +53,7 @@ public sealed class OrderProcess(OrdersDbContext db, ISender sender)
         }
     }
 }
+#pragma warning restore RLYEXP001
 
 [Message("orders.item-received")]
 public sealed record ItemReceived(Guid OrderId, int ExpectedItems);
@@ -73,6 +76,7 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) :
 {
     public DbSet<OrderState> Orders => Set<OrderState>();
 
+#pragma warning disable RLYEXP001
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         var state = modelBuilder.Entity<OrderState>();
@@ -80,6 +84,7 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) :
         state.Property(s => s.Id).ValueGeneratedNever();
         state.Property(s => s.Version).IsRowVersion();
     }
+#pragma warning restore RLYEXP001
 }
 ```
 
@@ -104,7 +109,9 @@ services.AddRelayer(relayer =>
         kafka.Consume("orders.item-received", consumer =>
         {
             consumer.Options.Group = "order-process";
+#pragma warning disable RLYEXP001
             consumer.Saga<OrdersDbContext, OrderState>("orders.process");
+#pragma warning restore RLYEXP001
             consumer.Handler<OrderProcess>();
         });
     });
