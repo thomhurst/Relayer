@@ -15,6 +15,8 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 
 public class ChangeCaptureTests
 {
+    private const string SlotFeedback = "FROM pg_replication_slots s JOIN pg_stat_replication r ON r.pid = s.active_pid WHERE s.slot_name = @slot";
+
     [Test]
     public async Task Registration_validates_protocol_limits_and_duplicate_names()
     {
@@ -184,7 +186,6 @@ public class ChangeCaptureTests
                 await accepted.Task.WaitAsync(timeout.Token);
                 // Force a marker behind the blocked commit and observe fresh feedback from this reader.
                 await Sql(source, "SELECT pg_logical_emit_message(true, 'checkpoint-test', '')");
-                const string SlotFeedback = "FROM pg_replication_slots s JOIN pg_stat_replication r ON r.pid = s.active_pid WHERE s.slot_name = @slot";
                 await using var observer = await source.OpenConnectionAsync(timeout.Token);
                 await using var feedback = new NpgsqlCommand($"SELECT r.reply_time {SlotFeedback}", observer);
                 feedback.Parameters.AddWithValue("slot", Slot);
@@ -266,6 +267,13 @@ public class ChangeCaptureTests
         {
             await Until(async () => await Count(source) == 0, timeout.Token);
             await Assert.That(replay.Ids.SequenceEqual([Id(1)])).IsTrue();
+
+            // Startup recovery deletes the row before Npgsql starts replication.
+            // Wait for client feedback so cancellation cannot overtake START_REPLICATION.
+            await using var observer = await source.OpenConnectionAsync(timeout.Token);
+            await using var feedback = new NpgsqlCommand($"SELECT EXISTS (SELECT 1 {SlotFeedback} AND r.reply_time IS NOT NULL)", observer);
+            feedback.Parameters.AddWithValue("slot", Slot);
+            await Until(async () => await feedback.ExecuteScalarAsync(timeout.Token) is true, timeout.Token);
         }
         finally
         {
