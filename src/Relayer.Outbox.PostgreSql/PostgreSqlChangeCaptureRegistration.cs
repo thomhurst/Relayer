@@ -73,7 +73,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             MaxDispatchAttempts = ReadValue(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
             BatchSize = ReadValue(nameof(defaults.BatchSize), defaults.BatchSize),
             ClaimDuration = ReadValue(nameof(defaults.ClaimDuration), defaults.ClaimDuration),
-            ReconnectDelay = ReadValue(nameof(defaults.ReconnectDelay), defaults.ReconnectDelay)
+            ReconnectDelay = ReadValue(nameof(defaults.ReconnectDelay), defaults.ReconnectDelay),
+            IdleCheckpointInterval = ReadValue(nameof(defaults.IdleCheckpointInterval), defaults.IdleCheckpointInterval)
         });
 
         T ReadValue<T>(string key, T fallback) where T : IParsable<T>

@@ -25,15 +25,17 @@ public class ChangeCaptureTests
         {
             ["BatchSize"] = "7",
             ["ReconnectDelay"] = "00:00:02",
+            ["IdleCheckpointInterval"] = "00:00:10",
             ["Schema"] = "custom"
         }).Build();
-        var native = new PgOutputReplicationOptions("other", PgOutputProtocolVersion.V1);
+        var native = new PgOutputReplicationOptions("other", PgOutputProtocolVersion.V1, messages: true);
         services.AddRelayerPostgreSqlChangeCapture("other", source, () => new("Host=unused"), new("other"), native, configuration);
         configuration["BatchSize"] = "99";
         await using var provider = services.BuildServiceProvider();
         var settings = provider.GetRequiredService<IOptionsMonitor<PostgreSqlChangeCaptureOptions>>().Get("other");
         await Assert.That(settings.BatchSize).IsEqualTo(7);
         await Assert.That(settings.ReconnectDelay).IsEqualTo(TimeSpan.FromSeconds(2));
+        await Assert.That(settings.IdleCheckpointInterval).IsEqualTo(TimeSpan.FromSeconds(10));
         await Assert.That(settings.Schema).IsEqualTo("custom");
         await Assert.That(settings.Replication).IsSameReferenceAs(native);
         await Assert.That(provider.GetServices<IHostedService>().Count()).IsEqualTo(2);
@@ -44,6 +46,12 @@ public class ChangeCaptureTests
             Replication = new("orders", PgOutputProtocolVersion.V2)
         }.Validate()).Throws<ArgumentException>();
         await Assert.That(() => Options(batchSize: 0).Validate()).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => new PostgreSqlChangeCaptureOptions
+        {
+            Slot = new("orders"),
+            Replication = new("orders", PgOutputProtocolVersion.V1),
+            IdleCheckpointInterval = TimeSpan.FromSeconds(1)
+        }.Validate()).Throws<ArgumentException>();
     }
 
     [Test]
@@ -59,6 +67,38 @@ public class ChangeCaptureTests
         await Assert.That(async () => await worker.StartAsync(default)).Throws<InvalidOperationException>();
         await Sql(source, "ALTER PUBLICATION orders SET (publish = 'insert'); ALTER PUBLICATION orders SET TABLE relayer_outbox WHERE (lane IS NULL)");
         await Assert.That(async () => await worker.StartAsync(default)).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Idle_checkpoint_advances_past_unpublished_writes()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Sql(source, "CREATE TABLE unrelated (value integer)");
+        await Provision(source, fixture.ConnectionString);
+        var pooled = new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Pooling = true, MaxPoolSize = 1 };
+        await using var workerSource = NpgsqlDataSource.Create(pooled.ConnectionString);
+        var transport = new RecordingTransport();
+        using var worker = Worker(workerSource, fixture.ConnectionString, transport, idleCheckpointInterval: TimeSpan.FromMilliseconds(100));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await worker.StartAsync(timeout.Token);
+
+        try
+        {
+            await Streaming(source, timeout.Token);
+            await Acknowledged(source, await Insert(source, Id(1)), timeout.Token);
+            await Sql(source, "INSERT INTO unrelated VALUES (1)");
+            await using var command = source.CreateCommand("SELECT pg_current_wal_insert_lsn()");
+            var position = (NpgsqlLogSequenceNumber)(await command.ExecuteScalarAsync(timeout.Token))!;
+            await Acknowledged(source, position, timeout.Token);
+            await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
+        }
+        finally
+        {
+            await StopAndWaitForSlotReleaseAsync(worker, source);
+        }
     }
 
     [Test]
@@ -119,7 +159,7 @@ public class ChangeCaptureTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         NpgsqlLogSequenceNumber position;
 
-        using (var first = Worker(source, fixture.ConnectionString, transport))
+        using (var first = Worker(source, fixture.ConnectionString, transport, idleCheckpointInterval: TimeSpan.FromMilliseconds(100)))
         {
             await first.StartAsync(timeout.Token);
 
@@ -128,6 +168,20 @@ public class ChangeCaptureTests
                 await Streaming(source, timeout.Token);
                 position = await Insert(source, Id(1));
                 await accepted.Task.WaitAsync(timeout.Token);
+                // Force a marker behind the blocked commit and observe fresh feedback from this reader.
+                await Sql(source, "SELECT pg_logical_emit_message(true, 'checkpoint-test', '')");
+                const string SlotFeedback = "FROM pg_replication_slots s JOIN pg_stat_replication r ON r.pid = s.active_pid WHERE s.slot_name = @slot";
+                await using var observer = await source.OpenConnectionAsync(timeout.Token);
+                await using var feedback = new NpgsqlCommand($"SELECT r.reply_time {SlotFeedback}", observer);
+                feedback.Parameters.AddWithValue("slot", Slot);
+                var previous = await feedback.ExecuteScalarAsync(timeout.Token);
+                feedback.CommandText = $"SELECT r.reply_time IS NOT NULL AND r.reply_time IS DISTINCT FROM @previous {SlotFeedback}";
+                feedback.Parameters.AddWithValue("previous", NpgsqlDbType.TimestampTz, previous ?? DBNull.Value);
+                await Until(async () => await feedback.ExecuteScalarAsync(timeout.Token) is true, timeout.Token);
+
+                await using var checkpoint = source.CreateCommand($"SELECT confirmed_flush_lsn < @position FROM pg_replication_slots WHERE slot_name = '{Slot}'");
+                checkpoint.Parameters.AddWithValue("position", NpgsqlDbType.PgLsn, position);
+                await Assert.That(await checkpoint.ExecuteScalarAsync(timeout.Token) is true).IsTrue();
             }
             finally
             {
@@ -208,12 +262,14 @@ public class ChangeCaptureTests
     // Replication slot names are unique per server, which every test shares.
     private static string Slot => TestContext.Current!.Isolation.GetIsolatedName("orders");
 
-    private static PostgreSqlChangeCaptureOptions Options(int batchSize = 3, bool retainSentMessages = false)
+    private static PostgreSqlChangeCaptureOptions Options(int batchSize = 3, bool retainSentMessages = false,
+        TimeSpan idleCheckpointInterval = default)
     {
         return new()
         {
             Slot = new(Slot),
-            Replication = new("orders", PgOutputProtocolVersion.V1),
+            Replication = new("orders", PgOutputProtocolVersion.V1, messages: idleCheckpointInterval != TimeSpan.Zero ? true : null),
+            IdleCheckpointInterval = idleCheckpointInterval,
             BatchSize = batchSize,
             RetainSentMessages = retainSentMessages
         };
@@ -332,6 +388,54 @@ public class ChangeCaptureTests
     }
 
     [Test]
+    public async Task Invalidated_slot_faults_live_worker_and_prevents_startup()
+    {
+        // The idle timeout is server-wide and must not invalidate other tests' slots.
+        await using var server = new PostgreSqlServer(new DockerCommand().RunAsync,
+            failure => throw new InvalidOperationException("Could not stop the dedicated PostgreSQL server.", failure));
+        await server.StartAsync();
+        await using var source = NpgsqlDataSource.Create(server.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Provision(source, server.ConnectionString);
+        await Insert(source, Id(1));
+        var recovering = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishRecovery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new RecordingTransport(async (_, token) =>
+        {
+            recovering.TrySetResult();
+            await finishRecovery.Task.WaitAsync(token);
+        });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var worker = Worker(source, server.ConnectionString, transport);
+
+        // Hold catch-up before START_REPLICATION, after the slot has passed startup validation.
+        await worker.StartAsync(timeout.Token);
+        await recovering.Task.WaitAsync(timeout.Token);
+        await Sql(source, "ALTER SYSTEM SET idle_replication_slot_timeout = '1s'");
+        await Sql(source, "SELECT pg_reload_conf()");
+        await using var observer = await source.OpenConnectionAsync(timeout.Token);
+        await using var ready = new NpgsqlCommand("""
+            SELECT current_setting('idle_replication_slot_timeout') <> '0'
+                AND inactive_since < clock_timestamp() - interval '1 second'
+            FROM pg_replication_slots
+            WHERE slot_name = @slot
+            """, observer);
+        ready.Parameters.AddWithValue("slot", Slot);
+        await Until(async () => await ready.ExecuteScalarAsync(timeout.Token) is true, timeout.Token);
+        await Sql(source, "CHECKPOINT");
+        await using var invalidation = source.CreateCommand(
+            $"SELECT invalidation_reason FROM pg_replication_slots WHERE slot_name = '{Slot}'");
+        await Assert.That((string?)await invalidation.ExecuteScalarAsync(timeout.Token)).IsEqualTo("idle_timeout");
+        finishRecovery.TrySetResult();
+
+        var failure = await Assert.That(async () => await worker.ExecuteTask!.WaitAsync(timeout.Token)).Throws<InvalidOperationException>();
+        await Assert.That(failure!.Message).Contains("idle_timeout");
+        using var replacement = Worker(source, server.ConnectionString, new());
+        var startup = await Assert.That(() => replacement.StartAsync(timeout.Token)).Throws<InvalidOperationException>();
+        await Assert.That(startup!.Message).Contains("idle_timeout");
+    }
+
+    [Test]
     public async Task Transient_native_disconnect_reconnects_to_persistent_slot_and_captures_new_commits()
     {
         await using var fixture = new PostgreSqlFixture();
@@ -381,11 +485,13 @@ public class ChangeCaptureTests
         }
     }
 
-    private static PostgreSqlChangeCaptureWorker Worker(NpgsqlDataSource source, string connectionString, RecordingTransport transport, bool retainSentMessages = false)
+    private static PostgreSqlChangeCaptureWorker Worker(NpgsqlDataSource source, string connectionString,
+        RecordingTransport transport, bool retainSentMessages = false, TimeSpan idleCheckpointInterval = default)
     {
-        return new(source, () => new(connectionString) { WalReceiverStatusInterval = TimeSpan.FromMilliseconds(25) }, Options(retainSentMessages: retainSentMessages), [transport],
-                    NullLogger<PostgreSqlChangeCaptureWorker>.Instance, NullLogger<PostgreSqlMaintenanceWorker>.Instance,
-                    NullLogger<PostgreSqlDirectDispatcher>.Instance);
+        return new(source, () => new(connectionString) { WalReceiverStatusInterval = TimeSpan.FromMilliseconds(25) },
+            Options(retainSentMessages: retainSentMessages, idleCheckpointInterval: idleCheckpointInterval), [transport],
+            NullLogger<PostgreSqlChangeCaptureWorker>.Instance, NullLogger<PostgreSqlMaintenanceWorker>.Instance,
+            NullLogger<PostgreSqlDirectDispatcher>.Instance);
     }
 
     private static async Task Provision(NpgsqlDataSource source, string connectionString, string publish = "insert")

@@ -61,6 +61,12 @@ public sealed class PostgreSqlChangeCaptureOptions
         get; init;
     } = TimeSpan.FromSeconds(5);
 
+    /// <summary>Interval for writing a PostgreSQL WAL checkpoint marker. Zero disables markers. Requires native pgoutput messages.</summary>
+    public TimeSpan IdleCheckpointInterval
+    {
+        get; init;
+    }
+
     internal PostgreSqlMaintenanceOptions Validate()
     {
         ArgumentNullException.ThrowIfNull(Slot);
@@ -75,6 +81,20 @@ public sealed class PostgreSqlChangeCaptureOptions
         if (ReconnectDelay <= TimeSpan.Zero || ReconnectDelay.TotalMilliseconds > uint.MaxValue - 1)
         {
             throw new ArgumentOutOfRangeException(nameof(ReconnectDelay));
+        }
+
+        if (IdleCheckpointInterval != TimeSpan.Zero)
+        {
+            if (IdleCheckpointInterval.TotalMilliseconds is < 1 or > uint.MaxValue - 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(IdleCheckpointInterval));
+            }
+
+            if (Replication.Messages != true)
+            {
+                throw new ArgumentException("Set messages: true in PgOutputReplicationOptions to enable CDC idle checkpoints.",
+                    nameof(Replication));
+            }
         }
 
         var recovery = new PostgreSqlMaintenanceOptions

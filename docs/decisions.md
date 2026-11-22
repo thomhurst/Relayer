@@ -1426,6 +1426,14 @@ acquiring its idle leadership lease. Feedback follows committed database mutatio
 failed database transaction. Native send failures remain durable and may be checkpointed; maintenance
 handles retries, expired claims, due schedules and retention. Ordered rows remain with existing lane leases.
 
+Npgsql handles primary keepalives internally, and its receive position can advance ahead of the reader's
+dispatch transactions. Offer opt-in checkpoints through PostgreSQL's `pg_logical_emit_message` with
+native `messages: true`. Each transactional marker supplies a commit in the existing read loop. Keep
+feedback on that loop so it advances only after earlier outbox dispatch completes. Leave supplied
+`PgOutputReplicationOptions` unchanged, and use local commit for marker writes so they do not depend
+on replication feedback. Validate slot usability from the native catalog at startup and before
+reconnection because Npgsql's transient SQLSTATE classification includes invalidated slots.
+
 **Consequences.** CDC avoids waiting for a polling interval for new commits without changing native sends,
 table layout, ordering or at-least-once recovery. A crash after broker acceptance can duplicate delivery.
 The application provisions and monitors WAL retention and must use the writer's database for both
