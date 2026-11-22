@@ -13,6 +13,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
     private readonly FrozenDictionary<string, Endpoint> _topics;
     private readonly FrozenDictionary<string, Subscription> _subscriptions;
     private readonly MessageTracing _tracing;
+    private readonly bool _publisherOrderingEnabled;
     private bool _disposed;
 
     internal List<GooglePubSubConsumer> Consumers
@@ -37,6 +38,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
             Subscriber = options.Subscriber,
             PublisherSettings = options.PublisherSettings.Clone()
         };
+        _publisherOrderingEnabled = _options.PublisherSettings.EnableMessageOrdering;
 
         foreach (var topic in options.Topics)
         {
@@ -44,6 +46,10 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
         }
 
         _subscriptions = options.Subscriptions.ToFrozenDictionary(subscription => SubscriptionName.Parse(subscription.Name).ToString(), subscription => subscription.Clone(), StringComparer.Ordinal);
+        var topicsWithUnorderedSubscriptions = _subscriptions.Values
+            .Where(static subscription => !subscription.EnableMessageOrdering)
+            .Select(static subscription => subscription.Topic)
+            .ToHashSet(StringComparer.Ordinal);
         var topics = new Dictionary<string, Endpoint>(StringComparer.Ordinal);
 
         foreach (var topic in options.Topics)
@@ -58,7 +64,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
             topics.Add(destination, new(new PublisherClientImpl(topic, [options.Publisher], options.PublisherSettings.Clone(), static () => Task.CompletedTask),
                 new()
                 {
-                    OrderedByKey = options.PublisherSettings.EnableMessageOrdering == true,
+                    OrderedByKey = _publisherOrderingEnabled && !topicsWithUnorderedSubscriptions.Contains(destination),
                     MaxBatchSize = 1000,
                     MaxMessageBytes = 10_000_000
                 },
@@ -120,7 +126,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
 
             // Incoming keys can originate outside Relayer, even on unordered subscriptions.
             // Failure copies preserve them, and the native publisher rejects keys unless enabled.
-            if (_options.PublisherSettings.EnableMessageOrdering != true)
+            if (!_publisherOrderingEnabled)
             {
                 throw new InvalidOperationException($"Pub/Sub consumer '{consumer.Source}': set PublisherSettings.EnableMessageOrdering = true so dead-letter copies can preserve incoming ordering keys.");
             }
@@ -363,9 +369,10 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
 
         var endpoint = GetEndpoint(message.Destination);
 
-        if (message.OrderingKey is not null && !endpoint.Capabilities.OrderedByKey)
+        // Native publishing can preserve keys on dead-letter copies even when delivery is unordered.
+        if (message.OrderingKey is not null && !_publisherOrderingEnabled)
         {
-            throw new InvalidOperationException("Pub/Sub ordering requires native PublisherSettings.EnableMessageOrdering and ordering-enabled subscriptions.");
+            throw new InvalidOperationException("Pub/Sub publishing with an ordering key requires PublisherSettings.EnableMessageOrdering = true.");
         }
 
         return endpoint;

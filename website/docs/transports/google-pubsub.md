@@ -74,7 +74,9 @@ Every transport with consumers must set `PublisherSettings.EnableMessageOrdering
 
 ## Ordering and native access
 
-For keyed ordering, set `PublisherSettings.EnableMessageOrdering = true`, set `Subscription.EnableMessageOrdering = true` on every consuming subscription, and use the common route ordering selector. Google's client retains responsibility for ordering keys in error, including `PublisherClient.ResumePublish`. Resolve `IGooglePubSubClients` with the transport name as its DI key, or use `context.GooglePubSub().Clients`, and call `PublisherFor(topic)` for those native operations. Do not dispose the returned publisher. Relayer does not claim exactly-once application effects, even when a native subscription enables exactly-once delivery.
+For keyed ordering, set `PublisherSettings.EnableMessageOrdering = true` and set `Subscription.EnableMessageOrdering = true` on every declared subscription for the topic. Startup rejects a route with `.OrderingKey(...)` if publisher ordering is disabled or any declared subscription for that topic has ordering disabled. This check uses the subscription declarations for the named transport. For subscriptions managed outside those declarations, enable ordering on the broker to get ordered delivery.
+
+Google's client retains responsibility for ordering keys in error, including `PublisherClient.ResumePublish`. Resolve `IGooglePubSubClients` with the transport name as its DI key, or use `context.GooglePubSub().Clients`, and call `PublisherFor(topic)` for those native operations. Do not dispose the returned publisher. Relayer does not claim exactly-once application effects, even when a native subscription enables exactly-once delivery.
 
 Inside a handler, `context.GooglePubSub().Message` exposes the original `PubsubMessage` and `.Subscriber` exposes the native streaming client. Both are borrowed until processing ends. Configure outgoing messages with `new SendOptions().GooglePubSub(message => ...)`; portable ordering keys and headers normally need no callback.
 

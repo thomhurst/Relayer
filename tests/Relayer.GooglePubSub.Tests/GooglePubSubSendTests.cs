@@ -50,6 +50,33 @@ public class GooglePubSubSendTests
     }
 
     [Test]
+    [Arguments(false, true, true, false)]
+    [Arguments(true, false, false, false)]
+    [Arguments(true, true, false, false)]
+    [Arguments(true, true, true, true)]
+    public async Task Topic_ordering_requires_publisher_and_all_declared_subscriptions(
+        bool publisherOrdering, bool firstSubscriptionOrdering, bool secondSubscriptionOrdering, bool expectedTopicOrdering)
+    {
+        await using var provider = Provider(new GatedPublisher(), transport => transport.Options.Configure(options =>
+        {
+            options.PublisherSettings.EnableMessageOrdering = publisherOrdering;
+            options.Subscriptions[0].EnableMessageOrdering = firstSubscriptionOrdering;
+            options.Subscriptions.Add(new()
+            {
+                Name = SourceSubscription + "-second",
+                Topic = Topic,
+                EnableMessageOrdering = secondSubscriptionOrdering
+            });
+        }));
+        var transport = provider.GetRequiredService<ITransport>();
+
+        await Assert.That(transport.GetCapabilities(Topic).OrderedByKey).IsEqualTo(expectedTopicOrdering);
+        await Assert.That(transport.GetCapabilities(DeadLetterTopic).OrderedByKey).IsEqualTo(publisherOrdering);
+        await Assert.That(transport.GetCapabilities(SourceSubscription).OrderedByKey).IsEqualTo(firstSubscriptionOrdering);
+        await Assert.That(transport.GetCapabilities(SourceSubscription + "-second").OrderedByKey).IsEqualTo(secondSubscriptionOrdering);
+    }
+
+    [Test]
     public async Task Unsupported_sends_and_pre_cancelled_sends_never_reach_native_publish()
     {
         var native = new GatedPublisher();
