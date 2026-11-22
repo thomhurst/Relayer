@@ -252,18 +252,21 @@ in EF's execution strategy. Creating a fresh DI scope and DbContext on each atte
 tracked state between attempts:
 
 ```csharp
-await strategyContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+await strategyContext.Database.CreateExecutionStrategy().ExecuteAsync(async attemptToken =>
 {
     await using var scope = serviceScopeFactory.CreateAsyncScope();
     var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
     var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-    await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+    await using var transaction = await db.Database.BeginTransactionAsync(attemptToken);
     db.Orders.Add(new Order { Id = orderId });
-    await sender.SendAsync(new OrderPlaced(orderId), cancellationToken);
-    await db.SaveChangesAsync(cancellationToken);
-    await transaction.CommitAsync(cancellationToken);
-});
+    await sender.SendAsync(new OrderPlaced(orderId), attemptToken);
+    await db.SaveChangesAsync(attemptToken);
+    await transaction.CommitAsync(attemptToken);
+}, cancellationToken);
 ```
+
+Pass the caller's cancellation token to `ExecuteAsync` so EF can cancel the delay between
+attempts. Pass the token supplied to the delegate to the operations within each attempt.
 
 Synchronous `Execute`, `SaveChanges` and transaction methods follow the same pattern. Do not carry
 tracked entities or buffered messages from a failed attempt into the next attempt. A connection failure

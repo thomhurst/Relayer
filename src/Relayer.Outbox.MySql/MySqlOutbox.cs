@@ -43,7 +43,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
 
         _inboxPools = inboxPools;
         _dispatcher = dispatcher;
-        dispatcher?.ValidateStore(value.TablePrefix);
+        dispatcher?.ValidateStore(value);
         _options = value;
         _lanes = value.Lanes;
         _instrumentation = instrumentation;
@@ -197,6 +197,15 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
 
         _count = 0;
         _transaction = null;
+    }
+
+    internal static void ValidateOrderedLanes(MySqlOutboxOptions writer, int orderedLaneCount)
+    {
+        if (writer.Lanes != orderedLaneCount)
+        {
+            throw new InvalidOperationException(
+                $"MySQL outbox store '{writer.DispatchStoreName}' writer has Lanes = {writer.Lanes}, but its ordered dispatcher has Lanes = {orderedLaneCount}. Configure the same Lanes on both registrations.");
+        }
     }
 
     internal static void ValidateOptions(MySqlOutboxOptions options)

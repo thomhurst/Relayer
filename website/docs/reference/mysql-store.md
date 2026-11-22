@@ -133,6 +133,10 @@ the transaction instead. Ambient `TransactionScope` is rejected before beginning
 
 Ordering keys use the shared stable lane hash. All writers and ordered workers must
 agree on `Lanes` (default `64`); changing it requires draining or migrating existing rows.
+When `DispatchStoreName` matches a locally registered ordered worker's name, a mismatch
+in lane counts fails host startup. If writer configuration reloads, new writer scopes also
+reject lane counts that differ from the running worker. Configure matching counts explicitly
+for unnamed writers or writers and workers running in separate hosts.
 The enlistment reports no scheduling support until matching due-row workers are implemented.
 Registering this integration alone does not send persisted rows to a broker.
 

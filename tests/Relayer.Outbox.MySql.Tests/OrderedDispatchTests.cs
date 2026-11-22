@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Data;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
@@ -33,6 +34,82 @@ public sealed class OrderedDispatchTests
         await Assert.That(() => services.AddRelayerMySqlOrderedDispatch("orders", source)).Throws<InvalidOperationException>();
         await Assert.That(() => new MySqlOrderedDispatchOptions { LeaseDuration = TimeSpan.FromMilliseconds(999) }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new MySqlOrderedDispatchOptions { PollInterval = TimeSpan.FromSeconds(10) }.Validate()).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    [Arguments(2, 1)]
+    [Arguments(1, 2)]
+    public async Task Named_writer_and_ordered_worker_with_different_lane_counts_fail_at_startup(int writerLanes, int workerLanes)
+    {
+        await using var database = new MySqlFixture();
+        await database.StartAsync();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton<ITransport>(new RecordingTransport());
+        var writer = new MySqlOutboxOptions { DispatchStoreName = "orders", Lanes = writerLanes };
+        builder.Services.AddRelayerMySqlOutbox(writer);
+        builder.Services.AddRelayerMySqlDirectDispatch("orders", database.Source, writer);
+        builder.Services.AddRelayerMySqlOrderedDispatch("orders", database.Source, new MySqlOrderedDispatchOptions { Lanes = workerLanes });
+        using var host = builder.Build();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var error = await Assert.That(async () =>
+        {
+            await host.StartAsync(timeout.Token);
+            await host.StopAsync(timeout.Token);
+        }).Throws<InvalidOperationException>();
+
+        await Assert.That(error!.Message).Contains("'orders'");
+        await Assert.That(error.Message).Contains($"writer has Lanes = {writerLanes}");
+        await Assert.That(error.Message).Contains($"ordered dispatcher has Lanes = {workerLanes}");
+    }
+
+    [Test]
+    public async Task Matching_named_worker_dispatches_an_ordered_row_and_rejects_mismatched_writer_reload()
+    {
+        await using var database = new MySqlFixture();
+        await database.StartAsync();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["DispatchStoreName"] = "orders",
+            ["Lanes"] = "2"
+        }).Build();
+        var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new RecordingTransport((_, _) =>
+        {
+            delivered.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton<ITransport>(transport);
+        builder.Services.AddRelayerMySqlOrderedDispatch("orders", database.Source, configuration);
+        builder.Services.AddRelayerMySqlDirectDispatch("orders", database.Source, new MySqlOutboxOptions { Lanes = 2 });
+        builder.Services.AddRelayerMySqlOutbox(configuration);
+        using var host = builder.Build();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await host.StartAsync(timeout.Token);
+
+        try
+        {
+            await using var scope = host.Services.CreateAsyncScope();
+            var outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
+            await using var transaction = await outbox.BeginTransactionAsync(database.Source, cancellationToken: timeout.Token);
+            await outbox.EnlistAsync(Record(Id(1), "b"), timeout.Token);
+            await transaction.CommitAsync(timeout.Token);
+            await delivered.Task.WaitAsync(timeout.Token);
+
+            configuration["Lanes"] = "3";
+            configuration.Reload();
+            await using var newScope = host.Services.CreateAsyncScope();
+            var error = await Assert.That(() => newScope.ServiceProvider.GetRequiredService<MySqlOutbox>()).Throws<InvalidOperationException>();
+            await Assert.That(error!.Message).Contains("writer has Lanes = 3");
+            await Assert.That(error.Message).Contains("ordered dispatcher has Lanes = 2");
+        }
+        finally
+        {
+            await host.StopAsync(timeout.Token);
+        }
+
+        await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
     }
 
     [Test]

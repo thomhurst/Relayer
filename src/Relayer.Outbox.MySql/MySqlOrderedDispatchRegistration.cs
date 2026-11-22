@@ -41,9 +41,19 @@ public static partial class MySqlOutboxServiceCollectionExtensions
                 provider.GetServices<IPostConfigureOptions<MySqlOrderedDispatchOptions>>(),
                 provider.GetServices<IValidateOptions<MySqlOrderedDispatchOptions>>()));
         services.AddKeyedSingleton<MySqlOrderedDispatcher>(name, (provider, _) =>
-            new(dataSource, provider.GetRequiredService<IOptionsMonitor<MySqlOrderedDispatchOptions>>().Get(name),
-                provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<MySqlOrderedDispatcher>>(),
-                instrumentation: provider.GetService<RelayerInstrumentation>()));
+        {
+            var worker = provider.GetRequiredService<IOptionsMonitor<MySqlOrderedDispatchOptions>>().Get(name);
+            var writer = provider.GetRequiredService<IOptionsMonitor<MySqlOutboxOptions>>().CurrentValue;
+
+            if (writer.DispatchStoreName == name)
+            {
+                MySqlOutbox.ValidateOrderedLanes(writer, worker.Lanes);
+            }
+
+            return new(dataSource, worker, provider.GetServices<ITransport>(),
+                provider.GetRequiredService<ILogger<MySqlOrderedDispatcher>>(),
+                instrumentation: provider.GetService<RelayerInstrumentation>());
+        });
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<MySqlOrderedDispatcher>(name));
         return services;
     }
