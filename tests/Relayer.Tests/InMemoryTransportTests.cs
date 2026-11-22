@@ -1384,6 +1384,101 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    public async Task Hosted_startup_can_retry_after_a_later_consumer_fails_composition()
+    {
+        var received = Channel.CreateUnbounded<int>();
+        int compositionAttempts = 0;
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(received);
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.InMemory("local", local =>
+            {
+                local.Options.Configure(options => options.Endpoints.Add("events", new()
+                {
+                    Capabilities = new()
+                    {
+                        ConsumptionModel = ConsumptionModel.Log,
+                        DeadLetter = true,
+                    },
+                }));
+                local.Send<InMemoryOrder>("events");
+                local.Consume("events", consumer =>
+                {
+                    consumer.Options.Group = "worker";
+                    consumer.Handler<InMemoryOrderHandler>();
+                });
+                local.Consume("orders", consumer =>
+                {
+                    consumer.Handler<InMemoryOrderHandler>();
+                    consumer.ConfigurePipeline(_ =>
+                    {
+                        if (++compositionAttempts == 1)
+                        {
+                            throw new InvalidOperationException("orders composition failed");
+                        }
+                    });
+                });
+            });
+        });
+        using IHost host = builder.Build();
+        var transport = (InMemoryTransport)host.Services.GetRequiredService<ITransport>();
+
+        await Assert.That(() => host.StartAsync()).Throws<InvalidOperationException>()
+            .WithMessageContaining("orders composition failed");
+        await Assert.That(() => transport.GetCommittedPosition("events", "worker", 0))
+            .Throws<InvalidOperationException>().WithMessageContaining("unknown group");
+
+        await host.StartAsync();
+        using var scope = host.Services.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await sender.SendAsync(new InMemoryOrder(42));
+
+        await Assert.That(await Next(received)).IsEqualTo(42);
+        await host.StopAsync();
+        await Assert.That(compositionAttempts).IsEqualTo(2);
+        await Assert.That(transport.GetCommittedPosition("events", "worker", 0)).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments("orders", true)]
+    [Arguments("outgoing", false)]
+    public async Task Hosted_startup_checks_custom_cloud_events_headers_only_on_consumed_endpoints(
+        string destination, bool consumed)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(Channel.CreateUnbounded<int>());
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.InMemory("local", local =>
+            {
+                local.Send<InMemoryOrder>(destination, route => route.SendOptions = new()
+                {
+                    HeaderNames = new("events_"),
+                });
+                local.Consume("orders", consumer => consumer.Handler<InMemoryOrderHandler>());
+            });
+        });
+        using IHost host = builder.Build();
+
+        if (consumed)
+        {
+            var error = await Assert.That(() => host.StartAsync()).Throws<InvalidOperationException>();
+            await Assert.That(error!.Message).Contains("orders").And.Contains("events_type").And.Contains("ce_type");
+        }
+        else
+        {
+            await host.StartAsync();
+            using var scope = host.Services.CreateScope();
+            var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+            await sender.SendAsync(new InMemoryOrder(42));
+            await host.StopAsync();
+        }
+    }
+
+    [Test]
     public async Task Hosted_startup_rejects_a_consumer_with_no_durable_failure_executor()
     {
         var services = new ServiceCollection();

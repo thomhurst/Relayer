@@ -23,6 +23,10 @@ Declared endpoints already exist as native in-memory entities when the adapter i
 
 Starting the host composes generated handlers into the core receive pipeline and starts native receivers. The default endpoint is a bounded queue with native scheduling, redelivery and dead-lettering. Consumers use the same `consumer.Failures(policy)` and `consumer.Classify(classifier)` calls as broker transports. Retryable failures get three in-process retries by default, then go to the native dead-letter collection. Redelivery delays use native scheduling and retain attempt counts and error history independently for each log group. In-memory redelivery requires a delay within the endpoint’s `MaxRedeliveryDelay`; copy and outbox redelivery fallbacks are rejected during startup (and for manual retry requests) to retain the failing group and its admission credit. Increase the native limit or shorten the delay. With native dead-lettering disabled, configure `DeadLetterEndpoint` to a separate declared endpoint for the core copy fallback. A dead-letter destination equal to the source is rejected at startup because copying would wait on the current delivery’s admission credit. An unavailable failure path fails at startup.
 
+The host composes all consumers for a named in-memory transport before registering any native receivers for that transport. If pipeline composition throws, retrying startup on the same host can compose those consumers again.
+
+A typed CloudEvents send route to an endpoint with a hosted consumer must use the default `ce_` header prefix. Startup reports incompatible `SendRouteOptions.HeaderNames` values before any receiver starts for that transport. Send-only endpoints can use a custom prefix.
+
 Configure declared endpoints through named Options. An endpoint with no override uses queue defaults. An override for an undeclared endpoint fails startup.
 
 ```csharp
