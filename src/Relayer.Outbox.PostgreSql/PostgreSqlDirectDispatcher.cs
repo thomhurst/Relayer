@@ -19,9 +19,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     private long _recoveredSettled;
     private bool _deferSettlement;
     private readonly NpgsqlDataSource _source;
-    private readonly string? _host;
-    private readonly int _port;
-    private readonly string? _database;
+    private readonly PostgreSqlDatabaseTarget _target;
     private readonly bool _retainSentMessages;
     private readonly int _maxDispatchAttempts;
     private bool _schemaValidated;
@@ -72,10 +70,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     {
         _failures = new(scopes);
         _source = dataSource;
-        var target = new NpgsqlConnectionStringBuilder(dataSource.ConnectionString);
-        _host = target.Host;
-        _port = target.Port;
-        _database = target.Database ?? target.Username;
+        _target = new(dataSource.ConnectionString);
         _retainSentMessages = storeOptions.RetainSentMessages;
         _maxDispatchAttempts = storeOptions.MaxDispatchAttempts;
         _store = store ?? new(dataSource, storeOptions);
@@ -100,26 +95,17 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     {
         var database = writer.Database;
 
-        if (string.IsNullOrEmpty(_database) || string.IsNullOrEmpty(database))
+        if (string.IsNullOrEmpty(_target.Database) || string.IsNullOrEmpty(database))
         {
             throw new InvalidOperationException("Set Database in the PostgreSQL outbox writer and direct dispatcher connection settings when the database cannot be inferred from Username.");
         }
 
-        if (database != _database || !MatchesEndpoint(writer.ConnectionString))
+        PostgreSqlDatabaseTarget? writerTarget = null;
+
+        if (!_target.MatchesWriter(_source.ConnectionString, writer, ref writerTarget))
         {
             throw new InvalidOperationException("The outbox transaction and its direct dispatcher must use the same PostgreSQL host, port and database.");
         }
-    }
-
-    private bool MatchesEndpoint(string connectionString)
-    {
-        if (connectionString == _source.ConnectionString)
-        {
-            return true;
-        }
-
-        var writer = new NpgsqlConnectionStringBuilder(connectionString);
-        return writer.Host == _host && writer.Port == _port;
     }
 
     internal void ValidateLocal(PostgreSqlLocalTransport local)

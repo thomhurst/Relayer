@@ -19,9 +19,8 @@ internal sealed class DefaultOutboxCapabilities(IOptionsMonitor<EntityFrameworkC
             return current;
         }
 
-        current = new(value,
-            PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix),
-            PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix, value.Lanes));
+        var (unordered, ordered) = PostgreSqlSchedulingRegistration.GetCapabilities(workers, value.Schema, value.TablePrefix, value.Lanes);
+        current = new(value, unordered, ordered);
         // Concurrent reloads may duplicate this cold work; each scope still receives one coherent version.
         Volatile.Write(ref _current, current);
         return current;

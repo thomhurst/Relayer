@@ -101,8 +101,15 @@ connection. Both overloads accept an optional native `IsolationLevel` unchanged.
 - A lost connection or cancellation during native commit can leave the outcome unknown. Inspect durable business
   state using an application idempotency key before retrying; no client can undo an acknowledged server commit.
 - Native broker callbacks are rejected before persistence because delegates cannot survive storage.
-  Headers and ordering remain available. Scheduled sends through `ISender` require a matching [maintenance worker](postgres-maintenance.md) for unordered rows or [ordered dispatcher](ordered-dispatch.md) for ordered rows; commit-only dispatch cannot deliver future rows. This database transaction does not enlist a broker's
-  native transaction or change its delivery guarantees.
+  Headers and ordering remain available. Scheduled sends through `ISender` require a
+  [maintenance worker](postgres-maintenance.md) for unordered rows or an
+  [ordered dispatcher](ordered-dispatch.md) for ordered rows. The worker must use the writer's configured
+  PostgreSQL host, port, database, schema and table prefix. Ordered dispatch also requires the same lane count.
+  Separate data sources may use different credentials or pool settings when they target the same database.
+  At startup Relayer checks the worker's schema, prefix and lanes. It checks the database when
+  `BeginTransactionAsync` selects the writer connection. If no worker matches, `ISender` rejects
+  `DeliverAt` before enlistment. Commit-only dispatch cannot deliver future rows. This database transaction
+  does not enlist a broker's native transaction or change its delivery guarantees.
 
 Commit, rollback and disposal must go through the returned transaction. Do not close the original connection,
 issue SQL transaction-control commands, or obtain and complete a separate native transaction behind the wrapper.

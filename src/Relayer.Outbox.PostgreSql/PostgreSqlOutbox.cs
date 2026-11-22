@@ -18,6 +18,8 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     private readonly PostgreSqlDirectDispatcher? _dispatcher;
     private readonly PostgreSqlLocalStore[] _localStores;
     private readonly PostgreSqlOutboxOptions _options;
+    private readonly IEnumerable<PostgreSqlSchedulingRegistration> _workers;
+    private readonly (bool Unordered, bool Ordered) _configuredScheduling;
     private PostgreSqlOutboxTransaction? _transaction;
     private readonly OutboxTenantBinding? _tenant;
     private bool _failed;
@@ -42,8 +44,10 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         _tenant = value.TenantBinding;
         _tenant?.Validate();
         _lanes = value.Lanes;
-        SupportsScheduling = PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix);
-        SupportsOrderedScheduling = PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix, value.Lanes);
+        _workers = workers;
+        // Startup can check the worker topology. The application chooses the database when it begins a transaction.
+        _configuredScheduling = PostgreSqlSchedulingRegistration.GetCapabilities(workers, value.Schema, value.TablePrefix, _lanes);
+        (SupportsScheduling, SupportsOrderedScheduling) = _configuredScheduling;
         _instrumentation = instrumentation;
         _dispatcher = dispatcher;
         dispatcher?.ValidateStore(value.Schema, value.TablePrefix);
@@ -55,13 +59,13 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     /// <inheritdoc />
     public bool SupportsScheduling
     {
-        get;
+        get; private set;
     }
 
     /// <inheritdoc />
     public bool SupportsOrderedScheduling
     {
-        get;
+        get; private set;
     }
 
     /// <inheritdoc />
@@ -77,8 +81,11 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         _dispatcher?.ValidateConnection(connection);
         PostgreSqlLocalStore.ValidateWriterConnection(_localStores, _options.Schema, _options.TablePrefix, _lanes,
             connection, static writer => writer.ConnectionString);
+        var scheduling = GetScheduling(connection);
         var native = await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
-        return _transaction = new(this, native, null);
+        var transaction = new PostgreSqlOutboxTransaction(this, native, null);
+        (SupportsScheduling, SupportsOrderedScheduling) = scheduling;
+        return _transaction = transaction;
     }
 
     /// <summary>Opens a connection from an application-owned data source. The transaction owns that connection only.</summary>
@@ -95,14 +102,24 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         {
             _dispatcher?.ValidateConnection(connection);
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            var scheduling = GetScheduling(connection);
             var native = await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
-            return _transaction = new(this, native, connection);
+            var transaction = new PostgreSqlOutboxTransaction(this, native, connection);
+            (SupportsScheduling, SupportsOrderedScheduling) = scheduling;
+            return _transaction = transaction;
         }
         catch
         {
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    private (bool Unordered, bool Ordered) GetScheduling(NpgsqlConnection connection)
+    {
+        return _configuredScheduling == default
+            ? default
+            : PostgreSqlSchedulingRegistration.GetCapabilities(_workers, _options.Schema, _options.TablePrefix, _lanes, connection);
     }
 
     private void EnsureAvailable()
@@ -201,6 +218,7 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
 
         _count = 0;
         _failed = false;
+        (SupportsScheduling, SupportsOrderedScheduling) = _configuredScheduling;
         _transaction = null;
     }
 

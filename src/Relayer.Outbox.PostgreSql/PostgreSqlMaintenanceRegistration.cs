@@ -48,7 +48,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         {
             var settings = provider.GetRequiredService<IOptionsMonitor<PostgreSqlMaintenanceOptions>>().Get(name);
             _ = settings.Validate();
-            return new(settings.Schema, settings.TablePrefix);
+            return new(dataSource, settings.Schema, settings.TablePrefix);
         });
         return services;
     }
