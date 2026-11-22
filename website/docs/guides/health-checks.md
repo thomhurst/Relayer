@@ -33,8 +33,15 @@ the callback. Tracking never affects delivery: a callback that finds no free slo
 
 ## Explicit adapters
 
-`Relayer.HealthChecks` supplies an outbox health adapter for `IOutboxStore`; use the [PostgreSQL read/claim store](../reference/postgres-store.md)
-or an application-supplied store.
+For outbox backlog readiness, register a named store using the
+[PostgreSQL](../reference/postgres-store.md#registration),
+[SQL Server](../reference/sqlserver-store.md#deployment-and-registration), or
+[MySQL](../reference/mysql-store.md#deployment-and-registration) registration instructions.
+You can also register an application-supplied `IOutboxStore`.
+
+Call `AddRelayerOutboxHealthProvider` with the same case-sensitive name you used to register the store.
+Include that name in `RelayerHealthCheckOptions.OutboxNames` when you call `AddRelayerHealthChecks`.
+
 Registering a transport does not establish native connectivity. Register adapters explicitly as keyed services.
 For Kafka, reference `Relayer.Kafka.HealthChecks` and call `AddRelayerKafkaHealthProviders("orders-broker")`
 with the exact transport name; see [Kafka health checks](../transports/kafka.md#health-checks) for native
