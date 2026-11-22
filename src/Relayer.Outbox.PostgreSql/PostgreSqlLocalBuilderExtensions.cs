@@ -142,6 +142,7 @@ public static class PostgreSqlLocalBuilderExtensions
                 }
 
                 var composed = pipeline.Build(consumer.Concurrency);
+                composed.ReceiveEndpoint = (name, consumer.Source);
                 composed.BufferAttemptSends = true;
                 var receive = new ReceivePipeline<PostgreSqlLocalDelivery, PostgreSqlLocalMessageBinding>(composed, new(), consumer.Concurrency);
                 transport.Register(consumer.Source, receive.ProcessAsync, consumer.Concurrency, options.MaxAttempts, options.RedeliveryDelays,

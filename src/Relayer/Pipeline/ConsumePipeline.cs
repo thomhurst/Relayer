@@ -56,6 +56,11 @@ public sealed partial class ConsumePipeline
         get;
     }
 
+    internal (string TransportName, string Source)? ReceiveEndpoint
+    {
+        get; set;
+    }
+
     internal bool RestoresTenant
     {
         get;
@@ -126,6 +131,7 @@ public sealed partial class ConsumePipeline
         // Tenant restoration writes to a scoped service, so those consumers keep one scope per attempt.
         _scopesOnDemand = failures is not null && singletonHandlerServices is not null && !RestoresTenant;
         _failures = failures;
+        ReceiveEndpoint = failures?.ReceiveEndpoint;
         _dispatch = dispatch;
         _failure = failure;
         _classifier = classifier;

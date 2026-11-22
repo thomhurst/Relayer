@@ -43,13 +43,13 @@ public sealed class HarnessMessage
         get;
     }
 
-    /// <summary>The named transport, when correlated with a send in this host.</summary>
+    /// <summary>The named sending or receiving transport, when known.</summary>
     public string? TransportName
     {
         get;
     }
 
-    /// <summary>The declared destination, when correlated with a send in this host.</summary>
+    /// <summary>The send destination or receive source, when known.</summary>
     public string? Destination
     {
         get;

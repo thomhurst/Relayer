@@ -74,7 +74,7 @@ Consume failures remain observable when native settlement already logged the exc
 
 Use `harness.Read<T>(observation)` for an individual observation, including `Failed[i].Message` or `DeadLettered[i].Message`. Its wire identity must match the requested registered type, and a retained logical object must be assignable to that type; otherwise the read throws. Typed reads use the observation's named transport serializer, falling back to the provider's default when no name is available. `HarnessMessage.Read<T>(serializer)` remains available when you want to select the serializer explicitly.
 
-Receive and dispatch bodies are copied before native storage can be reused. Typed results and retained observations survive `Reset()`. Logical sends retain the original message object in `Message`; do not mutate that object during assertions. Wire IDs and types can be null for malformed or raw native messages. Transport and destination names on receive observations are correlated with sends in the same provider; unsolicited external deliveries may not have those names.
+Receive and dispatch bodies are copied before native storage can be reused. Typed results and retained observations survive `Reset()`. Logical sends retain the original message object in `Message`; do not mutate that object during assertions. Wire IDs and types can be null for malformed or raw native messages. Receive observations use the receiving transport and source endpoint, including when outbox fan-out delivers the same message ID to several transports. When a manually composed pipeline has no receive endpoint metadata, the harness falls back to correlating the delivery with a send in the same provider.
 
 ## Deterministic idle and reset
 
