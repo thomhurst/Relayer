@@ -94,7 +94,7 @@ The native mechanisms and core fallbacks are:
 | Feature | Native when available | Fallback |
 |---|---|---|
 | Delayed delivery / scheduling | ASB `ScheduledEnqueueTime`, SQS per-message `DelaySeconds` on standard queues (≤ 15 min; unavailable on FIFO queues), RabbitMQ delayed-message plugin | Outbox `deliver_at` |
-| Delayed redelivery of a received message | SQS visibility timeout (≤ 12 h); immediate only: ASB abandon, RabbitMQ requeue | Scheduled re-send of a copy, else outbox `deliver_at` |
+| Delayed redelivery of a received message | SQS visibility timeout (up to 43,199 s, within the remaining receive budget); immediate only: ASB abandon, RabbitMQ requeue | Scheduled re-send of a copy, else outbox `deliver_at` |
 | Dead-letter with error metadata | ASB DLQ (`DeadLetterMessageAsync` with properties) | Send a copy to the dead-letter endpoint (Kafka DLT topic, SQS DLQ queue), then complete |
 | Ordering | Kafka partition key, ASB sessions, SQS FIFO message group | None — must be declared unordered |
 | Batching | Kafka, SQS (10), ASB batches | Client-side batching |

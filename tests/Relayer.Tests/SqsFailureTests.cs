@@ -1,3 +1,6 @@
+using Amazon.Runtime;
+using Amazon.SQS;
+using Amazon.SQS.Model;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.AmazonSqs;
@@ -214,18 +217,45 @@ public sealed class SqsFailureTests
     }
 
     [Test]
-    public async Task Unsupported_native_delay_waits_for_durable_outbox_before_deletion()
+    public async Task Largest_whole_second_below_twelve_hours_is_accepted_without_a_scheduler()
+    {
+        using var client = new SqsReceiveTests.ReceiveClient();
+        using var host = Host(client, TimeSpan.FromSeconds(43_199));
+        await host.StartAsync();
+        await host.StopAsync();
+    }
+
+    [Test]
+    [Arguments(43_199 * TimeSpan.TicksPerSecond + 1)]
+    [Arguments(43_200 * TimeSpan.TicksPerSecond)]
+    public async Task Delay_that_rounds_to_twelve_hours_requires_a_scheduler_at_startup(long delayTicks)
+    {
+        using var client = new SqsReceiveTests.ReceiveClient();
+        using var host = Host(client, TimeSpan.FromTicks(delayTicks));
+        await Assert.That(() => host.StartAsync()).Throws<InvalidOperationException>();
+        await Assert.That(client.Polls).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(43_199 * TimeSpan.TicksPerSecond + 1)]
+    [Arguments(43_200 * TimeSpan.TicksPerSecond)]
+    [Arguments(46_800 * TimeSpan.TicksPerSecond)]
+    public async Task Unsupported_native_delay_waits_for_durable_outbox_before_deletion(long delayTicks)
     {
         using var client = new SqsReceiveTests.ReceiveClient();
         var scheduler = new Scheduler();
-        using var host = Host(client, scheduler);
+        var delay = TimeSpan.FromTicks(delayTicks);
+        using var host = Host(client, delay, scheduler);
         await host.StartAsync();
+        var before = DateTimeOffset.UtcNow;
         await client.Deliveries.Writer.WriteAsync(SqsReceiveTests.Message("{\"Value\":1}", 1));
-        await scheduler.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var first = await Task.WhenAny(scheduler.Started.Task, client.NextPoll.Task).WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(first).IsEqualTo(scheduler.Started.Task);
         await Assert.That(client.Deletes).IsEqualTo(0);
+        await Assert.That(client.Visibility.IsEmpty).IsTrue();
         await Assert.That(scheduler.Transport).IsEqualTo("sqs");
         await Assert.That(scheduler.Destination).IsEqualTo("orders");
-        await Assert.That(scheduler.Due > DateTimeOffset.UtcNow.AddHours(12)).IsTrue();
+        await Assert.That(scheduler.Due >= before + delay && scheduler.Due <= DateTimeOffset.UtcNow + delay).IsTrue();
         await Assert.That(scheduler.Body).IsEqualTo("{\"Value\":1}");
         scheduler.Commit.SetResult();
         await client.NextPoll.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -233,7 +263,57 @@ public sealed class SqsFailureTests
         await host.StopAsync();
     }
 
-    private static IHost Host(SqsReceiveTests.ReceiveClient client, Scheduler? scheduler = null)
+    [Test]
+    public async Task Twelve_hour_redelivery_deletes_the_Floci_receipt_after_scheduling()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        using var client = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig
+        {
+            ServiceURL = await SharedBrokers.FlociUrlAsync(token),
+            AuthenticationRegion = "us-east-1"
+        });
+        var source = TestContext.Current!.Isolation.GetIsolatedName("source");
+        var dead = TestContext.Current!.Isolation.GetIsolatedName("dead");
+        var sourceUrl = (await client.CreateQueueAsync(source, token)).QueueUrl;
+        await client.CreateQueueAsync(dead, token);
+        var deleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.AfterResponseEvent += (_, args) =>
+        {
+            if (args is WebServiceResponseEventArgs { Response: DeleteMessageResponse })
+            {
+                deleted.TrySetResult();
+            }
+        };
+
+        var scheduler = new Scheduler();
+        using var host = Host(client, TimeSpan.FromHours(12), scheduler, source, dead);
+
+        try
+        {
+            await host.StartAsync(token);
+            var message = SqsReceiveTests.Message("{\"Value\":1}", 1);
+            await client.SendMessageAsync(new SendMessageRequest
+            {
+                QueueUrl = sourceUrl,
+                MessageBody = message.Body,
+                MessageAttributes = message.MessageAttributes
+            }, token);
+            await scheduler.Started.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
+            await Assert.That(scheduler.Destination).IsEqualTo(source);
+            await Assert.That(deleted.Task.IsCompleted).IsFalse();
+
+            scheduler.Commit.SetResult();
+            await deleted.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
+        }
+        finally
+        {
+            await host.StopAsync(token);
+        }
+    }
+
+    private static IHost Host(IAmazonSQS client, TimeSpan? redeliveryDelay = null, Scheduler? scheduler = null,
+        string source = "orders", string dead = "dead")
     {
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(new SqsReceiveFlociTests.Control());
@@ -252,17 +332,18 @@ public sealed class SqsFailureTests
                 sqs.Options.Configure(options =>
                 {
                     options.SqsClient = client;
-                    options.Queues.Add(new("orders"));
-                    options.Queues.Add(new("dead"));
+                    options.Queues.Add(new(source));
+                    options.Queues.Add(new(dead));
                 });
-                sqs.Consume("orders", consumer =>
+                sqs.Consume(source, consumer =>
                 {
                     consumer.Handler<SqsReceiveFlociTests.Handler>();
                     consumer.Failures(new()
                     {
-                        DeadLetterEndpoint = "dead",
+                        DeadLetterEndpoint = dead,
+                        RetryDelays = [],
                         Jitter = 0,
-                        RedeliveryDelays = scheduler is null ? [] : new[] { TimeSpan.FromHours(13) }
+                        RedeliveryDelays = redeliveryDelay is { } delay ? [delay] : []
                     });
                 });
             });
