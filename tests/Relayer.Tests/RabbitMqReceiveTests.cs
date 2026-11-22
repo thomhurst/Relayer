@@ -599,74 +599,106 @@ public class RabbitMqReceiveTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
-        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token, dedicated: true);
-        var factory = broker.Factory();
-        factory.AutomaticRecoveryEnabled = automaticRecovery;
-        factory.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(100);
-        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var channelClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var failedAck = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var attempts = 0;
-        var control = new RabbitMqReceiveControl
-        {
-            Handle = _ => Interlocked.Increment(ref attempts) == 1 ? new(finish.Task) : default,
-            NativeCallback = context =>
-            {
-                var channel = context.RabbitMQ().Channel;
-                channel.ChannelShutdownAsync += (_, _) =>
-                {
-                    channelClosed.TrySetResult();
-                    return Task.CompletedTask;
-                };
-                // Observe the real native exception after Relayer's callback exception handler runs.
-                channel.CallbackExceptionAsync += (_, args) =>
-                {
-                    failedAck.TrySetResult(args.Exception);
-                    return Task.CompletedTask;
-                };
-            },
-        };
-        using var host = Host(factory, control);
-        await host.StartAsync(token);
-        var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
-        var consumer = transport.Consumers.Single();
-        var probe = host.Services.GetRequiredKeyedService<ITransportHealthProbe>("rabbit");
+        string stage = "starting the broker";
 
         try
         {
-            await transport.SendAsync(new("orders", "{\"Value\":1}"u8.ToArray(), Headers()), token);
-            await control.Values.Reader.ReadAsync(token);
-            await broker.CommandAsync(["rabbitmqctl", "stop_app"], token);
-            await WaitAsync(async () => (await probe.CheckAsync(token)).Status == HealthStatus.Unhealthy, token);
-            // Connection health can change before the native client closes the delivery channel.
-            await channelClosed.Task.WaitAsync(token);
-        }
-        finally
-        {
-            finish.TrySetResult();
-        }
+            await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token, dedicated: true);
+            var factory = broker.Factory();
+            factory.AutomaticRecoveryEnabled = automaticRecovery;
+            factory.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(100);
+            var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var channelClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var failedAck = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var attempts = 0;
+            var control = new RabbitMqReceiveControl
+            {
+                Handle = _ => Interlocked.Increment(ref attempts) == 1 ? new(finish.Task) : default,
+                NativeCallback = context =>
+                {
+                    var channel = context.RabbitMQ().Channel;
+                    channel.ChannelShutdownAsync += (_, _) =>
+                    {
+                        channelClosed.TrySetResult();
+                        return Task.CompletedTask;
+                    };
+                    // Observe the real native exception after Relayer's callback exception handler runs.
+                    channel.CallbackExceptionAsync += (_, args) =>
+                    {
+                        failedAck.TrySetResult(args.Exception);
+                        return Task.CompletedTask;
+                    };
+                },
+            };
+            using var host = Host(factory, control);
+            stage = "starting the host";
+            await host.StartAsync(token);
+            var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
+            var consumer = transport.Consumers.Single();
+            var probe = host.Services.GetRequiredKeyedService<ITransportHealthProbe>("rabbit");
 
-        await Assert.That(await failedAck.Task.WaitAsync(token)).IsTypeOf<AlreadyClosedException>();
+            try
+            {
+                stage = "publishing the first message";
+                await transport.SendAsync(new("orders", "{\"Value\":1}"u8.ToArray(), Headers()), token);
+                stage = "waiting for the first delivery";
+                await control.Values.Reader.ReadAsync(token);
+                stage = "stopping the broker application";
+                await broker.CommandAsync(["rabbitmqctl", "stop_app"], token);
+                stage = "waiting for the connection health probe to report unhealthy";
+                await WaitAsync(async () => (await probe.CheckAsync(token)).Status == HealthStatus.Unhealthy, token);
+                // Connection health can change before the native client closes the delivery channel.
+                stage = "waiting for the delivery channel to shut down";
+                await channelClosed.Task.WaitAsync(token);
+            }
+            finally
+            {
+                finish.TrySetResult();
+            }
 
-        if (!automaticRecovery)
-        {
-            await Assert.That(consumer.Completion.IsFaulted).IsTrue();
+            stage = "waiting for the native acknowledgment failure callback";
+            await Assert.That(await failedAck.Task.WaitAsync(token)).IsTypeOf<AlreadyClosedException>();
+
+            if (!automaticRecovery)
+            {
+                await Assert.That(consumer.Completion.IsFaulted).IsTrue();
+                stage = "stopping the host after the consumer fault";
 #if NET11_0_OR_GREATER
-            // Hosting 11 propagates the observed background-service fault from StopAsync.
-            await Assert.That(async () => await host.StopAsync(token)).Throws<AlreadyClosedException>();
-#else
-            await host.StopAsync(token);
-#endif
-            return;
-        }
+                // Hosting 11 propagates the observed background-service fault from StopAsync.
+                AlreadyClosedException? shutdownError = null;
 
-        await Assert.That(consumer.Completion.IsCompleted).IsFalse();
-        await Assert.That(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested).IsFalse();
-        await broker.CommandAsync(["rabbitmqctl", "start_app"], token);
-        await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(1);
-        await WaitAsync(() => Task.FromResult(consumer.GetHealthState()?.IsIdle == true), token);
-        await Assert.That(consumer.Completion.IsCompleted).IsFalse();
-        await host.StopAsync(token);
+                try
+                {
+                    await host.StopAsync(token);
+                }
+                catch (AlreadyClosedException error)
+                {
+                    shutdownError = error;
+                }
+
+                await Assert.That(shutdownError).IsNotNull();
+#else
+                await host.StopAsync(token);
+#endif
+                return;
+            }
+
+            await Assert.That(consumer.Completion.IsCompleted).IsFalse();
+            await Assert.That(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested).IsFalse();
+            stage = "restarting the broker application";
+            await broker.CommandAsync(["rabbitmqctl", "start_app"], token);
+            stage = "waiting for redelivery after recovery";
+            await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(1);
+            stage = "waiting for the recovered consumer to become idle";
+            await WaitAsync(() => Task.FromResult(consumer.GetHealthState()?.IsIdle == true), token);
+            await Assert.That(consumer.Completion.IsCompleted).IsFalse();
+            stage = "stopping the host after recovery";
+            await host.StopAsync(token);
+        }
+        catch (OperationCanceledException error) when (token.IsCancellationRequested)
+        {
+            throw new TimeoutException($"RabbitMQ recovery test exceeded its deadline while {stage} (automaticRecovery: {automaticRecovery}).", error);
+        }
     }
 
     [Test]
