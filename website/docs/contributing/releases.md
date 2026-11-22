@@ -101,5 +101,7 @@ requesting publishing credentials. It then pushes packages and symbols to nuget.
 
 The workflow uses `--skip-duplicate` and explicitly pushes symbols as well as packages. A rerun can
 finish a partially published version without overwriting existing packages. Never move a release
-tag to change an existing NuGet version: use a new version instead. Releases are serialized and an
-active release is not cancelled by another tag push.
+tag to change an existing NuGet version: use a new version instead.
+
+Releases run one at a time. New tag pushes leave the active release running and can queue up to
+100 pending releases. GitHub Actions cancels additional runs if the queue is full.
