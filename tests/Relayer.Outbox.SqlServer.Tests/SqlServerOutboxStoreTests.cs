@@ -93,6 +93,36 @@ public sealed class SqlServerOutboxStoreTests(SqlServerFixture database)
     }
 
     [Test]
+    public async Task Single_row_mutations_ignore_trigger_row_counts_and_fence_stale_tokens()
+    {
+        var data = new StoreData(database);
+        await data.Create();
+        var now = DateTimeOffset.UtcNow;
+        var claim = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        var stale = new OutboxClaim(claim.MessageId, Guid.NewGuid());
+        await data.Insert(claim.MessageId, now);
+        await data.Execute($"""
+            CREATE TRIGGER [dbo].[{data.Options.TablePrefix}audit] ON {data.Table} AFTER UPDATE, DELETE AS
+            BEGIN
+                SET NOCOUNT OFF;
+                DECLARE @counts TABLE (id int);
+                INSERT INTO @counts VALUES (1), (2), (3), (4);
+            END;
+            """);
+
+        var store = data.Store();
+        var expires = now.AddMinutes(1);
+        var renewed = now.AddMinutes(2);
+        await Assert.That(await store.TryClaimAsync(claim, now, expires, default)).IsTrue();
+        await Assert.That(await store.TryClaimAsync(stale, now, expires, default)).IsFalse();
+        await Assert.That(await store.RenewClaimAsync(stale, now, renewed, default)).IsFalse();
+        await Assert.That(await store.RenewClaimAsync(claim, now, renewed, default)).IsTrue();
+        await Assert.That(await store.CompleteAsync(stale, expires, default)).IsFalse();
+        await Assert.That(await store.CompleteAsync(claim, expires, default)).IsTrue();
+        await Assert.That(await store.CompleteAsync(claim, expires, default)).IsFalse();
+    }
+
+    [Test]
     public async Task Native_cancellation_interrupts_a_blocked_claim_and_the_store_remains_usable()
     {
         var data = new StoreData(database);

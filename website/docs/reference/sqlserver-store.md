@@ -269,7 +269,9 @@ locks serialize connected passes without waiting behind another leader. Idle lea
 latency. These workers poll; they do not enable Service Broker, query notifications or CDC.
 
 Malformed encoded headers are transferred immediately to `outbox_dead`, with the raw payload and an
-actionable `last_error`. Recovery records missing transports and invalid endpoint capabilities as failed
+actionable `last_error`. Recovery can quarantine these rows and dispatch other eligible rows in the
+same pass when the outbox table has `AFTER UPDATE` or `AFTER DELETE` audit triggers that do not return
+result sets. Recovery records missing transports and invalid endpoint capabilities as failed
 attempts without stalling unrelated groups. Preparation and unclassified native send failures use
 `MaxDispatchAttempts` (default 10). Unordered rows that exhaust this budget leave the outbox.
 
