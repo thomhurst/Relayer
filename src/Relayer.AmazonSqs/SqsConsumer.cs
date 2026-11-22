@@ -399,12 +399,15 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
             return;
         }
 
-        _poll.Cancel();
-        using var registration = token.UnsafeRegister(static state => ((CancellationTokenSource)state!).Cancel(), _abort!);
-
         try
         {
+            _poll.Cancel();
             await Task.WhenAll(_workers).WaitAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            _abort!.Cancel();
+            throw;
         }
         finally
         {

@@ -10,13 +10,14 @@ using Relayer.Transports;
 
 namespace Relayer.AmazonSqs;
 
-internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
+internal sealed partial class SqsSendTransport : ITransport, ITransportSendTracing
 {
     private readonly IAmazonSQS _client;
     private readonly bool _ownsClient;
     private readonly FrozenDictionary<string, Endpoint> _endpoints;
     private readonly MessageTracing? _tracing;
     private readonly TimeProvider _time;
+    private readonly ILogger? _logger;
     private readonly SqsOperationPool _operations = new();
     private int _disposed;
 
@@ -146,6 +147,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         _ownsClient = ownsClient;
         _tracing = tracing;
         _time = time ?? TimeProvider.System;
+        _logger = logging?.CreateLogger<SqsSendTransport>();
         var endpoints = new Dictionary<string, Endpoint>(StringComparer.Ordinal);
 
         foreach (var declaration in options.Queues)
@@ -159,7 +161,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
                     System = "aws_sqs",
                     Destination = declaration.QueueName
                 },
-                    SendCoreAsync, SendBatchCoreAsync, logging?.CreateLogger<SqsSendTransport>());
+                    SendCoreAsync, SendBatchCoreAsync, _logger);
             }
 
             endpoints.Add(declaration.QueueName, endpoint);
@@ -580,10 +582,28 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         }
         catch
         {
-            await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                await StopAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // The original startup failure is reported after the drain aborts.
+            }
+            catch (Exception error)
+            {
+                if (_logger is { } logger)
+                {
+                    StartupRollbackFailed(logger, error, Name);
+                }
+            }
+
             throw;
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "SQS transport {Transport} failed to stop consumers after a startup failure.")]
+    private static partial void StartupRollbackFailed(ILogger logger, Exception exception, string transport);
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
