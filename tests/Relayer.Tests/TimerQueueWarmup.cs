@@ -5,18 +5,18 @@ namespace Relayer.Tests;
 
 internal static class TimerQueueWarmup
 {
-    // CancelAfter reuses its timer after warmup, but .NET's shared TimerQueue Lock
-    // allocates a 24 B AutoResetEvent and 32 B SafeWaitHandle on first contention.
-    // Exercise that native lazy initialization before measuring send or batch pipelines.
-    // This is setup only: do not replace native timers or exclude bytes from a window.
+    // CancelAfter reuses its timer after warmup. The timer queue locks and the
+    // portable scheduler lock allocate wait handles on first blocking contention.
+    // Warm those wait handles before measuring send or batch pipelines.
     internal static void WarmContention()
     {
         const BindingFlags Visibility = BindingFlags.Public | BindingFlags.NonPublic;
         var queuesType = typeof(Timer).Assembly.GetType("System.Threading.TimerQueue");
         var queues = queuesType?.GetProperty("Instances", Visibility | BindingFlags.Static)?.GetValue(null) as Array;
         var sharedLock = queuesType?.GetProperty("SharedLock", Visibility | BindingFlags.Instance);
+        var schedulerLock = queuesType?.GetField("s_timerEventLock", Visibility | BindingFlags.Static)?.GetValue(null);
 
-        if (queues is null || sharedLock is null)
+        if (queues is null || sharedLock is null || schedulerLock is not Lock schedulerGate)
         {
             throw UnsupportedRuntime();
         }
@@ -30,6 +30,8 @@ internal static class TimerQueueWarmup
 
             WarmContention(gate);
         }
+
+        WarmContention(schedulerGate);
     }
 
     private static void WarmContention(Lock gate)
@@ -73,7 +75,7 @@ internal static class TimerQueueWarmup
     private static InvalidOperationException UnsupportedRuntime()
     {
         return new(
-                $"Cannot find the native TimerQueue.Instances/SharedLock on {RuntimeInformation.FrameworkDescription}. " +
+                $"Cannot find the native TimerQueue.Instances, SharedLock, or s_timerEventLock on {RuntimeInformation.FrameworkDescription}. " +
                 "Update the allocation-test warmup for this runtime; keep exact allocation assertions enabled.");
     }
 }
