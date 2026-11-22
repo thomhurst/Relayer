@@ -46,18 +46,32 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
             sequence = parsed;
         }
 
-        await using var receiver = CreateReceiver(endpoint);
-        var messages = await receiver.PeekMessagesAsync(maxMessages, sequence, cancellationToken).ConfigureAwait(false);
-        var result = new DeadLetterMessage[messages.Count];
+        var receiver = CreateReceiver(endpoint);
+        var failed = false;
 
-        for (var i = 0; i < result.Length; i++)
+        try
         {
-            result[i] = Snapshot(messages[i]);
-        }
+            var messages = await receiver.PeekMessagesAsync(maxMessages, sequence, cancellationToken).ConfigureAwait(false);
+            var result = new DeadLetterMessage[messages.Count];
 
-        var next = messages.Count == 0 || messages[^1].SequenceNumber == long.MaxValue ? null
-            : (messages[^1].SequenceNumber + 1).ToString(CultureInfo.InvariantCulture);
-        return new(Array.AsReadOnly(result), next);
+            for (var i = 0; i < result.Length; i++)
+            {
+                result[i] = Snapshot(messages[i]);
+            }
+
+            var next = messages.Count == 0 || messages[^1].SequenceNumber == long.MaxValue ? null
+                : (messages[^1].SequenceNumber + 1).ToString(CultureInfo.InvariantCulture);
+            return new(Array.AsReadOnly(result), next);
+        }
+        catch
+        {
+            failed = true;
+            throw;
+        }
+        finally
+        {
+            await DisposeLinkAsync(receiver, failed).ConfigureAwait(false);
+        }
     }
 
     public ValueTask<int> RedriveAsync(string source, Func<DeadLetterMessage, bool>? filter = null,
@@ -75,15 +89,16 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
         int maxMessages, bool purge, CancellationToken cancellationToken)
     {
         var endpoint = GetSource(source, maxMessages);
-        await using var receiver = CreateReceiver(endpoint);
-        // Receive one bounded native batch; filtering cannot repeatedly receive an unmatched delivery.
-        // Unsettled originals remain in the DLQ if sending, filtering or settlement fails.
-        var messages = await receiver.ReceiveMessagesAsync(maxMessages, TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+        var receiver = CreateReceiver(endpoint);
+        IReadOnlyList<ServiceBusReceivedMessage> messages = [];
         var next = 0;
         ServiceBusSender? sender = null;
+        var failed = false;
 
         try
         {
+            // A single bounded native batch prevents a filter from repeatedly receiving an unmatched delivery.
+            messages = await receiver.ReceiveMessagesAsync(maxMessages, TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
             var changed = 0;
 
             for (; next < messages.Count; next++)
@@ -116,6 +131,7 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
         }
         catch
         {
+            failed = true;
             // Release the failing delivery and unprocessed suffix, even after caller cancellation.
             // Preserve the original failure if a lock expired or the broker cannot accept cleanup.
             for (; next < messages.Count; next++)
@@ -133,10 +149,34 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
         }
         finally
         {
-            if (sender is not null)
+            try
             {
-                await sender.DisposeAsync().ConfigureAwait(false);
+                if (sender is not null)
+                {
+                    await DisposeLinkAsync(sender, failed).ConfigureAwait(false);
+                }
             }
+            catch
+            {
+                failed = true;
+                throw;
+            }
+            finally
+            {
+                await DisposeLinkAsync(receiver, failed).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static async ValueTask DisposeLinkAsync(IAsyncDisposable link, bool preserveFailure)
+    {
+        try
+        {
+            await link.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception) when (preserveFailure)
+        {
+            // The Service Bus SDK reports close failures through its own diagnostics.
         }
     }
 
