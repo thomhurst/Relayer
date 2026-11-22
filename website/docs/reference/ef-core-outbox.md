@@ -166,6 +166,11 @@ command or an outbox-only save. It commits business changes and outgoing rows to
 `SaveChanges` works too. Disposing the selection before saving discards unsaved messages. A second save
 within the selection starts a new unit. Disposing the selection never commits anything.
 
+Relayer runs its save callbacks after the other EF Core save interceptors. If the final interceptor
+result suppresses the save, Relayer discards its pending sends without opening a transaction for
+them. An outbox-only save still commits when EF lets the save run. The outbox requires EF to manage
+its internal service provider, so configure the context without `UseInternalServiceProvider`.
+
 ## Explicit transactions
 
 Starting an EF transaction activates automatic enlistment when it is the scope's only active context:
@@ -195,7 +200,9 @@ are discarded. Before the first successful save, the retained boundary is empty.
 and save successfully, send B and catch a failed save, then send C and save successfully: commit writes
 A and C. Clear or repair EF's tracked changes before continuing; Relayer only resets its send buffer.
 Each context sharing a transaction has its own send/save boundary. Sends after the final successful
-save still join commit normally.
+save still join commit normally. A suppressed save discards that context's sends since its last
+successful save. It leaves the explicit transaction open, and earlier successful saves remain
+eligible to commit.
 
 Recovery requires a confirmed native automatic savepoint rollback during the failed or canceled save,
 or a save that fails while EF creates its automatic savepoint. EF creates that savepoint before any save

@@ -603,9 +603,18 @@ state is required. Native transaction rollback/disposal abandons buffered sends.
 successful SaveChanges (including an empty save) establishes its retained-send boundary, initially zero.
 A confirmed native automatic savepoint rollback during that context's SaveChanges discards sends since
 that boundary, including sends buffered before SaveChanges began, and permits the explicit unit to
-continue. Other participating contexts retain their own buffers. Successful native savepoint release
-drops the active checkpoint; failed/canceled-save callbacks preserve recovery only after confirmed
-rollback, or after native automatic savepoint creation fails, since EF creates it before any save command
+continue. Other participating contexts retain their own buffers. If the final EF interceptor result
+suppresses a save, Relayer discards sends since that context's last successful save without opening
+an owned transaction or advancing the retained boundary. An explicit transaction can still commit
+sends retained by earlier saves. EF calls the completion hook after either an empty or a suppressed
+save. Relayer extends EF Core 10.0.15's native
+[save interceptor aggregator](https://github.com/dotnet/efcore/blob/v10.0.15/src/EFCore/Diagnostics/Internal/SaveChangesInterceptorAggregator.cs)
+to run the outbox save callbacks last and observe the final result. EF's service replacement requires
+the EF-managed internal service provider.
+
+Successful native savepoint release drops the active checkpoint. Failed/canceled-save callbacks
+preserve recovery only after confirmed rollback or native automatic savepoint creation failure.
+EF creates the savepoint before any save command
 (#826). Relayer does not issue savepoint SQL or emulate database recovery. Manual savepoint rollback,
 failed saves without confirmed recovery (including AutoSavepointsEnabled=false), and failed commits
 invalidate commit until the whole transaction ends. Callers retry complete units with either a fresh context

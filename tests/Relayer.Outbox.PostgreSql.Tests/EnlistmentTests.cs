@@ -182,6 +182,91 @@ public class EnlistmentTests
     }
 
     [Test]
+    [Arguments(false, false, 0)]
+    [Arguments(false, true, 17)]
+    [Arguments(true, false, 17)]
+    [Arguments(true, true, 0)]
+    public async Task Suppressed_implicit_save_discards_pending_sends(bool synchronous, bool registerLast, int suppressedResult)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var suppress = new SuppressSave(suppressedResult);
+        var options = new DbContextOptionsBuilder<OrdersContext>().UseNpgsql(database.ConnectionString);
+
+        if (registerLast)
+        {
+            options.AddRelayerOutbox(scope.ServiceProvider, Database.Options).AddInterceptors(suppress);
+        }
+        else
+        {
+            options.AddInterceptors(suppress).AddRelayerOutbox(scope.ServiceProvider, Database.Options);
+        }
+
+        await using var db = new OrdersContext(options.Options);
+        using var outbox = db.EnlistRelayerOutbox();
+        db.Add(new Order { Id = 1 });
+        await outbox.EnqueueAsync(new Probe(1));
+
+        var result = synchronous ? db.SaveChanges() : await db.SaveChangesAsync();
+
+        await Assert.That(result).IsEqualTo(suppressedResult);
+        await Assert.That(db.Database.CurrentTransaction).IsNull();
+        await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(0L);
+        await Assert.That(await database.Count()).IsEqualTo(0L);
+
+        suppress.Enabled = false;
+        result = synchronous ? db.SaveChanges() : await db.SaveChangesAsync();
+
+        await Assert.That(result).IsEqualTo(1);
+        await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(1L);
+        await Assert.That(await database.Count()).IsEqualTo(0L);
+
+        await outbox.EnqueueAsync(new Probe(2));
+        result = synchronous ? db.SaveChanges() : await db.SaveChangesAsync();
+
+        await Assert.That(result).IsEqualTo(0);
+        await Assert.That(await database.Count()).IsEqualTo(1L);
+        await Assert.That(await database.Scalar($"SELECT get_byte(body, 0)::bigint FROM {Database.Table}")).IsEqualTo(2L);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Suppressed_explicit_save_keeps_only_previously_saved_sends(bool synchronous)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var suppress = new SuppressSave(0) { Enabled = false };
+        var options = new DbContextOptionsBuilder<OrdersContext>().UseNpgsql(database.ConnectionString)
+            .AddRelayerOutbox(scope.ServiceProvider, Database.Options).AddInterceptors(suppress);
+        await using var db = new OrdersContext(options.Options);
+        db.Database.AutoSavepointsEnabled = false;
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        using var outbox = db.EnlistRelayerOutbox();
+        await outbox.EnqueueAsync(new Probe(1));
+        db.Add(new Order { Id = 1 });
+
+        var result = synchronous ? db.SaveChanges() : await db.SaveChangesAsync();
+        await Assert.That(result).IsEqualTo(1);
+
+        suppress.Enabled = true;
+        await outbox.EnqueueAsync(new Probe(2));
+        db.Add(new Order { Id = 2 });
+
+        result = synchronous ? db.SaveChanges() : await db.SaveChangesAsync();
+        await Assert.That(result).IsEqualTo(0);
+
+        await transaction.CommitAsync();
+        await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(1L);
+        await Assert.That(await database.Count()).IsEqualTo(1L);
+        await Assert.That(await database.Scalar($"SELECT get_byte(body, 0)::bigint FROM {Database.Table}")).IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Selection_enqueues_only_uncanceled_messages_and_respects_transaction_boundaries()
     {
         await using var database = new Database();
@@ -1162,6 +1247,25 @@ public class EnlistmentTests
         }
 
         return result;
+    }
+
+    private sealed class SuppressSave(int suppressedResult) : SaveChangesInterceptor
+    {
+        public bool Enabled
+        {
+            get; set;
+        } = true;
+
+        public override InterceptionResult<int> SavingChanges(DbContextEventData eventData, InterceptionResult<int> result)
+        {
+            return Enabled ? InterceptionResult<int>.SuppressWithResult(suppressedResult) : result;
+        }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            return new(SavingChanges(eventData, result));
+        }
     }
 
     private sealed class Database : IAsyncDisposable

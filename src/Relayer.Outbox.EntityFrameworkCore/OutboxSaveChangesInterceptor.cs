@@ -29,6 +29,12 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
         state.CheckTransaction();
         state.EnsureTransactionAvailable();
 
+        if (result.HasResult)
+        {
+            state.DiscardUnsaved();
+            return result;
+        }
+
         if (state.Count > 0 && state.Context.Database.CurrentTransaction is null)
         {
             try
@@ -56,6 +62,12 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
         var state = Outbox.Get(eventData.Context!, Configuration);
         state.CheckTransaction();
         state.EnsureTransactionAvailable();
+
+        if (result.HasResult)
+        {
+            state.DiscardUnsaved();
+            return result;
+        }
 
         if (state.Count > 0 && state.Context.Database.CurrentTransaction is null)
         {
@@ -88,6 +100,12 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
     public override int SavedChanges(SaveChangesCompletedEventData eventData, int result)
     {
         var state = Outbox.Get(eventData.Context!, Configuration);
+
+        if (!state.Saving)
+        {
+            return result;
+        }
+
         state.Saved();
 
         if (state.OwnedTransaction is { } transaction)
@@ -113,6 +131,12 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
         int result, CancellationToken cancellationToken = default)
     {
         var state = Outbox.Get(eventData.Context!, Configuration);
+
+        if (!state.Saving)
+        {
+            return result;
+        }
+
         state.Saved();
 
         if (state.OwnedTransaction is { } transaction)
