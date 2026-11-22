@@ -68,9 +68,11 @@ application-owned. Replication uses a separate native connection outside the ord
 single-connection pool can serve recovery transactions. Stop the host before disposing the data source.
 
 Keep maintenance registered for failed sends, expired claims, future delivery times, and retention: due times
-and claim expiry do not produce insert events. CDC replaces polling as the wake-up for new commits;
-recovery still polls exceptional or time-dependent work. Direct commit-triggered dispatch can coexist but
-is not required for CDC. Fenced claims arbitrate between workers.
+and claim expiry do not produce insert events. PostgreSQL can also decode a commit before a SQL snapshot on
+the primary can see its rows. A CDC pass that misses those rows leaves them pending for maintenance or a
+later outbox commit. [PostgreSQL bug #19733](https://www.postgresql.org/message-id/19733-5fcd39e85fa221a4%40postgresql.org)
+
+Direct commit-triggered dispatch can coexist but is not required for CDC. Fenced claims arbitrate between workers.
 
 Ordered rows remain exclusively with the [ordered lane dispatcher](ordered-dispatch.md). CDC never bypasses
 lane ownership or sends ordered rows. Register ordered dispatch for routes using lanes. Native transport
@@ -134,9 +136,9 @@ configuration overload, set `IdleCheckpointInterval` to a duration such as `00:0
 `pg_catalog.pg_logical_emit_message`.
 
 At each interval the worker commits a small logical message in the writer's database. The reader
-checkpoints its commit in stream order, so an earlier outbox commit still completes dispatch before
-the checkpoint advances. Allow for the checkpoint interval, Npgsql's feedback interval and any
-time spent waiting for dispatch when monitoring lag.
+checkpoints its commit in stream order after the dispatch passes triggered by earlier outbox commits
+have finished. Allow for the checkpoint interval, Npgsql's feedback interval and any time spent waiting
+for dispatch when monitoring lag.
 
 ## Debezium event router
 
