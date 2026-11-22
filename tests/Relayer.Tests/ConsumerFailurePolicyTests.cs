@@ -52,10 +52,12 @@ public class ConsumerFailurePolicyTests
         var services = new ServiceCollection();
         services.AddRelayer(relayer =>
         {
+#pragma warning disable RLY004 // This test inspects failure settings without starting the consumers.
             relayer.AddTransport<Options, Options>("broker", transport =>
                 transport.Consume("source", consumer => consumer.Failures(policy).Classify(classifier)));
             relayer.InMemory("test", transport =>
                 transport.Consume("source", consumer => ((IConsumerBuilder)consumer).Failures(policy).Classify(classifier)));
+#pragma warning restore RLY004
         });
         await using var provider = services.BuildServiceProvider();
         var declarations = provider.GetRequiredService<RelayerConfiguration>().Transports;

@@ -46,6 +46,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var single = compilation.GetTypeByMetadataName("Relayer.IHandler`1");
             var batch = compilation.GetTypeByMetadataName("Relayer.IBatchHandler`1");
             var transport = compilation.GetTypeByMetadataName("Relayer.TransportBuilder`2");
+            var transportInterface = compilation.GetTypeByMetadataName("Relayer.ITransportConsumerBuilder");
             var consumer = compilation.GetTypeByMetadataName("Relayer.ConsumerBuilder`1");
             var consumerInterface = compilation.GetTypeByMetadataName("Relayer.IConsumerBuilder");
             var registration = compilation.GetTypeByMetadataName("Relayer.RelayerGeneratedHandlers");
@@ -139,17 +140,27 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                     AddHelperRegistrations(method, helperRegistration, explicitIdentities);
                 }
 
-                if (SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, transport))
+                var declaringType = method.ContainingType.OriginalDefinition;
+                var isTransportBuilder = SymbolEqualityComparer.Default.Equals(declaringType, transport);
+
+                if (isTransportBuilder)
                 {
                     if (method.Name == "Send" && method.TypeArguments.Length == 1)
                     {
                         CheckMessage(method.TypeArguments[0], invocation.Syntax.GetLocation());
                     }
-
-                    if (method.Name == "Consume")
+                    else if (method.Name == "Request" && method.TypeArguments.Length == 2)
                     {
-                        CheckConsumer(operationContext, invocation, consumer, consumerInterface);
+                        var location = invocation.Syntax.GetLocation();
+                        CheckMessage(method.TypeArguments[0], location);
+                        CheckMessage(method.TypeArguments[1], location);
                     }
+                }
+
+                if (method.Name == "Consume"
+                    && (isTransportBuilder || SymbolEqualityComparer.Default.Equals(declaringType, transportInterface)))
+                {
+                    CheckConsumer(operationContext, invocation, consumer, consumerInterface);
                 }
 
                 if (method.TypeArguments.Length > 0)
@@ -404,7 +415,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             {
                 var method = call.TargetMethod;
 
-                if (method.Name is not ("Concurrency" or "Batch")
+                if (method.Name is not ("Concurrency" or "Batch" or "Failures" or "Classify")
                     || !SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, consumer)
                         && !SymbolEqualityComparer.Default.Equals(method.ContainingType, consumerInterface))
                 {

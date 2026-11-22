@@ -75,6 +75,30 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments(false, false, "RLY001,RLY001")]
+    [Arguments(true, false, "RLY001")]
+    [Arguments(false, true, "RLY001")]
+    [Arguments(true, true, "")]
+    public async Task Request_routes_check_both_message_identities(bool requestHasIdentity, bool responseHasIdentity, string expected)
+    {
+        var requestIdentity = requestHasIdentity ? """[Message("lookup")] """ : "";
+        var responseRegistration = responseHasIdentity ? """builder.Infrastructure().MessageTypes.Add<LookupResult>("lookup.result");""" : "";
+
+        await Verify(Imports + $$"""
+            {{requestIdentity}}public record Lookup;
+            public record LookupResult;
+            static class Setup
+            {
+                public static void Add(Broker broker, IRelayerBuilder builder)
+                {
+                    broker.Request<Lookup, LookupResult>("requests", "replies");
+                    {{responseRegistration}}
+                }
+            }
+            """, expected);
+    }
+
+    [Test]
     [Arguments("Order")]
     [Arguments("Tombstone<Order>")]
     public async Task Explicit_identity_covers_routes_and_handlers_even_after_use(string messageType)
@@ -599,6 +623,29 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("Broker", "c => c.Failures(FailureOptions.None)", "RLY004")]
+    [Arguments("Broker", "c => c.Classify(new Relayer.Pipeline.DefaultFailureClassifier())", "RLY004")]
+    [Arguments("ITransportConsumerBuilder", "_ => { }", "RLY004")]
+    [Arguments("ITransportConsumerBuilder", "c => c.Failures(FailureOptions.None)", "RLY004")]
+    [Arguments("ITransportConsumerBuilder", "c => c.Classify(new Relayer.Pipeline.DefaultFailureClassifier())", "RLY004")]
+    [Arguments("ITransportConsumerBuilder", "c => c.Failures(FailureOptions.None).Concurrency(8)", "RLY004")]
+    [Arguments("ITransportConsumerBuilder", "c => c.Failures(FailureOptions.None).Handler<H>()", "")]
+    [Arguments("ITransportConsumerBuilder", "c => Failures(c)", "")]
+    [Arguments("ITransportConsumerBuilder", "Failures", "")]
+    public async Task Failure_settings_do_not_count_as_handler_registration(string receiver, string callback, string expected)
+    {
+        await Verify(Imports + Handler + $$"""
+            static class Setup
+            {
+                public static void Add({{receiver}} broker)
+                    => broker.Consume("orders", {{callback}});
+
+                static void Failures(IConsumerBuilder c) => c.Handler<H>();
+            }
+            """, expected);
+    }
+
+    [Test]
     public async Task Registration_on_another_consumer_does_not_hide_empty_consumer()
     {
         await Verify(Imports + Handler + """
@@ -726,6 +773,29 @@ public class ConfigurationAnalyzerTests
         var fixedCompilation = (await fixedDocument.Project.GetCompilationAsync())!;
         await Assert.That(string.Join("\n", fixedCompilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))).IsEqualTo("");
         await Assert.That((await fixedCompilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync()).Length).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments("public record Order<T>;", "Order<int>")]
+    [Arguments("public class Container<T> { public record Order; }", "Container<int>.Order")]
+    public async Task Code_fix_is_unavailable_for_generic_declarations(string declaration, string messageType)
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("Fix", LanguageNames.CSharp).WithMetadataReferences(References())
+            .WithCompilationOptions(new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var source = Imports + $$"""
+            {{declaration}}
+            static class Setup { public static void Add(Broker broker) => broker.Send<{{messageType}}>("orders"); }
+            """;
+        var document = project.AddDocument("Message.cs", source);
+        var compilation = (await document.Project.GetCompilationAsync())!;
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+
+        var actions = new List<CodeAction>();
+        await new MessageAttributeCodeFixProvider().RegisterCodeFixesAsync(new CodeFixContext(document, diagnostics[0],
+            (action, _) => actions.Add(action), CancellationToken.None));
+        await Assert.That(actions.Count).IsEqualTo(0);
     }
 
     [Test]
