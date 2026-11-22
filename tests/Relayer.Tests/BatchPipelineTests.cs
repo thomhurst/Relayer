@@ -881,6 +881,7 @@ public class BatchPipelineTests
     public async Task Warmed_batches_add_no_allocations_beyond_identical_fresh_DI_scope_and_sender(bool bufferedSends)
     {
         const int Iterations = 1_000;
+        var region = bufferedSends ? NativeAllocationRegion.Load() : null;
         await using var provider = Provider(size: 10);
         provider.GetRequiredService<AllocationHandler>().BufferedSends = bufferedSends;
         using var batchCancellation = new CancellationTokenSource();
@@ -919,6 +920,7 @@ public class BatchPipelineTests
         (int Batch, long Native, long Pipeline)? firstMismatch = null;
         long nativeTotal = 0;
         long pipelineTotal = 0;
+        region?.Begin();
 
         for (var iteration = 0; iteration < Iterations; iteration++)
         {
@@ -930,6 +932,7 @@ public class BatchPipelineTests
             }
 
             var native = GC.GetAllocatedBytesForCurrentThread() - start;
+            region?.Checkpoint(iteration * 3, native);
             start = GC.GetAllocatedBytesForCurrentThread();
 
             for (var i = 0; i < contexts.Length; i++)
@@ -952,6 +955,8 @@ public class BatchPipelineTests
             }
 
             var pipeline = GC.GetAllocatedBytesForCurrentThread() - start;
+            region?.Checkpoint(iteration * 3 + 1, pipeline);
+            region?.Checkpoint(iteration * 3 + 2, 0, final: iteration == Iterations - 1);
             nativeTotal += native;
             pipelineTotal += pipeline;
 
@@ -960,6 +965,8 @@ public class BatchPipelineTests
                 firstMismatch = (iteration + 1, native, pipeline);
             }
         }
+
+        region?.End();
 
         foreach (var delivery in deliveries)
         {
