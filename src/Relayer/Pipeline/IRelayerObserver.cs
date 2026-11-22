@@ -25,9 +25,19 @@ internal interface IRelayerObserver
 
 internal interface ITransportWrapper
 {
-    Transports.ITransport InnerTransport
+    ITransport InnerTransport
     {
         get;
+    }
+
+    internal static ITransport Unwrap(ITransport transport)
+    {
+        while (transport is ITransportWrapper wrapper)
+        {
+            transport = wrapper.InnerTransport;
+        }
+
+        return transport;
     }
 }
 

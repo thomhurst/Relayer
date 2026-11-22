@@ -31,12 +31,13 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(endpoints);
         Name = name;
+        Clock = timeProvider ?? TimeProvider.System;
         var built = new Dictionary<string, InMemoryEndpoint>(StringComparer.Ordinal);
 
         foreach (var pair in endpoints)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(pair.Key);
-            built.Add(pair.Key, new(name, pair.Key, pair.Value, timeProvider ?? TimeProvider.System, tracing));
+            built.Add(pair.Key, new(name, pair.Key, pair.Value, Clock, tracing));
         }
 
         _endpoints = built.ToFrozenDictionary(StringComparer.Ordinal);
@@ -62,6 +63,11 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
 
     /// <inheritdoc />
     public string Name
+    {
+        get;
+    }
+
+    internal TimeProvider Clock
     {
         get;
     }

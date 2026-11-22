@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks.Sources;
+using Relayer.InMemory;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -62,6 +64,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
     private readonly IMessageSerializer _serializer;
     private readonly SendDelegate _pipeline;
     private readonly TransportCapabilities _capabilities;
+    private readonly TimeProvider _deliveryClock;
     private readonly MessageEnvelope _envelope;
     private readonly SendTracing? _tracing;
     private readonly string _wireType;
@@ -118,6 +121,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
         _serializer = serializer;
         _pipeline = pipeline;
         _capabilities = capabilities;
+        _deliveryClock = (ITransportWrapper.Unwrap(transport) as InMemoryTransport)?.Clock ?? TimeProvider.System;
         _envelope = new(messageType, options.Source, options.HeaderNames, options.EnvelopeMode);
         _tracing = (transport as ITransportSendTracing)?.GetSendTracing(destination);
         _wireType = messageType.ToString();
@@ -373,7 +377,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
 
                 if (_outbox is null)
                 {
-                    supported = _route._capabilities.MaxDeliveryDelay is { } maxDelay && deliverAt - DateTimeOffset.UtcNow <= maxDelay;
+                    supported = _route._capabilities.MaxDeliveryDelay is { } maxDelay && deliverAt - _route._deliveryClock.GetUtcNow() <= maxDelay;
                 }
                 else if (Options.OrderingKey is not null || _route._orderingKey is not null)
                 {

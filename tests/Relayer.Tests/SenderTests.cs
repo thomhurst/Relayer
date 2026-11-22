@@ -4,6 +4,8 @@ using System.Threading.Tasks.Sources;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Relayer.InMemory;
+using Relayer.Testing;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -863,6 +865,46 @@ public class SenderTests
         await Assert.That(transport.DeliverAt).IsEqualTo(deliverAt);
         await Assert.That(transport.Count).IsEqualTo(1);
         await Assert.That(transport.CapabilityEndpoints).IsEquivalentTo(new[] { "orders" });
+    }
+
+    [Test]
+    [Arguments(-3, false)]
+    [Arguments(3, false)]
+    [Arguments(3, true)]
+    public async Task Direct_scheduling_uses_the_in_memory_transport_clock(int clockOffsetDays, bool useHarness)
+    {
+        var maxDelay = TimeSpan.FromHours(1);
+        var clock = new InMemoryTestClock();
+        clock.Advance(DateTimeOffset.UtcNow.AddDays(clockOffsetDays) - clock.GetUtcNow());
+        await using var transport = new InMemoryTransport("local", new Dictionary<string, InMemoryEndpointOptions>
+        {
+            ["orders"] = new() { Capabilities = new() { MaxDeliveryDelay = maxDelay } }
+        }, clock);
+        var services = Services(transport);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("local", "orders");
+        });
+
+        if (useHarness)
+        {
+            services.AddRelayerHarness();
+        }
+
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var order = new OrderPlaced(Guid.NewGuid());
+        var limit = clock.GetUtcNow() + maxDelay;
+        await transport.SendAsync(new("orders", default, deliverAt: limit), default);
+        await sender.SendAsync(order, options => options.DeliverAt = limit);
+
+        var tooLate = limit.AddTicks(1);
+        await Assert.That(async () => await transport.SendAsync(new("orders", default, deliverAt: tooLate), default))
+            .Throws<InvalidOperationException>().WithMessageContaining("exceeds MaxDeliveryDelay");
+        await Assert.That(async () => await sender.SendAsync(order, options => options.DeliverAt = tooLate))
+            .Throws<InvalidOperationException>().WithMessageContaining("cannot execute DeliverAt");
     }
 
     [Test]
