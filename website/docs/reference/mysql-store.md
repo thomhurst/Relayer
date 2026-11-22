@@ -53,7 +53,7 @@ ordering keys and tenant IDs survive reads.
 Eligibility means pending, due at the supplied UTC instant, and without a live claim. Counts
 span all lanes. A conditional InnoDB update claims one eligible row atomically. Renewal never
 shortens expiry; renewal, completion and failure require the matching token and a live claim.
-Failure increments attempts and releases the claim. At `MaxDispatchAttempts` (default `10`), an InnoDB transaction copies the raw row to dead storage and deletes an unordered row, or parks an ordered row in place. Keep this limit identical across stores and workers. Repeated or stale mutations return `false`.
+Failure increments attempts and releases the claim. At `MaxDispatchAttempts` (default `10`), an InnoDB transaction copies the raw row to dead storage and either deletes the unordered row or parks the ordered row in place. Keep this limit identical across stores and workers. Repeated or stale mutations return `false`.
 
 Dates use UTC `DATETIME(6)` values with microsecond precision. Await each operation before the
 next operation on the same store. Finish using borrowed rows before another read. Database
@@ -259,7 +259,8 @@ services.AddRelayerMySqlOrderedDispatch("orders", dataSource,
     });
 ```
 
-An overload accepts an `IConfiguration` section. Immutable options are read once at worker startup.
+The `IConfiguration` overload reads the section once during registration. Set all values before
+calling `AddRelayerMySqlOrderedDispatch`. Later configuration changes do not update the worker.
 Use the same database, prefix and lane count on every writer and worker. The application owns
 the data source and disposes it after workers stop. Destinations must support native ordering
 by key; invalid routing records a durable failure without sending.

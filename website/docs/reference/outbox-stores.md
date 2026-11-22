@@ -99,8 +99,16 @@ than the supplied current time. An absent or ineligible row returns false withou
 row. `RecordFailureAsync` increments attempts, persists the error and releases the claim in one operation.
 Repeating a failure operation with the released token must not increment attempts again. All three operations
 require a matching token and a claim that is still live at the supplied time; otherwise they return false without
-mutation. Empty IDs/tokens, invalid claim expiry and null error text are invalid arguments. Poison-row movement
-and key parking belong to a separate integration.
+mutation. Empty IDs/tokens, invalid claim expiry and null error text are invalid arguments.
+
+Providers can also apply a poison policy in the same operation. The PostgreSQL, SQL Server and MySQL stores
+do this when the incremented attempt count reaches the store's configured `MaxDispatchAttempts` (default 10). They write a dead record
+and either remove the unordered row from the outbox or park the ordered row in place, blocking later
+dispatch for its key. A return value of `true` confirms the failure was recorded. The row may already be
+parked or removed, so a custom dispatcher must use normal eligibility checks before retrying.
+
+See the store options and poison policies for [PostgreSQL](postgres-store.md#poison-rows-and-key-release),
+[SQL Server](sqlserver-store.md#recovery-poison-rows-and-retention) and [MySQL](mysql-store.md#reads-and-fencing).
 
 All mutations are atomic and durable before completion. Observe cancellation and propagate database errors.
 Cancellation or an error can occur after a database commit; callers must tolerate that uncertainty and
