@@ -15,7 +15,24 @@ public partial class ServiceBusMessageBindingTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task Native_settlement_round_trips_against_service_bus_emulator(bool nativeOnly)
+    public Task Native_settlement_round_trips_against_service_bus_emulator(bool nativeOnly)
+    {
+        return RoundTripAsync(nativeOnly, ["complete", "abandon", "defer"]);
+    }
+
+    // The emulator can fault the queue entity on the first dead-letter read and detach the
+    // dead-letter receiver, so final completion fails with MessageLockLost. The native SDK
+    // alone reproduces it. Re-enable once the emulator is fixed or replaced (#139, #876).
+    [Test]
+    [Skip("Azure Service Bus emulator faults the entity on the first dead-letter read: https://github.com/thomhurst/Relayer/issues/139")]
+    [Arguments(false)]
+    [Arguments(true)]
+    public Task Native_dead_letter_round_trips_against_service_bus_emulator(bool nativeOnly)
+    {
+        return RoundTripAsync(nativeOnly, ["dead_letter"]);
+    }
+
+    private async Task RoundTripAsync(bool nativeOnly, string[] operations)
     {
         // LinkStateLost retains the underlying AMQP exception, which MessageLockLost omits.
         using var sdkLogs = AzureEventSourceListener.CreateConsoleLogger(EventLevel.Warning);
@@ -35,7 +52,7 @@ public partial class ServiceBusMessageBindingTests
         var pipeline = Pipeline(provider);
         var properties = new Dictionary<string, object> { ["settlement-test"] = "preserved" };
 
-        foreach (var operation in new[] { "complete", "abandon", "defer", "dead_letter" })
+        foreach (var operation in operations)
         {
             var outgoing = new ServiceBusMessage(new BinaryData(new byte[] { 42 }))
             {
