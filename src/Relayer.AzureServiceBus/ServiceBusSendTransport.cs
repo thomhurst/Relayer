@@ -9,10 +9,11 @@ using Relayer.Transports;
 
 namespace Relayer.AzureServiceBus;
 
-internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracing
+internal sealed partial class ServiceBusSendTransport : ITransport, ITransportSendTracing
 {
     private readonly ServiceBusClient _client;
     private readonly bool _ownsClient;
+    private readonly ILogger? _logger;
     private readonly FrozenDictionary<string, Endpoint> _endpoints;
     private readonly ServiceBusTopology _topology;
     private readonly ServiceBusTransportOptions _declaredOptions;
@@ -106,6 +107,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         _client = client;
         _ownsClient = ownsClient;
         _declaredOptions = declaredOptions ?? options;
+        _logger = logging?.CreateLogger<ServiceBusSendTransport>();
         _topology = new(name, client, options, administration, consumers, destinations.ToArray());
         _declarations = consumers ?? [];
         _receiveSources = consumers is null ? [] : consumers.Select(consumer => consumer.Source).ToHashSet(StringComparer.Ordinal);
@@ -150,7 +152,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                     Destination = destination,
                     ServerAddress = client.FullyQualifiedNamespace
                 },
-                    SendCoreAsync, SendBatchCoreAsync, logging?.CreateLogger<ServiceBusSendTransport>(), new("cloudEvents:"));
+                    SendCoreAsync, SendBatchCoreAsync, _logger, new("cloudEvents:"));
             }
 
             endpoints.Add(destination, endpoint);
@@ -505,19 +507,31 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         }
         catch
         {
-            foreach (var consumer in Consumers)
+            var rollback = StopAsync(CancellationToken.None);
+
+            try
             {
-                await consumer.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                await rollback.ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                if (_logger is { } logger)
+                {
+                    StartupRollbackFailed(logger, rollback.Exception ?? error, Name);
+                }
             }
 
             throw;
         }
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    [LoggerMessage(Level = LogLevel.Error, Message = "Service Bus transport '{Transport}' could not stop all processors after startup failed.")]
+    private static partial void StartupRollbackFailed(ILogger logger, Exception exception, string transport);
+
+    public Task StopAsync(CancellationToken cancellationToken)
     {
         // Start every drain before awaiting it so one busy declaration cannot keep siblings accepting messages.
-        await Task.WhenAll(Consumers.Select(consumer => consumer.StopAsync(cancellationToken))).ConfigureAwait(false);
+        return Task.WhenAll(Consumers.Select(consumer => consumer.StopAsync(cancellationToken)));
     }
 
     internal void EnableHealthTracking()
