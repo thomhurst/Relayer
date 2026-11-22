@@ -63,7 +63,27 @@ transport.Request<GetPrice, Price>("prices", "price-replies",
 
 The default capacity is 256; supported capacities are 1 through 65,536. Exhaustion raises `InvalidOperationException` immediately. Each request owns its correlation identity, completion and deadline resources; these request orchestration allocations are separate from the pooled send/consume pipeline. Replies use a bounded slot lookup without a dictionary lock or decoding their correlation ID into a string. Reservations are removed after success, timeout, caller cancellation or send failure. Duplicate, late, malformed and unmatched correlation IDs are ignored and settle through the ordinary consumer pipeline. Invalid message envelopes or payloads still follow the ordinary failure policy. Pending requests do not survive a process restart.
 
-`RequestOptions.TimeProvider` allows deterministic deadline tests. A reply endpoint can use native consumer settings through the request builder’s `Replies` method:
+`RequestOptions.TimeProvider` allows deterministic deadline tests.
+
+## Configure the reply consumer
+
+`Request<TRequest, TResponse>` adds a typed reply handler to the consumer for the declared reply address. Hosted transports compose it through their normal single-message receive pipeline. Batch reply handlers fail startup validation.
+
+Use `request.Replies` to configure the reply consumer with the transport's usual options and failure settings. The consumer follows the transport's normal ordering, delivery and settlement rules. Use the reply address as the responder's fixed `Send<TResponse>` destination.
+
+| Transport | Reply endpoint setup |
+| --- | --- |
+| [In-memory](../transports/in-memory.md) | Use a dedicated endpoint name. The transport creates declared endpoints in the requesting process. |
+| [Kafka](../transports/kafka.md#register-a-consumer) | Use a dedicated reply topic and set a unique consumer group in `Replies`. See the example below. |
+| [Azure Service Bus](../transports/service-bus.md#register-receiving) | Use a dedicated queue name, or use a dedicated topic name and set `consumer.Options.Subscription` in `Replies`. |
+| [Amazon SQS](../transports/amazon-sqs.md#receiving-and-durable-settlement) | Use a declared, dedicated queue name and configure the dead-letter queue in `Replies`. SQS attribute limits apply. |
+| [RabbitMQ](../transports/rabbitmq.md#receive-and-settle) | Use the dedicated queue name for both consuming and sending. |
+| [PostgreSQL local](../transports/postgresql-local.md#register-routes-and-workers) | Use a dedicated local endpoint name with the matching PostgreSQL dispatch store and workers. Keep the store isolated from other dispatching processes so they cannot claim the replies. |
+| [NATS JetStream](../transports/nats.md#register-sends-and-a-durable-consumer) | Use the same dedicated name for the reply subject and the durable consumer, such as `price-replies-instance-1`. Declare the durable in `NatsTransportOptions.Consumers` with a filter for that subject. Set `consumer.Options.Stream` and the dead-letter subject in `Replies`. |
+
+[Google Cloud Pub/Sub](../transports/google-pubsub.md#register-topics-and-subscriptions) composes the same typed handler. Its reply consumer requires a fully qualified subscription name, while publishing requires a fully qualified topic name. `Request` puts the subscription name in `replyto`, and `ReplyAsync` requires it to match the response route's topic name exactly. This prevents end-to-end `Request` and `ReplyAsync` on Pub/Sub today.
+
+This Kafka example configures a dedicated reply group and a process-specific CloudEvents source.
 
 ```csharp
 kafka.Request<GetPrice, Price>("prices", "price-replies-instance-1",
@@ -78,8 +98,6 @@ kafka.Request<GetPrice, Price>("prices", "price-replies-instance-1",
 ```
 
 Kafka keeps Dekaf's native offset-reset setting. For a new request or reply consumer group, configure `KafkaTransportOptions.ConfigureConsumer` with `native => native.WithAutoOffsetReset(AutoOffsetReset.Earliest)` if messages may be sent before the initial partition assignment completes. `Latest` can skip those messages; host startup alone does not establish a committed group offset. Relayer does not override this native choice. `request.Send` also exposes the ordinary typed route builder for native route options and ordering keys.
-
-Batch reply handlers are unsupported and fail startup validation. Hosted Kafka, Service Bus, SQS, RabbitMQ and in-memory consumers compose the registered typed descriptor with the normal receive pipeline. Existing transport limits, including SQS attribute counts, still apply. Native ordering, retries, delivery and settlement semantics stay unchanged.
 
 ## Metadata and durability
 
