@@ -134,6 +134,90 @@ public class SnsSendFlociTests
         }
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Fifo_topic_reports_subscriber_ordering_and_keeps_native_groups(bool fifoQueue)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        var url = Environment.GetEnvironmentVariable("RELAYER_SNS_SERVICE_URL") ?? await SharedBrokers.FlociUrlAsync(token);
+        using var sns = new AmazonSimpleNotificationServiceClient(new BasicAWSCredentials("test", "test"), new AmazonSimpleNotificationServiceConfig { ServiceURL = url, AuthenticationRegion = "us-east-1" });
+        using var sqs = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = url, AuthenticationRegion = "us-east-1" });
+        var name = TestContext.Current!.Isolation.GetIsolatedName("sns-ordering");
+        var topicName = name + ".fifo";
+        var queueName = name + (fifoQueue ? ".fifo" : "");
+        var topicArn = "arn:aws:sns:us-east-1:000000000000:" + topicName;
+        var queueArn = "arn:aws:sqs:us-east-1:000000000000:" + queueName;
+        var options = new AmazonSnsTransportOptions { SnsClient = sns };
+        options.Topics.Add(new(topicName)
+        {
+            Attributes = new()
+            {
+                ["FifoTopic"] = "true"
+            }
+        });
+        options.Subscriptions.Add(new()
+        {
+            TopicArn = topicArn,
+            Protocol = "sqs",
+            Endpoint = queueArn,
+            ReturnSubscriptionArn = true,
+            Attributes = new()
+            {
+                ["RawMessageDelivery"] = "true"
+            }
+        });
+        var attributes = new Dictionary<string, string>
+        {
+            ["Policy"] = $$$$"""
+                {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"sns.amazonaws.com"},
+                "Action":"sqs:SendMessage","Resource":"{{{{queueArn}}}}","Condition":{"ArnEquals":{"aws:SourceArn":"{{{{topicArn}}}}"}}}]}
+                """
+        };
+
+        if (fifoQueue)
+        {
+            attributes.Add("FifoQueue", "true");
+        }
+
+        var queueUrl = (await sqs.CreateQueueAsync(new CreateQueueRequest { QueueName = queueName, Attributes = attributes }, token)).QueueUrl;
+        await using var transport = new SnsSendTransport("floci", sns, false, options);
+
+        try
+        {
+            await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
+            await Assert.That(transport.GetCapabilities(topicName).OrderedByKey).IsEqualTo(fifoQueue);
+            var send = new SendOptions().AmazonSns(request => request.MessageGroupId = "customer");
+            await transport.SendAsync(new(topicName, "first"u8.ToArray(), new KeyValuePair<string, WireString>[] { new("ce_id", new("first")) }, options: send), token);
+            await transport.SendAsync(new(topicName, "second"u8.ToArray(), new KeyValuePair<string, WireString>[] { new("ce_id", new("second")) }, options: send), token);
+            var first = await ReceiveAsync(sqs, queueUrl, token);
+
+            if (fifoQueue)
+            {
+                await Assert.That(first.Body).IsEqualTo("first");
+                await Assert.That(first.Attributes["MessageGroupId"]).IsEqualTo("customer");
+                var blocked = await sqs.ReceiveMessageAsync(new ReceiveMessageRequest { QueueUrl = queueUrl, WaitTimeSeconds = 1, MaxNumberOfMessages = 1 }, token);
+                await Assert.That(blocked.Messages?.Count ?? 0).IsEqualTo(0);
+                await sqs.DeleteMessageAsync(queueUrl, first.ReceiptHandle, token);
+            }
+
+            var second = await ReceiveAsync(sqs, queueUrl, token);
+            await Assert.That(new[] { first.Body, second.Body }).IsEquivalentTo(new[] { "first", "second" });
+        }
+        finally
+        {
+            try
+            {
+                await sns.DeleteTopicAsync(topicArn, CancellationToken.None);
+            }
+            finally
+            {
+                await sqs.DeleteQueueAsync(queueUrl, CancellationToken.None);
+            }
+        }
+    }
+
     private static async Task<Amazon.SQS.Model.Message> ReceiveAsync(IAmazonSQS sqs, string url, CancellationToken token)
     {
         var response = await sqs.ReceiveMessageAsync(new ReceiveMessageRequest { QueueUrl = url, WaitTimeSeconds = 10, MaxNumberOfMessages = 1, MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"] }, token);

@@ -202,6 +202,8 @@ SNS FIFO topics require a `.fifo` name and native `FifoTopic = "true"` attribute
 
 Native `PublishBatch` splits at destination changes, 10 messages or the aggregate **256 KiB** limit including attributes. Individual messages also have a 256 KiB limit. `AmazonSnsBatchException.Response` exposes the original native successful and failed entries, and `BatchOffset` identifies the native batch within its destination group. Successful entries are never automatically resent; later batches stop after a failure. Native FIFO ordering and deduplication govern delivery.
 
+A FIFO topic supports portable route ordering when every declared SQS subscriber uses a FIFO queue. A declared standard SQS subscriber delivers with best-effort ordering, so startup rejects routes that use `OrderingKey` for that topic. For native FIFO publishing to a mixed topology, set `PublishRequest.MessageGroupId` through `SendOptions.AmazonSns`. Relayer checks the declared subscriptions by topic name and does not discover undeclared subscribers for this check.
+
 ### SNS topics, subscriptions and queue policies
 
 `Topics` contains native `CreateTopicRequest` declarations with attributes and tags. `Subscriptions` contains native `SubscribeRequest` declarations with explicit topic and queue ARNs, `Protocol = "sqs"`, and `Attributes["RawMessageDelivery"] = "true"`. Raw delivery preserves the serialized body and CloudEvents message attributes on the queue. Other subscription protocols and wrapped SNS notification bodies are rejected at startup.
