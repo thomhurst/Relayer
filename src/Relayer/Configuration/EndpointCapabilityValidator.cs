@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer;
@@ -55,7 +56,7 @@ internal sealed class EndpointCapabilityValidator
             return; // Duplicate names have already been reported; neither adapter is authoritative.
         }
 
-        if (deferInitialization && transport is ITransportCapabilityInitializer)
+        if (deferInitialization && ITransportWrapper.Unwrap(transport) is ITransportCapabilityInitializer)
         {
             return;
         }
