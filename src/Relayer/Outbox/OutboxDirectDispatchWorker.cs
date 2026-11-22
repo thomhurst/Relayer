@@ -84,6 +84,11 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         _instrumentation?.AddOutboxPending(-count);
     }
 
+    protected virtual void LocalSettled(Guid rowId)
+    {
+        _instrumentation?.ObserveOutboxSettled(rowId);
+    }
+
     protected virtual bool HonorConfirmedSingle => false;
 
     protected virtual bool CheckCancellationBeforeRetry => true;
@@ -359,6 +364,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
 
                         await SendLocalAsync(batch, first, transport, cancellationToken).ConfigureAwait(false);
                         Completed(1, recovery);
+                        LocalSettled(_claims[0].MessageId);
                         continue;
                     }
 

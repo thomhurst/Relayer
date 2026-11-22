@@ -19,8 +19,9 @@ internal interface IRelayerObserver
 
     void DeadLettered(InMemory.InMemoryDelivery delivery, DeadLetterInfo error, (string TransportName, string Source) endpoint);
 
-    // Committed (positive) or settled (negative) durable outbox rows of this instance.
-    void OutboxPending(long delta);
+    void OutboxCommitting(ReadOnlySpan<Guid> rows);
+
+    void OutboxSettled(Guid rowId);
 }
 
 internal interface ITransportWrapper

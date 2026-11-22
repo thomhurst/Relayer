@@ -22,6 +22,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly string _claimBatch;
     private readonly string _claimDirectBatch;
     private readonly string _completeDirectBatch;
+    private readonly string _observeDirectBatch;
     private readonly string _failDirect;
     private readonly string _retryDirect;
     private readonly string _failDirectImmediately;
@@ -90,6 +91,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
 
         _completeBatch = $"WITH deleted AS ({CompleteBatchDelete("@now")} RETURNING row.id) SELECT count(*) FROM deleted";
         _completeDirectBatch = $"WITH deleted AS ({CompleteBatchDelete("clock_timestamp()")} RETURNING row.id) SELECT count(*) FROM deleted";
+        _observeDirectBatch = CompleteBatchDelete("clock_timestamp()") + " RETURNING row.id";
 
         if (options.RetainSentMessages)
         {
@@ -99,6 +101,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             _complete = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row WHERE {fenced}", sent, "@now", false);
             _completeBatch = PostgreSqlSentSql.Complete(CompleteBatchDelete("@now"), sent, "@now", true);
             _completeDirectBatch = PostgreSqlSentSql.Complete(CompleteBatchDelete("clock_timestamp()"), sent, "clock_timestamp()", true);
+            _observeDirectBatch = PostgreSqlSentSql.Complete(CompleteBatchDelete("clock_timestamp()"), sent, "clock_timestamp()", true, returnIds: true);
         }
 
         _retry = PostgreSqlPoisonSql.Retry(table, fenced, "@now");
@@ -306,7 +309,8 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         return _completedCount.Start(CreateBatchMutation(_completeBatch, claims, now), cancellationToken);
     }
 
-    internal ValueTask<long> CompleteDirectBatchAsync(ReadOnlyMemory<OutboxClaim> claims, CancellationToken cancellationToken)
+    internal ValueTask<long> CompleteDirectBatchAsync(ReadOnlyMemory<OutboxClaim> claims, CancellationToken cancellationToken,
+        List<Guid>? settled = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -320,7 +324,27 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             Validate(claim);
         }
 
-        return _completedCount.Start(CreateBatchMutation(_completeDirectBatch, claims, null), cancellationToken);
+        return settled is null
+            ? _completedCount.Start(CreateBatchMutation(_completeDirectBatch, claims, null), cancellationToken)
+            : ReadCompletedIdsAsync(CreateBatchMutation(_observeDirectBatch, claims, null), settled, cancellationToken);
+    }
+
+    private static async ValueTask<long> ReadCompletedIdsAsync(NpgsqlCommand command, List<Guid> settled,
+        CancellationToken cancellationToken)
+    {
+        var start = settled.Count;
+
+        await using (command.ConfigureAwait(false))
+        {
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                settled.Add(reader.GetGuid(0));
+            }
+        }
+
+        return settled.Count - start;
     }
 
     // The command copies the claim, so this store's single slot is free again once the call returns.

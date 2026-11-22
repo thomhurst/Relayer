@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
+using Relayer.Outbox;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer;
@@ -139,6 +140,11 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
 
         _batch.Prepare(transaction, _table, _rows, _count, _ordered ? _sequence : null);
         return _batch;
+    }
+
+    internal OutboxCommitObservation? ObserveCommit()
+    {
+        return _instrumentation?.ObserveOutboxCommit(_rows, _count, static row => row.Id);
     }
 
     internal void Committed()

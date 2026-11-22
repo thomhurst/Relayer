@@ -49,6 +49,7 @@
     <InternalsVisibleTo Include="Relayer.Outbox.SqlServer.Tests" />
     <InternalsVisibleTo Include="Relayer.Sagas" />
     <InternalsVisibleTo Include="Relayer.Testing" />
+    <InternalsVisibleTo Include="Relayer.Testing.Tests" />
   </ItemGroup>
 
 </Project>

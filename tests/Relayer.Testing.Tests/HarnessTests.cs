@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Relayer.InMemory;
+using Relayer.Outbox;
 using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Testing;
@@ -655,22 +656,35 @@ public class HarnessTests
     }
 
     [Test]
-    public async Task Committed_outbox_rows_are_outstanding_until_this_provider_settles_them()
+    public async Task Committing_outbox_rows_are_tracked_by_id_and_failed_commits_withdraw_work()
     {
         await using var fixture = await Fixture.Start();
         var instrumentation = fixture.Provider.GetRequiredService<RelayerInstrumentation>();
-        // A dispatcher can settle a row before its commit is reported; the later commit then balances it.
-        instrumentation.AddOutboxPending(-1);
-        await fixture.Harness.WaitForIdleAsync().WaitAsync(s_limit);
-        instrumentation.AddOutboxPending(1);
-        await fixture.Harness.WaitForIdleAsync().WaitAsync(s_limit);
-        instrumentation.AddOutboxPending(2);
+        var observer = instrumentation.Observer!;
+        var fast = Guid.CreateVersion7();
+        var pending = Guid.CreateVersion7();
+        var rolledBack = Guid.CreateVersion7();
+
+        observer.OutboxSettled(Guid.CreateVersion7());
+
+        using (var commit = new OutboxCommitObservation(observer, [fast, pending]))
+        {
+            observer.OutboxSettled(fast);
+            commit.Commit();
+        }
+
         var idle = fixture.Harness.WaitForIdleAsync();
+        observer.OutboxSettled(Guid.CreateVersion7());
         await Assert.That(idle.IsCompleted).IsFalse();
         await Assert.That(() => fixture.Harness.Reset()).Throws<InvalidOperationException>();
-        instrumentation.AddOutboxPending(-1);
-        await Assert.That(idle.IsCompleted).IsFalse();
-        instrumentation.AddOutboxPending(-1);
+
+        using (new OutboxCommitObservation(observer, [rolledBack]))
+        {
+            observer.OutboxSettled(pending);
+            observer.OutboxSettled(fast);
+            await Assert.That(idle.IsCompleted).IsFalse();
+        }
+
         await idle.WaitAsync(s_limit);
         fixture.Harness.Reset();
     }
@@ -718,24 +732,29 @@ public class HarnessTests
 
             await Assert.That(resolved).IsSameReferenceAs(instrumentation);
             resolved.AddOutboxPending(1);
+            resolved.AddOutboxPending(-1);
+            var rowId = Guid.CreateVersion7();
+            resolved.Observer!.OutboxCommitting([rowId]);
             harness = provider.GetRequiredService<RelayerHarness>();
             var idle = harness.WaitForIdleAsync();
             await Assert.That(idle.IsCompleted).IsFalse();
-            resolved.AddOutboxPending(-1);
+            resolved.ObserveOutboxSettled(rowId);
             await idle.WaitAsync(s_limit);
         }
 
         instrumentation.AddOutboxPending(1);
         await Assert.That(measurements.ToArray()).IsEquivalentTo(new long[] { 1, -1, 1 });
+        await Assert.That(instrumentation.Observer).IsNull();
         await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsTrue();
 
         using var nextProvider = services.BuildServiceProvider();
         var nextHarness = nextProvider.GetRequiredService<RelayerHarness>();
-        instrumentation.AddOutboxPending(1);
+        var nextRowId = Guid.CreateVersion7();
+        instrumentation.Observer!.OutboxCommitting([nextRowId]);
         var nextIdle = nextHarness.WaitForIdleAsync();
         await Assert.That(nextIdle.IsCompleted).IsFalse();
         await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsTrue();
-        instrumentation.AddOutboxPending(-1);
+        instrumentation.ObserveOutboxSettled(nextRowId);
         await nextIdle.WaitAsync(s_limit);
     }
 
@@ -764,10 +783,11 @@ public class HarnessTests
             using var secondProvider = secondServices.BuildServiceProvider();
 
             await Assert.That(() => secondProvider.GetRequiredService<RelayerHarness>()).Throws<InvalidOperationException>();
-            shared.AddOutboxPending(1);
+            var sharedRowId = Guid.CreateVersion7();
+            shared.Observer!.OutboxCommitting([sharedRowId]);
             var idle = firstHarness.WaitForIdleAsync();
             await Assert.That(idle.IsCompleted).IsFalse();
-            shared.AddOutboxPending(-1);
+            shared.ObserveOutboxSettled(sharedRowId);
             await idle.WaitAsync(s_limit);
 
             var thirdServices = new ServiceCollection();
@@ -778,10 +798,11 @@ public class HarnessTests
             thirdServices.AddRelayerHarness();
             using var thirdProvider = thirdServices.BuildServiceProvider();
             var thirdHarness = thirdProvider.GetRequiredService<RelayerHarness>();
-            distinct.AddOutboxPending(1);
+            var distinctRowId = Guid.CreateVersion7();
+            distinct.Observer!.OutboxCommitting([distinctRowId]);
             var thirdIdle = thirdHarness.WaitForIdleAsync();
             await Assert.That(thirdIdle.IsCompleted).IsFalse();
-            distinct.AddOutboxPending(-1);
+            distinct.ObserveOutboxSettled(distinctRowId);
             await thirdIdle.WaitAsync(s_limit);
         }
     }

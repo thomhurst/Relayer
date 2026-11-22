@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Transactions;
 using MySqlConnector;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
@@ -274,7 +275,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     // Only returned after the native transaction commits; stale claims and rollback have no terminal outcome.
     internal readonly record struct FailureOutcome(bool Accepted, bool Removed)
     {
-        internal void RecordTelemetry(RelayerInstrumentation? instrumentation)
+        internal void RecordTelemetry(RelayerInstrumentation? instrumentation, Guid rowId)
         {
             if (!Removed || instrumentation is null)
             {
@@ -283,6 +284,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
 
             instrumentation.AddOutboxPending(-1);
             instrumentation.RecordOutboxPoison();
+            instrumentation.ObserveOutboxSettled(rowId);
         }
     }
 
@@ -449,7 +451,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<long> CompleteBatchAsync(ReadOnlyMemory<OutboxClaim> claims,
-        DateTimeOffset now, CancellationToken cancellationToken)
+        DateTimeOffset now, CancellationToken cancellationToken, IRelayerObserver? observer = null)
     {
         EnsureAvailable(cancellationToken);
 
@@ -465,7 +467,29 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
             ? await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false)
             : null;
         var connection = recoveryConnection ?? ownedConnection!;
-        return await _completeBatch.ExecuteAsync(connection, default, cancellationToken).ConfigureAwait(false);
+
+        if (observer is null)
+        {
+            return await _completeBatch.ExecuteAsync(connection, default, cancellationToken).ConfigureAwait(false);
+        }
+
+        var outcomes = new bool[claims.Length];
+
+        try
+        {
+            return await _completeBatch.ExecuteAsync(connection, outcomes, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Each native mutation autocommits, so earlier acknowledged deletes survive later failures.
+            for (var i = 0; i < outcomes.Length; i++)
+            {
+                if (outcomes[i])
+                {
+                    observer.OutboxSettled(claims.Span[i].MessageId);
+                }
+            }
+        }
     }
 
     private static void ValidateBatch(ReadOnlySpan<OutboxClaim> claims, DateTimeOffset? now = null, DateTimeOffset? expires = null)

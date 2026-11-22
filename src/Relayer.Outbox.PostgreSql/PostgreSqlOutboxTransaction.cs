@@ -72,7 +72,9 @@ internal sealed class PostgreSqlOutboxTransaction : DbTransaction
         try
         {
             _owner.Prepare(_native)?.Execute();
+            using var observation = _owner.ObserveCommit();
             _native.Commit();
+            observation?.Commit();
             _owner.Committed();
         }
         finally
@@ -95,7 +97,10 @@ internal sealed class PostgreSqlOutboxTransaction : DbTransaction
                 await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            await _native.CommitAsync(cancellationToken).ConfigureAwait(false);
+            var observation = _owner.ObserveCommit();
+            await (observation is null
+                ? _native.CommitAsync(cancellationToken)
+                : observation.CommitAsync(_native, cancellationToken)).ConfigureAwait(false);
             _owner.Committed();
         }
         finally

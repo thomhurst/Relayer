@@ -130,7 +130,24 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
         {
             if (ReferenceEquals(state.Transaction, transaction))
             {
+                instrumentation?.FinishOutboxCommit(state, committed: false);
                 state.Clear();
+            }
+        }
+    }
+
+    internal void ObserveCommit(DbTransaction transaction)
+    {
+        if (instrumentation?.Observer is null)
+        {
+            return;
+        }
+
+        foreach (var state in _contexts)
+        {
+            if (ReferenceEquals(state.Transaction, transaction))
+            {
+                instrumentation.ObserveOutboxCommit(state, state.Rows, state.Count);
             }
         }
     }
@@ -146,6 +163,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
 
             try
             {
+                instrumentation?.FinishOutboxCommit(state, committed: true);
                 instrumentation?.AddOutboxPending(state.Count);
                 state.Configuration.Committed(state.Rows, state.Count);
             }
@@ -163,6 +181,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
             if (ReferenceEquals(state.Transaction, transaction))
             {
                 state.Failed = true;
+                instrumentation?.FinishOutboxCommit(state, committed: false);
             }
         }
     }
@@ -254,6 +273,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
     {
         foreach (var state in _contexts)
         {
+            instrumentation?.FinishOutboxCommit(state, committed: false);
             state.Clear();
         }
 

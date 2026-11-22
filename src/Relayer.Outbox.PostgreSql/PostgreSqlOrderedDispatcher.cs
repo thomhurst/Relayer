@@ -259,7 +259,8 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
         var count = 0;
         var sent = 0;
         var committed = 0;
-        var poisoned = false;
+        Guid? poisoned = null;
+        var settlementStart = 0;
 
         try
         {
@@ -329,6 +330,8 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                                 // Commit the lease, the claim and earlier completions; the fenced claim settles the row afterwards.
                                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                                 _instrumentation?.AddOutboxPending(-sent);
+                                _instrumentation?.ObserveOutboxSettlements(_rows, settlementStart, sent);
+                                settlementStart = index;
                                 committed += sent;
                                 sent = 0;
                                 await transaction.DisposeAsync().ConfigureAwait(false);
@@ -338,6 +341,8 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                                 await local.ConsumeAsync(prepared.Message, claim, row.Attempts + 1, null, cancellationToken).ConfigureAwait(false);
                                 // The fenced completion already committed: report it now, before the next row can fail the turn.
                                 _instrumentation?.AddOutboxPending(-1);
+                                _instrumentation?.ObserveOutboxSettled(row.Id);
+                                settlementStart = index + 1;
                                 committed++;
                                 continue;
                             }
@@ -405,7 +410,10 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                             throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
                         }
 
-                        poisoned = permanent || (!nativeSend && row.Attempts + 1 >= (consumer?.MaxAttempts ?? _options.MaxDispatchAttempts));
+                        if (permanent || (!nativeSend && row.Attempts + 1 >= (consumer?.MaxAttempts ?? _options.MaxDispatchAttempts)))
+                        {
+                            poisoned = row.Id;
+                        }
                         // The consume pipeline already logged a handler failure it handed back for retry or poison.
                         if (error is not ConsumeFailureHandoff)
                         {
@@ -435,10 +443,12 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
             }
 
             _instrumentation?.AddOutboxPending(-sent);
+            _instrumentation?.ObserveOutboxSettlements(_rows, settlementStart, sent);
 
-            if (poisoned)
+            if (poisoned is { } parked)
             {
                 _instrumentation?.RecordOutboxParked();
+                _instrumentation?.ObserveOutboxSettled(parked);
             }
 
             return committed + sent;

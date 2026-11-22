@@ -17,6 +17,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     private readonly OutboxDispatchBatch _recoveryBatch = new();
     private int _recoveredPoison;
     private long _recoveredSettled;
+    private List<Guid>? _recoveredIds;
     private bool _deferSettlement;
     private readonly NpgsqlDataSource _source;
     private readonly string? _host;
@@ -47,10 +48,17 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         var settled = _recoveredSettled + poisoned;
         _recoveredPoison = 0;
         _recoveredSettled = 0;
+        var ids = _recoveredIds;
+        _recoveredIds = null;
 
         if (!committed)
         {
             return;
+        }
+
+        if (ids is not null)
+        {
+            _instrumentation?.ObserveOutboxSettlements(ids);
         }
 
         if (settled != 0)
@@ -237,7 +245,46 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
 
     protected override ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken)
     {
-        return _store.CompleteDirectBatchAsync(_claims.AsMemory(offset, count), cancellationToken);
+        var claims = _claims.AsMemory(offset, count);
+
+        if (_instrumentation?.Observer is null)
+        {
+            return _store.CompleteDirectBatchAsync(claims, cancellationToken);
+        }
+
+        return _deferSettlement
+            ? _store.CompleteDirectBatchAsync(claims, cancellationToken, _recoveredIds ??= [])
+            : CompleteObservedAsync(claims, cancellationToken);
+    }
+
+    private async ValueTask<long> CompleteObservedAsync(ReadOnlyMemory<OutboxClaim> claims, CancellationToken cancellationToken)
+    {
+        var ids = new List<Guid>();
+        var count = await _store.CompleteDirectBatchAsync(claims, cancellationToken, ids).ConfigureAwait(false);
+        _instrumentation?.ObserveOutboxSettlements(ids);
+        return count;
+    }
+
+    protected override void LocalSettled(Guid rowId)
+    {
+        ObserveSettlement(rowId, _deferSettlement);
+    }
+
+    private void ObserveSettlement(Guid rowId, bool deferSettlement)
+    {
+        if (_instrumentation?.Observer is not { } observer)
+        {
+            return;
+        }
+
+        if (deferSettlement)
+        {
+            (_recoveredIds ??= []).Add(rowId);
+        }
+        else
+        {
+            observer.OutboxSettled(rowId);
+        }
     }
 
     protected override void Completed(long count, bool recovery, bool single = false)
@@ -329,6 +376,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         {
             await local.ConsumeAsync(message, claim, row.Attempts + 1, null, cancellationToken).ConfigureAwait(false);
             base.Completed(1, recovery: false);
+            ObserveSettlement(claim.MessageId, deferSettlement: false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -479,6 +527,11 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
                 _instrumentation?.AddOutboxPending(-completed);
             }
 
+            if (completed != 0)
+            {
+                ObserveSettlement(claim.MessageId, deferSettlement);
+            }
+
             return completed != 0;
         }
 
@@ -497,6 +550,8 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         // Unordered exhaustion moves the row to dead storage. Recovery records it once its transaction commits.
         if (result == 2)
         {
+            ObserveSettlement(claim.MessageId, deferSettlement);
+
             if (propagateDatabaseFailures)
             {
                 _recoveredPoison++;

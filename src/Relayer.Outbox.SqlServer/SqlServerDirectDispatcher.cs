@@ -12,6 +12,7 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     private readonly Func<Exception, bool>? _retrySendFailure;
     private readonly SqlServerDirectDispatchOptions _options;
     private long _recoveredCompletions;
+    private List<Guid>? _recoveredIds;
     private long _recoveredPoison;
     private bool _recovering;
     private readonly string _schema;
@@ -173,7 +174,32 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
 
     protected override ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken)
     {
-        return _store.CompleteBatchAsync(_claims.AsMemory(offset, count), DateTimeOffset.UtcNow, cancellationToken);
+        var claims = _claims.AsMemory(offset, count);
+        var now = DateTimeOffset.UtcNow;
+
+        if (_instrumentation?.Observer is null)
+        {
+            return _store.CompleteBatchAsync(claims, now, cancellationToken);
+        }
+
+        return _recovering
+            ? _store.CompleteBatchAsync(claims, now, cancellationToken, _recoveredIds ??= [])
+            : CompleteObservedAsync(claims, now, cancellationToken);
+    }
+
+    private async ValueTask<long> CompleteObservedAsync(ReadOnlyMemory<OutboxClaim> claims, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var ids = new List<Guid>();
+
+        try
+        {
+            return await _store.CompleteBatchAsync(claims, now, cancellationToken, ids).ConfigureAwait(false);
+        }
+        finally
+        {
+            _instrumentation?.ObserveOutboxSettlements(ids);
+        }
     }
 
     // The base worker ignores the result; a stale claim is recovered after expiry either way.
@@ -199,11 +225,12 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
 
         if (_recovering)
         {
-            _recoveredPoison++;
+            RecoveredQuarantine(claim.MessageId);
         }
         else
         {
             Poisoned(1);
+            _instrumentation?.ObserveOutboxSettled(claim.MessageId);
         }
     }
 
@@ -235,9 +262,14 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     }
 
     // Recovery reads only unordered rows, so a quarantined row has moved to dead storage; it settles with the transaction.
-    internal void RecoveredQuarantine()
+    internal void RecoveredQuarantine(Guid rowId)
     {
         _recoveredPoison++;
+
+        if (_instrumentation?.Observer is not null)
+        {
+            (_recoveredIds ??= []).Add(rowId);
+        }
     }
 
     // The maintenance worker owns this dispatcher and calls this once per transaction.
@@ -247,10 +279,17 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         var poisoned = _recoveredPoison;
         _recoveredCompletions = 0;
         _recoveredPoison = 0;
+        var ids = _recoveredIds;
+        _recoveredIds = null;
 
         if (!committed)
         {
             return;
+        }
+
+        if (ids is not null)
+        {
+            _instrumentation?.ObserveOutboxSettlements(ids);
         }
 
         if (completed != 0)

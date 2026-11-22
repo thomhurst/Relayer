@@ -391,7 +391,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<long> CompleteBatchAsync(ReadOnlyMemory<OutboxClaim> claims, DateTimeOffset now,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, List<Guid>? settled = null)
     {
         CheckOperation(cancellationToken);
 
@@ -425,7 +425,13 @@ public sealed class SqlServerOutboxStore : IOutboxStore
                 throw new InvalidDataException("SQL Server returned an empty batched completion result.");
             }
 
-            completed += reader.GetInt64(0);
+            var outcome = reader.GetInt64(0);
+            completed += outcome;
+
+            if (settled is not null && outcome == 1)
+            {
+                settled.Add(claims.Span[i].MessageId);
+            }
         }
 
         return completed;
