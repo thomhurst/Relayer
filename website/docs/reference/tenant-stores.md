@@ -170,15 +170,13 @@ tenant. It enumerates a finite snapshot each pass and reuses the PostgreSQL dire
 recovery, ordered lane coordination and retention operations. Each store has independent tables,
 membership and fenced leases. Stored native headers, including tenant headers, are sent unchanged.
 
-```csharp
-using Relayer.Outbox.PostgreSql;
+In `Program.cs`, use your application's service collection (`services`) and PostgreSQL
+connection string (`connectionString`).
 
-public sealed class DispatchCatalog : ITenantSource
-{
-    private IReadOnlyList<PostgreSqlTenantStore> _snapshot = [];
-    public IReadOnlyList<PostgreSqlTenantStore> GetTenants() => Volatile.Read(ref _snapshot);
-    public void Replace(PostgreSqlTenantStore[] entries) => Volatile.Write(ref _snapshot, entries);
-}
+```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
+using Relayer.Outbox.PostgreSql;
 
 // This separate native source belongs to the application. Do not change a writer's pooled source.
 var dispatchSettings = new NpgsqlConnectionStringBuilder(connectionString) { Pooling = false };
@@ -196,6 +194,13 @@ services.AddRelayerPostgreSqlTenantDispatch(new PostgreSqlTenantDispatchOptions
     MaxConnections = 4,
     TurnTimeout = TimeSpan.FromSeconds(15)
 });
+
+public sealed class DispatchCatalog : ITenantSource
+{
+    private IReadOnlyList<PostgreSqlTenantStore> _snapshot = [];
+    public IReadOnlyList<PostgreSqlTenantStore> GetTenants() => Volatile.Read(ref _snapshot);
+    public void Replace(PostgreSqlTenantStore[] entries) => Volatile.Write(ref _snapshot, entries);
+}
 ```
 
 The native data source may serve several isolated schemas or one database. Provision all tables first,
