@@ -60,6 +60,8 @@ The timeout covers sending and waiting. Zero, negative, infinite and values abov
 Pending state is provider-owned and bounded per request/response pair:
 
 ```csharp
+using Relayer;
+
 transport.Request<GetPrice, Price>("prices", "price-replies",
     request => request.Options = new RequestOptions { MaxPendingRequests = 128 });
 ```
@@ -88,6 +90,8 @@ Use `request.Replies` to configure the reply consumer with the transport's usual
 This Kafka example configures a dedicated reply group and a process-specific CloudEvents source.
 
 ```csharp
+using Relayer;
+
 kafka.Request<GetPrice, Price>("prices", "price-replies-instance-1",
     request =>
     {
