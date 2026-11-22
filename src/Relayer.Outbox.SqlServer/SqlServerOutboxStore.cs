@@ -72,18 +72,41 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             DECLARE @own bit = CASE WHEN @@TRANCOUNT = 0 THEN 1 ELSE 0 END;
             IF @own = 1 BEGIN TRANSACTION;
             DECLARE @changed int, @removed int = 0;
+            DECLARE @snapshot TABLE (
+                id binary(16) NOT NULL, lane int NULL, ordering_key nvarchar(max) NULL,
+                transport nvarchar(max) NOT NULL, destination nvarchar(max) NOT NULL,
+                message_type nvarchar(max) NOT NULL, headers varbinary(max) NOT NULL, body varbinary(max) NOT NULL,
+                created_at datetimeoffset(7) NOT NULL, deliver_at datetimeoffset(7) NULL,
+                attempts int NOT NULL, last_error nvarchar(max) NULL, tenant_id nvarchar(max) NULL,
+                failed_at datetimeoffset(7) NOT NULL
+            );
             UPDATE {table} SET attempts = attempts + 1, last_error = @error,
                 status = CASE WHEN lane IS NOT NULL THEN 'parked' ELSE status END,
                 claim_token = NULL, claim_expires_at = NULL
             OUTPUT inserted.id, inserted.lane, inserted.ordering_key, inserted.transport, inserted.destination,
                 inserted.message_type, inserted.headers, inserted.body, inserted.created_at, inserted.deliver_at,
                 inserted.attempts, inserted.last_error, inserted.tenant_id, SYSUTCDATETIME()
-            INTO {dead} (id, lane, ordering_key, transport, destination, message_type, headers, body,
+            INTO @snapshot (id, lane, ordering_key, transport, destination, message_type, headers, body,
                 created_at, deliver_at, attempts, last_error, tenant_id, failed_at)
             WHERE {fenced} AND attempts + 1 >= @maxAttempts;
             SET @changed = @@ROWCOUNT;
             IF @changed = 1
             BEGIN
+                -- A repaired row can still have a dead snapshot under the same ID.
+                MERGE {dead} WITH (HOLDLOCK) AS dead
+                USING @snapshot AS snapshot ON dead.id = snapshot.id
+                WHEN MATCHED THEN UPDATE SET lane = snapshot.lane, ordering_key = snapshot.ordering_key,
+                    transport = snapshot.transport, destination = snapshot.destination, message_type = snapshot.message_type,
+                    headers = snapshot.headers, body = snapshot.body, created_at = snapshot.created_at,
+                    deliver_at = snapshot.deliver_at, attempts = snapshot.attempts, last_error = snapshot.last_error,
+                    tenant_id = snapshot.tenant_id, failed_at = snapshot.failed_at
+                WHEN NOT MATCHED THEN
+                    INSERT (id, lane, ordering_key, transport, destination, message_type, headers, body,
+                        created_at, deliver_at, attempts, last_error, tenant_id, failed_at)
+                    VALUES (snapshot.id, snapshot.lane, snapshot.ordering_key, snapshot.transport, snapshot.destination,
+                        snapshot.message_type, snapshot.headers, snapshot.body, snapshot.created_at, snapshot.deliver_at,
+                        snapshot.attempts, snapshot.last_error, snapshot.tenant_id, snapshot.failed_at);
+
                 DELETE FROM {table} WHERE id = @id AND lane IS NULL;
                 SET @removed = @@ROWCOUNT;
             END

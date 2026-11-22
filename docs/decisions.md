@@ -1646,6 +1646,9 @@ No new notification or wake mechanism is introduced; Service Broker remains appl
 Transfer malformed header rows to a raw dead copy under a live fenced claim. Count recovery configuration
 failures and native send failures; an atomic update/dead-copy/delete transaction dead-letters exhausted
 unordered rows and parks exhausted ordered rows. Retention preserves dead copies of parked barriers.
+If application-owned repair makes a parked row pending again, the fenced failure mutation uses native
+`OUTPUT INTO` and `MERGE` to refresh the retained dead snapshot by message ID on the next terminal
+failure. The live row keeps its identity and sequence.
 The maximum send-attempt setting must match all dispatchers for a store. Completion failures after native
 success do not consume attempts. Future scheduled ISender registration remains separate; D64 adds ordered lane workers.
 
