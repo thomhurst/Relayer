@@ -13,7 +13,10 @@ public static class HandlerRegistrationExtensions
     /// it as a scoped service. Use it in generic helpers, where the handler is a type parameter; elsewhere prefer the
     /// generated <c>Handler&lt;THandler&gt;()</c>, which registers every contract the handler implements.
     /// </summary>
-    /// <remarks>Dispatch is typed and reflection-free. Tombstone and saga handlers need the generated <c>Handler&lt;THandler&gt;()</c>.</remarks>
+    /// <remarks>Dispatch is typed and reflection-free.</remarks>
+    /// <exception cref="InvalidOperationException">
+    /// The handler handles tombstones or is a saga handler. Use the generated <c>Handler&lt;THandler&gt;()</c>.
+    /// </exception>
     public static IConsumerBuilder Handler<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler, TMessage>(
         this IConsumerBuilder builder)
         where THandler : class, IHandler<TMessage>
@@ -24,6 +27,12 @@ public static class HandlerRegistrationExtensions
         {
             throw new InvalidOperationException(
                 $"Handler '{typeof(THandler)}' handles tombstones. Register it with the generated consumer.Handler<{typeof(THandler).Name}>().");
+        }
+
+        if (typeof(ISagaHandler).IsAssignableFrom(typeof(THandler)))
+        {
+            throw new InvalidOperationException(
+                $"Handler '{typeof(THandler)}' is a saga. Register it with the generated consumer.Handler<{typeof(THandler).Name}>().");
         }
 
         builder.AddHandler(new TypedHandlerDescriptor<THandler, TMessage>());

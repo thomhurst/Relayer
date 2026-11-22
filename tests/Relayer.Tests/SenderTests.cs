@@ -208,6 +208,22 @@ public class SenderTests
     }
 
     [Test]
+    public async Task String_ordering_key_selector_distinguishes_null_from_empty()
+    {
+        var transport = new RecordingTransport("events");
+        using var provider = CreateProvider(builder => builder.DeclareRoute<OptionalOrderingKey>(
+            "events", "orders", route => route.OrderingKey(static message => message.Key)), transport);
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        await sender.SendAsync(new OptionalOrderingKey(null));
+        await Assert.That(transport.OrderingKey).IsNull();
+
+        await sender.SendAsync(new OptionalOrderingKey(string.Empty));
+        await Assert.That(transport.OrderingKey).IsEqualTo(string.Empty);
+    }
+
+    [Test]
     public async Task Native_configuration_for_the_wrong_type_fails_through_the_sender()
     {
         using var provider = CreateProvider(builder => builder.DeclareRoute<OrderPlaced>("events", "orders"), new RecordingTransport("events"));
@@ -1015,6 +1031,9 @@ public class SenderTests
 
         return services;
     }
+
+    [Message("tests.optional-ordering-key")]
+    public sealed record OptionalOrderingKey(string? Key);
 
     private sealed class NativeOutgoing
     {

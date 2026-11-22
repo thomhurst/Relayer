@@ -39,7 +39,8 @@ public sealed class RouteBuilder<TMessage>
     }
 
     /// <summary>Derives a native partition key, session ID or message group ID from a string.</summary>
-    public RouteBuilder<TMessage> OrderingKey(Func<TMessage, string> selector)
+    /// <param name="selector">Returns the ordering key, or null to leave it unset.</param>
+    public RouteBuilder<TMessage> OrderingKey(Func<TMessage, string?> selector)
     {
         SetOrderingKey(selector);
         _sendOrderingKey = new StringOrderingKeySelector<TMessage>(selector);

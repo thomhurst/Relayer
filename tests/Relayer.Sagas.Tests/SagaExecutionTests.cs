@@ -1,10 +1,47 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.Sagas.Tests;
 
 public class SagaExecutionTests
 {
+    [Test]
+    public async Task Generic_helper_rejects_a_saga_during_configuration()
+    {
+        await Assert.That(() => new ServiceCollection().AddRelayer(relayer => relayer
+            .AddTransport<object, object>("events", transport => transport
+                .Consume("input", static consumer => RegisterFromHelper<Process, Input>(consumer)))))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("Register it with the generated consumer.Handler<Process>().");
+    }
+
+    [Test]
+    public async Task Generated_registration_dispatches_the_saga_transition()
+    {
+        var transitions = 0;
+        var services = new ServiceCollection();
+        services.AddScoped<Process>(_ => new()
+        {
+            Transition = _ =>
+            {
+                transitions++;
+                return ValueTask.CompletedTask;
+            }
+        });
+        services.AddRelayer(relayer => relayer
+            .AddTransport<object, object>("events", transport => transport
+                .Consume("input", static consumer => consumer.Handler<Process>())));
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        await using var scope = provider.CreateAsyncScope();
+        var descriptor = provider.GetRequiredService<HandlerRegistry>().GetHandler<Input, Process>();
+
+        await descriptor.DispatchAsync(descriptor.Resolve(scope.ServiceProvider), new(), new Context(scope.ServiceProvider), default);
+
+        await Assert.That(transitions).IsEqualTo(1);
+    }
+
     [Test]
     [Arguments("load", false)]
     [Arguments("load", true)]
@@ -295,6 +332,13 @@ public class SagaExecutionTests
         await new Process().HandleAsync(new(), new Context(services), default);
     }
 
+    private static void RegisterFromHelper<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler, TMessage>(
+        IConsumerBuilder consumer) where THandler : class, IHandler<TMessage>
+    {
+        consumer.Handler<THandler, TMessage>();
+    }
+
     private static ServiceProvider Services()
     {
         return new ServiceCollection().AddSingleton<SagaExecution<Data, Input>>().BuildServiceProvider();
@@ -308,11 +352,12 @@ public class SagaExecutionTests
         };
     }
 
-    private sealed class Data : SagaData;
+    public sealed class Data : SagaData;
 
-    private sealed class Input;
+    [Message("saga.execution")]
+    public sealed class Input;
 
-    private sealed class Process : Saga<Data, Input>
+    public sealed class Process : Saga<Data, Input>
     {
         internal Action? Validate;
         internal Func<ValueTask<Data?>> Load = static () => new(NewData());

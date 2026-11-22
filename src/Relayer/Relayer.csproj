@@ -47,6 +47,7 @@
     <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql.EntityFrameworkCore" />
     <InternalsVisibleTo Include="Relayer.Outbox.SqlServer" />
     <InternalsVisibleTo Include="Relayer.Outbox.SqlServer.Tests" />
+    <InternalsVisibleTo Include="Relayer.Sagas" />
     <InternalsVisibleTo Include="Relayer.Testing" />
   </ItemGroup>
 

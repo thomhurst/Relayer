@@ -3,6 +3,9 @@ namespace Relayer;
 /// <summary>Identifies a single-message or batch handler without runtime interface discovery.</summary>
 public interface IHandlerMarker;
 
+// The generated registration supplies the typed execution service for saga handlers.
+internal interface ISagaHandler;
+
 /// <summary>Handles messages of type <typeparamref name="TMessage"/>. Resolved from a fresh DI scope per message.</summary>
 /// <typeparam name="TMessage">The message type.</typeparam>
 public interface IHandler<in TMessage> : IHandlerMarker

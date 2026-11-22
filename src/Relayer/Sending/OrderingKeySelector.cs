@@ -8,7 +8,7 @@ internal interface IOrderingKeySelector<TMessage>
     WireString? Select(TMessage message, ArrayBufferWriter<byte> buffer);
 }
 
-internal sealed class StringOrderingKeySelector<TMessage>(Func<TMessage, string> selector) : IOrderingKeySelector<TMessage>
+internal sealed class StringOrderingKeySelector<TMessage>(Func<TMessage, string?> selector) : IOrderingKeySelector<TMessage>
 {
     public WireString? Select(TMessage message, ArrayBufferWriter<byte> buffer)
     {
