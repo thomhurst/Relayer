@@ -17,12 +17,15 @@ The core runs every fallback, so transports contain native code only.
 | `MaxRedeliveryDelay` | Longest native delayed redelivery. `TimeSpan.Zero` means immediate redelivery only; `null` means none. |
 | `DeadLetter` | The endpoint can dead-letter natively with error metadata. |
 | `OrderedByKey` | The endpoint preserves order per key (partition key, session, message group). |
+| `Tombstones` | The endpoint supports records with a key and a native null value. Defaults to `false`. |
 | `MaxBatchSize` | Native batch count. Defaults to 1. |
 | `Transactions` | Native transactions are available. |
 | `PauseResume` | The consumer can be paused and resumed natively. |
 | `Replay` | The endpoint supports seeking or replay. |
 | `MaxMessageBytes` | Declared message size limit. `null` means not declared, not unlimited. |
 | `ConsumptionModel` | Queue or log-based consumption. |
+
+A typed tombstone send requires exactly one fixed send route for the original message type. The route's endpoint must declare `Tombstones = true`. See the [Kafka typed tombstone example](../transports/kafka.md#typed-tombstones).
 
 ## Native mechanisms and fallbacks
 
