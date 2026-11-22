@@ -50,6 +50,7 @@ Relayer's send enlistment must use the same service scope:
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer;
 using Relayer.Outbox.EntityFrameworkCore;
 
 services.AddSingleton(new TenantStoreCatalog(tenantStores));
