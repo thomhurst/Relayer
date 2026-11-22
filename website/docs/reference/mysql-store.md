@@ -75,6 +75,8 @@ fail explicitly. Empty headers require the encoded version and zero count, not a
 Register one scoped outbox integration, separately from the named read/claim store:
 
 ```csharp
+using Relayer.Outbox.MySql;
+
 services.AddRelayerMySqlOutbox(new MySqlOutboxOptions
 {
     TablePrefix = "orders_",
@@ -146,7 +148,8 @@ Register `AddRelayerMySqlOutbox` and configure the consumer boundary before any 
 middleware. Deduplication is opt-in with `inbox: true`:
 
 ```csharp
-using Relayer.Pipeline;
+using Relayer.Outbox.MySql;
+
 services.AddRelayerMySqlOutbox(options);
 
 // On your single-message ConsumePipelineBuilder, after selecting its generated handler:
@@ -198,6 +201,8 @@ Register a named worker and select it on the scoped outbox. Register the applica
 transports before starting the host; they perform the actual broker sends.
 
 ```csharp
+using Relayer.Outbox.MySql;
+
 var options = new MySqlOutboxOptions
 {
     TablePrefix = "orders_",
@@ -253,6 +258,8 @@ queued. Register maintenance below to recover missed notifications, failures and
 Register the native named transports and an ordered worker alongside the transactional writer:
 
 ```csharp
+using Relayer.Outbox.MySql;
+
 const string tablePrefix = "orders_";
 services.AddRelayerMySqlOutbox(new MySqlOutboxOptions { TablePrefix = tablePrefix, Lanes = 64 });
 services.AddRelayerMySqlOrderedDispatch("orders", dataSource,
@@ -326,6 +333,8 @@ tables without altering existing definitions. Register maintenance with the same
 data source, prefix and attempt limit as other stores and dispatchers:
 
 ```csharp
+using Relayer.Outbox.MySql;
+
 services.AddRelayerMySqlMaintenance("orders", dataSource, new MySqlMaintenanceOptions
 {
     TablePrefix = "orders_",

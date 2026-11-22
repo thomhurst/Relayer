@@ -44,6 +44,7 @@ the same scoped service provider used by `ISender`:
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Relayer;
 using Relayer.Outbox.EntityFrameworkCore;
 
@@ -118,6 +119,7 @@ isolation, ownership and the current dynamic-consumer limitation.
 ### Individual registrations
 
 For separate writer/worker deployments or worker-specific tuning, the individual registrations remain available.
+Use the same imports as in the [combined registration example](#registration).
 Enlistment alone persists rows without starting any dispatch workers:
 
 ```csharp
