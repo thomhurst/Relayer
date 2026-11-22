@@ -2,6 +2,7 @@ using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using Amazon;
 using Amazon.SimpleNotificationService;
 using Amazon.SimpleNotificationService.Model;
 using Amazon.SQS;
@@ -73,11 +74,27 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         _ownsClient = ownsClient;
         _options = options;
         _tracing = tracing;
+        // Capability validation runs before topic ARNs are resolved, so match the declared topic names.
+        var topicsWithUnorderedSubscribers = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var subscription in options.Subscriptions)
+        {
+            if (subscription.Protocol == "sqs" &&
+                Arn.TryParse(subscription.TopicArn, out var topicArn) && topicArn.Service == "sns" &&
+                (!Arn.TryParse(subscription.Endpoint, out var queueArn) || queueArn.Service != "sqs" ||
+                 !queueArn.Resource.EndsWith(".fifo", StringComparison.Ordinal)))
+            {
+                topicsWithUnorderedSubscribers.Add(topicArn.Resource);
+            }
+        }
+
         var endpoints = new Dictionary<string, Endpoint>(StringComparer.Ordinal);
 
         foreach (var declaration in options.Topics)
         {
-            var endpoint = new Endpoint(declaration, identityHeaders?.GetValueOrDefault(declaration.Name) ?? "ce_id");
+            var fifo = declaration.Name.EndsWith(".fifo", StringComparison.Ordinal);
+            var orderedByKey = fifo && !topicsWithUnorderedSubscribers.Contains(declaration.Name);
+            var endpoint = new Endpoint(declaration, identityHeaders?.GetValueOrDefault(declaration.Name) ?? "ce_id", fifo, orderedByKey);
 
             if (tracing is not null)
             {
@@ -572,7 +589,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
     }
 
-    private sealed class Endpoint(CreateTopicRequest declaration, string identityHeader)
+    private sealed class Endpoint(CreateTopicRequest declaration, string identityHeader, bool fifo, bool orderedByKey)
     {
         internal CreateTopicRequest Declaration
         {
@@ -582,7 +599,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         internal bool Fifo
         {
             get;
-        } = declaration.Name.EndsWith(".fifo", StringComparison.Ordinal);
+        } = fifo;
 
         internal string IdentityHeader
         {
@@ -599,7 +616,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
             get;
         } = new()
         {
-            OrderedByKey = declaration.Name.EndsWith(".fifo", StringComparison.Ordinal),
+            OrderedByKey = orderedByKey,
             MaxBatchSize = 10,
             MaxMessageBytes = 262_144
         };

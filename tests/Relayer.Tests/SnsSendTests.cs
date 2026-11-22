@@ -5,6 +5,7 @@ using Amazon.SimpleNotificationService;
 using Amazon.SimpleNotificationService.Model;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Relayer.AmazonSqs;
 using Relayer.Transports;
 
@@ -83,6 +84,68 @@ public class SnsSendTests
         }
 
         await Assert.That(client.Disposals).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Keyed_fifo_routes_require_all_declared_subscribers_to_be_fifo(bool hasStandardSubscriber)
+    {
+        const string Topic = "ordered.fifo";
+        using var client = new SnsTestClient();
+        var app = Host.CreateApplicationBuilder();
+        app.Services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.AmazonSns("sns", sns =>
+            {
+                sns.TopologyMode = TopologyMode.None;
+                sns.Options.Configure(options =>
+                {
+                    options.SnsClient = client;
+                    options.Topics.Add(new(Topic)
+                    {
+                        Attributes = new()
+                        {
+                            ["FifoTopic"] = "true"
+                        }
+                    });
+                    options.Subscriptions.Add(Subscription());
+                    options.Subscriptions.Add(Subscription(Topic, "subscriber.fifo"));
+
+                    if (hasStandardSubscriber)
+                    {
+                        options.Subscriptions.Add(Subscription(Topic, "subscriber"));
+                    }
+                });
+                sns.Send<Event>(Topic, route => route.OrderingKey(_ => "customer"));
+            });
+        });
+
+        using var host = app.Build();
+        var transport = host.Services.GetServices<ITransport>().Single();
+        await Assert.That(transport.GetCapabilities(Topic).OrderedByKey).IsEqualTo(!hasStandardSubscriber);
+
+        if (hasStandardSubscriber)
+        {
+            await Assert.That(() => host.StartAsync()).Throws<OptionsValidationException>()
+                .WithMessageContaining("OrderedByKey is unavailable");
+            await Assert.That(client.Lookups).IsEqualTo(0);
+            return;
+        }
+
+        await host.StartAsync();
+
+        try
+        {
+            await using var scope = host.Services.CreateAsyncScope();
+            await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Event());
+            await Assert.That(client.Sent.Single().Group).IsEqualTo("customer");
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 
     [Test]
@@ -478,13 +541,13 @@ public class SnsSendTests
         return options;
     }
 
-    private static SubscribeRequest Subscription()
+    private static SubscribeRequest Subscription(string topic = "orders", string queue = "orders")
     {
         return new()
         {
-            TopicArn = SnsTestClient.Arn("orders"),
+            TopicArn = SnsTestClient.Arn(topic),
             Protocol = "sqs",
-            Endpoint = "arn:aws:sqs:us-east-1:000000000000:orders",
+            Endpoint = "arn:aws:sqs:us-east-1:000000000000:" + queue,
             Attributes = new()
             {
                 ["RawMessageDelivery"] = "true"
