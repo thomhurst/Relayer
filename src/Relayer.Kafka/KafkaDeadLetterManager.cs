@@ -111,8 +111,9 @@ internal sealed class KafkaDeadLetterManager : IDeadLetterManager
         var destination = Validate(source, maxMessages);
         var ownership = new KafkaOwnership();
         var native = ReaderBuilder().WithGroupId("relayer.deadletters." + _name.Length.ToString(CultureInfo.InvariantCulture) + "." + _name + "." + source)
-            .AddRebalanceListener(ownership).SubscribeTo(source);
+            .AddRebalanceListener(ownership);
         await using var reader = native.Build();
+        reader.Subscribe(source);
         var producerBuilder = new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>()
             .WithBootstrapServers(_options.BootstrapServers.ToArray())
             .WithKeySerializer(new KafkaKeySerializer()).WithValueSerializer(new KafkaValueSerializer());

@@ -35,6 +35,11 @@ public sealed class FailurePipeline
         get; init;
     }
 
+    internal string? RedeliveryUnavailableHint
+    {
+        get; init;
+    }
+
     /// <summary>Validates native paths and available fallback executors for this consumer's complete policy.</summary>
     public FailurePipeline(IServiceProvider services, string transportName, string source, string consumer,
         FailureOptions? options = null, FailureMessageCopyDelegate? copy = null,
@@ -214,7 +219,9 @@ public sealed class FailurePipeline
             return RedeliveryPath.Outbox;
         }
 
-        throw new InvalidOperationException($"Consumer '{_consumer}' from '{_source}' on transport '{_transport.Name}': redelivery delay {delay} has no executor. Shorten the delay, enable native redelivery/scheduling, or configure a message copy executor and durable IFailureScheduler.");
+        var hint = RedeliveryUnavailableHint ??
+            "Shorten the delay, enable native redelivery/scheduling, or configure a message copy executor and durable IFailureScheduler.";
+        throw new InvalidOperationException($"Consumer '{_consumer}' from '{_source}' on transport '{_transport.Name}': redelivery delay {delay} has no executor. {hint}");
     }
 
     [RuntimeAsyncMethodGeneration(false)]

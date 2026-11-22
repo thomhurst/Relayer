@@ -169,6 +169,7 @@ internal sealed partial class KafkaHostedService(IServiceProvider provider, stri
             {
                 // Transactional copies follow the same redirect as handler sends so offsets and outputs commit together.
                 CopyTransport = exactlyOnce ? null : copyTransport,
+                RedeliveryUnavailableHint = "Kafka does not support manual redelivery. Use RetryDelays for in-process retries and configure the dead-letter policy for failed messages.",
             };
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
@@ -210,9 +211,9 @@ internal sealed partial class KafkaHostedService(IServiceProvider provider, stri
             options.ConfigureConsumer?.Invoke(native);
             // Dekaf's partitioned runtime commits completed offsets itself; the consumer must not
             // commit or store consumed positions on its own (D22).
-            native.WithGroupId(consumer.Options.Group!).SubscribeTo(consumer.Source)
+            native.WithGroupId(consumer.Options.Group!)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false);
-            var receiver = new KafkaConsumer(native.Build, receive.ProcessAsync, tracing, endpoint,
+            var receiver = new KafkaConsumer(CreateConsumer, receive.ProcessAsync, tracing, endpoint,
                 consumer.Options.Processing ?? KafkaProcessing.Defaults(consumer.Concurrency), consumer.Concurrency,
                 health?.CreateWorker());
             receivers.Add(receiver);
@@ -233,6 +234,14 @@ internal sealed partial class KafkaHostedService(IServiceProvider provider, stri
             if (consumer.Options.CircuitBreaker is { } circuit)
             {
                 receiver.ConfigureCircuit(circuit, composed, telemetry, provider.GetService<TimeProvider>() ?? TimeProvider.System);
+            }
+
+            IKafkaConsumer<byte[], byte[]> CreateConsumer()
+            {
+                var client = native.Build();
+                // Dekaf replaces subscriptions on the consumer. Builder subscriptions append topics.
+                client.Subscribe(consumer.Source);
+                return client;
             }
         }
     }

@@ -46,6 +46,7 @@ public sealed class KafkaTransportOptions
     }
 
     /// <summary>Customises each Dekaf consumer builder. Keep raw byte deserializers; Relayer disables automatic commits and offset storage afterward.</summary>
+    /// <remarks>Hosted consumption and dead-letter redrive replace any subscription set by this callback with their declared source.</remarks>
     public Action<ConsumerBuilder<byte[], byte[]>>? ConfigureConsumer
     {
         get; set;
