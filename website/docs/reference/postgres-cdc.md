@@ -28,13 +28,13 @@ SELECT * FROM pg_create_logical_replication_slot('orders_cdc', 'pgoutput');
 
 Do not use temporary slots, row filters, or publications that include updates, deletes or truncates.
 INSERT-only capture avoids feeding dispatch's claim, failure and deletion writes back into dispatch.
-Relayer validates the slot and publication at host startup; it never creates, drops or resets a slot.
-Errors Npgsql classifies as transient retry after `ReconnectDelay`, including an occupied slot.
-Other runtime errors, including permanent database, replication or configuration failures, fault the CDC
-worker. With the default `BackgroundServiceExceptionBehavior.StopHost`, the host logs the error and stops
-the application. If you configure `Ignore`, the faulted worker stays stopped; maintenance must remain
-available and operations must repair the cause and restart the host. Relayer does not silently retry
-permanent errors. Restore invalidated slots through your database operations procedure.
+Relayer validates the slot and publication at host startup. Provisioning, replacement and reset stay
+with database operations. An invalidated slot fails startup validation. If the slot becomes invalid
+while the host runs, revalidation faults the worker before reconnecting. An occupied healthy slot
+and other errors Npgsql classifies as transient retry after `ReconnectDelay`.
+Permanent database, replication or configuration errors fault the CDC worker. With the default
+`BackgroundServiceExceptionBehavior.StopHost`, the host logs the error and stops the application.
+If you configure `Ignore`, keep maintenance available, repair the cause and restart the host.
 
 ## Registration
 
@@ -102,12 +102,13 @@ ID boundary in bounded transactions. This includes rows committed before slot cr
 retains changes during catch-up, closing the gap before live capture. Each subsequent captured outbox
 commit triggers another bounded traversal. Rolled-back writer transactions never dispatch.
 
-The reader advances the applied/flushed position only after the traversal's database transactions commit.
-Npgsql sends feedback on its native status interval. Failed sends can be checkpointed because their rows
-remain durable for maintenance; database failures and cancelled dispatches are not checkpointed. Restart
-can revisit rows, and claims skip rows already deleted or claimed. Delivery is **at-least-once**: broker
-acceptance followed by a crash before database commit can deliver the same ID and body again. Use the
-[consumer inbox](ef-core-inbox.md) for deduplication.
+The reader advances the applied and flushed positions after all dispatch transactions for a captured
+commit have completed. Npgsql sends feedback on its native status interval. Failed sends can be
+checkpointed because their rows remain durable for maintenance. Database failures and cancelled
+dispatches preserve the earlier checkpoint. Restart can revisit rows, and claims skip rows already
+deleted or claimed. Delivery is **at-least-once**. Broker acceptance followed by a crash before
+database commit can deliver the same ID and body again. Use the [consumer inbox](ef-core-inbox.md)
+for deduplication.
 
 Monitor slot activity, `confirmed_flush_lsn`, retained WAL and disk capacity. A stopped reader retains WAL;
 server retention limits can invalidate a slot. Restore capture through your database operations procedure,
@@ -117,6 +118,25 @@ Dispatch runs inline on the replication read loop. A slow or unavailable broker 
 commits and advancing feedback, so retained WAL can grow during a send stall. Npgsql continues its native
 status timer, but that does not advance the applied/flushed position past unfinished dispatch. Size WAL
 retention for broker outages and monitor disk capacity.
+
+### Checkpoint during periods without outbox inserts
+
+For a database that generates WAL between outbox inserts, enable checkpoint markers in the CDC options:
+
+```csharp
+Replication = new PgOutputReplicationOptions("orders_cdc", PgOutputProtocolVersion.V1, messages: true),
+IdleCheckpointInterval = TimeSpan.FromSeconds(30),
+```
+
+Set both options. `IdleCheckpointInterval` defaults to zero, which disables markers. When using the
+configuration overload, set `IdleCheckpointInterval` to a duration such as `00:00:30` and pass
+`messages: true` in the native options. The writer data source must be able to execute
+`pg_catalog.pg_logical_emit_message`.
+
+At each interval the worker commits a small logical message in the writer's database. The reader
+checkpoints its commit in stream order, so an earlier outbox commit still completes dispatch before
+the checkpoint advances. Allow for the checkpoint interval, Npgsql's feedback interval and any
+time spent waiting for dispatch when monitoring lag.
 
 ## Debezium event router
 
