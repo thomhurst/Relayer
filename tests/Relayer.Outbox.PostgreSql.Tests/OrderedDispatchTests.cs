@@ -60,7 +60,7 @@ public class OrderedDispatchTests
         },
             [failing], NullLogger<PostgreSqlOrderedDispatcher>.Instance, instrumentation: instrumentation))
         {
-            await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
+            await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
         }
 
         await Assert.That(poisonCount).IsEqualTo(1L);

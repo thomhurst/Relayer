@@ -156,11 +156,14 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
         {
             foreach (var pair in source)
             {
-                // Publish controls apply to the original send. The copy uses the destination stream's retention policy.
+                // Publish controls belong to the original send, including headers JetStream can read as a schedule purge.
                 if (string.Equals(pair.Key, "Nats-Msg-Id", StringComparison.OrdinalIgnoreCase) ||
                     pair.Key.StartsWith("Nats-Expected-", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(pair.Key, "Nats-Rollup", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(pair.Key, "Nats-TTL", StringComparison.OrdinalIgnoreCase))
+                    string.Equals(pair.Key, "Nats-TTL", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(pair.Key, "Nats-Schedule", StringComparison.OrdinalIgnoreCase) ||
+                    pair.Key.StartsWith("Nats-Schedule-", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(pair.Key, "Nats-Scheduler", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }

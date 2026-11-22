@@ -449,6 +449,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
             {
                 _instrumentation?.RecordOutboxParked();
                 _instrumentation?.ObserveOutboxSettled(parked);
+                return committed + sent + 1;
             }
 
             return committed + sent;

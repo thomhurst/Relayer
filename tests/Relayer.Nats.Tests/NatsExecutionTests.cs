@@ -867,6 +867,119 @@ public class NatsExecutionTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Poison_copy_drops_native_schedule_controls(bool purgeSchedule)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var stream = TestContext.Current!.Isolation.GetIsolatedName("schedule_events");
+        var deadStream = stream + "_dead";
+        var schedule = TestContext.Current!.Isolation.GetIsolatedName("schedule_definition");
+        var target = schedule + ".target";
+        var deadSubject = schedule + ".dead";
+        var source = purgeSchedule ? target : schedule;
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(new ExecutionControl());
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(NatsExecutionJson.Default);
+            relayer.Nats("schedule", transport =>
+            {
+                transport.TopologyMode = TopologyMode.Provision;
+                transport.Options.Configure(options =>
+                {
+                    options.ConnectionOptions = broker.Options();
+                    options.Streams.Add(new(stream)
+                    {
+                        Configuration = new(stream, [schedule, target])
+                        {
+                            AllowMsgSchedules = true,
+                            AllowMsgTTL = true
+                        }
+                    });
+                    options.Streams.Add(new(deadStream)
+                    {
+                        Configuration = new(deadStream, [deadSubject])
+                    });
+                    options.Consumers.Add(new(stream, "worker")
+                    {
+                        Configuration = new("worker")
+                        {
+                            FilterSubject = source
+                        }
+                    });
+                });
+                transport.Send<ExecutionMessage>(source);
+                transport.Consume("worker", consumer =>
+                {
+                    consumer.Options.Stream = stream;
+                    consumer.Failures(new()
+                    {
+                        RetryDelays = [],
+                        DeadLetterEndpoint = deadSubject
+                    });
+                    consumer.Handler<ExecutionHandler>();
+                });
+            });
+        });
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+        await host.StartAsync(token);
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        var reader = await js.CreateConsumerAsync(deadStream, new("dead_reader")
+        {
+            FilterSubject = deadSubject
+        }, token);
+        var message = new ExecutionMessage(42);
+        using var scope = host.Services.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(message,
+            options => options.Nats(headers =>
+            {
+                headers["ce-id"] = "scheduled-message";
+                headers["custom"] = "native";
+
+                if (purgeSchedule)
+                {
+                    headers["Nats-Schedule-Next"] = "purge";
+                    headers["Nats-Scheduler"] = schedule;
+                }
+                else
+                {
+                    headers["Nats-Schedule"] = $"@at {DateTimeOffset.UtcNow.AddHours(1):O}";
+                    headers["Nats-Schedule-Target"] = target;
+                    headers["nats-schedule-ttl"] = "10m";
+                }
+            }), token);
+
+        var copy = await reader.NextAsync(NatsRawSerializer<byte[]>.Default, new()
+        {
+            Expires = TimeSpan.FromSeconds(5)
+        }, token);
+        await Assert.That(copy).IsNotNull();
+        await Assert.That(copy!.Data).IsEquivalentTo(JsonSerializer.SerializeToUtf8Bytes(message, NatsExecutionJson.Default.ExecutionMessage));
+        var headers = copy.Headers!;
+        await Assert.That(headers.ContainsKey("Nats-Schedule")).IsFalse();
+        await Assert.That(headers.ContainsKey("Nats-Schedule-Target")).IsFalse();
+        await Assert.That(headers.ContainsKey("nats-schedule-ttl")).IsFalse();
+        await Assert.That(headers.ContainsKey("Nats-Schedule-Next")).IsFalse();
+        await Assert.That(headers.ContainsKey("Nats-Scheduler")).IsFalse();
+        await Assert.That(headers["ce-id"].ToString()).IsEqualTo("scheduled-message");
+        await Assert.That(headers["custom"].ToString()).IsEqualTo("native");
+        await Assert.That(headers[FailureHeaders.Attempts].ToString()).IsEqualTo("1");
+        await Assert.That((await js.GetStreamAsync(deadStream, cancellationToken: token)).Info.State.Messages).IsEqualTo(1L);
+
+        // Graceful stop waits for the original delivery's confirmed ACK after the durable copy.
+        await host.StopAsync(token);
+        var settled = await js.GetConsumerAsync(stream, "worker", token);
+        await Assert.That(settled.Info.NumAckPending).IsEqualTo(0L);
+        await Assert.That(settled.Info.AckFloor.ConsumerSeq).IsEqualTo(1UL);
+    }
+
+    [Test]
     public async Task Failed_confirmed_ack_leaves_native_redelivery_running()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
