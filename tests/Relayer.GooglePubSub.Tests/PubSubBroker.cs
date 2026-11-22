@@ -67,6 +67,12 @@ internal sealed class PubSubBroker(GrpcChannel channel, IContainer? proxy = null
         var client = control ?? throw new InvalidOperationException("Disconnect and reconnect tests require a proxy.");
         using var response = await client.PostAsync("/proxies/pubsub", body, token);
         response.EnsureSuccessStatusCode();
+
+        if (connected)
+        {
+            // The listener can reopen while the channel still reports the outage's connection failure.
+            await channel.ConnectAsync(token);
+        }
     }
 
     public async ValueTask DisposeAsync()
