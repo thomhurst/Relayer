@@ -84,7 +84,7 @@ public static class KafkaBuilderExtensions
                 }
 
                 endpoints.Add(consumer.Source);
-                endpoints.Add(consumer.Failure.DeadLetterEndpoint ?? consumer.Source + ".dead-letter");
+                endpoints.Add(GetDeadLetterTopic(consumer));
             }
 
             var options = provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get(name);
@@ -103,6 +103,19 @@ public static class KafkaBuilderExtensions
         builder.Services.AddKeyedSingleton<IConsumerControl>(name, (provider, key) => provider.GetRequiredKeyedService<KafkaHostedService>(key));
         builder.Services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<KafkaHostedService>(name));
         return builder;
+    }
+
+    internal static string GetDeadLetterTopic(IConsumerDefinition consumer)
+    {
+        var source = consumer.Source;
+        var topic = consumer.Failure.DeadLetterEndpoint ?? source + ".dead-letter";
+
+        if (string.Equals(topic, source, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Kafka consumer '{source}': DeadLetterEndpoint must differ from the source topic. Choose a separate topic or leave DeadLetterEndpoint unset to use '{source}.dead-letter'.");
+        }
+
+        return topic;
     }
 }
 

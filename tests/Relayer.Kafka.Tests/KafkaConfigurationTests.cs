@@ -9,6 +9,31 @@ namespace Relayer.Kafka.Tests;
 public class KafkaConfigurationTests
 {
     [Test]
+    public async Task Dead_letter_topic_matching_source_is_rejected_before_native_clients()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.Kafka("events", kafka =>
+        {
+            kafka.Options.Configure(options => options.BootstrapServers.Add("unused:9092"));
+            kafka.Consume("orders", consumer =>
+            {
+                consumer.Options.Group = "orders";
+                consumer.Failures(new()
+                {
+                    DeadLetterEndpoint = "orders"
+                });
+                consumer.Handler<KafkaReceiveHandler>();
+            });
+        }));
+        await using var provider = services.BuildServiceProvider();
+
+        await Assert.That(() => provider.GetRequiredKeyedService<IDeadLetterManager>("events"))
+            .Throws<InvalidOperationException>().WithMessageContaining("DeadLetterEndpoint must differ from the source topic");
+        await Assert.That(() => provider.GetServices<ITransport>().ToArray())
+            .Throws<InvalidOperationException>().WithMessageContaining("DeadLetterEndpoint must differ from the source topic");
+    }
+
+    [Test]
     public async Task Durable_redelivery_fails_before_native_clients_even_with_a_scheduler()
     {
         var services = new ServiceCollection();
