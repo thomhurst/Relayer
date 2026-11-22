@@ -732,24 +732,29 @@ public class HarnessTests
 
             await Assert.That(resolved).IsSameReferenceAs(instrumentation);
             resolved.AddOutboxPending(1);
+            resolved.AddOutboxPending(-1);
+            var rowId = Guid.CreateVersion7();
+            resolved.Observer!.OutboxCommitting([rowId]);
             harness = provider.GetRequiredService<RelayerHarness>();
             var idle = harness.WaitForIdleAsync();
             await Assert.That(idle.IsCompleted).IsFalse();
-            resolved.AddOutboxPending(-1);
+            resolved.ObserveOutboxSettled(rowId);
             await idle.WaitAsync(s_limit);
         }
 
         instrumentation.AddOutboxPending(1);
         await Assert.That(measurements.ToArray()).IsEquivalentTo(new long[] { 1, -1, 1 });
+        await Assert.That(instrumentation.Observer).IsNull();
         await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsTrue();
 
         using var nextProvider = services.BuildServiceProvider();
         var nextHarness = nextProvider.GetRequiredService<RelayerHarness>();
-        instrumentation.AddOutboxPending(1);
+        var nextRowId = Guid.CreateVersion7();
+        instrumentation.Observer!.OutboxCommitting([nextRowId]);
         var nextIdle = nextHarness.WaitForIdleAsync();
         await Assert.That(nextIdle.IsCompleted).IsFalse();
         await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsTrue();
-        instrumentation.AddOutboxPending(-1);
+        instrumentation.ObserveOutboxSettled(nextRowId);
         await nextIdle.WaitAsync(s_limit);
     }
 
@@ -778,10 +783,11 @@ public class HarnessTests
             using var secondProvider = secondServices.BuildServiceProvider();
 
             await Assert.That(() => secondProvider.GetRequiredService<RelayerHarness>()).Throws<InvalidOperationException>();
-            shared.AddOutboxPending(1);
+            var sharedRowId = Guid.CreateVersion7();
+            shared.Observer!.OutboxCommitting([sharedRowId]);
             var idle = firstHarness.WaitForIdleAsync();
             await Assert.That(idle.IsCompleted).IsFalse();
-            shared.AddOutboxPending(-1);
+            shared.ObserveOutboxSettled(sharedRowId);
             await idle.WaitAsync(s_limit);
 
             var thirdServices = new ServiceCollection();
@@ -792,10 +798,11 @@ public class HarnessTests
             thirdServices.AddRelayerHarness();
             using var thirdProvider = thirdServices.BuildServiceProvider();
             var thirdHarness = thirdProvider.GetRequiredService<RelayerHarness>();
-            distinct.AddOutboxPending(1);
+            var distinctRowId = Guid.CreateVersion7();
+            distinct.Observer!.OutboxCommitting([distinctRowId]);
             var thirdIdle = thirdHarness.WaitForIdleAsync();
             await Assert.That(thirdIdle.IsCompleted).IsFalse();
-            distinct.AddOutboxPending(-1);
+            distinct.ObserveOutboxSettled(distinctRowId);
             await thirdIdle.WaitAsync(s_limit);
         }
     }
