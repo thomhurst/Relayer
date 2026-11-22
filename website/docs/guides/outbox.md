@@ -16,6 +16,7 @@ provider to your project. Register a scoped DbContext, the PostgreSQL outbox and
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Relayer;
 using Relayer.Kafka;

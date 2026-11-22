@@ -58,6 +58,9 @@ Scope identities are captured in a read-only snapshot only when a generated fail
 `AddRelayer` automatically registers one `MessageTracing` source owner per service provider. Subscribe with your OpenTelemetry provider's `AddSource(RelayerTelemetry.ActivitySourceName)`. Repeated registration shares the source within that provider; separate providers own separate sources named `Relayer`:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+
 services.AddRelayer(relayer => { /* Declare transports and handlers here. */ });
 services.AddOptions<TracingOptions>().Bind(configuration.GetSection("Relayer:Tracing"));
 services.AddSingleton<IActivityEnricher, ApplicationEnricher>();
