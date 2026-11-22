@@ -2,6 +2,7 @@
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" />
     <PackageReference Include="TUnit" />
     <ProjectReference Include="../../src/Relayer.AspNetCore/Relayer.AspNetCore.csproj" />
   </ItemGroup>
