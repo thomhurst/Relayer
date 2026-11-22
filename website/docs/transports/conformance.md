@@ -57,7 +57,7 @@ The PostgreSQL local fixture runs `SendReceiveSettle`, `OrderingByKey`, `TracePr
 
 | Case | Checks | Native capability required |
 |---|---|---|
-| `SendReceiveSettle` | Body/header ownership, delivery, completion and no replay after consumer restart | None |
+| `SendReceiveSettle` | Body/header ownership, no replay after consumer restart and native completion of the restart marker | None; requires `VerifySettlementAsync` |
 | `Retry` | Redelivery, unchanged body/creation headers and increasing delivery count when the broker supplies one | `MaxRedeliveryDelay` is not null |
 | `FailureHandlingFailure` | The first handler attempt throws and the failure handler also throws. The native transport redelivers the original body and creation headers, then delivers a subsequent healthy message. | Native redelivery (no capability skip) |
 | `DeadLetter` | Original body/creation headers, reason/description and healthy-message progress | `DeadLetter` |
@@ -76,6 +76,10 @@ Delay assertions use the smaller of 200 ms and the endpoint's native maximum. Th
 
 The copy contract exercises the adapter boundary used by outbox dispatch, scheduled re-sends and dead-letter copies. It does not run a durable outbox worker or replace its integration tests. Native dead-letter preservation has its own case. Transport-specific restart/rebalance chaos tests, batching, replay, transactions and client-specific guarantees remain additional adapter tests.
 
+## Send, receive and settle
+
+Implement `ITransportConformanceFixture<TIncoming>.VerifySettlementAsync` to confirm that both messages, including the post-restart marker, completed durably. The suite stops the restarted consumer, then calls the hook with the scenario token before fixture disposal. Use native state or broker-confirmed settlement, such as a queue with no ready or in-flight messages or a committed consumer offset past the marker. Missing verification fails the case.
+
 ## Graceful stop
 
 `CleanShutdown` sends one message (with a key on ordered endpoints, including Service Bus sessions) and holds its handler at an asynchronous gate. Once the handler has entered, the suite starts a bounded graceful stop, rejects an already-completed stop while processing is still held, releases the handler and awaits shutdown. A synchronous completion observer also rejects asynchronous stop completion before the full in-flight consumer pipeline, including settlement, finishes. If the stop task is still pending at the scenario deadline, the suite reports a failure during in-flight transport shutdown and attempts cleanup with a separate bounded budget. No sleeps or process-wide log capture are used. The fixture must also implement `ITransportShutdownConformanceFixture`; absence of this evidence is a failure, never a capability skip.
@@ -91,8 +95,8 @@ Queue and log in-memory fixtures, Kafka, RabbitMQ, Service Bus queue and session
 | Kafka | Forwarding probes instrument the real Dekaf consumer, producer and their facets through disposal. The receive loop must drain and the broker must report the in-flight record's committed offset. Adapter and Dekaf logs share a fixture-local capture. |
 | Service Bus | Fixture-filtered SDK events record successful broker completion, client closure, sends and automatic message/session renewals. Queue and session shutdown run separately. SDK events and production adapter logs feed the same capture through disposal. |
 | RabbitMQ | The production consumer drains in-flight handlers and native acknowledgement before closing its channel; the real broker retains the queue and confirms completion across receiver restart. |
-| NATS JetStream | The production pull worker must finish before shutdown verification. The fixture queries the real durable consumer and requires zero pending acknowledgements and a positive consumer ACK floor after confirmed ACK settlement. Native client and adapter logs remain captured through disposal. |
-| SQS | The production long-poll workers drain processing and await native deletion. The fixture rejects settlement after shutdown and checks Floci’s native in-flight count after the confirmed delete response; adapter logs remain captured through disposal. |
+| NATS JetStream | The production pull worker must finish before shutdown verification. The fixture queries the real durable consumer and requires zero pending acknowledgements and an ACK floor at the message's stream sequence after confirmed ACK settlement. Native client and adapter logs remain captured through disposal. |
+| SQS | The production long-poll workers drain processing and await native deletion. The fixture rejects settlement after shutdown and checks Floci's native ready and in-flight counts after the confirmed delete response; adapter logs remain captured through disposal. |
 | Google Pub/Sub | A pass-through gRPC interceptor observes broker-confirmed acknowledgement RPCs, streaming-pull closure, renewal calls and admitted publish RPCs. A forwarding subscriber observes actual native stop/disposal completion; the native publisher shutdown callback records its drained closure. The native subscriber must finish and the broker subscription must remain durable for redelivery if an acknowledgement was not persisted. API, gRPC and high-level native client logs use fixture-local capture. |
 | PostgreSQL local | The production dispatch and maintenance workers stop after the in-flight pipeline drains. The fixture queries PostgreSQL and requires zero rows in `relayer_outbox` after stop. Fixture-local worker logs are checked through disposal. |
 

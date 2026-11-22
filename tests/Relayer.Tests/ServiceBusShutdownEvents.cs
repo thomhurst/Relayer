@@ -77,6 +77,17 @@ internal sealed class ServiceBusShutdownEvents(string destination, ILogger logge
         }
     }
 
+    internal void AssertCompletions(int expected)
+    {
+        lock (_gate)
+        {
+            if (_completed != expected)
+            {
+                throw new InvalidOperationException($"Expected {expected} broker-confirmed completions, saw {_completed}.");
+            }
+        }
+    }
+
     internal void AssertClean(bool requireClosure)
     {
         lock (_gate)
@@ -86,10 +97,7 @@ internal sealed class ServiceBusShutdownEvents(string destination, ILogger logge
                 throw new InvalidOperationException(string.Join("; ", _violations));
             }
 
-            if (_completed != 1)
-            {
-                throw new InvalidOperationException($"Expected one broker-confirmed completion, saw {_completed}.");
-            }
+            AssertCompletions(1);
 
             if (requireClosure && (_used.Count < 2 || !_used.IsSubsetOf(_closed)))
             {

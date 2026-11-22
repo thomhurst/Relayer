@@ -136,8 +136,13 @@ public class LocalTransportConformanceTests(PostgreSqlLocalSessionFixture server
 
         public async ValueTask VerifyShutdownAsync(CancellationToken cancellationToken)
         {
-            await Assert.That(await LocalTransportTests.Count(_source, "relayer_outbox")).IsEqualTo(0L);
+            await VerifySettlementAsync(cancellationToken);
             Logs.AssertClean();
+        }
+
+        public async ValueTask VerifySettlementAsync(CancellationToken cancellationToken)
+        {
+            await Assert.That(await LocalTransportTests.Count(_source, "relayer_outbox", cancellationToken)).IsEqualTo(0L);
         }
 
         public async ValueTask DisposeAsync()

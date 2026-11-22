@@ -291,11 +291,10 @@ public class KafkaSchemaRegistryTests
             builder = builder.WithPortBinding("20000-29999", "8081").WithPortBinding("20000-29999", "9092");
         }
 
-        return builder
-            // Kafka readiness does not establish that the independent HTTP registry is ready.
-            .WithWaitStrategy(Wait.ForUnixContainer()
-                .UntilHttpRequestIsSucceeded(request => request.ForPort(RedpandaBuilder.SchemaRegistryPort).ForPath("/subjects")))
-            .Build();
+        // Kafka readiness does not establish that the independent HTTP registry is ready.
+        var wait = Wait.ForUnixContainer()
+            .UntilHttpRequestIsSucceeded(request => request.ForPort(RedpandaBuilder.SchemaRegistryPort).ForPath("/subjects"));
+        return builder.WithWaitStrategy(wait).Build();
     }
 
     private static void Configure(TransportBuilder<KafkaTransportOptions, KafkaConsumerOptions> kafka, string bootstrap)

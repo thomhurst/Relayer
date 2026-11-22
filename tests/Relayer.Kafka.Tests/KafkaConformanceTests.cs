@@ -230,18 +230,33 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
             throw new InvalidOperationException("Kafka receive loop did not drain.");
         }
 
+        await VerifyCommittedOffsetAsync(1, cancellationToken);
+
+        if (_consumerLifetime.Commits != 1)
+        {
+            throw new InvalidOperationException("Kafka shutdown did not observe a single native commit.");
+        }
+
+        _consumerLifetime.AssertClean();
+        _producerLifetime.AssertClean();
+    }
+
+    public ValueTask VerifySettlementAsync(CancellationToken cancellationToken)
+    {
+        return VerifyCommittedOffsetAsync(2, cancellationToken);
+    }
+
+    private async ValueTask VerifyCommittedOffsetAsync(long expected, CancellationToken cancellationToken)
+    {
         await using var reader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(Bootstrap).WithGroupId(Destination)
             .WithLoggerFactory(_logs).WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
         await reader.InitializeAsync(cancellationToken);
         var committed = await reader.GetCommittedOffsetAsync(new(Destination, 0), cancellationToken);
 
-        if (committed != 1 || _consumerLifetime.Commits != 1)
+        if (committed != expected)
         {
-            throw new InvalidOperationException($"Kafka shutdown did not durably commit the in-flight record: {committed}.");
+            throw new InvalidOperationException($"Expected Kafka committed offset {expected}, observed {committed}.");
         }
-
-        _consumerLifetime.AssertClean();
-        _producerLifetime.AssertClean();
     }
 
     public async ValueTask DisposeAsync()

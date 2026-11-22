@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using Amazon.Runtime;
 using Amazon.SQS;
 using Amazon.SQS.Model;
@@ -12,6 +13,32 @@ namespace Relayer.Tests;
 
 public sealed class SqsConformanceTests
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Floci_requires_native_deletion_after_consumer_restart(bool suppressSecondDelete)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        // The session owns this broker. This case only changes its own queue.
+        var broker = new SqsBroker(await SharedBrokers.Floci.Value.WaitAsync(deadline.Token));
+        var suite = new TransportConformanceSuite<SqsDelivery, SqsMessageBinding>(
+            (tracing, token) => SqsConformanceFixture.CreateAsync(broker, tracing, false, token, suppressSecondDelete));
+
+        if (suppressSecondDelete)
+        {
+            var failure = await Assert.That(async () =>
+            {
+                await suite.RunAsync(TransportConformanceCase.SendReceiveSettle, deadline.Token);
+            }).Throws<InvalidOperationException>();
+            await Assert.That(failure!.Message).Contains("native settlement verification");
+            await Assert.That(failure.InnerException!.Message).Contains("SQS queue still contains unsettled messages");
+        }
+        else
+        {
+            await Assert.That((await suite.RunAsync(TransportConformanceCase.SendReceiveSettle, deadline.Token)).Skipped).IsFalse();
+        }
+    }
+
     [Test]
     public async Task Floci_passes_standard_and_FIFO_transport_contracts()
     {
@@ -59,15 +86,29 @@ internal sealed class SqsBroker(IContainer container) : IAsyncDisposable
         }
     }
 
-    internal AmazonSQSClient Client()
+    internal AmazonSQSClient Client(bool suppressSecondDelete = false)
     {
-        return new(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig
+        var credentials = new BasicAWSCredentials("test", "test");
+        var config = new AmazonSQSConfig
         {
             ServiceURL = Url,
             AuthenticationRegion = "us-east-1",
             MaxErrorRetry = 0,
             Timeout = TimeSpan.FromSeconds(3)
-        });
+        };
+        return suppressSecondDelete ? new MissingDeleteClient(credentials, config) : new AmazonSQSClient(credentials, config);
+    }
+
+    private sealed class MissingDeleteClient(AWSCredentials credentials, AmazonSQSConfig config) : AmazonSQSClient(credentials, config)
+    {
+        private int _deletes;
+
+        public override Task<DeleteMessageResponse> DeleteMessageAsync(DeleteMessageRequest request, CancellationToken cancellationToken = default)
+        {
+            return Interlocked.Increment(ref _deletes) == 2
+                ? Task.FromResult(new DeleteMessageResponse { HttpStatusCode = HttpStatusCode.OK })
+                : base.DeleteMessageAsync(request, cancellationToken);
+        }
     }
 
     internal async Task PauseAsync(CancellationToken token)
@@ -156,10 +197,10 @@ internal sealed class SqsConformanceFixture : ITransportConformanceFixture<SqsDe
         return error is AmazonServiceException or HttpRequestException or IOException or TimeoutException or TaskCanceledException;
     }
 
-    private SqsConformanceFixture(SqsBroker broker, MessageTracing tracing, bool fifo)
+    private SqsConformanceFixture(SqsBroker broker, MessageTracing tracing, bool fifo, bool suppressSecondDelete)
     {
         _broker = broker;
-        _client = broker.Client();
+        _client = broker.Client(suppressSecondDelete);
         _logs = LoggerFactory.Create(builder => builder.AddProvider(Logs));
         Destination = TestContext.Current!.Isolation.GetIsolatedName("conformance-" + Guid.NewGuid().ToString("N")[..8]) + (fifo ? ".fifo" : "");
         DefaultOrderingKey = fifo ? new WireString("conformance") : null;
@@ -186,9 +227,9 @@ internal sealed class SqsConformanceFixture : ITransportConformanceFixture<SqsDe
         });
     }
 
-    internal static async ValueTask<ITransportConformanceFixture<SqsDelivery>> CreateAsync(SqsBroker broker, MessageTracing tracing, bool fifo, CancellationToken token)
+    internal static async ValueTask<ITransportConformanceFixture<SqsDelivery>> CreateAsync(SqsBroker broker, MessageTracing tracing, bool fifo, CancellationToken token, bool suppressSecondDelete = false)
     {
-        var fixture = new SqsConformanceFixture(broker, tracing, fifo);
+        var fixture = new SqsConformanceFixture(broker, tracing, fifo, suppressSecondDelete);
 
         try
         {
@@ -246,8 +287,21 @@ internal sealed class SqsConformanceFixture : ITransportConformanceFixture<SqsDe
     {
         await Assert.That(Volatile.Read(ref _settlements)).IsEqualTo(1);
         Volatile.Write(ref _closed, 1);
-        var attributes = await _client.GetQueueAttributesAsync(_url, ["ApproximateNumberOfMessagesNotVisible"], token);
-        await Assert.That(attributes.Attributes["ApproximateNumberOfMessagesNotVisible"]).IsEqualTo("0");
+        await VerifySettlementAsync(token);
+    }
+
+    public async ValueTask VerifySettlementAsync(CancellationToken token)
+    {
+        const string Visible = "ApproximateNumberOfMessages";
+        const string InFlight = "ApproximateNumberOfMessagesNotVisible";
+        var response = await _client.GetQueueAttributesAsync(_url, [Visible, InFlight], token);
+        var ready = response.Attributes[Visible];
+        var leased = response.Attributes[InFlight];
+
+        if (ready != "0" || leased != "0")
+        {
+            throw new InvalidOperationException($"SQS queue still contains unsettled messages: {ready} visible, {leased} in flight.");
+        }
     }
 
     public async ValueTask DisposeAsync()
