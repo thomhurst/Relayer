@@ -1298,6 +1298,10 @@ client's signature contradicts that. Per-message DI scopes for scoped handlers r
   (and final asynchronous consumption where applicable). The maintainer approved this
   repeated-overflow allocation trade-off in [#727](https://github.com/thomhurst/Relayer/issues/727#issuecomment-6876252806);
   no per-pool configuration is exposed. This bounds object count, not the size of retained batch arrays.
+- Handler attempt buffers retain up to 128 send entries per consume context. Entries with more than
+  64 KiB of combined body and UTF-8 metadata storage, more than 64 header slots, or oversized native
+  callback storage are dropped when the attempt clears. Overflow can allocate again on later attempts,
+  following the direct-send retention policy from [#693](https://github.com/thomhurst/Relayer/pull/693).
 - A scoped handler's DI scope, its service cache and the handler instance are application lifetime cost, not
   pipeline cost. Singleton handlers keep the zero-allocation path.
 - Everything else Relayer adds per message stays at zero, and still needs maintainer approval to change.

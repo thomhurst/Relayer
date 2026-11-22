@@ -135,6 +135,8 @@ The pipeline pools contexts, serialization buffers, envelope storage, and timeou
 
 After warmup, the default direct path allocates no managed memory with no tracing listener while sends fit within these retention limits. Repeated oversized sends or bursts above the pool capacity allocate again rather than permanently retaining peak memory. Caller code, middleware, serializer implementations and native clients can add their own allocations.
 
+Each pooled consume context keeps up to 128 buffered send entries for reuse. An entry is discarded after the attempt if it holds more than 64 KiB of combined body, UTF-8 header and ordering-key storage, more than 64 header slots, or more than 16 native callback slots. Larger sends and bursts use temporary storage and can allocate again in later attempts.
+
 ## Send tracing
 
 `AddRelayer` registers one provider-owned `ActivitySource` named `Relayer`. Enable that source in your tracing exporter (for example, OpenTelemetry's `AddSource("Relayer")`). The in-memory adapter integrates it automatically; custom adapters use the [send tracing seam](../transports/authoring.md#send-tracing).
