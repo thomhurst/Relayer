@@ -1,3 +1,4 @@
+using System.Text;
 using Amazon.Runtime;
 using Amazon.SQS;
 using Amazon.SQS.Model;
@@ -115,6 +116,73 @@ public class SqsSendFlociTests
             {
                 await client.DeleteQueueAsync(url, CancellationToken.None);
             }
+        }
+    }
+
+    [Test]
+    public async Task An_expired_batch_timer_bypasses_the_queue_default_delay()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        var clock = new InMemoryTestClock();
+        var externalUrl = Environment.GetEnvironmentVariable("RELAYER_SQS_SERVICE_URL");
+        using var client = new AdvancingSqsClient(clock, new AmazonSQSConfig
+        {
+            ServiceURL = externalUrl ?? await SharedBrokers.FlociUrlAsync(token),
+            AuthenticationRegion = "us-east-1",
+        });
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("scheduled-batch");
+        var options = new AmazonSqsTransportOptions { SqsClient = client };
+        var declaration = new CreateQueueRequest(queue)
+        {
+            Attributes = new()
+            {
+                ["MaximumMessageSize"] = "1048576",
+                ["DelaySeconds"] = "60",
+            },
+        };
+        options.Queues.Add(declaration);
+        var url = (await client.CreateQueueAsync(declaration, token)).QueueUrl;
+
+        try
+        {
+            await using var transport = new SqsSendTransport("test", client, false, options, time: clock);
+            await transport.StartAsync(token);
+            OutgoingMessage[] batch =
+            [
+                new(queue, Encoding.UTF8.GetBytes(new string('a', 600_000))),
+                new(queue, Encoding.UTF8.GetBytes(new string('b', 600_000)), deliverAt: clock.GetUtcNow().AddSeconds(30)),
+            ];
+            await transport.SendBatchAsync(batch, token);
+
+            var received = await ReceiveAsync(client, url, token);
+            await Assert.That(received.Body[0]).IsEqualTo('b');
+            await Assert.That(client.BatchCalls).IsEqualTo(2);
+        }
+        finally
+        {
+            await client.DeleteQueueAsync(url, CancellationToken.None);
+        }
+    }
+
+    private sealed class AdvancingSqsClient(InMemoryTestClock clock, AmazonSQSConfig config)
+        : AmazonSQSClient(new BasicAWSCredentials("test", "test"), config)
+    {
+        internal int BatchCalls
+        {
+            get; private set;
+        }
+
+        public override async Task<SendMessageBatchResponse> SendMessageBatchAsync(SendMessageBatchRequest request, CancellationToken cancellationToken = default)
+        {
+            var response = await base.SendMessageBatchAsync(request, cancellationToken);
+
+            if (++BatchCalls == 1)
+            {
+                clock.Advance(TimeSpan.FromSeconds(31));
+            }
+
+            return response;
         }
     }
 

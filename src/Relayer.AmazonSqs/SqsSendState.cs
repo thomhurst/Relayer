@@ -37,7 +37,7 @@ internal sealed class SqsSendState
         }
     }
 
-    internal int Prepare(OutgoingMessage outgoing, string queueUrl, bool fifo, string identityHeader = "ce_id")
+    internal int Prepare(OutgoingMessage outgoing, string queueUrl, bool fifo, string identityHeader = "ce_id", TimeProvider? time = null)
     {
         Request.QueueUrl = queueUrl;
         // SQS has a native text body. Reject invalid UTF-8 rather than silently replacing serializer bytes.
@@ -98,21 +98,7 @@ internal sealed class SqsSendState
 
         if (outgoing.DeliverAt is { } deliverAt)
         {
-            var delay = deliverAt - DateTimeOffset.UtcNow;
-
-            if (delay > TimeSpan.Zero)
-            {
-                if (fifo || delay > TimeSpan.FromMinutes(15))
-                {
-                    throw new NotSupportedException("SQS per-message timers require a standard queue and a delay at most 15 minutes. Use the durable outbox for longer delays or FIFO scheduling.");
-                }
-
-                Request.DelaySeconds = (int)Math.Ceiling(delay.TotalSeconds);
-            }
-            else
-            {
-                Request.DelaySeconds = fifo ? null : 0;
-            }
+            Request.DelaySeconds = CalculateDelaySeconds(deliverAt - (time ?? TimeProvider.System).GetUtcNow(), fifo);
         }
 
         if (fifo && (string.IsNullOrWhiteSpace(Request.MessageGroupId) || Request.DelaySeconds is not null))
@@ -144,6 +130,21 @@ internal sealed class SqsSendState
         }
 
         return size;
+    }
+
+    internal static int? CalculateDelaySeconds(TimeSpan delay, bool fifo)
+    {
+        if (delay <= TimeSpan.Zero)
+        {
+            return fifo ? null : 0;
+        }
+
+        if (fifo || delay > TimeSpan.FromMinutes(15))
+        {
+            throw new NotSupportedException("SQS per-message timers require a standard queue and a delay at most 15 minutes. Use the durable outbox for longer delays or FIFO scheduling.");
+        }
+
+        return (int)Math.Ceiling(delay.TotalSeconds);
     }
 
     internal void CopyToEntry()
