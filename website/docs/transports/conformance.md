@@ -34,6 +34,7 @@ The scenario deadline and caller cancellation also bound the asynchronous fixtur
 ## Fixture responsibilities
 
 - Provision an empty, isolated endpoint with capacity for at least 32 small messages. Supply its destination, CloudEvents `HeaderNames`, expected OpenTelemetry `messaging.system` and native completion operation name.
+- Set `DefaultOrderingKey` when the endpoint requires a native group or session key for every send. The suite uses it for ordinary sends and outage probes. The ordering case supplies its own key.
 - Expose the production `ITransport`. `RegisterConsumer` connects the supplied receive callback to the native consumer without adding another process span. The suite composes generated dispatch, process tracing and settlement around the callback.
 - Implement `SettleAsync` with the production native complete, redeliver and dead-letter operations. Use their existing settlement instrumentation; do not manufacture spans to satisfy the suite. Do not settle again when the callback returns `Disposition.SettledByHandler`.
 - Read dead letters from the actual native destination and return an owned `ConformanceDeadLetter` snapshot. Preserve original headers and error reason/description.
@@ -42,7 +43,7 @@ The scenario deadline and caller cancellation also bound the asynchronous fixtur
 
 The reference fixture and executable tests live in [`tests/Relayer.Conformance.Tests`](https://github.com/thomhurst/Relayer/tree/main/tests/Relayer.Conformance.Tests). Queue and partitioned log modes both run every case. Separate tests verify capability skips and prove that missing send tracing or overwritten creation headers fail.
 
-SQS runs receive/settle, immediate and delayed visibility retries, standard-queue timers, FIFO group ordering, tracing, restart, outage recovery against Floci and clean shutdown. Its native dead-letter case is a capability skip; separate production-host tests verify poison copies with failure metadata before deletion, for standard and FIFO queues.
+SQS runs receive/settle, immediate and delayed visibility retries, standard-queue timers, tracing, restart, outage recovery and clean shutdown against Floci. FIFO fixtures also run receive/settle, outage recovery and group ordering. Its native dead-letter case is a capability skip; separate production-host tests verify poison copies with failure metadata before deletion, for standard and FIFO queues.
 
 RabbitMQ runs receive/settle, immediate requeue, recovery after failure handling throws, consumer restart, tracing, broker recovery, outage sends and clean shutdown against a real broker. Native metadata-preserving dead-lettering, delayed requeue and ordering-by-key remain capability skips; separate RabbitMQ tests cover confirmed poison copies and native DLX routing.
 

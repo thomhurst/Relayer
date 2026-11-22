@@ -293,6 +293,15 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         ChannelReader<Delivery> received, ConcurrentQueue<Activity> spans, Func<DateTimeOffset> redeliverAt,
         TaskCompletionSource orderRelease, ScenarioProgress progress, ShutdownProgress shutdown, CancellationToken token)
     {
+        WireString? defaultOrderingKey = fixture.DefaultOrderingKey;
+
+        // Keep the shutdown key for ordered fixtures that have no fixture default.
+        if (defaultOrderingKey is null && scenario == TransportConformanceCase.CleanShutdown &&
+            fixture.Transport.GetCapabilities(fixture.Destination).OrderedByKey)
+        {
+            defaultOrderingKey = new WireString("conformance");
+        }
+
         async Task<Delivery> Next(string phase = "receive completion")
         {
             progress.Phase = phase;
@@ -304,7 +313,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             progress.Phase = $"send {value}";
             var body = Encoding.UTF8.GetBytes($"{{\"Value\":{value}}}");
             var headers = Headers(fixture.HeaderNames, creation);
-            var send = fixture.Transport.SendAsync(new(fixture.Destination, body, headers, key, at), token).AsTask();
+            var message = new OutgoingMessage(fixture.Destination, body, headers, key ?? defaultOrderingKey, at);
+            var send = fixture.Transport.SendAsync(message, token).AsTask();
 
             try
             {
@@ -332,7 +342,9 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
             try
             {
-                await fixture.Transport.SendAsync(new(fixture.Destination, body, Headers(fixture.HeaderNames, false)), outageToken).ConfigureAwait(false);
+                var headers = Headers(fixture.HeaderNames, false);
+                var message = new OutgoingMessage(fixture.Destination, body, headers, defaultOrderingKey);
+                await fixture.Transport.SendAsync(message, outageToken).ConfigureAwait(false);
                 return true;
             }
             catch (OperationCanceledException) when (outageToken.IsCancellationRequested && !token.IsCancellationRequested)
@@ -360,9 +372,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         switch (scenario)
         {
             case TransportConformanceCase.CleanShutdown:
-                // Session-enabled native endpoints require their key even for one message.
-                await Send(1, key: fixture.Transport.GetCapabilities(fixture.Destination).OrderedByKey
-                    ? new WireString("conformance") : null).ConfigureAwait(false);
+                await Send(1).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 1);
                 progress.Phase = "in-flight transport shutdown";
                 var stopping = fixture.Transport.StopAsync(token);

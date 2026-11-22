@@ -18,14 +18,20 @@ public sealed class SqsConformanceTests
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(8));
         await using var broker = await SqsBroker.StartAsync(deadline.Token);
 
+        var fifo = new TransportConformanceSuite<SqsDelivery, SqsMessageBinding>(
+            (tracing, token) => SqsConformanceFixture.CreateAsync(broker, tracing, true, token), TimeSpan.FromMinutes(1));
+        await Assert.That((await fifo.RunAsync(TransportConformanceCase.SendReceiveSettle, deadline.Token)).Skipped).IsFalse();
+        await Assert.That((await fifo.RunAsync(TransportConformanceCase.SendDuringOutage, deadline.Token)).Skipped).IsFalse();
+        await Assert.That((await fifo.RunAsync(TransportConformanceCase.OrderingByKey, deadline.Token)).Skipped).IsFalse();
+
+        var standard = new TransportConformanceSuite<SqsDelivery, SqsMessageBinding>(
+            (tracing, token) => SqsConformanceFixture.CreateAsync(broker, tracing, false, token), TimeSpan.FromMinutes(1));
+
         foreach (var scenario in Enum.GetValues<TransportConformanceCase>())
         {
-            var fifo = scenario == TransportConformanceCase.OrderingByKey;
-            var suite = new TransportConformanceSuite<SqsDelivery, SqsMessageBinding>(
-                (tracing, token) => SqsConformanceFixture.CreateAsync(broker, tracing, fifo, token), TimeSpan.FromMinutes(1));
-            var result = await suite.RunAsync(scenario, deadline.Token);
+            var result = await standard.RunAsync(scenario, deadline.Token);
             // Specific-message dead-lettering is a core durable-copy fallback, tested in SqsReceiveFlociTests.
-            await Assert.That(result.Skipped).IsEqualTo(scenario == TransportConformanceCase.DeadLetter);
+            await Assert.That(result.Skipped).IsEqualTo(scenario is TransportConformanceCase.DeadLetter or TransportConformanceCase.OrderingByKey);
         }
     }
 }
@@ -138,6 +144,11 @@ internal sealed class SqsConformanceFixture : ITransportConformanceFixture<SqsDe
         get;
     } = new();
 
+    public WireString? DefaultOrderingKey
+    {
+        get;
+    }
+
     public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(5);
 
     public bool IsExpectedOutageFailure(Exception error)
@@ -151,6 +162,7 @@ internal sealed class SqsConformanceFixture : ITransportConformanceFixture<SqsDe
         _client = broker.Client();
         _logs = LoggerFactory.Create(builder => builder.AddProvider(Logs));
         Destination = TestContext.Current!.Isolation.GetIsolatedName("conformance-" + Guid.NewGuid().ToString("N")[..8]) + (fifo ? ".fifo" : "");
+        DefaultOrderingKey = fifo ? new WireString("conformance") : null;
         var options = new AmazonSqsTransportOptions { SqsClient = _client };
         // A short visibility timeout keeps the redelivery scenarios from waiting out SQS's 30 s default.
         options.Queues.Add(new(Destination)

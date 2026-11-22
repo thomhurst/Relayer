@@ -46,6 +46,9 @@ public interface ITransportConformanceFixture<TIncoming> : IAsyncDisposable
         get;
     }
 
+    /// <summary>The ordering key for sends without an explicit scenario key. Supply one when the endpoint requires it.</summary>
+    WireString? DefaultOrderingKey => null;
+
     /// <summary>Native outage send budget, or null when this fixture cannot inject a real broker outage.</summary>
     TimeSpan? OutageSendTimeout => null;
 
