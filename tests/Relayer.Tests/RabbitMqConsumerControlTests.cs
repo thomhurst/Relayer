@@ -221,7 +221,6 @@ public sealed class RabbitMqConsumerControlTests
         var control = host.Services.GetRequiredKeyedService<IConsumerControl>("rabbit");
         await host.StartAsync(token);
         var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
-        transport.HealthTracking = true;
         var audit = transport.Consumers.Single(consumer => consumer.Declaration.Source == "audit");
         var orders = transport.Consumers.Single(consumer => consumer.Declaration.Source == "orders");
         await transport.SendAsync(new("audit", "{\"Value\":1}"u8.ToArray(), RabbitMqReceiveTests.Headers()), token);
@@ -237,9 +236,9 @@ public sealed class RabbitMqConsumerControlTests
         try
         {
             await entered.Task.WaitAsync(token);
-            // The broker can count a consumer before the client processes basic.consume-ok.
-            // Wait for Relayer to finish starting orders before cancelling the group.
-            while (orders.GetHealthState() is null)
+            // The billing failure starts rollback. Wait for orders to finish stopping while audit is blocked.
+            // Orders can stop before the test observes it running.
+            while (!orders.Completion.IsCompletedSuccessfully)
             {
                 await Task.Delay(10, token);
             }
@@ -258,7 +257,6 @@ public sealed class RabbitMqConsumerControlTests
         await Assert.That(redelivery is { Redelivered: true }).IsTrue();
 
         await Assert.That(audit.Completion.IsCompletedSuccessfully).IsTrue();
-        await Assert.That(orders.Completion.IsCompletedSuccessfully).IsTrue();
         await Assert.That((await channel.QueueDeclarePassiveAsync("audit", token)).ConsumerCount).IsEqualTo(0u);
         await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount).IsEqualTo(0u);
         await host.StopAsync(token);
