@@ -120,6 +120,84 @@ public class NatsExecutionTests
     }
 
     [Test]
+    public async Task Stop_drains_later_consumers_while_earlier_handler_is_blocked()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var stream = TestContext.Current!.Isolation.GetIsolatedName("stop_events");
+        var subject = TestContext.Current!.Isolation.GetIsolatedName("stop_orders");
+        var firstSubject = subject + ".first";
+        var secondSubject = subject + ".second";
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        await js.CreateStreamAsync(new(stream, [firstSubject, secondSubject]), token);
+        await js.CreateConsumerAsync(stream, new("first")
+        {
+            FilterSubject = firstSubject
+        }, token);
+        await js.CreateConsumerAsync(stream, new("second")
+        {
+            FilterSubject = secondSubject
+        }, token);
+
+        await using var provider = NatsConfigurationTests.Provider(options =>
+        {
+            options.ConnectionOptions = broker.Options();
+            options.Consumers.Add(new(stream, "first"));
+            options.Consumers.Add(new(stream, "second"));
+        });
+        var transport = (NatsNativeTransport)provider.GetRequiredService<ITransport>();
+        var settings = new NatsJSConsumeOpts { MaxMsgs = 1, DrainOnCancel = true };
+        var first = transport.AddConsumer(stream, "first", settings, 1);
+        var second = transport.AddConsumer(stream, "second", settings, 1);
+        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        first.Receive = async (_, _) =>
+        {
+            firstEntered.TrySetResult();
+            await releaseFirst.Task.WaitAsync(token);
+            return Disposition.Complete;
+        };
+        second.Receive = (_, _) =>
+        {
+            secondEntered.TrySetResult();
+            return ValueTask.FromResult(Disposition.Complete);
+        };
+
+        await transport.StartAsync(token);
+        var body = new byte[] { 0 };
+        var serializer = NatsRawSerializer<byte[]>.Default;
+        Task? stopping = null;
+
+        try
+        {
+            (await js.PublishAsync(firstSubject, body, serializer, cancellationToken: token)).EnsureSuccess();
+            (await js.PublishAsync(secondSubject, body, serializer, cancellationToken: token)).EnsureSuccess();
+            await Task.WhenAll(firstEntered.Task, secondEntered.Task).WaitAsync(token);
+
+            stopping = transport.StopAsync(token);
+            // Wait for the native drain fence before publishing fresh work to the second subject.
+            await second.Completion.WaitAsync(TimeSpan.FromSeconds(10), token);
+            await Assert.That(stopping.IsCompleted).IsFalse();
+            (await js.PublishAsync(secondSubject, body, serializer, cancellationToken: token)).EnsureSuccess();
+            var secondInfo = (await js.GetConsumerAsync(stream, "second", token)).Info;
+            await Assert.That(secondInfo.NumPending).IsEqualTo(1);
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+
+            if (stopping is not null)
+            {
+                await stopping;
+            }
+        }
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Restart_after_cancelled_offline_stop_replaces_the_drained_worker(bool drainCompleted)

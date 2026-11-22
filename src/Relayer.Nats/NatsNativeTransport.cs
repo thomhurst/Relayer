@@ -254,13 +254,23 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
 
     private async Task StopConsumersAsync(CancellationToken token, bool restarting = false)
     {
+        var stops = new Task[Consumers.Count];
+
+        // Signal every native pull loop before waiting for any worker's drain.
+        for (var i = 0; i < stops.Length; i++)
+        {
+            stops[i] = Consumers[i].StopAsync(token);
+        }
+
         Exception? failure = null;
 
-        foreach (var consumer in Consumers)
+        for (var i = 0; i < stops.Length; i++)
         {
+            var consumer = Consumers[i];
+
             try
             {
-                await consumer.StopAsync(token).ConfigureAwait(false);
+                await stops[i].ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (restarting && consumer.Completion.IsCanceled && !token.IsCancellationRequested)
             {
