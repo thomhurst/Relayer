@@ -328,7 +328,7 @@ public sealed class ServiceBusReceiveTests
 
     internal static ServiceProvider Provider(NativeClient client, Action<ConsumerBuilder<ServiceBusConsumerOptions>>? configure = null,
         string? subscription = null, bool health = false, bool sessions = false, TimeProvider? time = null,
-        bool autoStart = true)
+        bool autoStart = true, int? maxDeliveryCount = 10)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -356,17 +356,26 @@ public sealed class ServiceBusReceiveTests
                     options.Client = client;
                     options.AutoStartConsumers = autoStart;
 
+                    if (maxDeliveryCount is not { } limit)
+                    {
+                        return;
+                    }
+
                     if (subscription is null)
                     {
                         options.Queues.Add(new("orders")
                         {
-                            RequiresSession = sessions
+                            RequiresSession = sessions,
+                            MaxDeliveryCount = limit
                         });
                     }
                     else
                     {
                         options.Topics.Add(new("events"));
-                        options.Subscriptions.Add(new("events", subscription));
+                        options.Subscriptions.Add(new("events", subscription)
+                        {
+                            MaxDeliveryCount = limit
+                        });
                     }
                 });
                 bus.Consume(subscription is null ? "orders" : "events", consumer =>

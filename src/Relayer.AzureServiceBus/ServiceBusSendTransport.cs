@@ -15,6 +15,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     private readonly bool _ownsClient;
     private readonly FrozenDictionary<string, Endpoint> _endpoints;
     private readonly ServiceBusTopology _topology;
+    private readonly ServiceBusTransportOptions _declaredOptions;
     private int _disposed;
     private readonly HashSet<string> _receiveSources;
     private readonly IReadOnlyList<IConsumerDefinition> _declarations;
@@ -98,11 +99,13 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     internal ServiceBusSendTransport(string name, ServiceBusClient client, bool ownsClient,
         ServiceBusTransportOptions options, IEnumerable<string> destinations, TopologyMode mode,
         ServiceBusAdministrationClient? administration = null, MessageTracing? tracing = null, ILoggerFactory? logging = null, IReadOnlyList<IConsumerDefinition>? consumers = null,
-        IReadOnlyList<IRouteDefinition>? routes = null, MessageTypeRegistry? types = null)
+        IReadOnlyList<IRouteDefinition>? routes = null, MessageTypeRegistry? types = null,
+        ServiceBusTransportOptions? declaredOptions = null)
     {
         Name = name;
         _client = client;
         _ownsClient = ownsClient;
+        _declaredOptions = declaredOptions ?? options;
         _topology = new(name, client, options, administration, consumers, destinations.ToArray());
         _declarations = consumers ?? [];
         _receiveSources = consumers is null ? [] : consumers.Select(consumer => consumer.Source).ToHashSet(StringComparer.Ordinal);
@@ -154,6 +157,19 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         }
 
         _endpoints = endpoints.ToFrozenDictionary(StringComparer.Ordinal);
+    }
+
+    internal void ValidateRedeliveryBudget(string source, string? subscription, string entity, int nativeRedeliveries)
+    {
+        // An implied declaration has SDK defaults, which say nothing about the broker's actual limit.
+        int? limit = subscription is null
+            ? _declaredOptions.Queues.SingleOrDefault(queue => queue.Name == source)?.MaxDeliveryCount
+            : _declaredOptions.Subscriptions.SingleOrDefault(item => item.TopicName == source && item.SubscriptionName == subscription)?.MaxDeliveryCount;
+
+        if (limit <= nativeRedeliveries)
+        {
+            throw new InvalidOperationException($"Service Bus consumer '{entity}' on transport '{Name}': declared MaxDeliveryCount is {limit}. Set MaxDeliveryCount to at least {nativeRedeliveries + 1} for the initial delivery and {nativeRedeliveries} native redeliveries, or reduce RedeliveryDelays.");
+        }
     }
 
     // The CloudEvents type header names of the routes to a destination; their value becomes the native Subject.

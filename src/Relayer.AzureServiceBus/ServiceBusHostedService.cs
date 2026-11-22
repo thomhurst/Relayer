@@ -56,9 +56,10 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                     ServerAddress = _transport.Client.FullyQualifiedNamespace,
                 };
                 var settlement = new ServiceBusSettlement(tracing, endpoint);
-                var failures = new FailurePipeline(provider, name, consumer.Source,
-                    consumer.Options.Subscription is { } subscription ? consumer.Source + "/Subscriptions/" + subscription : consumer.Source,
-                    consumer.Failure);
+                string? subscription = consumer.Options.Subscription;
+                string entity = subscription is null ? consumer.Source : consumer.Source + "/Subscriptions/" + subscription;
+                var failures = new FailurePipeline(provider, name, consumer.Source, entity, consumer.Failure);
+                _transport.ValidateRedeliveryBudget(consumer.Source, subscription, entity, failures.GetLongestNativeRedeliveryRun());
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                     provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
                     consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>());

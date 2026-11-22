@@ -33,7 +33,8 @@ public static class ServiceBusBuilderExtensions
         {
             var configuration = provider.GetRequiredService<RelayerConfiguration>();
             var definition = configuration.Transports.Single(item => item.Name == name);
-            var options = provider.GetRequiredService<IOptionsMonitor<ServiceBusTransportOptions>>().Get(name);
+            var declaredOptions = provider.GetRequiredService<IOptionsMonitor<ServiceBusTransportOptions>>().Get(name);
+            var options = declaredOptions;
 
             if ((options.Client is null) == string.IsNullOrWhiteSpace(options.ConnectionString))
             {
@@ -68,7 +69,7 @@ public static class ServiceBusBuilderExtensions
             return new ServiceBusSendTransport(name, client, options.Client is null, options,
                 definition.Routes.Select(route => route.Destination), mode, admin,
                 provider.GetRequiredService<MessageTracing>(), logging, definition.Consumers, definition.Routes,
-                provider.GetRequiredService<MessageTypeRegistry>());
+                provider.GetRequiredService<MessageTypeRegistry>(), declaredOptions);
         });
         builder.Services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<ServiceBusSendTransport>(name));
         builder.Services.AddKeyedSingleton<IDeadLetterManager>(name, (provider, _) =>
