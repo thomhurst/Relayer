@@ -308,6 +308,7 @@ internal sealed partial class ServiceBusSendTransport : ITransport, ITransportSe
         try
         {
             state.Prepare(outgoing, endpoint.SubjectHeaders, endpoint.IdHeaders, endpoint.RouteCallbacks);
+            cancellationToken.ThrowIfCancellationRequested();
             endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
             var failed = true;
@@ -439,6 +440,7 @@ internal sealed partial class ServiceBusSendTransport : ITransport, ITransportSe
                         index++;
                     }
 
+                    cancellationToken.ThrowIfCancellationRequested();
                     endpoint.Tracing?.RecordNativeSend(admitted.Count);
                     var duration = endpoint.Tracing?.StartNativeSend() ?? default;
                     var failed = true;

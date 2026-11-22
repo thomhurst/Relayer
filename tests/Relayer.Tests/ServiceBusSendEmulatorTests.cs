@@ -14,6 +14,58 @@ namespace Relayer.Tests;
 public class ServiceBusSendEmulatorTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Cancellation_during_native_message_configuration_skips_send_metrics(bool batch)
+    {
+        var stack = await SharedBrokers.ServiceBus.Value;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString());
+        var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("callback-cancellation");
+        var options = new ServiceBusTransportOptions { Client = client };
+        options.Queues.Add(new(queue));
+        using var instrumentation = new RelayerInstrumentation();
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), [], instrumentation: instrumentation);
+        using var duration = new SendDurationCapture(instrumentation);
+        long sent = 0;
+        using var metrics = new MeterListener
+        {
+            InstrumentPublished = (instrument, listener) =>
+            {
+                if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            },
+        };
+        metrics.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref sent, count));
+        metrics.Start();
+        await using var transport = new ServiceBusSendTransport("emulator", client, false, options, [queue], TopologyMode.None,
+            tracing: tracing);
+        await admin.CreateQueueAsync(new CreateQueueOptions(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100 }, token);
+
+        try
+        {
+            using var stop = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var sendOptions = new SendOptions().ServiceBus(_ => stop.Cancel());
+            var message = new OutgoingMessage(queue, new byte[] { 1 }, options: sendOptions);
+            await Assert.That(async () => await (batch ? transport.SendBatchAsync(new[] { message }, stop.Token)
+                : transport.SendAsync(message, stop.Token))).Throws<OperationCanceledException>();
+
+            await using var receiver = client.CreateReceiver(queue);
+            await Assert.That(await receiver.PeekMessageAsync(cancellationToken: token)).IsNull();
+            await Assert.That(sent).IsEqualTo(0);
+            await Assert.That(duration.Values.Count).IsEqualTo(0);
+        }
+        finally
+        {
+            await admin.DeleteQueueAsync(queue, CancellationToken.None);
+        }
+    }
+
+    [Test]
     public async Task Rejected_native_batch_can_isolate_oversized_row_from_valid_neighbour()
     {
         var stack = await SharedBrokers.ServiceBus.Value;
