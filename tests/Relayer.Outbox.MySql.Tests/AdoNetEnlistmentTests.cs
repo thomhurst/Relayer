@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
 using Relayer.Transports;
+using TUnit.Assertions.Enums;
 
 namespace Relayer.Outbox.MySql.Tests;
 
@@ -89,8 +90,8 @@ public class AdoNetEnlistmentTests
         await Assert.That(await store.ReadPendingAsync(new(owned.Lane, created.AddDays(2)), buffer, default)).IsEqualTo(1);
         var actual = buffer[0];
         await Assert.That(actual.Id).IsEqualTo(record.Id);
-        await Assert.That(actual.Message.Body.ToArray()).IsEquivalentTo(new byte[] { 1, 255 });
-        await Assert.That(actual.Message.Headers.Span[0].Value.Utf8.ToArray()).IsEquivalentTo(new byte[] { 255, 0, 254 });
+        await Assert.That(actual.Message.Body.ToArray()).IsEquivalentTo(new byte[] { 1, 255 }, CollectionOrdering.Matching);
+        await Assert.That(actual.Message.Headers.Span[0].Value.Utf8.ToArray()).IsEquivalentTo(new byte[] { 255, 0, 254 }, CollectionOrdering.Matching);
         await Assert.That(actual.Message.Headers.Length).IsEqualTo(2);
         await Assert.That(actual.Message.OrderingKey!.Value.ToString()).IsEqualTo("customer-é");
         await Assert.That(actual.CreatedAt).IsEqualTo(created.ToUniversalTime());
@@ -216,7 +217,7 @@ public class AdoNetEnlistmentTests
             await transaction.CommitAsync();
             await using var command = database.Source.CreateCommand("SELECT body FROM relayer_outbox WHERE id=@id");
             command.Parameters.Add(new MySqlParameter("id", record.Id.ToByteArray(bigEndian: true)));
-            await Assert.That((byte[])(await command.ExecuteScalarAsync())!).IsEquivalentTo(bytes);
+            await Assert.That((byte[])(await command.ExecuteScalarAsync())!).IsEquivalentTo(bytes, CollectionOrdering.Matching);
         }
     }
 

@@ -10,6 +10,82 @@ namespace Relayer.Outbox.MySql.Tests;
 public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchContractTests
 {
     [Test]
+    public async Task Startup_rejects_dispatch_sessions_with_autocommit_disabled()
+    {
+        var transport = new RecordingTransport();
+        await using var fixture = new Fixture(transport);
+        var error = await Assert.That(() => fixture.Start(10, 10, openDispatcherConnection: DisableAutocommitAsync))
+            .Throws<InvalidOperationException>();
+        await Assert.That(error!.Message).Contains("autocommit=1");
+    }
+
+    [Test]
+    public async Task Dispatch_does_not_send_when_a_later_session_disables_autocommit()
+    {
+        var transport = new RecordingTransport();
+        var disableAutocommit = false;
+        await using var fixture = new Fixture(transport);
+        await fixture.Start(10, 10, openDispatcherConnection: (context, token) =>
+            Volatile.Read(ref disableAutocommit) ? DisableAutocommitAsync(context, token) : default);
+        Volatile.Write(ref disableAutocommit, true);
+        var record = Record(1);
+        await fixture.CommitAsync(record);
+        await fixture.StopAsync();
+
+        await Assert.That(transport.Received.Count).IsEqualTo(0);
+        await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[] { new Row(record.Id, 0, null, false, false) });
+    }
+
+    [Test]
+    public async Task Invalid_destination_recovery_rejects_a_later_session_with_autocommit_disabled()
+    {
+        var transport = new RecordingTransport { CapabilityFailure = "throw" };
+        var disableAutocommit = false;
+        await using var fixture = new Fixture(transport);
+        await fixture.Start(10, 10, openDispatcherConnection: (context, token) =>
+            Volatile.Read(ref disableAutocommit) ? DisableAutocommitAsync(context, token) : default);
+        await fixture.StopAsync();
+        var record = Record(1, "alpha");
+        await fixture.CommitAsync(record);
+        Volatile.Write(ref disableAutocommit, true);
+
+        var error = await Assert.That(async () => await fixture.RecoverAsync([record])).Throws<InvalidOperationException>();
+        await Assert.That(error!.Message).Contains("autocommit=1");
+        await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[] { new Row(record.Id, 0, null, false, false) });
+    }
+
+    [Test]
+    public async Task Retry_requires_autocommit_but_explicit_failure_transaction_commits_without_it()
+    {
+        await using var fixture = new Fixture(new RecordingTransport());
+        await fixture.Start(10, 10, startWorker: false);
+        var record = Record(1);
+        await fixture.CommitAsync(record);
+        using var writer = new MySqlOutboxStore(fixture.Source, fixture.Options);
+        var now = DateTimeOffset.UtcNow;
+        var claim = new OutboxClaim(record.Id, Guid.NewGuid());
+        await Assert.That(await writer.TryClaimAsync(claim, now, now.AddMinutes(5), default)).IsTrue();
+
+        await using var source = new MySqlDataSourceBuilder(fixture.Source.ConnectionString + ";Pooling=false")
+            .UseConnectionOpenedCallback(DisableAutocommitAsync).Build();
+        using var store = new MySqlOutboxStore(source, fixture.Options);
+        var error = await Assert.That(async () => await store.RecordRetryAsync(claim, "send failed", now, default))
+            .Throws<InvalidOperationException>();
+        await Assert.That(error!.Message).Contains("autocommit=1");
+        await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[] { new Row(record.Id, 0, null, true, true) });
+
+        var outcome = await store.RecordDispatchFailureAsync(claim, "invalid destination", now, default);
+        await Assert.That(outcome.Accepted).IsTrue();
+        await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[] { new Row(record.Id, 1, "invalid destination", false, false) });
+    }
+
+    private static async ValueTask DisableAutocommitAsync(MySqlConnectionOpenedContext context, CancellationToken cancellationToken)
+    {
+        await using var command = new MySqlCommand("SET SESSION autocommit=0", context.Connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    [Test]
     [Arguments("throw")]
     [Arguments("zero")]
     [Arguments("negative")]
@@ -205,6 +281,7 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
         private readonly MySqlFixture _database = new();
 
         internal MySqlDataSource Source => _database.Source;
+        private MySqlDataSource? _dispatchSource;
         private ServiceProvider? _provider;
         private MySqlDirectDispatcher? _worker;
 
@@ -216,7 +293,8 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
 
         internal MySqlDirectDispatcher? Worker => _worker;
 
-        internal async Task Start(int batchSize, int queueCapacity, bool startWorker = true)
+        internal async Task Start(int batchSize, int queueCapacity, bool startWorker = true,
+            MySqlConnectionOpenedCallback? openDispatcherConnection = null)
         {
             await _database.StartAsync();
             await using var connection = await Source.OpenConnectionAsync();
@@ -227,7 +305,14 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
             services.AddSingleton<ITransport>(transport);
             services.AddSingleton<RelayerInstrumentation>();
             services.AddRelayerMySqlOutbox(_options);
-            services.AddRelayerMySqlDirectDispatch("store", Source, _options,
+
+            if (openDispatcherConnection is not null)
+            {
+                _dispatchSource = new MySqlDataSourceBuilder(Source.ConnectionString + ";Pooling=false")
+                    .UseConnectionOpenedCallback(openDispatcherConnection).Build();
+            }
+
+            services.AddRelayerMySqlDirectDispatch("store", _dispatchSource ?? Source, _options,
                 new()
                 {
                     BatchSize = batchSize,
@@ -327,6 +412,11 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
                 }
                 finally
                 {
+                    if (_dispatchSource is not null)
+                    {
+                        await _dispatchSource.DisposeAsync();
+                    }
+
                     await _database.DisposeAsync();
                 }
             }

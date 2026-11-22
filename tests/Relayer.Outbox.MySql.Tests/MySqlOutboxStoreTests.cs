@@ -2,6 +2,7 @@ using System.Transactions;
 using Microsoft.Extensions.DependencyInjection;
 using MySqlConnector;
 using Relayer.Transports;
+using TUnit.Assertions.Enums;
 
 namespace Relayer.Outbox.MySql.Tests;
 
@@ -87,11 +88,11 @@ public sealed class MySqlOutboxStoreTests
             await Assert.That(row.Id).IsEqualTo(id);
             await Assert.That(row.CreatedAt).IsEqualTo(now);
             await Assert.That(row.Message.DeliverAt).IsEqualTo(now);
-            await Assert.That(row.Message.Body.ToArray()).IsEquivalentTo(new byte[] { 0, 1, 255 });
+            await Assert.That(row.Message.Body.ToArray()).IsEquivalentTo(new byte[] { 0, 1, 255 }, CollectionOrdering.Matching);
             await Assert.That(row.Message.Headers.Length).IsEqualTo(3);
             await Assert.That(row.Message.Headers.Span[0].Key).IsEqualTo("duplicate");
             await Assert.That(row.Message.Headers.Span[1].Key).IsEqualTo("duplicate");
-            await Assert.That(row.Message.Headers.Span[1].Value.Utf8.ToArray()).IsEquivalentTo(new byte[] { 255, 0, 254 });
+            await Assert.That(row.Message.Headers.Span[1].Value.Utf8.ToArray()).IsEquivalentTo(new byte[] { 255, 0, 254 }, CollectionOrdering.Matching);
             await Assert.That(row.Message.Headers.Span[2].Value.Utf8.Length).IsEqualTo(0);
             await Assert.That(row.Message.OrderingKey!.Value.ToString()).IsEqualTo("customer-é");
             await Assert.That(row.TenantId).IsEqualTo("tenant-é");

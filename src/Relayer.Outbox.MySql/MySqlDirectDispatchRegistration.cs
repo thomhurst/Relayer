@@ -15,7 +15,7 @@ public static partial class MySqlOutboxServiceCollectionExtensions
     /// <summary>Registers a named durable store and a hosted worker for unordered, commit-triggered sends.</summary>
     /// <remarks>
     /// Select this name with MySqlOutboxOptions.DispatchStoreName on participating scopes.
-    /// The application owns the data source; its native connection string must specify Database.
+    /// The application owns the data source. Its connection string must specify Database and its sessions must enable autocommit.
     /// Writers must use the same database spelling. This does not dispatch ordered or future-due rows or run recovery polling.
     /// </remarks>
     public static IServiceCollection AddRelayerMySqlDirectDispatch(this IServiceCollection services,

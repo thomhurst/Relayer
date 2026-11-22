@@ -68,6 +68,12 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
         }
     }
 
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        await _store.ValidateDispatchSessionAsync(cancellationToken).ConfigureAwait(false);
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     // Called only after durable commit. Queue pressure and shutdown cannot make a committed transaction fail.
     internal void Committed(List<BufferedOutboxMessage> rows, int count)
     {
@@ -152,7 +158,7 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
             var claim = new OutboxClaim(id, Guid.NewGuid());
             var now = DateTimeOffset.UtcNow;
 
-            if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
+            if (await _store.TryClaimForDispatchAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
             {
                 (await _store.RecordDispatchFailureAsync(claim, OutboxErrorText.Describe(error), now, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
             }
