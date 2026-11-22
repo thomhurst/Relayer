@@ -300,10 +300,13 @@ public sealed class SqsFailureTests
     }
 
     [Test]
-    [Arguments(null)]
-    [Arguments("ce_")]
-    [Arguments("retry_")]
-    public async Task Durable_redelivery_uses_the_source_binding_and_deletes_after_scheduling(string? fifoSourcePrefix)
+    [Arguments(null, null)]
+    [Arguments("ce_", null)]
+    [Arguments("ce_", "retry_")]
+    [Arguments("event_", null)]
+    [Arguments("event_", "event_")]
+    public async Task Durable_redelivery_uses_the_source_binding_and_deletes_after_scheduling(
+        string? receivePrefix, string? sendPrefix)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
@@ -312,7 +315,7 @@ public sealed class SqsFailureTests
             ServiceURL = await SharedBrokers.FlociUrlAsync(token),
             AuthenticationRegion = "us-east-1"
         });
-        var fifo = fifoSourcePrefix is not null;
+        var fifo = receivePrefix is not null;
         var suffix = fifo ? ".fifo" : "";
         var source = TestContext.Current!.Isolation.GetIsolatedName("source") + suffix;
         var dead = TestContext.Current!.Isolation.GetIsolatedName("dead") + suffix;
@@ -335,15 +338,23 @@ public sealed class SqsFailureTests
 
         var scheduler = new Scheduler();
         var delay = TimeSpan.FromHours(fifo ? 13 : 12);
-        using var host = Host(client, [delay, TimeSpan.FromHours(14)], scheduler, source, dead, fifoSourcePrefix);
+        using var host = Host(client, [delay, TimeSpan.FromHours(14)], scheduler, source, dead, receivePrefix, sendPrefix);
 
         try
         {
             await host.StartAsync(token);
             var message = SqsReceiveTests.Message("{\"Value\":1}", 1);
-            var identityHeader = new HeaderNames(fifoSourcePrefix ?? "ce_").Id;
+            var receiveNames = new HeaderNames(receivePrefix ?? "ce_");
+            var id = message.MessageAttributes["ce_id"];
+            var type = message.MessageAttributes["ce_type"];
+            message.MessageAttributes = new()
+            {
+                [receiveNames.Id] = id,
+                [receiveNames.Type] = type
+            };
+            var identityHeader = sendPrefix is null ? receiveNames.Id : new HeaderNames(sendPrefix).Id;
 
-            if (identityHeader != "ce_id")
+            if (identityHeader != receiveNames.Id)
             {
                 // The receive binding can decode the envelope while a separate send binding
                 // supplies the destination's native FIFO deduplication ID.
@@ -365,19 +376,90 @@ public sealed class SqsFailureTests
             await scheduler.Started.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
             await Assert.That(scheduler.Destination).IsEqualTo(source);
             await Assert.That(scheduler.Body).IsEqualTo(message.Body);
-            await Assert.That(scheduler.Headers["ce_id"]).IsEqualTo("id");
+            await Assert.That(scheduler.Headers[receiveNames.Id]).IsEqualTo("id");
+            await Assert.That(scheduler.Headers[receiveNames.Type]).IsEqualTo("sqs.receive;v=1");
+            await Assert.That(scheduler.Headers.ContainsKey("ce_id")).IsEqualTo(receiveNames.Id == "ce_id");
             await Assert.That(scheduler.Headers[identityHeader]).IsEqualTo(message.MessageAttributes[identityHeader].StringValue);
             await Assert.That(scheduler.Headers[FailureHeaders.Redeliveries]).IsEqualTo("1");
             await Assert.That(scheduler.OrderingKey).IsEqualTo(fifo ? "group" : null);
             await Assert.That(deleted.Task.IsCompleted).IsFalse();
 
+            // Drain the active delivery without leaving a broker long poll pending during replay.
+            var stopping = host.StopAsync(token);
             scheduler.Commit.SetResult();
             await deleted.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
+            await stopping;
+
+            if (fifo)
+            {
+                // Rebuild the send from stored fields, as an outbox dispatcher does when it is due.
+                var transport = host.Services.GetRequiredKeyedService<SqsSendTransport>("sqs");
+                var headers = scheduler.Headers.Select(static header =>
+                    new KeyValuePair<string, WireString>(header.Key, new(header.Value))).ToArray();
+                await transport.SendAsync(new(scheduler.Destination!, System.Text.Encoding.UTF8.GetBytes(scheduler.Body!),
+                    headers, new WireString(scheduler.OrderingKey!)), token);
+
+                var replay = await client.ReceiveMessageAsync(new ReceiveMessageRequest
+                {
+                    QueueUrl = sourceUrl,
+                    WaitTimeSeconds = 10,
+                    MessageAttributeNames = ["All"],
+                    MessageSystemAttributeNames = ["All"]
+                }, token);
+                var retried = replay.Messages.Single();
+                await Assert.That(retried.Attributes["MessageDeduplicationId"]).IsEqualTo(scheduler.Headers[identityHeader]);
+                await Assert.That(retried.Attributes["MessageGroupId"]).IsEqualTo("group");
+                await Assert.That(retried.MessageAttributes[receiveNames.Id].StringValue).IsEqualTo("id");
+                await Assert.That(retried.Body).IsEqualTo(message.Body);
+            }
         }
         finally
         {
             await host.StopAsync(token);
         }
+    }
+
+    [Test]
+    public async Task Conflicting_fifo_consumer_identity_bindings_require_an_explicit_send_binding()
+    {
+        using var client = new SqsReceiveTests.ReceiveClient();
+        var services = new ServiceCollection();
+        services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.AmazonSqs("sqs", sqs =>
+            {
+                sqs.Options.Configure(options =>
+                {
+                    options.SqsClient = client;
+                    options.Queues.Add(Queue("orders.fifo"));
+                    options.Queues.Add(Queue("dead.fifo"));
+                });
+                sqs.Consume("orders.fifo", consumer =>
+                {
+                    consumer.Handler<SqsReceiveFlociTests.Handler>();
+                    consumer.Options.HeaderNames = new("first_");
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = "dead.fifo"
+                    });
+                });
+                sqs.Consume("orders.fifo", consumer =>
+                {
+                    consumer.Handler<SqsReceiveFlociTests.Handler>();
+                    consumer.Options.HeaderNames = new("second_");
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = "dead.fifo"
+                    });
+                });
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+
+        var thrown = await Assert.That(() => provider.GetRequiredKeyedService<SqsSendTransport>("sqs"))
+            .Throws<InvalidOperationException>();
+        await Assert.That(thrown!.Message).Contains("consumers must use the same HeaderNames identity binding");
     }
 
     private static CreateQueueRequest Queue(string name)
@@ -392,7 +474,7 @@ public sealed class SqsFailureTests
     }
 
     private static IHost Host(IAmazonSQS client, TimeSpan[]? redeliveryDelays = null, Scheduler? scheduler = null,
-        string source = "orders", string dead = "dead", string? fifoSourcePrefix = null)
+        string source = "orders", string dead = "dead", string? receivePrefix = null, string? sendPrefix = null)
     {
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(new SqsReceiveFlociTests.Control());
@@ -415,7 +497,7 @@ public sealed class SqsFailureTests
                     options.Queues.Add(Queue(dead));
                 });
 
-                if (fifoSourcePrefix is not null)
+                if (receivePrefix == "ce_")
                 {
                     sqs.Send<SqsSendTests.Order>(dead, route =>
                     {
@@ -425,23 +507,29 @@ public sealed class SqsFailureTests
                         };
                         route.OrderingKey(static _ => "group");
                     });
+                }
 
-                    if (fifoSourcePrefix != "ce_")
+                if (sendPrefix is not null)
+                {
+                    sqs.Send<SqsReceiveFlociTests.Payload>(source, route =>
                     {
-                        sqs.Send<SqsReceiveFlociTests.Payload>(source, route =>
+                        route.SendOptions = new()
                         {
-                            route.SendOptions = new()
-                            {
-                                HeaderNames = new(fifoSourcePrefix)
-                            };
-                            route.OrderingKey(static _ => "group");
-                        });
-                    }
+                            HeaderNames = new(sendPrefix)
+                        };
+                        route.OrderingKey(static _ => "group");
+                    });
                 }
 
                 sqs.Consume(source, consumer =>
                 {
                     consumer.Handler<SqsReceiveFlociTests.Handler>();
+
+                    if (receivePrefix is not null)
+                    {
+                        consumer.Options.HeaderNames = new(receivePrefix);
+                    }
+
                     consumer.Failures(new()
                     {
                         DeadLetterEndpoint = dead,

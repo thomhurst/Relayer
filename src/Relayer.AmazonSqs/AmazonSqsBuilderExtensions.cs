@@ -24,12 +24,30 @@ public static class AmazonSqsBuilderExtensions
             var options = provider.GetRequiredService<IOptionsMonitor<AmazonSqsTransportOptions>>().Get(name);
             SqsSendTransport.ValidateDeclarations(name, options, declaration.Routes.Select(route => route.Destination));
 
-            foreach (var consumer in declaration.Consumers)
+            var routeIdentityHeaders = SqsSendTransport.ResolveIdentityHeaders(declaration.Routes);
+            var identityHeaders = new Dictionary<string, string>(routeIdentityHeaders, StringComparer.Ordinal);
+
+            foreach (var consumerDeclaration in declaration.Consumers)
             {
-                SqsConsumer.ValidateDeclaration(name, options, (ConsumerDefinition<AmazonSqsConsumerOptions>)consumer);
+                var consumer = (ConsumerDefinition<AmazonSqsConsumerOptions>)consumerDeclaration;
+                SqsConsumer.ValidateDeclaration(name, options, consumer);
+
+                if (!consumer.Source.EndsWith(".fifo", StringComparison.Ordinal) ||
+                    routeIdentityHeaders.ContainsKey(consumer.Source))
+                {
+                    continue;
+                }
+
+                // Resolve once so the failure copy and the eventual outbox dispatch use the same identity.
+                string identityHeader = consumer.Options.HeaderNames.Id;
+
+                if (!identityHeaders.TryAdd(consumer.Source, identityHeader) &&
+                    identityHeaders[consumer.Source] != identityHeader)
+                {
+                    throw new InvalidOperationException($"SQS FIFO queue '{consumer.Source}': consumers must use the same HeaderNames identity binding when no CloudEvents send route declares one. Configure matching HeaderNames for consumers on this queue.");
+                }
             }
 
-            var identityHeaders = SqsSendTransport.ResolveIdentityHeaders(declaration.Routes);
             var client = options.SqsClient ?? new AmazonSQSClient(options.Sqs);
             return new SqsSendTransport(name, client, options.SqsClient is null, options,
                 provider.GetRequiredService<MessageTracing>(), provider.GetService<ILoggerFactory>(), identityHeaders);
