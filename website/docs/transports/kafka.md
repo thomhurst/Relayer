@@ -150,6 +150,7 @@ Relayer discards the legacy `relayer.internal.kafka.tombstone` header, including
 Consumers start with the host by default. Set `AutoStartConsumers = false` to bring the host up first and start the consumers yourself through the transport's keyed `IConsumerControl`:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
 
 kafka.Options.Configure(options => options.AutoStartConsumers = false);

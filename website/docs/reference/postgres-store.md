@@ -141,6 +141,9 @@ Register typed native exception rules to distinguish permanent broker rejections
 For example, with Azure Service Bus:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+
 services.AddSingleton<IFailureClassifier>(new FailureClassifierBuilder()
     .On<Azure.Messaging.ServiceBus.ServiceBusException>(FailureAction.DeadLetter,
         static (error, _) => !error.IsTransient)
@@ -173,6 +176,10 @@ insert sequence: later rows with its key wait while unrelated keys continue. A r
 the attempt, dead copy and barrier together.
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+using Relayer.Outbox.PostgreSql;
+
 services.AddRelayerPostgreSqlDeadLetters("orders", dataSource, storeOptions);
 var manager = serviceProvider.GetRequiredKeyedService<IDeadLetterManager>("orders");
 var page = await manager.PeekAsync("orders", maxMessages: 20);

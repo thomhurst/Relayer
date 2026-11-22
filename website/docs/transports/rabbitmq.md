@@ -230,6 +230,7 @@ tracking add no per-message objects of their own.
 Consumers subscribe with the host by default. Set `AutoStartConsumers = false` to bring the host up first and start them yourself through the transport's keyed `IConsumerControl`:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
 
 rabbit.Options.Configure(options => options.AutoStartConsumers = false);
