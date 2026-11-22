@@ -124,27 +124,46 @@ public sealed class SqsReceiveFlociTests
 
             if (fifo)
             {
-                // A malformed envelope still needs native deduplication on a FIFO poison copy.
                 var sourceUrlForPoison = (await client.GetQueueUrlAsync(source, token)).QueueUrl;
-                await client.SendMessageAsync(new SendMessageRequest
+                var hasDestinationIdentity = names.Id != "ce_id";
+
+                foreach (var nativeId in new[] { "native-poison-1", "native-poison-2" })
                 {
-                    QueueUrl = sourceUrlForPoison,
-                    MessageBody = "malformed",
-                    MessageGroupId = "malformed-group",
-                    MessageDeduplicationId = "native-poison-id",
-                }, token);
-                var malformed = await client.ReceiveMessageAsync(new ReceiveMessageRequest
-                {
-                    QueueUrl = deadUrl,
-                    WaitTimeSeconds = 10,
-                    MessageAttributeNames = ["All"],
-                    MessageSystemAttributeNames = ["All"],
-                }, token);
-                var malformedCopy = malformed.Messages.Single();
-                await Assert.That(malformedCopy.Body).IsEqualTo("malformed");
-                await Assert.That(malformedCopy.Attributes["MessageDeduplicationId"]).IsEqualTo("native-poison-id");
-                await Assert.That(malformedCopy.MessageAttributes.ContainsKey(FailureHeaders.History)).IsTrue();
-                await client.DeleteMessageAsync(deadUrl, malformedCopy.ReceiptHandle, token);
+                    await client.SendMessageAsync(new SendMessageRequest
+                    {
+                        QueueUrl = sourceUrlForPoison,
+                        MessageBody = "malformed",
+                        MessageGroupId = "malformed-group",
+                        MessageDeduplicationId = nativeId,
+                        MessageAttributes = hasDestinationIdentity ? new()
+                        {
+                            ["ce_id"] = new()
+                            {
+                                DataType = "String",
+                                StringValue = "shared-value"
+                            }
+                        } : null
+                    }, token);
+                    var malformed = await client.ReceiveMessageAsync(new ReceiveMessageRequest
+                    {
+                        QueueUrl = deadUrl,
+                        WaitTimeSeconds = 10,
+                        MessageAttributeNames = ["All"],
+                        MessageSystemAttributeNames = ["All"],
+                    }, token);
+                    var malformedCopy = malformed.Messages.Single();
+                    await Assert.That(malformedCopy.Body).IsEqualTo("malformed");
+                    await Assert.That(malformedCopy.Attributes["MessageDeduplicationId"]).IsEqualTo(nativeId);
+                    await Assert.That(malformedCopy.MessageAttributes.ContainsKey(FailureHeaders.History)).IsTrue();
+
+                    if (hasDestinationIdentity)
+                    {
+                        await Assert.That(malformedCopy.MessageAttributes["ce_id"].DataType).IsEqualTo("String");
+                        await Assert.That(malformedCopy.MessageAttributes["ce_id"].StringValue).IsEqualTo("shared-value");
+                    }
+
+                    await client.DeleteMessageAsync(deadUrl, malformedCopy.ReceiptHandle, token);
+                }
             }
 
             if (fifo)

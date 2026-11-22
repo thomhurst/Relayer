@@ -27,7 +27,9 @@ public sealed class SqsFailureTests
         var copy = SqsHostedService.Copy(context, sourceHeader, deadHeader);
         var state = new SqsSendState("0");
         state.Prepare(copy, "dead.fifo", true, deadHeader);
-        await Assert.That(state.Request.MessageDeduplicationId).IsEqualTo(deadHeader == "ce_id" ? "id" : "native-id");
+        await Assert.That(state.Request.MessageDeduplicationId).IsEqualTo(needsFallback ? "native-id" : "id");
+        await Assert.That(state.Request.MessageAttributes["ce_id"].DataType).IsEqualTo("String");
+        await Assert.That(state.Request.MessageAttributes["ce_id"].StringValue).IsEqualTo("id");
 
         if (needsFallback)
         {

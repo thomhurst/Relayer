@@ -86,6 +86,15 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
         var delivery = context.Features.GetRequired<NativeMessage<SqsDelivery>>().Message;
         var attributes = delivery.Message.MessageAttributes;
         var fifo = delivery.QueueUrl.EndsWith(".fifo", StringComparison.Ordinal);
+        // Normal envelope copies remain persistable. A malformed or differently bound FIFO
+        // identity can require the original native fallback, which an outbox cannot store.
+        var hasSourceIdentity = attributes?.TryGetValue(sourceIdentityHeader, out var sourceIdentity) == true &&
+            sourceIdentity.DataType == "String" && IsDeduplicationId(sourceIdentity.StringValue);
+        var hasDeadIdentity = attributes?.TryGetValue(deadIdentityHeader, out var deadIdentity) == true &&
+            deadIdentity.DataType == "String" && IsDeduplicationId(deadIdentity.StringValue);
+        var deduplication = hasSourceIdentity && hasDeadIdentity ? null :
+            delivery.Message.Attributes?.GetValueOrDefault("MessageDeduplicationId");
+        var bindDeadIdentity = hasDeadIdentity && deduplication is null;
         var headers = new List<KeyValuePair<string, WireString>>(attributes?.Count ?? 0);
         Dictionary<string, MessageAttributeValue>? native = null;
 
@@ -93,10 +102,10 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
         {
             foreach (var attribute in attributes)
             {
-                // Keep unusable destination identities native so portable header binding cannot
-                // overwrite the original FIFO deduplication fallback after the callback.
+                // Keep the destination identity native if binding it would overwrite a fallback
+                // or produce an invalid FIFO deduplication ID.
                 if (attribute.Value.DataType == "String" && attribute.Value.StringValue is { } text &&
-                    (!fifo || attribute.Key != deadIdentityHeader || IsDeduplicationId(text)))
+                    (!fifo || attribute.Key != deadIdentityHeader || bindDeadIdentity))
                 {
                     headers.Add(new(attribute.Key, new(text)));
                 }
@@ -108,15 +117,6 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
         }
 
         SendOptions? options = null;
-        // Normal envelope copies remain persistable. A malformed/differently bound FIFO
-        // identity (including native typed attributes) needs the original native fallback,
-        // which cannot be stored by an outbox.
-        var hasSourceIdentity = attributes?.TryGetValue(sourceIdentityHeader, out var sourceIdentity) == true &&
-            sourceIdentity.DataType == "String" && IsDeduplicationId(sourceIdentity.StringValue);
-        var hasDeadIdentity = attributes?.TryGetValue(deadIdentityHeader, out var deadIdentity) == true &&
-            deadIdentity.DataType == "String" && IsDeduplicationId(deadIdentity.StringValue);
-        var deduplication = hasSourceIdentity && hasDeadIdentity ? null :
-            delivery.Message.Attributes?.GetValueOrDefault("MessageDeduplicationId");
         var groupId = delivery.Message.Attributes?.GetValueOrDefault("MessageGroupId");
         // Standard queues use native groups for fairness, not portable ordering.
         var fairGroup = fifo ? null : groupId;
