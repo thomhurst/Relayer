@@ -1934,6 +1934,8 @@ Delay options are bindable arrays. `FailureOptions` retains its convenience cons
 
 In-memory consumers use only native redelivery for retries, including manual settlement requests. Scheduled-copy and outbox redelivery fallbacks are rejected when the requested delay exceeds `MaxRedeliveryDelay`: sending another message to the source would fan out to unrelated log groups and could wait for admission credit still owned by the current delivery. Native redelivery retains both the group and that credit. Dead-letter copies to a separate configured endpoint remain supported.
 
+Unordered queues compute an absolute UTC deadline when they accept a redelivery disposition. The transport caps their advertised limit to the clock's remaining UTC range at construction and checks the live clock at settlement. Manual settlement keeps the validated deadline through callback exit. Ordered queues and logs use elapsed time for retained-head retries.
+
 ## D75. Failure diagnostics are bounded
 
 **Status:** Accepted; supersedes D10's every-attempt diagnostic retention guarantee.

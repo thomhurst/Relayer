@@ -174,6 +174,7 @@ public readonly struct InMemoryDelivery
     }
 
     /// <summary>Manually requests native redelivery.</summary>
+    /// <exception cref="InvalidOperationException">Redelivery is unavailable, or the delay exceeds the endpoint's scheduling limits.</exception>
     public void Redeliver(TimeSpan delay)
     {
         _receiver.Settle(Disposition.Redeliver(delay));

@@ -26,6 +26,7 @@ public sealed record InMemoryEndpointOptions
     } = 256;
 
     /// <summary>Capabilities to emulate. Replay, transactions and pause/resume are not implemented.</summary>
+    /// <remarks>Unordered queues limit the effective MaxRedeliveryDelay to the clock's remaining UTC range when built.</remarks>
     public TransportCapabilities Capabilities
     {
         get; init;

@@ -38,6 +38,8 @@ internal sealed class InMemoryEndpoint
         get;
     }
 
+    internal bool IsUnorderedQueue => Capabilities.ConsumptionModel == ConsumptionModel.Queue && !Capabilities.OrderedByKey;
+
     internal Channel<InMemoryDeadLetter> DeadLetters
     {
         get;
@@ -69,7 +71,9 @@ internal sealed class InMemoryEndpoint
             throw new NotSupportedException($"Endpoint '{name}': in-memory Replay, Transactions and PauseResume are not implemented. Disable these capabilities.");
         }
 
-        if (Capabilities.ConsumptionModel == ConsumptionModel.Queue && !Capabilities.OrderedByKey && options.Partitions != 1)
+        var sharedQueue = IsUnorderedQueue;
+
+        if (sharedQueue && options.Partitions != 1)
         {
             throw new ArgumentException($"Endpoint '{name}': unordered queues require Partitions = 1. Enable OrderedByKey or use ConsumptionModel.Log.", nameof(options));
         }
@@ -82,7 +86,19 @@ internal sealed class InMemoryEndpoint
             _pool.TryReturn(new(), i);
         }
 
-        var sharedQueue = Capabilities.ConsumptionModel == ConsumptionModel.Queue && !Capabilities.OrderedByKey;
+        if (sharedQueue && Capabilities.MaxRedeliveryDelay is { } maximum && maximum > TimeSpan.Zero)
+        {
+            var clockLimit = DateTimeOffset.MaxValue - clock.GetUtcNow();
+
+            if (clockLimit < maximum)
+            {
+                Capabilities = Capabilities with
+                {
+                    MaxRedeliveryDelay = clockLimit
+                };
+            }
+        }
+
         _partitions = CreatePartitions(options.Partitions, sharedQueue);
 
         if (sharedQueue)
@@ -437,23 +453,39 @@ internal sealed class InMemoryEndpoint
         }
     }
 
-    internal void ValidateSettlement(Disposition disposition)
+    internal DateTimeOffset? ValidateSettlement(Disposition disposition)
     {
         if (disposition.Kind is not (DispositionKind.Complete or DispositionKind.Redeliver or DispositionKind.DeadLetter))
         {
             throw new InvalidOperationException($"Endpoint '{_name}': settlement requires an explicit Complete, Redeliver or DeadLetter decision.");
         }
 
-        if (disposition.Kind == DispositionKind.Redeliver &&
-            (Capabilities.MaxRedeliveryDelay is not { } maximum || disposition.Delay > maximum))
+        if (disposition.Kind == DispositionKind.Redeliver)
         {
-            throw new InvalidOperationException($"Endpoint '{_name}': Redeliver exceeds MaxRedeliveryDelay or native redelivery is unavailable.");
+            if (Capabilities.MaxRedeliveryDelay is not { } maximum || disposition.Delay > maximum)
+            {
+                throw new InvalidOperationException($"Endpoint '{_name}': Redeliver exceeds MaxRedeliveryDelay or native redelivery is unavailable.");
+            }
+
+            if (disposition.Delay > TimeSpan.Zero && IsUnorderedQueue)
+            {
+                var now = Clock.GetUtcNow();
+
+                if (disposition.Delay > DateTimeOffset.MaxValue - now)
+                {
+                    throw new InvalidOperationException($"Endpoint '{_name}': Redeliver exceeds the clock's remaining UTC range. Shorten the delay.");
+                }
+
+                return now.Add(disposition.Delay);
+            }
         }
 
         if (disposition.Kind == DispositionKind.DeadLetter && !Capabilities.DeadLetter)
         {
             throw new InvalidOperationException($"Endpoint '{_name}': native DeadLetter is unavailable. Configure a core failure executor with a durable fallback.");
         }
+
+        return null;
     }
 
     internal void Dispose()
@@ -548,6 +580,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
     private InMemoryMessage? _pending;
     private bool _manual;
     private Disposition _settlement;
+    private DateTimeOffset? _settlementRedeliveryAt;
     private ReadOnlyMemory<KeyValuePair<string, WireString>> _redeliveryHeaders;
 
     internal ReadOnlyMemory<KeyValuePair<string, WireString>> RedeliveryHeaders =>
@@ -592,7 +625,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                 throw new InvalidOperationException("This native delivery is not active or has already been settled.");
             }
 
-            endpoint.ValidateSettlement(disposition);
+            _settlementRedeliveryAt = endpoint.ValidateSettlement(disposition);
             _settlement = disposition;
             _manual = true;
         }
@@ -693,7 +726,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                     throw new InvalidOperationException("Return SettledByHandler after manually settling InMemoryDelivery.");
                 }
 
-                endpoint.ValidateSettlement(disposition);
+                var redeliveryAt = _manual ? _settlementRedeliveryAt : endpoint.ValidateSettlement(disposition);
 
                 if (disposition.Kind == DispositionKind.Redeliver)
                 {
@@ -704,12 +737,12 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
 
                     Attempt++;
 
-                    if (endpoint.Capabilities.ConsumptionModel == ConsumptionModel.Queue && !endpoint.Capabilities.OrderedByKey)
+                    if (endpoint.IsUnorderedQueue)
                     {
                         _pending.RedeliveryHeaders = RedeliveryHeaders;
                         _redeliveryHeaders = default;
                         _pending.QueueAttempt = Attempt;
-                        _pending.DeliverAt = endpoint.Clock.GetUtcNow().Add(disposition.Delay);
+                        _pending.DeliverAt = redeliveryAt ?? endpoint.Clock.GetUtcNow();
                         await endpoint.EnqueueAsync(_pending, abort).ConfigureAwait(false);
                         _pending = null;
                     }
