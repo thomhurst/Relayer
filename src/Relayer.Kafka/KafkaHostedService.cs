@@ -104,6 +104,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
         var health = provider.GetKeyedService<KafkaConsumerHealth>(name);
         // Publish only a complete set, so a retried start cannot compose a consumer twice.
         var receivers = new List<KafkaConsumer>(definition.Consumers.Count);
+        ITransport? registeredTransport = null;
 
         foreach (var declaration in definition.Consumers)
         {
@@ -174,7 +175,13 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             {
                 var shared = _transport;
                 var sends = new KafkaTransactionalSends(shared);
-                composed.SendRedirect = (shared, sends);
+                // The sender and the failure pipeline both use the registered adapter, including its test wrapper.
+                registeredTransport ??= provider.GetServices<ITransport>().Single(transport => transport.Name == name);
+                var target = registeredTransport is ITransportSendTargetWrapper wrapper
+                    ? wrapper.WrapSendTarget(sends)
+                    : sends;
+                composed.SendRedirect = (registeredTransport, target);
+
                 var group = consumer.Options.Group!;
                 var transactionalId = consumer.Options.TransactionalId;
                 receiver.ConfigureTransactions(() => shared.WithProducer(KafkaProducerTransport.CreateProducerBuilder(options, loggerFactory)

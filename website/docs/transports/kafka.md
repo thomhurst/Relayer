@@ -200,6 +200,8 @@ What joins the transaction:
 - Sends a handler makes through `ISender` to a route on the same Kafka transport, including `SendWithoutOutboxAsync`. They are buffered until the attempt succeeds, as always, and then produced through the transactional producer.
 - [Dead-letter copies](../guides/failure-handling.md) of the consumer's failed records, so a poison record's copy and its offset commit together.
 
+The [test harness](../guides/testing.md) preserves this transaction boundary for both handler sends and dead-letter copies. Its `Dispatched` observations record successful producer calls, which can precede a commit. Use a `ReadCommitted` reader to verify which records committed.
+
 What does not: sends to other transports or Kafka transports, database outbox rows, and any other side effect. Those stay at least once and can repeat when a transaction aborts and its records are processed again.
 
 When a commit fails, a partition is lost, or a failure escapes the failure pipeline (for example a dead-letter copy that cannot be written), Dekaf aborts the transaction, so none of its output becomes visible, and the records are processed again from the committed offsets in a new transaction or by the partition's next owner. `CommitInterval` sets how long each transaction lasts, and so how late downstream readers see the output.
