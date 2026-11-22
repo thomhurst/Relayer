@@ -28,7 +28,7 @@ The core runs every fallback, so transports contain native code only.
 
 | Feature | Native when available | Fallback |
 |---|---|---|
-| Delayed delivery / scheduling | Service Bus `ScheduledEnqueueTime`, SQS `DelaySeconds` on standard queues (up to 15 minutes; not on FIFO queues), RabbitMQ delayed-message plugin | Outbox `deliver_at` |
+| Delayed delivery / scheduling | Service Bus `ScheduledEnqueueTime`, SQS `DelaySeconds` on standard queues (up to 15 minutes; not on FIFO queues), RabbitMQ [native delays](../transports/rabbitmq.md#native-delays-and-the-outbox-fallback) require the delayed-message plugin and an alternate exchange configured in `DelayedExchanges` for the route's exchange and successfully declared in `Provision` mode | Outbox `deliver_at` |
 | Delayed redelivery of a received message | SQS visibility timeout (up to 12 hours); immediate only: Service Bus abandon, RabbitMQ requeue | Scheduled re-send of a copy, else the outbox |
 | Dead-letter with error metadata | Service Bus DLQ with properties | Send a copy to the dead-letter endpoint (Kafka DLT topic, SQS DLQ queue), then complete |
 | Ordering | Kafka partition key, Service Bus sessions, SQS FIFO message group | None: the route must not declare an ordering key |
