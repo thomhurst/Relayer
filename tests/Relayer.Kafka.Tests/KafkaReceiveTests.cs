@@ -7,6 +7,9 @@ using System.Threading.Channels;
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Errors;
+using Dekaf.Producer;
+using Dekaf.Protocol;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -185,7 +188,9 @@ public class KafkaReceiveTests
     }
 
     [Test]
-    public async Task Core_retry_durable_dead_letter_and_native_commits_preserve_creation_context()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Core_retry_durable_dead_letter_and_native_commits_preserve_creation_context(bool unacknowledgedProducer)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -201,7 +206,7 @@ public class KafkaReceiveTests
             ActivityStopped = spans.Enqueue,
         };
         ActivitySource.AddActivityListener(listener);
-        using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control);
+        using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control, unacknowledgedProducer: unacknowledgedProducer);
         await host.StartAsync(token);
         var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
         await fixture.Transport.StartAsync(token);
@@ -278,6 +283,45 @@ public class KafkaReceiveTests
             processes.All(process => process.SpanId != span.ParentSpanId))).IsTrue();
         var copySends = spans.Where(span => span.Source.Name == "Relayer" && span.DisplayName == "send " + source + ".dead-letter").ToArray();
         await Assert.That(copySends.All(copy => spans.Any(span => span.Source.Name == "Dekaf" && span.ParentSpanId == copy.SpanId))).IsTrue();
+    }
+
+    [Test]
+    public async Task Broker_rejection_of_dead_letter_copy_leaves_source_offset_uncommitted_with_acks_none()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await Broker.Started.WaitAsync(token);
+        var deadLetterConfigs = new Dictionary<string, string> { ["max.message.bytes"] = "1024" };
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, Topic(), token, deadLetterConfigs);
+        var control = new KafkaReceiveControl();
+        using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control, unacknowledgedProducer: true);
+        await host.StartAsync(token);
+        await fixture.Transport.StartAsync(token);
+        var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
+        var source = fixture.Destination;
+        var poison = Message(source, 2);
+        var oversized = Encoding.UTF8.GetBytes("{\"Number\":2}" + new string(' ', 8 * 1024));
+        var deadLetter = new TopicPartition(source + ".dead-letter", 0);
+        // A direct send still uses the caller's Acks.None, even to the same topic.
+        await transport.SendAsync(new(deadLetter.Topic, oversized, poison.Headers, poison.OrderingKey), token);
+        await fixture.Transport.SendAsync(new(source, oversized, poison.Headers, poison.OrderingKey), token);
+        await fixture.Transport.SendAsync(Message(source, 3), token);
+
+        var error = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await control.ReadHandledAsync(transport.Consumers[0].Completion, token));
+        await Assert.That(error!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+        await Assert.That(async () => await host.StopAsync(token)).Throws<KafkaException>();
+
+        await using var offsets = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
+            .WithGroupId(source).WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
+        await offsets.InitializeAsync(token);
+        var committed = await offsets.GetCommittedOffsetAsync(new(source, 0), token);
+        await Assert.That(committed is null or < 0).IsTrue();
+
+        await using var admin = new AdminClientBuilder().WithBootstrapServers(fixture.Bootstrap).Build();
+        var latest = await admin.ListOffsetsAsync([new() { TopicPartition = deadLetter, Spec = OffsetSpec.Latest }], cancellationToken: token);
+        await Assert.That(latest[deadLetter].Offset).IsEqualTo(0L);
     }
 
     [Test]
@@ -619,7 +663,8 @@ public class KafkaReceiveTests
     }
 
     private static IHost BuildHost(string bootstrap, string destination, KafkaReceiveControl control, bool missingDeadLetter = false,
-        bool healthySibling = false, CircuitClock? circuitClock = null, bool circuitRetry = false, int concurrency = 1)
+        bool healthySibling = false, CircuitClock? circuitClock = null, bool circuitRetry = false, int concurrency = 1,
+        bool unacknowledgedProducer = false)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -648,7 +693,15 @@ public class KafkaReceiveTests
                     options.BootstrapServers.Add(bootstrap);
                     options.ConfigureConsumer = native => native.WithAutoOffsetReset(AutoOffsetReset.Earliest)
                         .WithOffsetCommitMode(OffsetCommitMode.Auto).WithAutoOffsetStore(); // Relayer must override both.
-                    options.ConfigureProducer = native => native.WithAllowAutoCreateTopics(false);
+                    options.ConfigureProducer = native =>
+                    {
+                        native.WithAllowAutoCreateTopics(false);
+
+                        if (unacknowledgedProducer)
+                        {
+                            native.WithIdempotence(false).WithAcks(Acks.None);
+                        }
+                    };
                 });
                 kafka.Consume(destination, consumer =>
                 {

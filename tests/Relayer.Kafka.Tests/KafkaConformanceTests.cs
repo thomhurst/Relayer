@@ -147,13 +147,14 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
     }
 
     /// <summary>Creates a fixture on a running broker it does not own, for tests that leave the broker running.</summary>
-    internal static async ValueTask<KafkaFixture> CreateAsync(MessageTracing tracing, string bootstrap, string destination, CancellationToken token)
+    internal static async ValueTask<KafkaFixture> CreateAsync(MessageTracing tracing, string bootstrap, string destination, CancellationToken token,
+        Dictionary<string, string>? deadLetterConfigs = null)
     {
         var fixture = new KafkaFixture(null, bootstrap, destination, tracing);
 
         try
         {
-            await fixture.CreateTopicsAsync(token);
+            await fixture.CreateTopicsAsync(token, deadLetterConfigs);
             return fixture;
         }
         catch
@@ -163,11 +164,11 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         }
     }
 
-    private async Task CreateTopicsAsync(CancellationToken token)
+    private async Task CreateTopicsAsync(CancellationToken token, Dictionary<string, string>? deadLetterConfigs = null)
     {
         await using var admin = new AdminClientBuilder().WithBootstrapServers(Bootstrap).WithLoggerFactory(_logs).Build();
         await admin.CreateTopicsAsync([new() { Name = Destination, NumPartitions = 1, ReplicationFactor = 1 },
-            new() { Name = Destination + ".dead-letter", NumPartitions = 1, ReplicationFactor = 1 }], cancellationToken: token);
+            new() { Name = Destination + ".dead-letter", NumPartitions = 1, ReplicationFactor = 1, Configs = deadLetterConfigs }], cancellationToken: token);
     }
 
     public void RegisterConsumer(Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> receive)

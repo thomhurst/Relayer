@@ -32,7 +32,9 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     };
 
     internal KafkaProducerTransport(string name, IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> producer,
-        IEnumerable<string> destinations, MessageTracing? tracing = null, ILoggerFactory? loggerFactory = null, KafkaTransportOptions? options = null)
+        IEnumerable<string> destinations, MessageTracing? tracing = null, ILoggerFactory? loggerFactory = null,
+        KafkaTransportOptions? options = null,
+        IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>? failureCopyProducer = null)
     {
         Name = name;
         _options = options;
@@ -55,6 +57,11 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
 
         _endpoints = endpoints.ToFrozenDictionary(StringComparer.Ordinal);
         _topics = endpoints.Keys.ToFrozenDictionary(static topic => topic, topic => producer.ForTopic(topic), StringComparer.Ordinal);
+
+        if (failureCopyProducer is not null)
+        {
+            FailureCopyTransport = WithProducer(failureCopyProducer);
+        }
     }
 
     public string Name
@@ -63,6 +70,11 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     }
 
     internal IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> Producer => _producer;
+
+    internal KafkaProducerTransport? FailureCopyTransport
+    {
+        get;
+    }
 
     // A transport with the same name, topics and send telemetry over another native producer.
     internal KafkaProducerTransport WithProducer(IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> producer)
@@ -328,7 +340,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
 
         try
         {
-            await _producer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await InitializeProducerAsync(cancellationToken).ConfigureAwait(false);
 
             foreach (var consumer in Consumers)
             {
@@ -354,10 +366,15 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         }
     }
 
-    internal ValueTask InitializeProducerAsync(CancellationToken cancellationToken)
+    internal async ValueTask InitializeProducerAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return _producer.InitializeAsync(cancellationToken);
+        await _producer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+        if (FailureCopyTransport is { } copies)
+        {
+            await copies.InitializeProducerAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     // Starts the consumers after the host started the producer. A partial start stops the consumers it started,
@@ -398,7 +415,8 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
 
     internal Task FlushAsync(CancellationToken cancellationToken)
     {
-        return _producer.FlushAsync(cancellationToken).AsTask();
+        var flush = _producer.FlushAsync(cancellationToken).AsTask();
+        return FailureCopyTransport is { } copies ? Task.WhenAll(flush, copies.FlushAsync(cancellationToken)) : flush;
     }
 
     public async ValueTask DisposeAsync()
@@ -419,7 +437,17 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         }
         finally
         {
-            await _producer.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                await _producer.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                if (FailureCopyTransport is { } copies)
+                {
+                    await copies.DisposeAsync().ConfigureAwait(false);
+                }
+            }
         }
     }
 }

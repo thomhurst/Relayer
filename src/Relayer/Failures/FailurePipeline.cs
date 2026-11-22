@@ -29,6 +29,12 @@ public sealed class FailurePipeline
 
     internal (string TransportName, string Source) ReceiveEndpoint => (_transport.Name, _source);
 
+    // An adapter can require stronger delivery guarantees for copies than for ordinary sends.
+    internal ITransport? CopyTransport
+    {
+        get; init;
+    }
+
     /// <summary>Validates native paths and available fallback executors for this consumer's complete policy.</summary>
     public FailurePipeline(IServiceProvider services, string transportName, string source, string consumer,
         FailureOptions? options = null, FailureMessageCopyDelegate? copy = null,
@@ -355,7 +361,8 @@ public sealed class FailurePipeline
         }
         else
         {
-            await context.RedirectSend(_transport).SendAsync(copy, timeout.Token).ConfigureAwait(false);
+            var sender = CopyTransport ?? context.RedirectSend(_transport);
+            await sender.SendAsync(copy, timeout.Token).ConfigureAwait(false);
         }
 
         timeout.Token.ThrowIfCancellationRequested();
