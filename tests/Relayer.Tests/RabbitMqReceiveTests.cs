@@ -604,25 +604,48 @@ public class RabbitMqReceiveTests
         factory.AutomaticRecoveryEnabled = automaticRecovery;
         factory.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(100);
         var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var channelClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var failedAck = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         var attempts = 0;
-        var control = new RabbitMqReceiveControl { Handle = _ => Interlocked.Increment(ref attempts) == 1 ? new(finish.Task) : default };
+        var control = new RabbitMqReceiveControl
+        {
+            Handle = _ => Interlocked.Increment(ref attempts) == 1 ? new(finish.Task) : default,
+            NativeCallback = context =>
+            {
+                var channel = context.RabbitMQ().Channel;
+                channel.ChannelShutdownAsync += (_, _) =>
+                {
+                    channelClosed.TrySetResult();
+                    return Task.CompletedTask;
+                };
+                // Observe the real native exception after Relayer's callback exception handler runs.
+                channel.CallbackExceptionAsync += (_, args) =>
+                {
+                    failedAck.TrySetResult(args.Exception);
+                    return Task.CompletedTask;
+                };
+            },
+        };
         using var host = Host(factory, control);
         await host.StartAsync(token);
         var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
         var consumer = transport.Consumers.Single();
         var probe = host.Services.GetRequiredKeyedService<ITransportHealthProbe>("rabbit");
-        // Observe the real native exception after Relayer's callback exception handler runs.
-        control.NativeCallback = context => context.RabbitMQ().Channel.CallbackExceptionAsync += (_, args) =>
+
+        try
         {
-            failedAck.TrySetResult(args.Exception);
-            return Task.CompletedTask;
-        };
-        await transport.SendAsync(new("orders", "{\"Value\":1}"u8.ToArray(), Headers()), token);
-        await control.Values.Reader.ReadAsync(token);
-        await broker.CommandAsync(["rabbitmqctl", "stop_app"], token);
-        await WaitAsync(async () => (await probe.CheckAsync(token)).Status == HealthStatus.Unhealthy, token);
-        finish.TrySetResult();
+            await transport.SendAsync(new("orders", "{\"Value\":1}"u8.ToArray(), Headers()), token);
+            await control.Values.Reader.ReadAsync(token);
+            await broker.CommandAsync(["rabbitmqctl", "stop_app"], token);
+            await WaitAsync(async () => (await probe.CheckAsync(token)).Status == HealthStatus.Unhealthy, token);
+            // Connection health can change before the native client closes the delivery channel.
+            await channelClosed.Task.WaitAsync(token);
+        }
+        finally
+        {
+            finish.TrySetResult();
+        }
+
         await Assert.That(await failedAck.Task.WaitAsync(token)).IsTypeOf<AlreadyClosedException>();
 
         if (!automaticRecovery)
