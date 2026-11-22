@@ -35,6 +35,58 @@ public sealed class ServiceBusConsumerControlTests
     }
 
     [Test]
+    public async Task Failed_start_stops_siblings_and_preserves_the_start_error_when_rollback_fails()
+    {
+        var client = new ServiceBusReceiveTests.NativeClient();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(Channel.CreateUnbounded<int>());
+        services.AddRelayer(builder =>
+        {
+            builder.Infrastructure().MessageTypes.Add<DeferredPayload>("servicebus.deferred-start");
+            builder.UseJsonSerializer(ServiceBusConsumerControlJson.Default);
+            builder.ServiceBus("bus", bus =>
+            {
+                bus.TopologyMode = TopologyMode.None;
+                bus.Options.Configure(options =>
+                {
+                    options.Client = client;
+                    options.AutoStartConsumers = false;
+                });
+                bus.Consume("first", consumer => consumer.Handler<DeferredHandler>());
+                bus.Consume("second", consumer => consumer.Handler<DeferredHandler>());
+                bus.Consume("third", consumer => consumer.Handler<DeferredHandler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        await ServiceBusReceiveTests.Start(provider);
+        var control = provider.GetRequiredKeyedService<IConsumerControl>("bus");
+
+        var first = client.Processors.Single(processor => processor.Source == "first");
+        var second = client.Processors.Single(processor => processor.Source == "second");
+        var third = client.Processors.Single(processor => processor.Source == "third");
+        var startError = new InvalidOperationException("Third processor failed to start.");
+        first.Drain = Task.FromException(new InvalidOperationException("First processor failed to stop."));
+        third.StartWork = () => Task.FromException(startError);
+
+        try
+        {
+            var observed = await Assert.That(async () => await control.StartAsync(default)).Throws<InvalidOperationException>();
+            await Assert.That(observed).IsSameReferenceAs(startError);
+        }
+        finally
+        {
+            first.Drain = Task.CompletedTask;
+        }
+
+        await Assert.That(first.Starts).IsEqualTo(1);
+        await Assert.That(first.Stops).IsEqualTo(1);
+        await Assert.That(second.Starts).IsEqualTo(1);
+        await Assert.That(second.Stops).IsEqualTo(1);
+        await ServiceBusReceiveTests.Stop(provider);
+    }
+
+    [Test]
     public async Task Control_fails_before_the_host_starts_and_after_it_stops()
     {
         var client = new ServiceBusReceiveTests.NativeClient();
