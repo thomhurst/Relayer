@@ -7,7 +7,8 @@ using Relayer.Transports;
 
 namespace Relayer.Nats;
 
-internal sealed partial class NatsConsumerWorker(string stream, string name, NatsJSConsumeOpts settings, int concurrency, MessageTracing tracing, ILogger<NatsConsumerWorker>? logger = null)
+internal sealed partial class NatsConsumerWorker(string stream, string name, NatsJSConsumeOpts settings, int concurrency,
+    MessageTracing tracing, ILogger<NatsConsumerWorker>? logger = null, string? deadLetterSubject = null)
 {
     private readonly MessageOperationTracing _ack = new(tracing, new() { System = "nats", Destination = stream, Subscription = name }, MessagingOperation.Settle, "ack");
     private CancellationTokenSource? _pull;
@@ -32,6 +33,12 @@ internal sealed partial class NatsConsumerWorker(string stream, string name, Nat
 
         var consumer = await context.GetConsumerAsync(stream, name, token).ConfigureAwait(false);
         Validate(consumer.Info.Config, stream, name);
+
+        if (deadLetterSubject is not null && MatchesConsumerFilter(consumer.Info.Config, deadLetterSubject))
+        {
+            await ValidateDeadLetterStreamAsync(context, deadLetterSubject, token).ConfigureAwait(false);
+        }
+
         _pull = new();
         _processing = new();
         var tasks = new Task[concurrency];
@@ -64,6 +71,57 @@ internal sealed partial class NatsConsumerWorker(string stream, string name, Nat
         {
             throw new InvalidOperationException($"NATS consumer '{stream}/{name}': use a durable pull consumer with AckPolicy.Explicit, full payloads and unlimited MaxDeliver. Finite MaxDeliver can strand poison messages before the durable dead-letter copy succeeds.");
         }
+    }
+
+    private async ValueTask ValidateDeadLetterStreamAsync(NatsJSContext context, string subject, CancellationToken token)
+    {
+        await foreach (var destinationStream in context.ListStreamNamesAsync(subject, token).ConfigureAwait(false))
+        {
+            if (destinationStream == stream)
+            {
+                throw new InvalidOperationException($"NATS consumer '{stream}/{name}' can receive its dead-letter subject '{subject}'. Narrow the JetStream consumer filter or choose a different DeadLetterEndpoint.");
+            }
+        }
+
+        token.ThrowIfCancellationRequested();
+    }
+
+    private static bool MatchesConsumerFilter(ConsumerConfig config, string subject)
+    {
+        if (config.FilterSubject is { Length: > 0 } filter)
+        {
+            return MatchesSubjectFilter(subject, filter);
+        }
+
+        return config.FilterSubjects is not { Count: > 0 } filters || filters.Any(pattern => MatchesSubjectFilter(subject, pattern));
+    }
+
+    private static bool MatchesSubjectFilter(string subject, string filter)
+    {
+        var subjectTokens = subject.Split('.');
+        var filterTokens = filter.Split('.');
+
+        for (var i = 0; i < filterTokens.Length; i++)
+        {
+            if (i == subjectTokens.Length)
+            {
+                return false;
+            }
+
+            var filterToken = filterTokens[i];
+
+            if (filterToken == ">")
+            {
+                return true;
+            }
+
+            if (filterToken != "*" && filterToken != subjectTokens[i])
+            {
+                return false;
+            }
+        }
+
+        return filterTokens.Length == subjectTokens.Length;
     }
 
     private async Task RunAsync(INatsJSConsumer consumer, CancellationToken pull, CancellationToken processing)

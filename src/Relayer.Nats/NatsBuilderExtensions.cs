@@ -81,7 +81,8 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
                     Destination = consumer.Options.Stream,
                     Subscription = consumer.Source
                 }));
-            var worker = _transport.AddConsumer(consumer.Options.Stream, consumer.Source, consumer.Options.Settings, consumer.Concurrency);
+            var worker = _transport.AddConsumer(consumer.Options.Stream, consumer.Source, consumer.Options.Settings,
+                consumer.Concurrency, consumer.Failure.DeadLetterEndpoint);
             pipeline.Settle(worker.SettleContextAsync);
             pipeline.ConfigureConsumer(provider, consumer);
 

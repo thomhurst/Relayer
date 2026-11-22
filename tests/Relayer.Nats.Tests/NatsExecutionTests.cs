@@ -14,6 +14,91 @@ namespace Relayer.Nats.Tests;
 public class NatsExecutionTests
 {
     [Test]
+    [Arguments(".dead", null, ".dead", false, true)]
+    [Arguments(".*", null, ".dead", false, true)]
+    [Arguments(".>", null, ".dead.failure", false, true)]
+    [Arguments(".created", ".dead.*", ".dead.failure", false, true)]
+    [Arguments(null, null, ".dead", false, true)]
+    [Arguments(".created", null, ".dead", false, false)]
+    [Arguments(".created", ".updated", ".dead", false, false)]
+    [Arguments(".*", null, ".dead.failure", false, false)]
+    [Arguments(".>", null, "", false, false)]
+    [Arguments(null, null, "_dead", true, false)]
+    [Arguments(">", null, "_dead", true, false)]
+    public async Task Hosted_start_rejects_dead_letter_subjects_the_native_consumer_reads(
+        string? filter, string? secondFilter, string deadSuffix, bool separateStream, bool rejects)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var stream = TestContext.Current!.Isolation.GetIsolatedName("events");
+        var root = TestContext.Current!.Isolation.GetIsolatedName("orders");
+        var sendSubject = root + ".created";
+        var deadSubject = root + deadSuffix;
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        await js.CreateStreamAsync(new(stream, [root, root + ".>"]), token);
+
+        if (separateStream)
+        {
+            await js.CreateStreamAsync(new(stream + "_dead", [deadSubject]), token);
+        }
+
+        await js.CreateConsumerAsync(stream, new("worker")
+        {
+            FilterSubject = secondFilter is null ? Filter(filter) : null,
+            FilterSubjects = secondFilter is null ? null : [Filter(filter)!, root + secondFilter]
+        }, token);
+
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(NatsExecutionJson.Default);
+            relayer.Nats("execution", transport =>
+            {
+                transport.TopologyMode = TopologyMode.None;
+                transport.Options.Configure(options =>
+                {
+                    options.ConnectionOptions = broker.Options();
+                    options.Consumers.Add(new(stream, "worker"));
+                });
+                transport.Send<ExecutionMessage>(sendSubject);
+                transport.Consume("worker", consumer =>
+                {
+                    consumer.Options.Stream = stream;
+                    consumer.Failures(new()
+                    {
+                        RetryDelays = [],
+                        DeadLetterEndpoint = deadSubject
+                    });
+                    consumer.Handler<ExecutionHandler>();
+                });
+            });
+        });
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+
+        if (rejects)
+        {
+            var error = await Assert.That(() => host.StartAsync(token)).Throws<InvalidOperationException>();
+            await Assert.That(error!.Message).Contains($"{stream}/worker");
+            await Assert.That(error.Message).Contains(deadSubject);
+            await Assert.That(error.Message).Contains("Narrow");
+        }
+        else
+        {
+            await host.StartAsync(token);
+            await host.StopAsync(token);
+        }
+
+        string? Filter(string? suffix)
+        {
+            return suffix is null or ">" ? suffix : root + suffix;
+        }
+    }
+
+    [Test]
     public async Task Repeated_start_during_outage_does_not_ping_or_close_the_running_transport()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));

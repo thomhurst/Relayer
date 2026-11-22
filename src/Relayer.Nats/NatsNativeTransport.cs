@@ -304,14 +304,14 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
         }
     }
 
-    internal NatsConsumerWorker AddConsumer(string stream, string name, NatsJSConsumeOpts settings, int concurrency)
+    internal NatsConsumerWorker AddConsumer(string stream, string name, NatsJSConsumeOpts settings, int concurrency, string? deadLetterSubject = null)
     {
         if (!_declaredConsumers.Contains((stream, name)))
         {
             throw new InvalidOperationException($"Undeclared NATS consumer '{stream}/{name}'.");
         }
 
-        var worker = new NatsConsumerWorker(stream, name, settings, concurrency, _tracing, _consumerLogger);
+        var worker = new NatsConsumerWorker(stream, name, settings, concurrency, _tracing, _consumerLogger, deadLetterSubject);
         Consumers.Add(worker);
         return worker;
     }
