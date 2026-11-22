@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
@@ -17,7 +18,10 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     private int _recoveredPoison;
     private long _recoveredSettled;
     private bool _deferSettlement;
-    private readonly Npgsql.NpgsqlDataSource _source;
+    private readonly NpgsqlDataSource _source;
+    private readonly string? _host;
+    private readonly int _port;
+    private readonly string? _database;
     private readonly bool _retainSentMessages;
     private readonly int _maxDispatchAttempts;
     private bool _schemaValidated;
@@ -60,7 +64,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         }
     }
 
-    internal PostgreSqlDirectDispatcher(Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions storeOptions,
+    internal PostgreSqlDirectDispatcher(NpgsqlDataSource dataSource, PostgreSqlOutboxOptions storeOptions,
         PostgreSqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<PostgreSqlDirectDispatcher> logger,
         PostgreSqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null, TimeProvider? timeProvider = null,
         PostgreSqlOrderedDispatcher? ordered = null)
@@ -68,6 +72,10 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     {
         _failures = new(scopes);
         _source = dataSource;
+        var target = new NpgsqlConnectionStringBuilder(dataSource.ConnectionString);
+        _host = target.Host;
+        _port = target.Port;
+        _database = target.Database ?? target.Username;
         _retainSentMessages = storeOptions.RetainSentMessages;
         _maxDispatchAttempts = storeOptions.MaxDispatchAttempts;
         _store = store ?? new(dataSource, storeOptions);
@@ -84,8 +92,34 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     {
         if (_schema != (schema ?? "public") || _prefix != prefix)
         {
-            throw new InvalidOperationException("The EF Core outbox and its direct dispatcher must use identical PostgreSQL schema and table prefix settings.");
+            throw new InvalidOperationException("The PostgreSQL outbox and its direct dispatcher must use identical schema and table prefix settings.");
         }
+    }
+
+    internal void ValidateConnection(NpgsqlConnection writer)
+    {
+        var database = writer.Database;
+
+        if (string.IsNullOrEmpty(_database) || string.IsNullOrEmpty(database))
+        {
+            throw new InvalidOperationException("Set Database in the PostgreSQL outbox writer and direct dispatcher connection settings when the database cannot be inferred from Username.");
+        }
+
+        if (database != _database || !MatchesEndpoint(writer.ConnectionString))
+        {
+            throw new InvalidOperationException("The outbox transaction and its direct dispatcher must use the same PostgreSQL host, port and database.");
+        }
+    }
+
+    private bool MatchesEndpoint(string connectionString)
+    {
+        if (connectionString == _source.ConnectionString)
+        {
+            return true;
+        }
+
+        var writer = new NpgsqlConnectionStringBuilder(connectionString);
+        return writer.Host == _host && writer.Port == _port;
     }
 
     internal void ValidateLocal(PostgreSqlLocalTransport local)

@@ -69,6 +69,7 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     {
         ArgumentNullException.ThrowIfNull(connection);
         EnsureAvailable();
+        _dispatcher?.ValidateConnection(connection);
         var native = await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
         return _transaction = new(this, native, null);
     }
@@ -79,10 +80,12 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     {
         ArgumentNullException.ThrowIfNull(dataSource);
         EnsureAvailable();
-        var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var connection = dataSource.CreateConnection();
 
         try
         {
+            _dispatcher?.ValidateConnection(connection);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             var native = await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
             return _transaction = new(this, native, connection);
         }
