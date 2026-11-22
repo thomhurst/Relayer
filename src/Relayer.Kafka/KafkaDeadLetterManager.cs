@@ -34,10 +34,9 @@ internal sealed class KafkaDeadLetterManager : IDeadLetterManager
         _name = name;
         _options = options;
 
-        foreach (var declaration in consumers)
+        foreach (var consumer in consumers)
         {
-            var consumer = (ConsumerDefinition<KafkaConsumerOptions>)declaration;
-            var topic = consumer.Failure.DeadLetterEndpoint ?? consumer.Source + ".dead-letter";
+            var topic = KafkaBuilderExtensions.GetDeadLetterTopic(consumer);
 
             if (_sources.TryGetValue(topic, out var destination) && destination != consumer.Source)
             {

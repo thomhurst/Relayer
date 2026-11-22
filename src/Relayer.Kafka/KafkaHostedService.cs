@@ -115,7 +115,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 RedeliveryDelays = policy.RedeliveryDelays,
                 Jitter = policy.Jitter,
                 CopyTimeout = policy.CopyTimeout,
-                DeadLetterEndpoint = policy.DeadLetterEndpoint ?? consumer.Source + ".dead-letter",
+                DeadLetterEndpoint = KafkaBuilderExtensions.GetDeadLetterTopic(consumer),
             }, Copy);
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
