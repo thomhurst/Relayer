@@ -407,6 +407,9 @@ Resolve the management service for a named Kafka transport from the built applic
 It lists configured consumer dead-letter topics, including the default `<source>.dead-letter`.
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+
 var manager = host.Services.GetRequiredKeyedService<IDeadLetterManager>("events");
 var sources = manager.List();
 var page = await manager.PeekAsync("orders.dead-letter", maxMessages: 20,
@@ -430,6 +433,8 @@ if (page.Messages.FirstOrDefault()?.MessageId is { } deadLetterId)
 with the default header prefix. To select by that original ID, inspect the header value:
 
 ```csharp
+using Relayer.Kafka;
+
 var redrivenByOriginalId = await manager.RedriveAsync("orders.dead-letter",
     filter: message => message.Features.GetRequired<KafkaDeadLetterFeature>()
         .Record.Headers.Any(header => header.Key == "ce_id" && !header.IsValueNull

@@ -277,6 +277,7 @@ Each named Service Bus transport registers a keyed `IDeadLetterManager`. It list
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
+using Relayer;
 
 var manager = provider.GetRequiredKeyedService<IDeadLetterManager>("orders");
 var sources = manager.List();
