@@ -392,7 +392,8 @@ public sealed partial class ConsumePipeline
                             if (_owner._failures is not null && _owner.Circuit is { } circuit && !_outcomeRecorded)
                             {
                                 _outcomeRecorded = true;
-                                var opened = circuit.Complete(_probe, false);
+                                var failedProbe = _probe && _context.Settlement.Request is { Kind: DispositionKind.Redeliver };
+                                var opened = circuit.Complete(_probe, failedProbe);
 
                                 if (opened || _probe)
                                 {
