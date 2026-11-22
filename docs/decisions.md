@@ -920,6 +920,15 @@ Startup validates source-generated JSON metadata for routes and consumed wire co
 using the built-in serializer. Contracts exclusive to custom serializers can omit runtime JSON metadata.
 Do not resolve unused default JSON metadata when every transport has an override. Await optional
 `IMessageSerializerInitializer` preparation before hosted receivers start, including concurrent startup.
+Validate JSON metadata for each accepted upcast source when composing its reader, including handlers
+added through `ConfigurePipeline`.
+
+Use the container's singleton disposal for serializer factories. .NET 11 dependency injection deduplicates
+shared factory results by reference ([dotnet/runtime#128768](https://github.com/dotnet/runtime/pull/128768)).
+.NET 10 captures every disposable factory result. On .NET 10, the first named factory returning a disposable
+instance gives the container the original instance. Further named registrations use non-disposable aliases.
+`GetMessageSerializer` resolves the original instance before pipeline composition, and the container
+still controls disposal order and synchronous or asynchronous disposal.
 
 The optional `Relayer.Kafka.SchemaRegistry` package prepares explicit JSON writer contracts with Dekaf's
 AOT-safe serializer and native configuration. Accept only the prepared writer schema ID for each message

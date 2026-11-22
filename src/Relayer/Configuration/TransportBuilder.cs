@@ -197,8 +197,7 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         }
 
         _hasSerializer = true;
-        _services.AddKeyedSingleton<IMessageSerializer>(Name, (provider, _) => factory(provider)
-            ?? throw new InvalidOperationException($"Transport '{Name}': the serializer factory returned null."));
+        NamedMessageSerializer.Register(_services, Name, factory);
     }
 
     internal TransportDefinition Build()

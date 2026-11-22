@@ -1,7 +1,9 @@
 using System.Buffers;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.InMemory;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -59,6 +61,51 @@ public class TransportSerializerTests
         await host.StartAsync();
         await Assert.That(custom.Initializations).IsEqualTo(1);
         await host.StopAsync();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Host_disposes_named_serializers_once_per_instance(bool shareInstance)
+    {
+        var shared = new DisposableSerializer();
+        var independent = new DisposableSerializer();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.Infrastructure().MessageTypes.Add<NoJsonMetadata>("manual");
+            relayer.InMemory("first", transport => transport.UseSerializer(_ => shared).Send<NoJsonMetadata>("first"));
+
+            if (shareInstance)
+            {
+                relayer.InMemory("second", transport => transport.UseSerializer(_ => shared).Send<NoJsonMetadata>("second"));
+            }
+
+            relayer.InMemory("independent", transport => transport.UseSerializer(_ => independent).Send<NoJsonMetadata>("independent"));
+        });
+
+        var host = builder.Build();
+
+        await using ((IAsyncDisposable)host)
+        {
+            await host.StartAsync();
+            await Assert.That(host.Services.GetMessageSerializer("first")).IsSameReferenceAs(shared);
+            await Assert.That(host.Services.GetMessageSerializer("independent")).IsSameReferenceAs(independent);
+
+            if (shareInstance)
+            {
+                await Assert.That(host.Services.GetMessageSerializer("second")).IsSameReferenceAs(shared);
+            }
+
+            await Assert.That(shared.Initializations).IsEqualTo(1);
+            await Assert.That(independent.Initializations).IsEqualTo(1);
+            await host.StopAsync();
+            await Assert.That(shared.Disposals).IsEqualTo(0);
+            await Assert.That(independent.Disposals).IsEqualTo(0);
+        }
+
+        await Assert.That(shared.Disposals).IsEqualTo(1);
+        await Assert.That(independent.Disposals).IsEqualTo(1);
     }
 
     [Test]
@@ -143,6 +190,47 @@ public class TransportSerializerTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Pipeline_callback_requires_json_metadata_for_upcast_sources(bool includeSourceMetadata)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            var infrastructure = relayer.Infrastructure();
+            infrastructure.MessageTypes.Add<NoJsonMetadata>("versioned").Add<JsonValue>("versioned", 2)
+                .Add<JsonOrder>("orders");
+            infrastructure.Upcasters.Add(new ManualUpgrade());
+            relayer.UseJsonSerializer(RelayerGeneratedJsonContext.Default);
+
+            if (includeSourceMetadata)
+            {
+                relayer.UseJsonSerializer(UpcastSourceJsonContext.Default);
+            }
+
+            new ConsumerBuilder<object>(relayer.Services, infrastructure.Handlers, "manual").Handler<JsonValueHandler>();
+            relayer.InMemory("default", transport => transport.Consume("json", consumer =>
+            {
+                consumer.Handler<JsonOrderHandler>();
+                consumer.ConfigurePipeline(pipeline => pipeline.Handler(infrastructure.Handlers.GetHandler<JsonValue, JsonValueHandler>()));
+            }));
+        });
+
+        using var host = builder.Build();
+
+        if (includeSourceMetadata)
+        {
+            await host.StartAsync();
+            await host.StopAsync();
+        }
+        else
+        {
+            await Assert.That(() => host.StartAsync()).Throws<InvalidOperationException>()
+                .WithMessageContaining(nameof(NoJsonMetadata));
+        }
+    }
+
+    [Test]
     public async Task Preparation_failure_prevents_any_receiver_start()
     {
         var serializer = new PreparedSerializer { Fail = true };
@@ -174,6 +262,14 @@ public class TransportSerializerTests
         }
     }
 
+    public sealed class JsonOrderHandler : IHandler<JsonOrder>
+    {
+        public ValueTask HandleAsync(JsonOrder message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+    }
+
     private sealed class ManualUpgrade : IUpcaster<NoJsonMetadata, JsonValue>
     {
         public JsonValue Upcast(NoJsonMetadata message)
@@ -182,7 +278,7 @@ public class TransportSerializerTests
         }
     }
 
-    private sealed class PreparedSerializer : IMessageSerializer, IMessageSerializerInitializer
+    private class PreparedSerializer : IMessageSerializer, IMessageSerializerInitializer
     {
         public int Initializations;
         public bool Fail;
@@ -212,6 +308,17 @@ public class TransportSerializerTests
         }
     }
 
+    private sealed class DisposableSerializer : PreparedSerializer, IAsyncDisposable
+    {
+        public int Disposals;
+
+        public ValueTask DisposeAsync()
+        {
+            Disposals++;
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class StartupProbe(PreparedSerializer serializer) : IHostedService
     {
         public bool Started;
@@ -229,3 +336,6 @@ public class TransportSerializerTests
         }
     }
 }
+
+[JsonSerializable(typeof(TransportSerializerTests.NoJsonMetadata))]
+internal partial class UpcastSourceJsonContext : JsonSerializerContext;
