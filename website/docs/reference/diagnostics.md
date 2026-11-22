@@ -39,20 +39,45 @@ The code fix adds `[global::Relayer.MessageAttribute("OrderPlaced")]` to the mes
 
 RLY001 reports a source-declared message type once at its declaration. For a type from a referenced assembly, it reports each use that it checks.
 
-Alternatively, call `builder.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed")`. RLY001 recognizes calls to Relayer's `MessageTypeRegistry.Add<T>` anywhere in the current compilation, including after the route or handler use. The registration covers that CLR type and its `Tombstone<T>` wrapper. For example, `ValueTuple<int, string>` covers `(int Id, string Account)`, and `Envelope<object>` covers `Envelope<dynamic>`. Register each distinct closed generic type separately. Calls hidden inside a referenced assembly or generic helper are not inferred; mark the helper instead, as below. The analyzer does not prove that a visible registration executes; startup validation remains authoritative.
+With `Relayer.Transports` in scope, you can instead call `builder.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed")`. RLY001 recognizes calls to Relayer's `MessageTypeRegistry.Add<T>` anywhere in the current compilation, including after the route or handler use. The registration covers that CLR type and its `Tombstone<T>` wrapper. For example, `ValueTuple<int, string>` covers `(int Id, string Account)`, and `Envelope<object>` covers `Envelope<dynamic>`. Register each distinct closed generic type separately. Calls hidden inside a referenced assembly or generic helper are not inferred; mark the helper instead, as below. The analyzer does not prove that a visible registration executes; startup validation remains authoritative.
 
 For a generic handler whose message is nested in a generic type, such as `IHandler<Outer<T>.Message>`, RLY001 checks the closed message when you register the concrete handler. For example, `consumer.Handler<OuterHandler<int>>()` can use an identity registered with `builder.Infrastructure().MessageTypes.Add<Outer<int>.Message>("orders")`.
 
 When a generic local handler registration uses a message type parameter from an enclosing helper, the message stays open inside that helper. If the enclosing helper constrains its handler to `IHandler<TMessage>` or `IBatchHandler<TMessage>`, RLY001 checks the message identity at the call that supplies the concrete message type.
 
-When a helper registers the identity, for example a shared messaging library that registers it together with the route, mark the helper's type parameter with `[RegistersMessageIdentity]`. Each call with a concrete type argument then counts as a registration, including calls to a helper in a referenced assembly:
+When a generic helper registers an identity, apply `[RegistersMessageIdentity]` to the method and pass the name of the type parameter whose message identity it registers. Each call with a concrete type argument counts as a registration, including calls to a helper in a referenced assembly.
+
+Declare the extension in a public static class in the shared library.
 
 ```csharp
-[RegistersMessageIdentity(nameof(TMessage))]
-public static void PublishRaw<TMessage>(this IRelayerBuilder builder, string name) =>
-    builder.Infrastructure().MessageTypes.Add<TMessage>(name);
+using Relayer;
+using Relayer.Transports;
 
-builder.PublishRaw<OrderPlaced>("orders.placed"); // OrderPlaced counts as registered
+namespace SharedMessaging;
+
+public static class MessageIdentityExtensions
+{
+    [RegistersMessageIdentity(nameof(TMessage))]
+    public static void PublishRaw<TMessage>(this IRelayerBuilder builder, string name) =>
+        builder.Infrastructure().MessageTypes.Add<TMessage>(name);
+}
+```
+
+Import the shared library's namespace in the calling project to use the extension.
+
+```csharp
+using Relayer;
+using SharedMessaging;
+
+public static class OrderMessaging
+{
+    public static void Register(IRelayerBuilder builder)
+    {
+        builder.PublishRaw<OrderPlaced>("orders.placed");
+    }
+}
+
+public sealed record OrderPlaced(string OrderId);
 ```
 
 Pass the name with `nameof` so a rename keeps it in step: a name that matches none of the helper's type parameters registers nothing, and RLY001 keeps reporting.
