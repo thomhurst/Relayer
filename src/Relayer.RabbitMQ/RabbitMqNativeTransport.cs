@@ -150,7 +150,7 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
                 // Roll back every consumer even when the token has expired; report the start failure.
                 try
                 {
-                    await StopEachConsumerAsync(cancellationToken).ConfigureAwait(false);
+                    await StopAllConsumersAsync(cancellationToken).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -173,7 +173,7 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
 
         try
         {
-            await StopEachConsumerAsync(cancellationToken).ConfigureAwait(false);
+            await StopAllConsumersAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -215,16 +215,18 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
         }
     }
 
-    // A consumer whose drain is cancelled still disposes its channel; keep stopping the others, then rethrow.
-    private async Task StopEachConsumerAsync(CancellationToken cancellationToken)
+    private async Task StopAllConsumersAsync(CancellationToken cancellationToken)
     {
+        // Start native cancellation on every channel before waiting for any consumer to drain.
+        var stopTasks = Consumers.Select(consumer => consumer.StopAsync(cancellationToken)).ToArray();
         Exception? error = null;
 
-        foreach (var consumer in Consumers)
+        // Wait for every channel to finish cleanup and preserve the first error in registration order.
+        foreach (var stopTask in stopTasks)
         {
             try
             {
-                await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
+                await stopTask.ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -276,7 +278,7 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
 
         try
         {
-            await StopEachConsumerAsync(cancellationToken).ConfigureAwait(false);
+            await StopAllConsumersAsync(cancellationToken).ConfigureAwait(false);
             publishers = Interlocked.Exchange(ref _publishers, null);
 
             if (publishers is not null)
