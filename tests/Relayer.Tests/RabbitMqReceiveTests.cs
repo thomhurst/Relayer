@@ -316,6 +316,57 @@ public class RabbitMqReceiveTests
     }
 
     [Test]
+    public async Task Shutdown_cancels_later_queue_while_first_handler_drains()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var factory = broker.Factory();
+        var releaseAudit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var control = new RabbitMqReceiveControl { Handle = value => value == 1 ? new(releaseAudit.Task) : default };
+        using var host = Host(factory, control, secondConsumer: true);
+        await host.StartAsync(token);
+        await using var connection = await factory.CreateConnectionAsync(token);
+        await using var channel = await connection.CreateChannelAsync(new CreateChannelOptions(true, true), token);
+        var properties = new BasicProperties
+        {
+            ContentType = "application/json",
+            Headers = new Dictionary<string, object?>
+            {
+                ["cloudEvents:id"] = "shutdown-test"u8.ToArray(),
+                ["cloudEvents:type"] = "rabbit.receive;v=1"u8.ToArray(),
+            },
+        };
+        await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount).IsEqualTo(1u);
+        Task? stopping = null;
+
+        try
+        {
+            await channel.BasicPublishAsync("", "audit", true, properties, "{\"Value\":1}"u8.ToArray(), token);
+            await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(1);
+
+            stopping = host.StopAsync(token);
+            using var cancelDeadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+            cancelDeadline.CancelAfter(TimeSpan.FromSeconds(10));
+            await WaitAsync(async () =>
+                (await channel.QueueDeclarePassiveAsync("orders", cancelDeadline.Token)).ConsumerCount == 0,
+                cancelDeadline.Token);
+            await Assert.That(stopping.IsCompleted).IsFalse();
+
+            await channel.BasicPublishAsync("", "orders", true, properties, "{\"Value\":2}"u8.ToArray(), token);
+            await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).MessageCount).IsEqualTo(1u);
+        }
+        finally
+        {
+            releaseAudit.TrySetResult();
+            await (stopping ?? host.StopAsync(token));
+        }
+
+        await Assert.That((await channel.QueueDeclarePassiveAsync("audit", token)).MessageCount).IsEqualTo(0u);
+        await Assert.That(control.Values.Reader.TryRead(out _)).IsFalse();
+    }
+
+    [Test]
     public async Task Process_samplers_see_queue_destination_and_ack_spans_have_delivery_attributes()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));

@@ -194,8 +194,9 @@ therefore stays false and configured durable `RedeliveryDelays` fail startup. Ex
 native semantics, including potentially repeated deliveries without an attempt count. The native `Redelivered`
 flag is exposed unchanged and is never treated as a delivery counter. Native delayed sends do not add delayed nack.
 
-Graceful stop waits for native cancel-ok and active callbacks before closing their settlement channel. The host's
-stop deadline cancels processing. Unexpected callback failure reaches the hosted service and leaves uncertain
+Graceful stop starts native cancellation on every consumer in the named transport. Each consumer waits for
+native cancel-ok and active callbacks before closing its settlement channel. The host's stop deadline cancels
+processing. Unexpected callback failure reaches the hosted service and leaves uncertain
 work unacknowledged. A connection outage that prevents acknowledgement leaves the delivery for native
 redelivery without terminating the host when both `ConnectionFactory.AutomaticRecoveryEnabled` and
 `ConnectionFactory.TopologyRecoveryEnabled` are true. RabbitMQ.Client restores subscriptions as part of
