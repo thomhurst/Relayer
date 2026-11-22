@@ -53,6 +53,16 @@ internal sealed class FanOutSendTarget<TMessage>(SendRoute<TMessage>[] routes) :
     }
 }
 
+internal sealed class UnsupportedFanOutTombstoneTarget<TMessage>(MessageType messageType) : SendTarget<Tombstone<TMessage>>
+{
+    internal override ValueTask SendAsync(Tombstone<TMessage> message, Action<SendOptions>? configure,
+        IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
+        ReplyMetadata reply = default, WireString tenant = default)
+    {
+        throw new InvalidOperationException($"Typed tombstones require a single fixed send route. Message '{messageType}' has several send routes.");
+    }
+}
+
 internal static class SendRouteTimeout
 {
     internal static bool HasExpired(CancellationToken callerToken, CancellationTokenSource timeout)

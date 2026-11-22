@@ -2061,6 +2061,8 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 - A send to several routes enlists one outbox row per route, in declaration order, in the caller's transaction. All rows share the envelope message ID, time and parent context, so consumers deduplicate by message ID. Each route records its own send span, so its creation context is that route's span.
 - Outbox rows need distinct keys. The first row's ID is the message ID, which keeps single-route rows and lookups unchanged; each later row gets its own UUIDv7 ID, which dead-letter and failure tooling reports for that row.
 - A direct send to several routes cannot be atomic, so it fails before any send, including through a handler's send buffer. Use an outbox transaction.
+- Composition requires a registered outbox executor for several logical routes. It rejects a native transaction requirement on any of those routes because fan-out can only enlist in the outbox transaction.
+- Typed tombstones require one fixed route on a capable transport. They cannot be persisted in the outbox, so a typed tombstone for a message with several logical routes fails without sending to any destination.
 - Ordering keys, capability checks, transaction requirements and the per-send configuration callback apply per route. Request and response types keep exactly one route, because the reply must match one native destination.
 
 **Consequences.** Single-route sends keep their pooled path, with one extra virtual call and no allocation. A fan-out send pools its loop state and runs one operation per route. `OutboxRecord.Id` identifies the row; it equals the envelope message ID except on later fan-out rows.
