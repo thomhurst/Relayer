@@ -193,12 +193,15 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         }
     }
 
-    /// <summary>Waits for a delivery of the registered message identity that the consume pipeline handled successfully, without polling.</summary>
+    /// <summary>Waits for the first matching successful delivery in harness recording order, without polling.</summary>
     /// <remarks>Includes deliveries handled before the call. Failed attempts and dead-lettered deliveries do not match; a later successful redelivery does.
-    /// Use this for broker round-trips, where idle cannot be inferred. The predicate runs on the consuming thread and must not block.</remarks>
+    /// Use this for broker round-trips, where idle cannot be inferred. Each wait evaluates its predicate sequentially.
+    /// The predicate can run on the calling or consuming thread and must not block.</remarks>
     public async Task<TMessage> WaitForConsumedAsync<TMessage>(Func<TMessage, bool>? predicate = null, CancellationToken cancellationToken = default)
     {
         var waiter = new ConsumedWaiter<TMessage>(this, GetIdentity<TMessage>(), predicate);
+        using var cancellation = cancellationToken.UnsafeRegister(
+            static (state, token) => ((ConsumedWaiter<TMessage>)state!).TrySetCanceled(token), waiter);
         HarnessMessage[] handled;
 
         lock (_gate)
@@ -217,13 +220,19 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
                 }
             }
 
-            return await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            if (!waiter.Task.IsCompleted)
+            {
+                Drain(waiter);
+            }
+
+            return await waiter.Task.ConfigureAwait(false);
         }
         finally
         {
             lock (_gate)
             {
                 _waiters.Remove(waiter);
+                waiter.ClearPending();
             }
         }
     }
@@ -358,7 +367,9 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
             {
                 for (var i = 0; i < observations.Length; i++)
                 {
-                    Processed(contexts.Span[i], observations[i], handled);
+                    var context = contexts.Span[i];
+                    // A later item can throw after this item's native settlement completed.
+                    Processed(context, observations[i], handled || context.Features.Get<SuccessfulSettlement>() is not null);
                 }
             }
         }
@@ -375,6 +386,12 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
                 var delivery = (DefaultMessageContext)context;
                 var disposition = delivery.ObservedDisposition;
                 await next(context).ConfigureAwait(false);
+
+                if (disposition.Kind is DispositionKind.Complete or DispositionKind.SettledByHandler)
+                {
+                    delivery.Features.Set(SuccessfulSettlement.Instance);
+                }
+
                 // The in-memory adapter observes actual settlement, including manual native settlement.
                 if (disposition.Kind == DispositionKind.DeadLetter && context.Features.Get<NativeMessage<InMemoryDelivery>>() is null)
                 {
@@ -393,18 +410,18 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         RecordFailure(Snapshot(context), error, HarnessOperation.Consume);
     }
 
-    // Handled: processing returned, the final attempt did not fail, and nothing requested or decided a retry or
-    // dead-letter. An in-process retry advances the attempt, so an earlier failed attempt does not count. A
+    // Handled: processing returned or the batch item settled successfully, the final attempt did not fail, and
+    // nothing requested or decided a retry or dead-letter. An in-process retry advances the attempt. A
     // requested retry or dead-letter is never handled, even when a copy fallback completes the original.
-    private void Processed(DefaultMessageContext context, HarnessMessage observation, bool returned)
+    private void Processed(DefaultMessageContext context, HarnessMessage observation, bool completed)
     {
-        IConsumedWaiter[] waiters;
+        List<IConsumedWaiter>? ready = null;
 
         lock (_gate)
         {
             var finalAttemptFailed = _failing.Remove(context, out var attempt) && attempt == context.Attempt;
 
-            if (!returned || finalAttemptFailed || context.Settlement.Request is { Kind: not DispositionKind.Complete } ||
+            if (!completed || finalAttemptFailed || context.Settlement.Request is { Kind: not DispositionKind.Complete } ||
                 context.FailureDisposition is { Kind: not DispositionKind.Complete } ||
                 context.Features.Get<NativeMessage<InMemoryDelivery>>()?.Message.SettlementKind is DispositionKind.Redeliver or DispositionKind.DeadLetter)
             {
@@ -413,17 +430,41 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
 
             _handled.Add(observation);
 
-            if (_waiters.Count == 0)
+            foreach (var waiter in _waiters)
+            {
+                if (waiter.Enqueue(observation))
+                {
+                    (ready ??= []).Add(waiter);
+                }
+            }
+        }
+
+        if (ready is null)
+        {
+            return;
+        }
+
+        foreach (var waiter in ready)
+        {
+            Drain(waiter);
+        }
+    }
+
+    private void Drain(IConsumedWaiter waiter)
+    {
+        while (true)
+        {
+            HarnessMessage? observation;
+
+            lock (_gate)
+            {
+                observation = waiter.TakeNext();
+            }
+
+            if (observation is null || waiter.TryComplete(observation))
             {
                 return;
             }
-
-            waiters = _waiters.ToArray();
-        }
-
-        foreach (var waiter in waiters)
-        {
-            waiter.TryComplete(observation);
         }
     }
 
@@ -550,14 +591,67 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         return signal;
     }
 
+    private sealed class SuccessfulSettlement
+    {
+        internal static SuccessfulSettlement Instance
+        {
+            get;
+        } = new();
+    }
+
     private interface IConsumedWaiter
     {
+        // Queue state is accessed under the harness gate. Predicates always run outside it.
+        bool Enqueue(HarnessMessage observation);
+
+        HarnessMessage? TakeNext();
+
+        void ClearPending();
+
         bool TryComplete(HarnessMessage observation);
     }
 
     private sealed class ConsumedWaiter<TMessage>(RelayerHarness owner, string identity, Func<TMessage, bool>? predicate)
         : TaskCompletionSource<TMessage>(TaskCreationOptions.RunContinuationsAsynchronously), IConsumedWaiter
     {
+        private readonly Queue<HarnessMessage> _pending = new();
+        // Registration owns the drain while it scans history, even when the snapshot is empty.
+        private bool _draining = true;
+
+        public bool Enqueue(HarnessMessage observation)
+        {
+            if (Task.IsCompleted)
+            {
+                return false;
+            }
+
+            _pending.Enqueue(observation);
+
+            if (_draining)
+            {
+                return false;
+            }
+
+            _draining = true;
+            return true;
+        }
+
+        public HarnessMessage? TakeNext()
+        {
+            if (_pending.TryDequeue(out var observation))
+            {
+                return observation;
+            }
+
+            _draining = false;
+            return null;
+        }
+
+        public void ClearPending()
+        {
+            _pending.Clear();
+        }
+
         public bool TryComplete(HarnessMessage observation)
         {
             if (Task.IsCompleted)
