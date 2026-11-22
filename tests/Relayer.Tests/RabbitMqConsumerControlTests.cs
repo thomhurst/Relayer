@@ -64,6 +64,39 @@ public sealed class RabbitMqConsumerControlTests
     }
 
     [Test]
+    public async Task Retrying_host_start_after_pipeline_composition_fails_subscribes_each_consumer_once()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var factory = broker.Factory();
+        var compositionAttempts = 0;
+        using var host = RabbitMqReceiveTests.Host(factory, new(), secondConsumer: true, configureOrdersPipeline: _ =>
+        {
+            if (compositionAttempts++ == 0)
+            {
+                throw new InvalidOperationException("Orders pipeline composition failed.");
+            }
+        });
+
+        await Assert.That(async () => await host.StartAsync(token))
+            .Throws<InvalidOperationException>().WithMessage("Orders pipeline composition failed.");
+        await host.StartAsync(token);
+
+        try
+        {
+            await using var connection = await factory.CreateConnectionAsync(token);
+            await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
+            await Assert.That((await channel.QueueDeclarePassiveAsync("audit", token)).ConsumerCount).IsEqualTo(1u);
+            await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount).IsEqualTo(1u);
+        }
+        finally
+        {
+            await host.StopAsync(token);
+        }
+    }
+
+    [Test]
     public async Task Auto_started_consumer_can_be_paused_and_resumed()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
