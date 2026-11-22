@@ -24,7 +24,6 @@ to invoke them with the delivery's service scope.
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using Relayer;
-using Relayer.Kafka;
 using Relayer.Sagas.EntityFrameworkCore;
 
 #pragma warning disable RLYEXP001
@@ -72,6 +71,8 @@ for messages allowed to start a process. Multiple message handlers can use the s
 Configure the native EF model without a Relayer model builder:
 
 ```csharp
+using Microsoft.EntityFrameworkCore;
+
 public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) : DbContext(options)
 {
     public DbSet<OrderState> Orders => Set<OrderState>();
@@ -92,8 +93,15 @@ Npgsql maps the `uint` row version to PostgreSQL's native `xmin` column. EF chec
 when saving updates. Use application-owned migrations for the state table and the existing
 [PostgreSQL schema](../reference/postgres-schema.md) for inbox and outbox tables.
 
+For the registration below, also reference `Relayer.Kafka`.
+
 ```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+using Relayer.Kafka;
 using Relayer.Outbox.EntityFrameworkCore;
+using Relayer.Sagas.EntityFrameworkCore;
 
 services.AddRelayerEntityFrameworkCoreOutbox();
 services.AddDbContext<OrdersDbContext>((services, options) => options
