@@ -120,6 +120,8 @@ Sent history is disabled by default. To retain diagnostic evidence after success
 set `RetainSentMessages = true` on the `PostgreSqlOutboxOptions` passed to direct dispatch
 and durable stores, and on every `PostgreSqlOrderedDispatchOptions`,
 `PostgreSqlChangeCaptureOptions` and `PostgreSqlMaintenanceOptions` for those tables.
+For [PostgreSQL local work](../transports/postgresql-local.md#register-routes-and-workers), also pass
+`PostgreSqlLocal` a `PostgreSqlOutboxOptions` with `RetainSentMessages = true`.
 Tenant catalog dispatch reads the flag from each store's `PostgreSqlOutboxOptions`.
 
 ```csharp

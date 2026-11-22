@@ -34,7 +34,7 @@ See [EF Core transactions](../reference/ef-core-outbox.md#explicit-transactions)
 
 ## Choose intentional direct sends
 
-If a send intentionally bypasses database durability, replace it with the explicit API:
+To bypass outbox enlistment, use the explicit API:
 
 ```csharp
 await sender.SendWithoutOutboxAsync(message, cancellationToken);
@@ -60,4 +60,5 @@ Previously compiled callers can still use the original static method on `EntityF
 - `SendRouteOptions.TransactionRequirement` still defaults to `None`; it does not opt out of this safety check.
 
 Check controller, background service and handler call sites when upgrading. Activate the business
-transaction for durable sends and use `SendWithoutOutboxAsync` only where direct sending is intended.
+transaction to commit business changes and outgoing messages together. Use `SendWithoutOutboxAsync`
+for intentional direct sends.
