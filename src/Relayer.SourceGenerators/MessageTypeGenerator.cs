@@ -151,8 +151,14 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
             Emit(spc, input.Left, name);
         });
-        context.RegisterSourceOutput(messages.Combine(context.CompilationProvider),
-            static (spc, input) => EmitJsonContext(spc, input.Left, input.Right));
+
+        var applicationJsonAttributes = context.SyntaxProvider.ForAttributeWithMetadataName(
+                "System.Text.Json.Serialization.JsonSerializableAttribute",
+                predicate: static (node, _) => node is ClassDeclarationSyntax,
+                transform: static (ctx, _) => (Tree: ctx.TargetNode.SyntaxTree, Spans: GetJsonAttributeTokenSpans(ctx)))
+            .Collect();
+        context.RegisterSourceOutput(messages.Combine(context.CompilationProvider.Combine(applicationJsonAttributes)),
+            static (spc, input) => EmitJsonContext(spc, input.Left, input.Right.Left, input.Right.Right));
     }
 
     private static MessageModel? ToModel(GeneratorAttributeSyntaxContext context)
@@ -271,7 +277,11 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         context.AddSource(exportedName is null ? "RelayerGeneratedMessageTypes.g.cs" : exportedName + "Extensions.g.cs", SourceText.From(builder.ToString(), Encoding.UTF8));
     }
 
-    private static void EmitJsonContext(SourceProductionContext context, ImmutableArray<MessageModel> models, Compilation compilation)
+    private static void EmitJsonContext(
+        SourceProductionContext context,
+        ImmutableArray<MessageModel> models,
+        Compilation compilation,
+        ImmutableArray<(SyntaxTree Tree, ImmutableArray<TextSpan> Spans)> applicationJsonAttributes)
     {
         if (models.IsDefaultOrEmpty)
         {
@@ -297,18 +307,29 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         var declaration = CSharpSyntaxTree.ParseText(text, parseOptions, cancellationToken: context.CancellationToken);
         context.AddSource("RelayerGeneratedJsonContext.Declaration.g.cs", text);
 
-        // Roslyn generators cannot see one another's output. Run STJ on the augmented
-        // compilation and forward only our context, leaving user contexts to the SDK.
+        // Roslyn generators cannot see one another's output. Give the embedded generator
+        // a private compilation in which it can discover only Relayer's context.
+        foreach (var group in applicationJsonAttributes.GroupBy(static entry => entry.Tree))
+        {
+            var original = group.Key;
+            var originalText = original.GetText(context.CancellationToken);
+
+            // Blank tokens without moving source locations or removing directive trivia.
+            var changes = group.SelectMany(static entry => entry.Spans)
+                .Where(static span => !span.IsEmpty)
+                .OrderBy(static span => span.Start)
+                .Select(span => new TextChange(span, new string(originalText.ToString(span)
+                    .Select(static character => char.IsWhiteSpace(character) ? character : ' ').ToArray())));
+            compilation = compilation.ReplaceSyntaxTree(original, original.WithChangedText(originalText.WithChanges(changes)));
+        }
+
         var result = CSharpGeneratorDriver.Create([JsonGeneratorLoader.Create().AsSourceGenerator()], parseOptions: parseOptions)
             .RunGenerators(compilation.AddSyntaxTrees(declaration), context.CancellationToken)
             .GetRunResult();
 
-        foreach (var generated in result.Results.SelectMany(r => r.GeneratedSources))
+        foreach (var generated in result.Results.Single().GeneratedSources)
         {
-            if (generated.HintName.StartsWith("RelayerGeneratedJsonContext.", StringComparison.Ordinal))
-            {
-                context.AddSource(generated.HintName, generated.SourceText);
-            }
+            context.AddSource(generated.HintName, generated.SourceText);
         }
 
         foreach (var diagnostic in result.Diagnostics)
@@ -325,6 +346,54 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                 helpLinkUri: diagnostic.Descriptor.HelpLinkUri);
             context.ReportDiagnostic(Diagnostic.Create(descriptor, Location.None, diagnostic.GetMessage()));
         }
+    }
+
+    private static ImmutableArray<TextSpan> GetJsonAttributeTokenSpans(GeneratorAttributeSyntaxContext context)
+    {
+        var declaration = (ClassDeclarationSyntax)context.TargetNode;
+        var excluded = new HashSet<TextSpan>(context.Attributes.Select(static attribute => attribute.ApplicationSyntaxReference!.Span));
+        var spans = ImmutableArray.CreateBuilder<TextSpan>();
+
+        foreach (var list in declaration.AttributeLists)
+        {
+            var attributes = list.Attributes;
+
+            if (!attributes.Any(attribute => excluded.Contains(attribute.Span)))
+            {
+                continue;
+            }
+
+            if (attributes.All(attribute => excluded.Contains(attribute.Span)))
+            {
+                spans.AddRange(list.DescendantTokens().Select(static token => token.Span));
+                continue;
+            }
+
+            bool keptAttribute = false;
+
+            for (int index = 0; index < attributes.Count; index++)
+            {
+                var attribute = attributes[index];
+                bool remove = excluded.Contains(attribute.Span);
+
+                // Keep a comma only before each retained attribute after the first.
+                if (index > 0 && (remove || !keptAttribute))
+                {
+                    spans.Add(attributes.GetSeparator(index - 1).Span);
+                }
+
+                if (remove)
+                {
+                    spans.AddRange(attribute.DescendantTokens().Select(static token => token.Span));
+                }
+                else
+                {
+                    keptAttribute = true;
+                }
+            }
+        }
+
+        return spans.ToImmutable();
     }
 
     private static bool CanReference(INamedTypeSymbol type, Compilation compilation)

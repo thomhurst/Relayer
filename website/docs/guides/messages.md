@@ -85,7 +85,7 @@ Message types and all their containing types must be accessible within the assem
 
 The default serializer is System.Text.Json with a source-generated `JsonSerializerContext`. The generator builds it from the declared message types, so serialization is Native AOT safe and never falls back to reflection.
 
-Relayer embeds a pinned .NET 10 JSON generator for its context, compatible with both .NET 10 and .NET 11 targets. It runs independently of the SDK’s JSON generator, so rebuilding Relayer’s generator in a running compiler server does not change which JSON APIs its output requires. User-declared JSON contexts continue to use the SDK’s generator.
+Relayer embeds a pinned .NET 10 JSON generator for its context, compatible with both .NET 10 and .NET 11 targets. It runs independently of the SDK’s JSON generator, so rebuilding Relayer’s generator in a running compiler server does not change which JSON APIs its output requires. The embedded generator produces metadata and diagnostics for Relayer’s context only. The SDK’s generator handles application-declared contexts, including a context in another namespace with the same class name as Relayer’s generated context.
 
 `AddMessageTypesFromThisAssembly()` registers the messages and their generated JSON context together. Pass `JsonSerializerOptions` to customize JSON, or add your own context with `UseJsonSerializer`:
 

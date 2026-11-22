@@ -178,7 +178,7 @@ public class MessageTypeGeneratorTests
         await Assert.That(diagnostic.Id).IsEqualTo("RLYM004");
         await Assert.That(diagnostic.Severity).IsEqualTo(DiagnosticSeverity.Error);
         await Assert.That(diagnostic.Location.GetLineSpan().Path).IsEqualTo(tree.FilePath);
-        await Assert.That(tree.GetText().ToString(diagnostic.Location.SourceSpan))
+        await Assert.That(tree.GetText().ToString(diagnostic.Location.SourceSpan).ReplaceLineEndings("\n"))
             .IsEqualTo("[Relayer.Message(\"static\")]\npublic static class InvalidMessage { }");
         await Assert.That(diagnostic.Descriptor.HelpLinkUri)
             .IsEqualTo("https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym004");
@@ -234,6 +234,33 @@ public class MessageTypeGeneratorTests
             .IsEqualTo("");
         using var image = new MemoryStream();
         await Assert.That(output.Emit(image).Success).IsTrue();
+    }
+
+    [Test]
+    public async Task Embedded_json_diagnostics_keep_the_relayer_message_location()
+    {
+        var compilation = CreateCompilation("JsonDiagnostics", """
+            using System.Text.Json.Serialization;
+            [JsonSerializable(typeof(AuditPayload))]
+            internal partial class ApplicationJsonContext : JsonSerializerContext;
+            public sealed class AuditPayload { [JsonInclude] private int AuditNumber { get; set; } }
+
+            [Relayer.Message("order")]
+            public sealed class Order { [JsonInclude] private int OrderNumber { get; set; } }
+            """);
+        var original = compilation.SyntaxTrees.Single();
+        var tree = original.WithFilePath("MessagesAndContext.cs");
+        compilation = compilation.ReplaceSyntaxTree(original, tree);
+
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver.RunGeneratorsAndUpdateCompilation(compilation, out _, out var diagnostics);
+
+        var diagnostic = diagnostics.Single();
+        await Assert.That(diagnostic.Id).IsEqualTo("SYSLIB1038");
+        await Assert.That(diagnostic.Severity).IsEqualTo(DiagnosticSeverity.Warning);
+        await Assert.That(diagnostic.GetMessage()).Contains("OrderNumber");
+        await Assert.That(diagnostic.Location.GetLineSpan().Path).IsEqualTo(tree.FilePath);
+        await Assert.That(tree.GetText().ToString(diagnostic.Location.SourceSpan)).IsEqualTo("OrderNumber");
     }
 
     [Test]
