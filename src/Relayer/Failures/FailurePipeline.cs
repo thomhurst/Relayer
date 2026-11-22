@@ -16,7 +16,8 @@ public sealed class FailurePipeline
     private readonly string _source;
     private readonly TimeSpan[] _retries;
     private readonly TimeSpan[] _redeliveries;
-    private readonly FailureOptions _options;
+    private readonly double _jitter;
+    private readonly string? _deadLetterEndpoint;
     private readonly TimeSpan _copyTimeout;
     private readonly Func<MessageContext, string, OutgoingMessage>? _copy;
     private readonly IFailureScheduler? _scheduler;
@@ -60,16 +61,18 @@ public sealed class FailurePipeline
         ArgumentException.ThrowIfNullOrWhiteSpace(consumer);
         _source = source;
         _consumer = consumer;
-        _options = options ?? new();
-        _copyTimeout = _options.CopyTimeout ?? TimeSpan.FromSeconds(30);
+        options ??= new();
+        _jitter = options.Jitter;
+        _deadLetterEndpoint = options.DeadLetterEndpoint;
+        _copyTimeout = options.CopyTimeout ?? TimeSpan.FromSeconds(30);
         _copy = copy;
         _scheduler = scheduler;
         _time = timeProvider ?? TimeProvider.System;
-        _retries = _options.RetryDelays?.ToArray() ??
+        _retries = options.RetryDelays?.ToArray() ??
             [TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1)];
-        _redeliveries = _options.RedeliveryDelays.ToArray();
+        _redeliveries = options.RedeliveryDelays.ToArray();
 
-        if (!double.IsFinite(_options.Jitter) || _options.Jitter < 0 || _options.Jitter > 1)
+        if (!double.IsFinite(_jitter) || _jitter < 0 || _jitter > 1)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Jitter must be between zero and one.");
         }
@@ -133,12 +136,12 @@ public sealed class FailurePipeline
 
         if (!_nativeDeadLetter)
         {
-            if (string.IsNullOrWhiteSpace(_options.DeadLetterEndpoint) || copy is null)
+            if (string.IsNullOrWhiteSpace(_deadLetterEndpoint) || copy is null)
             {
                 throw Invalid("DeadLetter", "Enable native DeadLetter with error metadata, or configure DeadLetterEndpoint and a message copy executor.");
             }
 
-            _deadLetterMaxBytes = validator.GetCapabilities(_transport, _options.DeadLetterEndpoint)?.MaxMessageBytes;
+            _deadLetterMaxBytes = validator.GetCapabilities(_transport, _deadLetterEndpoint)?.MaxMessageBytes;
         }
 
         _paths = new RedeliveryPath[_redeliveries.Length];
@@ -257,7 +260,7 @@ public sealed class FailurePipeline
             }
             else
             {
-                await CopyAsync(context, _options.DeadLetterEndpoint!, null, headers, false).ConfigureAwait(false);
+                await CopyAsync(context, _deadLetterEndpoint!, null, headers, false).ConfigureAwait(false);
                 context.FailureDisposition = Disposition.Complete;
             }
         }
@@ -281,8 +284,8 @@ public sealed class FailurePipeline
 
     private TimeSpan Jitter(TimeSpan delay)
     {
-        return _options.Jitter == 0 || delay == TimeSpan.Zero ? delay
-                : TimeSpan.FromTicks((long)(delay.Ticks * (1 - Random.Shared.NextDouble() * _options.Jitter)));
+        return _jitter == 0 || delay == TimeSpan.Zero ? delay
+                : TimeSpan.FromTicks((long)(delay.Ticks * (1 - Random.Shared.NextDouble() * _jitter)));
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -332,7 +335,7 @@ public sealed class FailurePipeline
         }
         else
         {
-            await CopyAsync(context, _options.DeadLetterEndpoint!, null, deadHeaders, false).ConfigureAwait(false);
+            await CopyAsync(context, _deadLetterEndpoint!, null, deadHeaders, false).ConfigureAwait(false);
             context.FailureDisposition = Disposition.Complete;
         }
     }

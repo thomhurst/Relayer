@@ -320,6 +320,22 @@ public class FailurePipelineTests
     }
 
     [Test]
+    public async Task Dead_letter_copy_keeps_the_endpoint_validated_at_composition()
+    {
+        var transport = new Transport { Capabilities = new() };
+        using var provider = Provider(transport);
+        provider.GetRequiredService<Control>().Invoke = Throw;
+        var options = new FailureOptions { DeadLetterEndpoint = "errors", RetryDelays = [] };
+        var pipeline = Pipeline(provider, options, Copy);
+        options.DeadLetterEndpoint = "replacement-errors";
+
+        var result = await pipeline.ProcessAsync(new());
+
+        await Assert.That(result.Kind).IsEqualTo(DispositionKind.Complete);
+        await Assert.That(transport.Sends.Single().Destination).IsEqualTo("errors");
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Pending_and_failed_fallback_never_returns_completion(bool durableScheduler)
