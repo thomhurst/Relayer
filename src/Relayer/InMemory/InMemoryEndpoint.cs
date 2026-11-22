@@ -7,6 +7,7 @@ namespace Relayer.InMemory;
 internal sealed class InMemoryEndpoint
 {
     private readonly string _name;
+    private readonly string _transportName;
     private readonly SlotPool<InMemoryMessage> _pool;
     private readonly Channel<InMemoryMessage>[] _partitions;
     private readonly Channel<InMemoryMessage>[] _scheduled;
@@ -42,11 +43,12 @@ internal sealed class InMemoryEndpoint
         get;
     } = Channel.CreateUnbounded<InMemoryDeadLetter>();
 
-    internal InMemoryEndpoint(string name, InMemoryEndpointOptions options, TimeProvider clock, MessageTracing? tracing = null)
+    internal InMemoryEndpoint(string transportName, string name, InMemoryEndpointOptions options, TimeProvider clock, MessageTracing? tracing = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Capabilities);
         _name = name;
+        _transportName = transportName;
         Clock = clock;
         SettlementTracing = tracing is null ? null : new(tracing, name);
         Capabilities = options.Capabilities;
@@ -216,6 +218,8 @@ internal sealed class InMemoryEndpoint
     {
         get; set;
     }
+
+    internal (string TransportName, string Source) ReceiveEndpoint => (_transportName, _name);
 
     internal InMemoryMessage Rent()
     {
@@ -724,7 +728,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                 if (disposition.Kind == DispositionKind.DeadLetter)
                 {
                     endpoint.DeadLetters.Writer.TryWrite(new(delivery, disposition.DeadLetter));
-                    endpoint.Observer?.DeadLettered(delivery, disposition.DeadLetter);
+                    endpoint.Observer?.DeadLettered(delivery, disposition.DeadLetter, endpoint.ReceiveEndpoint);
                 }
 
                 Interlocked.Exchange(ref _committed, _pending.Position);

@@ -406,12 +406,12 @@ public class HarnessTests
         using var scope = provider.CreateScope();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         await sender.SendAsync(new Probe(1));
-        var first = outbox.Message;
         await sender.SendAsync(new OtherProbe(2));
 
         if (outboxBatch)
         {
-            await provider.GetServices<ITransport>().Single().SendBatchAsync(new[] { first, outbox.Message }, default);
+            var batch = outbox.Records.Select(record => record.Message).ToArray();
+            await provider.GetServices<ITransport>().Single().SendBatchAsync(batch, default);
         }
 
         var harness = provider.GetRequiredService<RelayerHarness>();
@@ -499,13 +499,99 @@ public class HarnessTests
         var idle = fixture.Harness.WaitForIdleAsync();
         await Assert.That(idle.IsCompleted).IsFalse();
         var transport = fixture.Provider.GetServices<ITransport>().Single(item => item.Name == "first");
-        await transport.SendAsync(outbox.Message, default);
+        await transport.SendAsync(outbox.Records.Single().Message, default);
         cycle.Dispose();
         await idle.WaitAsync(s_limit);
         await Assert.That(fixture.Harness.Sent.Count).IsEqualTo(1);
         await Assert.That(fixture.Harness.Dispatched.Count).IsEqualTo(1);
         await Assert.That(fixture.Harness.Consumed.Count).IsEqualTo(1);
         await Assert.That(fixture.Harness.Dispatched[0].MessageId).IsEqualTo(fixture.Harness.Sent[0].MessageId);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Outbox_fan_out_reads_each_delivery_with_its_own_transport_serializer(bool deadLetter)
+    {
+        var outbox = new TestOutbox();
+        var services = new ServiceCollection();
+        services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        services.AddSingleton(new ProbeControl
+        {
+            Handle = (_, _) => deadLetter ? ValueTask.FromException(new InvalidOperationException("failed")) : default
+        });
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            AddRoute("first", "first-probes", 1);
+            AddRoute("second", "second-probes", 2);
+
+            void AddRoute(string name, string destination, byte marker)
+            {
+                builder.InMemory(name, transport =>
+                {
+                    transport.UseSerializer(provider => new MarkedSerializer(provider.GetRequiredService<IMessageSerializer>(), marker));
+                    transport.Send<Probe>(destination);
+                    transport.Consume(destination, consumer =>
+                    {
+                        consumer.Handler<ProbeHandler>();
+                        consumer.Failures(new()
+                        {
+                            RetryDelays = []
+                        });
+                    });
+                });
+            }
+        });
+        services.AddRelayerHarness();
+        await using var fixture = new Fixture(services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true }));
+        await fixture.Send(new Probe(7));
+
+        var transports = fixture.Provider.GetServices<ITransport>().ToDictionary(transport => transport.Name);
+
+        foreach (var record in outbox.Records)
+        {
+            await transports[record.TransportName].SendAsync(record.Message, default);
+        }
+
+        var harness = fixture.Harness;
+        await Assert.That(harness.Dispatched.Count).IsEqualTo(2);
+        string? id = harness.Dispatched[0].MessageId;
+        await Assert.That(id).IsNotNull();
+        await Assert.That(harness.Dispatched[1].MessageId).IsEqualTo(id);
+
+        await fixture.StartServices();
+        await fixture.Idle();
+
+        await Assert.That(harness.Consumed.Count).IsEqualTo(2);
+        await Assert.That(harness.GetConsumed<Probe>().Select(probe => probe.Value).ToArray()).IsEquivalentTo(new[] { 7, 7 });
+        await CheckRoutesAsync(harness.Consumed);
+
+        if (deadLetter)
+        {
+            await CheckRoutesAsync(harness.Failed.Select(failure => failure.Message));
+            await CheckRoutesAsync(harness.DeadLettered.Select(dead => dead.Message));
+        }
+        else
+        {
+            await Assert.That(harness.Failed.Count).IsEqualTo(0);
+            var handled = await harness.WaitForConsumedAsync<Probe>().WaitAsync(s_limit);
+            await Assert.That(handled.Value).IsEqualTo(7);
+        }
+
+        async Task CheckRoutesAsync(IEnumerable<HarnessMessage> observations)
+        {
+            var byTransport = observations.ToDictionary(observation => observation.TransportName!);
+            await Assert.That(byTransport.Count).IsEqualTo(2);
+            await Assert.That(byTransport["first"].Destination).IsEqualTo("first-probes");
+            await Assert.That(byTransport["second"].Destination).IsEqualTo("second-probes");
+
+            foreach (var observation in byTransport.Values)
+            {
+                await Assert.That(observation.MessageId).IsEqualTo(id);
+                await Assert.That(harness.Read<Probe>(observation).Value).IsEqualTo(7);
+            }
+        }
     }
 
     [Test]
@@ -896,10 +982,10 @@ public class HarnessTests
     {
         public bool IsActive => true;
 
-        public OutgoingMessage Message
+        public List<OutboxRecord> Records
         {
-            get; private set;
-        }
+            get;
+        } = [];
 
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
@@ -912,7 +998,10 @@ public class HarnessTests
                 headers[i] = new(headers[i].Key, new WireString(headers[i].Value.ToString()));
             }
 
-            Message = new(message.Destination, message.Body.ToArray(), headers);
+            Records.Add(record with
+            {
+                Message = new(message.Destination, message.Body.ToArray(), headers)
+            });
             return default;
         }
     }

@@ -36,7 +36,7 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
         foreach (var pair in endpoints)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(pair.Key);
-            built.Add(pair.Key, new(pair.Key, pair.Value, timeProvider ?? TimeProvider.System, tracing));
+            built.Add(pair.Key, new(name, pair.Key, pair.Value, timeProvider ?? TimeProvider.System, tracing));
         }
 
         _endpoints = built.ToFrozenDictionary(StringComparer.Ordinal);

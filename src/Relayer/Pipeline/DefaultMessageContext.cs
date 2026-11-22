@@ -131,6 +131,8 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
 
     internal HeaderNames EnvelopeNames => _receive?.EnvelopeNames ?? _owner.EnvelopeNames;
 
+    internal (string TransportName, string Source)? ReceiveEndpoint => _owner.ReceiveEndpoint;
+
     internal MessageOperationTracing? ProcessTracing => _receive?.ProcessTracing;
 
     internal string? TracePartitionId => _receive?.TracePartitionId;

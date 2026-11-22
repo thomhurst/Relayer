@@ -27,6 +27,8 @@ public sealed class FailurePipeline
     private readonly TransportCapabilities _capabilities;
     private readonly long? _deadLetterMaxBytes;
 
+    internal (string TransportName, string Source) ReceiveEndpoint => (_transport.Name, _source);
+
     /// <summary>Validates native paths and available fallback executors for this consumer's complete policy.</summary>
     public FailurePipeline(IServiceProvider services, string transportName, string source, string consumer,
         FailureOptions? options = null, FailureMessageCopyDelegate? copy = null,
