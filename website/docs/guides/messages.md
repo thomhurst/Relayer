@@ -105,6 +105,8 @@ services.AddRelayer(relayer =>
 
 When contexts overlap, the last registered context supplies the metadata for a type. A custom context can also cover explicitly registered message types from a contracts assembly. At host startup, each transport using the default JSON serializer requires metadata for its send routes and the wire contracts its consumers deserialize, including older versions accepted through upcasters. With no transport declarations, resolving the default serializer requires metadata for every registered contract.
 
+For every contract a consumer reads, including an upcaster's input type, use `JsonSourceGenerationMode.Metadata` or the default generation mode. A context generated with `JsonSourceGenerationMode.Serialization` alone lacks the metadata needed to deserialize the contract. See [System.Text.Json source generation modes](https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/source-generation-modes).
+
 Single-message consumers cache their typed JSON reader when the pipeline is composed, using the selected source-generated metadata and reader options. Custom serializers continue to receive calls through `IMessageSerializer`.
 
 Serialization writes to pooled `IBufferWriter<byte>` storage and deserialization reads the `ReadOnlySequence<byte>` directly. Null bodies and trailing JSON values are rejected.
@@ -233,6 +235,15 @@ The version is part of the type name. Register `IUpcaster<TFrom, TTo>` instances
 
 ```csharp
 using Relayer.Transports;
+
+services.AddRelayer(relayer =>
+{
+    relayer.AddMessageTypesFromThisAssembly();
+    relayer.Infrastructure().Upcasters.Add(new OrderUpgrade());
+    // Select an IHandler<OrderPlacedV2> or IBatchHandler<OrderPlacedV2>
+    // on the consumer using the normal transport configuration.
+});
+
 [Message("orders.placed", Version = 1)]
 public sealed record OrderPlacedV1(Guid OrderId);
 
@@ -243,14 +254,6 @@ public sealed class OrderUpgrade : IUpcaster<OrderPlacedV1, OrderPlacedV2>
 {
     public OrderPlacedV2 Upcast(OrderPlacedV1 message) => new(message.OrderId, "GBP");
 }
-
-services.AddRelayer(relayer =>
-{
-    relayer.AddMessageTypesFromThisAssembly();
-    relayer.Infrastructure().Upcasters.Add(new OrderUpgrade());
-    // Select an IHandler<OrderPlacedV2> or IBatchHandler<OrderPlacedV2>
-    // on the consumer using the normal transport configuration.
-});
 ```
 
 Register every contract, including intermediate versions. Each upgrade must keep the same stable name and increase the version. Each source contract has one upgrade; duplicate sources, missing identities, name changes and non-increasing versions fail during configuration. Chains such as v1 to v2 to v3 are composed once when the consumer is built, regardless of registration order. A consumer must select only one reachable handler per incoming identity; selecting both an old handler and its upgraded handler is ambiguous and fails composition.
