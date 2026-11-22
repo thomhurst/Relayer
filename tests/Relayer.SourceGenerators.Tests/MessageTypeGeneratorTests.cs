@@ -615,6 +615,117 @@ public class MessageTypeGeneratorTests
         await Assert.That(string.Join("\n", friend.GetDiagnostics().Where(static d => d.Severity == DiagnosticSeverity.Error))).IsEqualTo("");
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Explicit_json_types_round_trip_with_safe_metadata_names(bool export)
+    {
+        var exportAttribute = export ? """[assembly: GenerateMessageTypes("AddOrderMessages")]""" : "";
+        var registrationMethod = export ? "AddOrderMessages" : "AddMessageTypesFromThisAssembly";
+        var compilation = CreateCompilation("PayloadMetadata", $$"""
+            using System;
+            using System.Buffers;
+            using System.Collections.Generic;
+            using Microsoft.Extensions.DependencyInjection;
+            using Relayer;
+            using Relayer.Pipeline;
+            using Relayer.Serialization;
+
+            {{exportAttribute}}
+            [assembly: GenerateMessageJsonType(typeof(Logistics.Line))]
+            [assembly: GenerateMessageJsonType(typeof(IReadOnlyList<Logistics.Line>))]
+            [assembly: GenerateMessageJsonType(typeof(Payload.@event))]
+            [assembly: GenerateMessageJsonType(typeof(Payload.@event))]
+            [assembly: GenerateMessageJsonType(typeof(Shopping.OrderPlaced))]
+
+            namespace Shopping
+            {
+                public sealed record Line(int Total);
+                [Message("shopping.order")] public sealed record OrderPlaced(IReadOnlyList<Line> Lines);
+            }
+
+            namespace Logistics
+            {
+                public sealed record Line(string Street);
+                [Message("logistics.delivery")] public sealed record DeliveryScheduled(IReadOnlyList<Line> Lines);
+            }
+
+            public static class Payload
+            {
+                public sealed record @event(int Id);
+                [Message("payload.keyword")] public sealed record Wrapper(@event Body);
+            }
+
+            public static class Probe
+            {
+                public static bool Run()
+                {
+                    var services = new ServiceCollection();
+                    services.AddRelayer(builder => builder.{{registrationMethod}}());
+                    using var provider = services.BuildServiceProvider();
+                    var serializer = provider.GetRequiredService<IMessageSerializer>();
+                    var order = RoundTrip(serializer, new Shopping.OrderPlaced([new(42)]));
+                    var delivery = RoundTrip(serializer, new Logistics.DeliveryScheduled([new("Main Street")]));
+                    var wrapper = RoundTrip(serializer, new Payload.Wrapper(new(17)));
+                    return order.Lines[0].Total == 42 && delivery.Lines[0].Street == "Main Street" && wrapper.Body.Id == 17;
+                }
+
+                private static T RoundTrip<T>(IMessageSerializer serializer, T value)
+                {
+                    var buffer = new ArrayBufferWriter<byte>();
+                    serializer.Serialize(value, buffer);
+                    return serializer.Deserialize<T>(new ReadOnlySequence<byte>(buffer.WrittenMemory));
+                }
+            }
+            """);
+        compilation = compilation.WithOptions(compilation.Options.WithGeneralDiagnosticOption(ReportDiagnostic.Error));
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+        await Assert.That(string.Join("\n", diagnostics.Where(d => d.Severity >= DiagnosticSeverity.Warning))).IsEqualTo("");
+
+        using var image = new MemoryStream();
+        var result = output.Emit(image);
+        await Assert.That(string.Join("\n", result.Diagnostics.Where(d => d.Severity >= DiagnosticSeverity.Warning))).IsEqualTo("");
+
+        var loader = new AssemblyLoadContext(compilation.AssemblyName, isCollectible: true);
+
+        try
+        {
+            image.Position = 0;
+            var assembly = loader.LoadFromStream(image);
+            await Assert.That((bool)assembly.GetType("Probe")!.GetMethod("Run")!.Invoke(null, null)!).IsTrue();
+        }
+        finally
+        {
+            loader.Unload();
+        }
+    }
+
+    [Test]
+    [Arguments("null!")]
+    [Arguments("typeof(Generic<>)")]
+    [Arguments("typeof(Hidden[])")]
+    [Arguments("typeof(Span<int>)")]
+    public async Task Invalid_explicit_json_type_keeps_other_message_metadata(string argument)
+    {
+        var compilation = CreateCompilation("InvalidPayloadMetadata", $$"""
+            using System;
+            using Relayer;
+            [assembly: GenerateMessageJsonType({{argument}})]
+            [Message("orders.placed")] public sealed record OrderPlaced(int Id);
+            public sealed record Generic<T>(T Value);
+            file sealed record Hidden(int Id);
+            """);
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+
+        var diagnostic = diagnostics.Single();
+        await Assert.That(diagnostic.Id).IsEqualTo("RLYM009");
+        await Assert.That(diagnostic.Location.SourceTree).IsEqualTo(compilation.SyntaxTrees.Single());
+        await Assert.That(string.Join("\n", output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))).IsEqualTo("");
+        await Assert.That(UserFacingSource(driver)).Contains("JsonSerializable(typeof(global::OrderPlaced)");
+    }
+
     private static string UserFacingSource(GeneratorDriver driver)
     {
         return string.Join("\n", driver.GetRunResult().GeneratedTrees

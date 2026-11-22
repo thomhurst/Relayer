@@ -142,6 +142,10 @@ Use `dotnet_diagnostic.<ID>.severity` in `.editorconfig`, or a targeted `#pragma
 
 `[assembly: GenerateMessageTypes("AddOrderMessages")]` exports an explicit public registration extension for a contracts library. Supply a non-empty C# identifier that is not a keyword or `AddMessageTypesFromThisAssembly`. Choose distinct names for libraries used together, for example `AddOrderMessages` and `AddBillingMessages`. Invalid names stop generation of the exported method; local registration remains available.
 
+## RLYM009 — Invalid JSON metadata type {#rlym009}
+
+`[GenerateMessageJsonType]` requires a closed type that the generated JSON context can reference. Pass `typeof` with an accessible, non-file-local type. For a generic type, supply all type arguments, for example `typeof(Envelope<OrderPlaced>)`. Static types and ref structs cannot be serialized. See [payload metadata names](../guides/messages.md#payload-types-that-need-distinct-metadata-names).
+
 ## Preview feature opt-in
 
 These compiler diagnostics come from `ExperimentalAttribute`. Preview APIs may change outside the first stable release compatibility promise. Suppress only the ID for the feature you accept, using `#pragma warning disable RLYEXP001` around the use or `<NoWarn>$(NoWarn);RLYEXP001</NoWarn>` in your project. This does not change runtime behavior.
