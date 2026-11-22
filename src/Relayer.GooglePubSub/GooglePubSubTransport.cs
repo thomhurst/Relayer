@@ -394,13 +394,14 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        var stopTasks = Consumers.Select(worker => worker.StopAsync(cancellationToken)).ToArray();
         List<Exception>? errors = null;
 
-        foreach (var worker in Consumers)
+        foreach (var stop in stopTasks)
         {
             try
             {
-                await worker.StopAsync(cancellationToken).ConfigureAwait(false);
+                await stop.ConfigureAwait(false);
             }
             catch (Exception error)
             {

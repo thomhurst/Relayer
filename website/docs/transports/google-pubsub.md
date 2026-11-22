@@ -56,7 +56,7 @@ services.AddRelayer(relayer =>
 
 Use fully qualified native endpoint names. Topics must be declared in `Topics`; consumers refer to entries in `Subscriptions`. These are ordinary named Options registrations. Use the generated handler and JSON registration described in [messages](../guides/messages.md).
 
-`PublisherClient.Settings` and `SubscriberClient.Settings` pass through as native settings. Relayer snapshots settings when composing the transport. It creates native `PublisherClientImpl` instances per topic and `SubscriberClientImpl` instances per running consumer, using your prepared API clients. Stopping drains handlers and native acknowledgements. Restarting a stopped transport creates fresh streaming subscribers over the same API clients. A fatal subscriber task fails the hosted background service; recreate the application host after that failure.
+`PublisherClient.Settings` and `SubscriberClient.Settings` pass through as native settings. Relayer snapshots settings when composing the transport. It creates native `PublisherClientImpl` instances per topic and `SubscriberClientImpl` instances per running consumer, using your prepared API clients. Stopping a named transport requests native shutdown on all its subscriptions before waiting for handlers and native acknowledgements to drain. Restarting a stopped transport creates fresh streaming subscribers over the same API clients. A fatal subscriber task fails the hosted background service; recreate the application host after that failure.
 
 For concurrency greater than one, declare the same limit in both places:
 
