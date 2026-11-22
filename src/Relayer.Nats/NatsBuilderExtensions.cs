@@ -56,9 +56,14 @@ public sealed class NatsConsumerOptions
     };
 }
 
-internal sealed class NatsHostedService(IServiceProvider provider, string name) : BackgroundService
+internal sealed class NatsHostedService(IServiceProvider provider, string name) : BackgroundService, IHostedLifecycleService
 {
     private NatsNativeTransport? _transport;
+
+    public Task StartingAsync(CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
+    }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -102,6 +107,11 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public Task StartedAsync(CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await foreach (var completion in Task.WhenEach(_transport!.Consumers.Select(worker => worker.Completion)).ConfigureAwait(false))
@@ -110,19 +120,30 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
         }
     }
 
+    public Task StoppingAsync(CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
+    }
+
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         try
         {
             if (_transport is not null)
             {
-                await _transport.StopAsync(cancellationToken).ConfigureAwait(false);
+                await _transport.StopAsync(cancellationToken, closeConnection: false).ConfigureAwait(false);
             }
         }
         finally
         {
             await base.StopAsync(cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    public Task StoppedAsync(CancellationToken cancellationToken)
+    {
+        // Other hosted services can still flush buffered sends during StopAsync.
+        return _transport?.CloseAfterDrainAsync(cancellationToken) ?? Task.CompletedTask;
     }
 
     private static OutgoingMessage Copy(MessageContext context)

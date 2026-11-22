@@ -198,7 +198,12 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
         }
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        return StopAsync(cancellationToken, closeConnection: true);
+    }
+
+    internal async Task StopAsync(CancellationToken cancellationToken, bool closeConnection)
     {
         await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -212,9 +217,9 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
             }
             finally
             {
-                if (Consumers.All(consumer => consumer.Completion.IsCompleted))
+                if (closeConnection)
                 {
-                    await CloseAsync().ConfigureAwait(false);
+                    await CloseIfDrainedAsync().ConfigureAwait(false);
                 }
             }
         }
@@ -222,6 +227,31 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
         {
             _lifecycle.Release();
         }
+    }
+
+    internal async Task CloseAfterDrainAsync(CancellationToken cancellationToken)
+    {
+        // Close a drained connection even when the host deadline expired. Bound any wait for the gate.
+        if (!_lifecycle.Wait(0))
+        {
+            await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        try
+        {
+            await CloseIfDrainedAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+    }
+
+    private ValueTask CloseIfDrainedAsync()
+    {
+        return _stopping && Consumers.All(consumer => consumer.Completion.IsCompleted)
+            ? CloseAsync()
+            : ValueTask.CompletedTask;
     }
 
     public async ValueTask DisposeAsync()

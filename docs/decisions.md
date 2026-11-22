@@ -717,7 +717,10 @@ claim the same row, while expired in-flight sends and partial native failures re
 boundary. Queue saturation or a stopped worker leaves durable rows pending. Logging the rejected handoff
 is best effort because the transaction already committed. Shutdown drains queued commits until its deadline.
 Hosted RabbitMQ drains consumers in `StopAsync` and uses the Generic Host's `StoppedAsync` phase to
-drain publishers and close the native connection after outbox workers finish stopping.
+drain publishers and close the native connection after outbox workers finish stopping. Hosted NATS uses
+the same phases to drain native pulls and keep the JetStream connection available until other hosted
+services finish, including consumers that flush buffered sends. A standalone NATS stop still closes
+the connection once its own consumers drain.
 Recovery polling, ordered lane dispatch and poison-row processing remain separate work; direct dispatch
 alone does not recover rows left by overflow, failure or process death. Buffer handoff, sorting and
 projection have dedicated allocation benchmarks; native client and database allocations remain excluded.
