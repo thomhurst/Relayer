@@ -350,8 +350,9 @@ arrival time of the oldest record that is buffered or being processed and not ye
 retries and durable failure copies. Unlike a last-progress time, that value does not advance while one
 partition is stuck and others keep processing. The oldest receiver determines liveness, so idle receivers
 and healthy declarations on the same source cannot mask a stall. Before receiver startup and after receiver
-shutdown or failure, state is unavailable and health is unhealthy. Connectivity and liveness are separate
-checks: an idle receiver does not prove broker connectivity.
+shutdown or failure, state is unavailable and health is unhealthy. If consumer composition fails during
+startup, a successful retry on the same host reports liveness for the newly composed receivers.
+Connectivity and liveness are separate checks: an idle receiver does not prove broker connectivity.
 
 Without this optional registration, Kafka consumers attach no native monitor and record no health state.
 The Kafka transport itself has no dependency on the health-check packages. See [health integration](../guides/health-checks.md)
@@ -401,10 +402,11 @@ This API requires a transport whose `TransportCapabilities.Tombstones` is true (
 
 ## Inspect and redrive dead letters
 
-Resolve the management service for a named Kafka transport. It lists only configured consumer dead-letter topics (including the default `<source>.dead-letter`), rather than discovering broker-wide topics:
+Resolve the management service for a named Kafka transport from the built application's service provider.
+It lists configured consumer dead-letter topics, including the default `<source>.dead-letter`.
 
 ```csharp
-var manager = services.GetRequiredKeyedService<IDeadLetterManager>("events");
+var manager = host.Services.GetRequiredKeyedService<IDeadLetterManager>("events");
 var sources = manager.List();
 var page = await manager.PeekAsync("orders.dead-letter", maxMessages: 20,
     cancellationToken: cancellationToken);
@@ -413,9 +415,24 @@ if (page.NextCursor is { } cursor)
     var next = await manager.PeekAsync("orders.dead-letter", maxMessages: 20,
         cursor: cursor, cancellationToken: cancellationToken);
 }
-var redriven = await manager.RedriveAsync("orders.dead-letter",
+
+if (page.Messages.FirstOrDefault()?.MessageId is { } deadLetterId)
+{
+    var redriven = await manager.RedriveAsync("orders.dead-letter",
+        filter: message => message.MessageId == deadLetterId,
+        maxMessages: 20, cancellationToken: cancellationToken);
+}
+```
+
+`DeadLetterMessage.MessageId` identifies the Kafka record by topic, partition and offset, for example
+`orders.dead-letter:0:42`. The original CloudEvents ID is available in the native record's `ce_id` header
+with the default header prefix. To select by that original ID, inspect the header value:
+
+```csharp
+var redrivenByOriginalId = await manager.RedriveAsync("orders.dead-letter",
     filter: message => message.Features.GetRequired<KafkaDeadLetterFeature>()
-        .Record.Headers.Any(header => header.Key == "ce_id"),
+        .Record.Headers.Any(header => header.Key == "ce_id" && !header.IsValueNull
+            && header.Value.Span.SequenceEqual("order-event-123"u8)),
     maxMessages: 20, cancellationToken: cancellationToken);
 ```
 

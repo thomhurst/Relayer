@@ -11,7 +11,7 @@ using Relayer.Transports;
 
 namespace Relayer.Kafka;
 
-internal sealed class KafkaHostedService(IServiceProvider provider, string name) : ConsumerHostedService($"Kafka transport '{name}'")
+internal sealed partial class KafkaHostedService(IServiceProvider provider, string name) : ConsumerHostedService($"Kafka transport '{name}'")
 {
     private KafkaProducerTransport? _transport;
     private bool _composed;
@@ -98,15 +98,55 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
         }
 
         var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
+        var health = provider.GetKeyedService<KafkaConsumerHealth>(name);
+        var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
+        // A retried start must see only receivers and health from a complete composition.
+        var receivers = new List<KafkaConsumer>(definition.Consumers.Count);
+
+        try
+        {
+            ComposeReceivers(_transport, definition.Consumers, receivers, health, loggerFactory);
+        }
+        catch
+        {
+            foreach (var receiver in receivers)
+            {
+                try
+                {
+                    await receiver.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    LogCompositionCleanupFailed(loggerFactory.CreateLogger<KafkaHostedService>(), receiver.Topic,
+                        receiver.Group, exception);
+                }
+            }
+
+            throw;
+        }
+
+        _transport.Consumers.AddRange(receivers);
+
+        if (health is not null)
+        {
+            for (var i = 0; i < receivers.Count; i++)
+            {
+                health.Register(definition.Consumers[i], receivers[i].WorkerHealth!);
+            }
+        }
+
+        _composed = true;
+    }
+
+    private void ComposeReceivers(KafkaProducerTransport transport, IReadOnlyList<IConsumerDefinition> declarations,
+        List<KafkaConsumer> receivers, KafkaConsumerHealth? health, ILoggerFactory loggerFactory)
+    {
         var options = provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get(name);
         var tracing = provider.GetRequiredService<MessageTracing>();
         var handlers = provider.GetRequiredService<HandlerRegistry>();
-        var health = provider.GetKeyedService<KafkaConsumerHealth>(name);
-        // Publish only a complete set, so a retried start cannot compose a consumer twice.
-        var receivers = new List<KafkaConsumer>(definition.Consumers.Count);
         ITransport? registeredTransport = null;
 
-        foreach (var declaration in definition.Consumers)
+        foreach (var declaration in declarations)
         {
             var consumer = (ConsumerDefinition<KafkaConsumerOptions>)declaration;
             var exactlyOnce = KafkaProcessing.IsExactlyOnce(consumer.Options);
@@ -121,7 +161,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             }, Copy)
             {
                 // Transactional copies follow the same redirect as handler sends so offsets and outputs commit together.
-                CopyTransport = exactlyOnce ? null : _transport.FailureCopyTransport,
+                CopyTransport = exactlyOnce ? null : transport.FailureCopyTransport,
             };
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
@@ -152,7 +192,6 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
 
             var composed = pipeline.Build(consumer.Concurrency);
             var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(composed, new(), consumer.Concurrency);
-            var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
             var native = new Dekaf.ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(options.BootstrapServers.ToArray())
                 .WithLoggerFactory(loggerFactory);
             // Exactly-once input skips aborted upstream transactions unless the application configures otherwise.
@@ -168,15 +207,14 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false);
             var receiver = new KafkaConsumer(native.Build, receive.ProcessAsync, tracing, endpoint,
                 consumer.Options.Processing ?? KafkaProcessing.Defaults(consumer.Concurrency), consumer.Concurrency,
-                health?.Register(declaration));
+                health?.CreateWorker());
             receivers.Add(receiver);
 
             if (exactlyOnce)
             {
-                var shared = _transport;
-                var sends = new KafkaTransactionalSends(shared);
+                var sends = new KafkaTransactionalSends(transport);
                 // The sender and the failure pipeline both use the registered adapter, including its test wrapper.
-                registeredTransport ??= provider.GetServices<ITransport>().Single(transport => transport.Name == name);
+                registeredTransport ??= provider.GetServices<ITransport>().Single(item => item.Name == name);
                 var target = registeredTransport is ITransportSendTargetWrapper wrapper
                     ? wrapper.WrapSendTarget(sends)
                     : sends;
@@ -184,7 +222,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
 
                 var group = consumer.Options.Group!;
                 var transactionalId = consumer.Options.TransactionalId;
-                receiver.ConfigureTransactions(() => shared.WithProducer(KafkaProducerTransport.CreateProducerBuilder(options, loggerFactory)
+                receiver.ConfigureTransactions(() => transport.WithProducer(KafkaProducerTransport.CreateProducerBuilder(options, loggerFactory)
                     .WithTransactionalId(transactionalId ?? group + "-" + Guid.NewGuid().ToString("N")).Build()), sends);
             }
 
@@ -193,10 +231,11 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 receiver.ConfigureCircuit(circuit, composed, telemetry, provider.GetService<TimeProvider>() ?? TimeProvider.System);
             }
         }
-
-        _transport.Consumers.AddRange(receivers);
-        _composed = true;
     }
+
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "Could not dispose the staged Kafka receiver for {Topic} in group {Group} after composition failed.")]
+    private static partial void LogCompositionCleanupFailed(ILogger logger, string topic, string? group, Exception exception);
 
     internal static OutgoingMessage Copy(MessageContext context)
     {

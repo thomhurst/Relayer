@@ -7,10 +7,13 @@ internal sealed class KafkaConsumerHealth(TimeProvider clock)
 {
     private readonly Dictionary<IConsumerDefinition, List<KafkaWorkerHealth>> _workers = new(ReferenceEqualityComparer.Instance);
 
-    internal KafkaWorkerHealth Register(IConsumerDefinition consumer)
+    internal KafkaWorkerHealth CreateWorker()
     {
-        var worker = new KafkaWorkerHealth(clock);
+        return new(clock);
+    }
 
+    internal void Register(IConsumerDefinition consumer, KafkaWorkerHealth worker)
+    {
         lock (_workers)
         {
             if (!_workers.TryGetValue(consumer, out var workers))
@@ -20,8 +23,6 @@ internal sealed class KafkaConsumerHealth(TimeProvider clock)
 
             workers.Add(worker);
         }
-
-        return worker;
     }
 
     internal (bool IsIdle, DateTimeOffset LastProgressAt)? GetState(IConsumerDefinition consumer)
