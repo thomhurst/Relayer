@@ -182,17 +182,16 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
         await fixture.CommitAsync(records);
         // Leave the commit queue stopped: exercise the exact native batch store independently.
         var store = new SqlServerOutboxStore(ConnectionString, fixture.Options);
-        var now = DateTimeOffset.UtcNow;
         var claims = records.Select(row => new OutboxClaim(row.Id, Guid.NewGuid())).ToArray();
         var claimed = new bool[claims.Length];
-        await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(5), default);
+        await store.ClaimBatchAsync(claims, claimed, store.CreateDispatchClaimSql(TimeSpan.FromMinutes(5)), default);
         await Assert.That(claimed.All(value => value)).IsTrue();
         await fixture.Sql($"CREATE TRIGGER [dbo].[count_{TestContext.Current!.Isolation.GetIsolatedName("delete")}] ON {fixture.Table} AFTER DELETE AS BEGIN DECLARE @counts TABLE (id int); INSERT INTO @counts VALUES (1), (2), (3), (4); END;");
         var stale = claims[1];
         claims[1] = new(stale.MessageId, Guid.NewGuid());
-        await Assert.That(await store.CompleteBatchAsync(claims, now, default)).IsEqualTo(2L);
-        await Assert.That(await store.CompleteBatchAsync(new[] { stale }, now, default)).IsEqualTo(1L);
-        await Assert.That(await store.CompleteBatchAsync(claims, now, default)).IsEqualTo(0L);
+        await Assert.That(await store.CompleteBatchAsync(claims, default)).IsEqualTo(2L);
+        await Assert.That(await store.CompleteBatchAsync(new[] { stale }, default)).IsEqualTo(1L);
+        await Assert.That(await store.CompleteBatchAsync(claims, default)).IsEqualTo(0L);
     }
 
     [Test]
@@ -201,15 +200,14 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
         var transport = new RecordingTransport();
         await using var fixture = new Fixture(ConnectionString, transport);
         await fixture.Start(10, 10, startWorker: false);
-        var records = Enumerable.Range(0, 600).Select(_ => Record(1)).ToArray();
+        var records = Enumerable.Range(0, 1100).Select(_ => Record(1)).ToArray();
         await fixture.CommitAsync(records);
         var store = new SqlServerOutboxStore(ConnectionString, fixture.Options);
         var claims = records.Select(row => new OutboxClaim(row.Id, Guid.NewGuid())).ToArray();
         var claimed = new bool[claims.Length];
-        var now = DateTimeOffset.UtcNow;
-        await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(5), default);
+        await store.ClaimBatchAsync(claims, claimed, store.CreateDispatchClaimSql(TimeSpan.FromMinutes(5)), default);
         await Assert.That(claimed.All(value => value)).IsTrue();
-        await Assert.That(await store.CompleteBatchAsync(claims, now, default)).IsEqualTo(600L);
+        await Assert.That(await store.CompleteBatchAsync(claims, default)).IsEqualTo(1100L);
         await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(0);
     }
 
@@ -322,7 +320,7 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
             }
 
             var batch = new OutboxDispatchBatch();
-            batch.Take(rows, rows.Count, DateTimeOffset.UtcNow);
+            batch.Take(rows, rows.Count);
             await _worker!.DispatchRecoveredAsync(batch, cancellationToken);
         }
 

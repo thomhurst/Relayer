@@ -17,13 +17,13 @@ internal sealed class OutboxDispatchBatch
         get; private set;
     }
 
-    internal void Take(List<SqlServerBufferedMessage> source, int count, DateTimeOffset now)
+    internal void Take(List<SqlServerBufferedMessage> source, int count)
     {
         for (var i = 0; i < count; i++)
         {
             var row = source[i];
 
-            if (row.Lane is not null || row.DeliverAt > now)
+            if (row.Lane is not null)
             {
                 continue;
             }
@@ -38,7 +38,7 @@ internal sealed class OutboxDispatchBatch
         }
     }
 
-    // Both batches already own only eligible unordered rows. Swap their reusable buffers;
+    // Both batches already own only unordered rows. Swap their reusable buffers;
     // returning the emptied notification must not clear payloads now owned by this batch.
     internal void Append(OutboxDispatchBatch source)
     {

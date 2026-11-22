@@ -13,7 +13,6 @@ public class SqlServerOutboxDispatchBenchmarks
     private readonly OutboxDispatchBatch _notification = new();
     private readonly List<SqlServerBufferedMessage> _one = [new()];
     private OutboxRecord[] _records = null!;
-    private DateTimeOffset _now;
 
     [Params(1, 64)]
     public int Rows
@@ -24,7 +23,7 @@ public class SqlServerOutboxDispatchBenchmarks
     [GlobalSetup]
     public void Setup()
     {
-        _now = DateTimeOffset.UtcNow;
+        var now = DateTimeOffset.UtcNow;
         _records = new OutboxRecord[Rows];
         var body = new byte[1024];
         KeyValuePair<string, WireString>[] headers = [new("ce_type", new WireString("dispatch.probe;v=1"))];
@@ -33,7 +32,7 @@ public class SqlServerOutboxDispatchBenchmarks
         {
             _source.Add(new());
             _records[i] = new(Guid.CreateVersion7(), "events", "dispatch.probe;v=1",
-                new OutgoingMessage(i % 2 == 0 ? "alpha" : "beta", body, headers), _now);
+                new OutgoingMessage(i % 2 == 0 ? "alpha" : "beta", body, headers), now);
         }
         // Both halves of the buffer swap and header decode must reach their high-water marks.
         RecoveryBufferAndGroup();
@@ -56,7 +55,7 @@ public class SqlServerOutboxDispatchBenchmarks
         for (var i = 0; i < Rows; i++)
         {
             _one[0].Copy(_records[i], 32);
-            _notification.Take(_one, 1, _now);
+            _notification.Take(_one, 1);
             _notification.Sort();
             bytes += _notification.Rows[0].ToMessage().Body.Length;
             _notification.Clear();
@@ -76,11 +75,11 @@ public class SqlServerOutboxDispatchBenchmarks
 
             if (i == 0)
             {
-                _batch.Take(_one, 1, _now);
+                _batch.Take(_one, 1);
             }
             else
             {
-                _notification.Take(_one, 1, _now);
+                _notification.Take(_one, 1);
                 _batch.Append(_notification);
             }
 
@@ -122,7 +121,7 @@ public class SqlServerOutboxDispatchBenchmarks
             _source[i].Copy(_records[i], 32, unordered: true);
         }
 
-        _batch.Take(_source, Rows, _now);
+        _batch.Take(_source, Rows);
         _batch.Sort();
         var bytes = 0;
 
@@ -143,7 +142,7 @@ public class SqlServerOutboxDispatchBenchmarks
             _source[i].Copy(_records[i], 32);
         }
 
-        _batch.Take(_source, Rows, _now);
+        _batch.Take(_source, Rows);
         _batch.Sort();
         var bytes = 0;
 

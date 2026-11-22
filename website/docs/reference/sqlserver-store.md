@@ -196,18 +196,19 @@ This validates caller-owned connections, including `ChangeDatabase`, without ope
 connection or relying on a login's default database. `DispatchStoreName` is optional: without it, transactions only persist messages.
 The configuration overload for transaction enlistment also binds `DispatchStoreName`.
 
-After a successful synchronous or asynchronous commit, due unordered buffers move to a bounded
+After a successful synchronous or asynchronous commit, unordered buffers move to a bounded
 in-process queue. The committing scope can end or begin another transaction while the worker sends.
 No activity or scoped service travels with the queued buffers. Native endpoint capabilities and
 `BatchSize` bound each send; single messages use `SendAsync`, groups use `SendBatchAsync`.
 `SqlBatch` groups fenced claim and completion statements through the native client. Claims use fresh
-tokens, and completion deletes only rows still owned by that live token. An expired claim leaves the
-row available for later recovery, even if the broker accepted the message; delivery remains at least once.
-Explicitly retryable native send failures record the error, increment a diagnostic attempt count (saturating at 30), and
-release live claims with a durable `deliver_at` deadline. Retry delays start at one second, double after
-each failed send and stop growing at five minutes. Native clients still own retries within each send;
-native batch failure isolation is described below. A completion failure after a successful send retains
-the claim without incrementing send attempts.
+tokens. SQL Server UTC determines when a stored schedule is due and whether a claim is still live.
+Completion deletes only rows still owned by the live token. An expired claim leaves the row available
+for later recovery, even if the broker accepted the message. Delivery remains at least once.
+Explicitly retryable native send failures record the error, increment a diagnostic attempt count
+(saturating at 30), and release live claims with a durable `deliver_at` deadline based on SQL Server UTC.
+Retry delays start at one second, double after each failed send and stop growing at five minutes.
+Native clients still own retries within each send. See batch failure isolation below. A completion
+failure after a successful send retains the claim without incrementing send attempts.
 
 **This worker does not poll or recover rows.** Ordered rows, future schedules, overflow and commits
 after shutdown remain durable. A full or stopped queue attempts to log an error. A logging failure leaves
@@ -253,9 +254,9 @@ that message to run again.
 Hosted maintenance waits for the application to finish starting before claiming rows.
 By then, hosted transports have finished starting, regardless of registration order.
 
-Each recovery pass reads at most `BatchSize` due, unordered pending rows older than `RecoveryDelay`,
-using a fixed UUID high-water mark before wrapping. Failed, previously claimed and newly due older rows
-are revisited even while newer rows arrive. Nonempty passes continue immediately, committing and releasing
+Each recovery pass uses SQL Server UTC to read and claim at most `BatchSize` due, unordered pending
+rows older than `RecoveryDelay`, using a fixed UUID high-water mark before wrapping. The worker
+revisits failed, previously claimed and newly due older rows even while newer rows arrive. Nonempty passes continue immediately, committing and releasing
 transaction admission between bounded batches. `SweepInterval` (five seconds by default) is the idle delay
 after exhausting the fixed scan, losing admission, or a pass error. Failed rows are attempted at most once
 per scan; locked, scheduled and otherwise ineligible rows do not cause a retry loop. Cleanup is checked
