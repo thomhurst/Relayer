@@ -1,5 +1,6 @@
 using System.Collections.Frozen;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Amazon;
@@ -13,13 +14,16 @@ namespace Relayer.AmazonSqs;
 
 internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
 {
+    private const string MaximumMessageSizeAttribute = "MaximumMessageSize";
+    private const int DefaultMaximumMessageBytes = 262_144;
+
     private readonly IAmazonSimpleNotificationService _client;
     private readonly bool _ownsClient;
     private readonly FrozenDictionary<string, Endpoint> _endpoints;
     private readonly AmazonSnsTransportOptions _options;
     private readonly MessageTracing? _tracing;
     private readonly SnsOperationPool _operations = new();
-    private readonly Lock _topicArnLock = new();
+    private readonly Lock _topicCacheLock = new();
     private SqsSendTransport? _queues;
     private int _disposed;
 
@@ -144,7 +148,8 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
     {
         Check(cancellationToken);
         var endpoint = GetEndpoint(message.Destination);
-        var arn = GetTopicArn(endpoint);
+        var topic = GetResolvedTopic(endpoint);
+        var arn = topic.Arn;
         ValidateMessage(message, endpoint);
         var state = _operations.Rent();
         state.Used = 1;
@@ -154,7 +159,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         try
         {
             var size = state.Messages[0].Prepare(message, arn, endpoint.Fifo, endpoint.IdentityHeader);
-            ValidateSize(endpoint, size);
+            ValidateSize(endpoint, size, topic.MaximumMessageBytes);
             endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
             var failed = true;
@@ -234,7 +239,9 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
 
         var endpoint = GetEndpoint(messages.Span[0].Destination);
-        var arn = GetTopicArn(endpoint);
+        var topic = GetResolvedTopic(endpoint);
+        var arn = topic.Arn;
+        var maximumMessageBytes = topic.MaximumMessageBytes;
         var state = _operations.Rent();
         var count = 0;
         var bytes = 0;
@@ -266,9 +273,9 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
                 var pending = state.Messages[count];
                 state.Used = count + 1;
                 var size = pending.Prepare(messages.Span[i], arn, endpoint.Fifo, endpoint.IdentityHeader);
-                ValidateSize(endpoint, size);
+                ValidateSize(endpoint, size, maximumMessageBytes);
 
-                if (count > 0 && bytes + size > 262_144)
+                if (count > 0 && bytes + size > maximumMessageBytes)
                 {
                     await FlushAsync(state, endpoint, batchStart, cancellationToken).ConfigureAwait(false);
 
@@ -351,9 +358,9 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
     }
 
-    private string GetTopicArn(Endpoint endpoint)
+    private ResolvedTopic GetResolvedTopic(Endpoint endpoint)
     {
-        return endpoint.Arn ?? throw new InvalidOperationException($"SNS transport '{Name}': start the host or apply topology before sending.");
+        return endpoint.Topic ?? throw new InvalidOperationException($"SNS transport '{Name}': start the host or apply topology before sending.");
     }
 
     private static void ValidateMessage(OutgoingMessage message, Endpoint endpoint)
@@ -369,11 +376,11 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
     }
 
-    private static void ValidateSize(Endpoint endpoint, int size)
+    private static void ValidateSize(Endpoint endpoint, int size, int maximumMessageBytes)
     {
-        if (size > 262_144)
+        if (size > maximumMessageBytes)
         {
-            throw new InvalidOperationException($"SNS message for '{endpoint.Declaration.Name}' exceeds 256 KiB including attributes.");
+            throw new InvalidOperationException($"SNS message for '{endpoint.Declaration.Name}' exceeds {maximumMessageBytes} bytes including attributes.");
         }
     }
 
@@ -387,16 +394,20 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
     {
         Check(cancellationToken);
         var topicArns = await ResolveTopicsAsync(cancellationToken).ConfigureAwait(false);
+        var topics = new Dictionary<Endpoint, ResolvedTopic>(_endpoints.Count);
 
         foreach (var endpoint in _endpoints.Values)
         {
-            if (!topicArns.ContainsKey(endpoint))
+            if (!topicArns.TryGetValue(endpoint, out var arn))
             {
                 throw new InvalidOperationException($"Missing SNS topic '{endpoint.Declaration.Name}'. Provision topology explicitly before sending.");
             }
+
+            var actual = await _client.GetTopicAttributesAsync(arn, cancellationToken).ConfigureAwait(false);
+            topics.Add(endpoint, endpoint.Resolve(arn, actual.Attributes));
         }
 
-        UpdateTopicArnCache(topicArns, cancellationToken);
+        UpdateTopicCache(topics, cancellationToken);
     }
 
     private async Task<Dictionary<Endpoint, string>> ResolveTopicsAsync(CancellationToken cancellationToken)
@@ -447,6 +458,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
 
         var topicArns = await ResolveTopicsAsync(cancellationToken).ConfigureAwait(false);
+        var topics = new Dictionary<Endpoint, ResolvedTopic>(_endpoints.Count);
 
         foreach (var endpoint in _endpoints.Values)
         {
@@ -459,11 +471,11 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
                 }
 
                 arn = (await _client.CreateTopicAsync(endpoint.Declaration, cancellationToken).ConfigureAwait(false)).TopicArn;
-                topicArns[endpoint] = arn;
             }
 
-            var actual = await _client.GetTopicAttributesAsync(new GetTopicAttributesRequest { TopicArn = arn }, cancellationToken).ConfigureAwait(false);
+            var actual = await _client.GetTopicAttributesAsync(arn, cancellationToken).ConfigureAwait(false);
             CompareAttributes(endpoint.Declaration.Attributes, actual.Attributes, $"SNS topic '{endpoint.Declaration.Name}'", differences);
+            topics.Add(endpoint, endpoint.Resolve(arn, actual.Attributes));
 
             if (endpoint.Declaration.Tags is { Count: > 0 } tags)
             {
@@ -524,19 +536,19 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
 
         var report = new TopologyReport(differences);
-        UpdateTopicArnCache(topicArns, cancellationToken);
+        UpdateTopicCache(topics, cancellationToken);
         return report;
     }
 
-    private void UpdateTopicArnCache(Dictionary<Endpoint, string> topicArns, CancellationToken cancellationToken)
+    private void UpdateTopicCache(Dictionary<Endpoint, ResolvedTopic> topics, CancellationToken cancellationToken)
     {
-        lock (_topicArnLock)
+        lock (_topicCacheLock)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             foreach (var endpoint in _endpoints.Values)
             {
-                endpoint.Arn = topicArns.GetValueOrDefault(endpoint);
+                endpoint.Topic = topics.GetValueOrDefault(endpoint);
             }
         }
     }
@@ -566,6 +578,22 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
     }
 
+    private static int ReadMaximumMessageBytes(string topicName, Dictionary<string, string>? attributes)
+    {
+        if (attributes?.TryGetValue(MaximumMessageSizeAttribute, out var value) != true)
+        {
+            return DefaultMaximumMessageBytes;
+        }
+
+        if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var maximum) ||
+            maximum is < 1024 or > 1_048_576)
+        {
+            throw new InvalidOperationException($"SNS topic '{topicName}': MaximumMessageSize '{value}' must be an integer from 1024 to 1048576 bytes.");
+        }
+
+        return maximum;
+    }
+
     public Task StopAsync(CancellationToken cancellationToken)
     {
         return Task.CompletedTask;
@@ -589,9 +617,17 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
     }
 
+    private sealed record ResolvedTopic(string Arn, int MaximumMessageBytes, TransportCapabilities Capabilities);
+
     private sealed class Endpoint(CreateTopicRequest declaration, string identityHeader, bool fifo, bool orderedByKey)
     {
-        private string? _arn;
+        private volatile ResolvedTopic? _topic;
+        private readonly TransportCapabilities _declaredCapabilities = new()
+        {
+            OrderedByKey = orderedByKey,
+            MaxBatchSize = 10,
+            MaxMessageBytes = ReadMaximumMessageBytes(declaration.Name, declaration.Attributes)
+        };
 
         internal CreateTopicRequest Declaration
         {
@@ -608,31 +644,33 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
             get;
         } = identityHeader;
 
-        internal string? Arn
+        internal ResolvedTopic? Topic
         {
             get
             {
-                return Volatile.Read(ref _arn);
+                return _topic;
             }
             set
             {
-                Volatile.Write(ref _arn, value);
+                _topic = value;
             }
         }
 
-        internal TransportCapabilities Capabilities
-        {
-            get;
-        } = new()
-        {
-            OrderedByKey = orderedByKey,
-            MaxBatchSize = 10,
-            MaxMessageBytes = 262_144
-        };
+        internal TransportCapabilities Capabilities => Topic?.Capabilities ?? _declaredCapabilities;
 
         internal SendTracing? Tracing
         {
             get; set;
+        }
+
+        internal ResolvedTopic Resolve(string arn, Dictionary<string, string>? attributes)
+        {
+            var maximum = ReadMaximumMessageBytes(Declaration.Name, attributes);
+            var capabilities = _declaredCapabilities with
+            {
+                MaxMessageBytes = maximum
+            };
+            return new(arn, maximum, capabilities);
         }
     }
 }

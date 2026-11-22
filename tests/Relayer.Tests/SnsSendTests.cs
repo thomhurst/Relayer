@@ -682,6 +682,7 @@ internal sealed class SnsTestClient() : AmazonSimpleNotificationServiceClient(ne
     internal readonly List<(string Id, SnsSent Message)[]> Batches = [];
     internal readonly List<CreateTopicRequest> Creates = [];
     internal readonly List<SubscribeRequest> Subscribes = [];
+    internal readonly Dictionary<string, string> TopicMaximumSizes = new();
     internal readonly Dictionary<string, string> SubscriptionAttributes = new() { ["RawMessageDelivery"] = "true" };
     internal bool FailBatch;
     internal int FailBatchOnCall;
@@ -777,12 +778,16 @@ internal sealed class SnsTestClient() : AmazonSimpleNotificationServiceClient(ne
             await TopicAttributesGate.Task.WaitAsync(cancellationToken);
         }
 
+        var attributes = new Dictionary<string, string> { ["FifoTopic"] = "true" };
+
+        if (TopicMaximumSizes.TryGetValue(request.TopicArn, out var maximum))
+        {
+            attributes["MaximumMessageSize"] = maximum;
+        }
+
         return new()
         {
-            Attributes = new()
-            {
-                ["FifoTopic"] = "true"
-            }
+            Attributes = attributes
         };
     }
 
