@@ -8,6 +8,8 @@ namespace Relayer.GooglePubSub.Tests;
 public class GooglePubSubSendTests
 {
     private const string Topic = "projects/test/topics/orders";
+    private const string DeadLetterTopic = "projects/test/topics/orders-dead";
+    private const string SourceSubscription = "projects/test/subscriptions/orders";
 
     [Test]
     public async Task Cancellation_after_admission_keeps_borrowed_storage_until_native_completion()
@@ -80,7 +82,7 @@ public class GooglePubSubSendTests
     public async Task Unsupported_consumer_guarantees_fail_before_any_native_receive(string invalid)
     {
         var native = new GatedPublisher();
-        await using var provider = Provider(native, transport => transport.Consume("projects/test/subscriptions/orders", consumer =>
+        await using var provider = Provider(native, transport => transport.Consume(SourceSubscription, consumer =>
         {
             if (invalid == "concurrency")
             {
@@ -91,7 +93,7 @@ public class GooglePubSubSendTests
             {
                 consumer.Failures(new()
                 {
-                    DeadLetterEndpoint = Topic,
+                    DeadLetterEndpoint = DeadLetterTopic,
                     RedeliveryDelays = new[] { TimeSpan.Zero }
                 });
             }
@@ -99,7 +101,7 @@ public class GooglePubSubSendTests
             {
                 consumer.Failures(new()
                 {
-                    DeadLetterEndpoint = Topic
+                    DeadLetterEndpoint = DeadLetterTopic
                 });
             }
 
@@ -130,11 +132,11 @@ public class GooglePubSubSendTests
         await using var provider = Provider(native, transport =>
         {
             transport.Options.Configure(options => options.PublisherSettings.EnableMessageOrdering = enabled);
-            transport.Consume("projects/test/subscriptions/orders", consumer =>
+            transport.Consume(SourceSubscription, consumer =>
             {
                 consumer.Failures(new()
                 {
-                    DeadLetterEndpoint = Topic
+                    DeadLetterEndpoint = DeadLetterTopic
                 });
                 consumer.Handler<PubSubHandler>();
             });
@@ -151,6 +153,41 @@ public class GooglePubSubSendTests
         }
 
         await Assert.That(native.Started.Task.IsCompleted).IsFalse();
+    }
+
+    [Test]
+    [Arguments("")]
+    [Arguments("attributes.kind = \"orders\"")]
+    public async Task Same_topic_dead_lettering_requires_a_subscription_filter(string filter)
+    {
+        var native = new GatedPublisher();
+        await using var provider = Provider(native, transport =>
+        {
+            transport.Options.Configure(options =>
+            {
+                options.PublisherSettings.EnableMessageOrdering = true;
+                options.Subscriptions[0].Filter = filter;
+            });
+            transport.Consume(SourceSubscription, consumer =>
+            {
+                consumer.Failures(new()
+                {
+                    DeadLetterEndpoint = Topic,
+                    RetryDelays = []
+                });
+                consumer.Handler<PubSubHandler>();
+            });
+        });
+
+        if (filter.Length == 0)
+        {
+            await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<InvalidOperationException>()
+                .WithMessageContaining("separate dead-letter topic");
+        }
+        else
+        {
+            await Assert.That(provider.GetRequiredService<ITransport>()).IsNotNull();
+        }
     }
 
     [Test]
@@ -233,9 +270,10 @@ public class GooglePubSubSendTests
                     BatchingSettings = new(1, null, null)
                 };
                 options.Topics.Add(TopicName.Parse(Topic));
+                options.Topics.Add(TopicName.Parse(DeadLetterTopic));
                 options.Subscriptions.Add(new()
                 {
-                    Name = "projects/test/subscriptions/orders",
+                    Name = SourceSubscription,
                     Topic = Topic
                 });
             });

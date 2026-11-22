@@ -87,7 +87,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
             var consumer = (ConsumerDefinition<GooglePubSubConsumerOptions>)declaration;
             ArgumentNullException.ThrowIfNull(consumer.Options.Settings);
             ArgumentNullException.ThrowIfNull(consumer.Failure);
-            TopicFor(consumer.Source);
+            var subscription = GetSubscription(consumer.Source);
 
             if (consumer.BatchSize != 1)
             {
@@ -104,12 +104,20 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
                 throw new NotSupportedException($"Pub/Sub consumer '{consumer.Source}': Nack cannot persist updated failure attributes. Use in-process RetryDelays and a DeadLetterEndpoint topic; durable redelivery is not supported.");
             }
 
-            if (string.IsNullOrWhiteSpace(consumer.Failure.DeadLetterEndpoint))
+            string? deadLetterEndpoint = consumer.Failure.DeadLetterEndpoint;
+
+            if (string.IsNullOrWhiteSpace(deadLetterEndpoint))
             {
                 throw new InvalidOperationException($"Pub/Sub consumer '{consumer.Source}': set Failure.DeadLetterEndpoint to a declared topic. Native DeadLetterPolicy cannot dead-letter on demand with error metadata.");
             }
 
-            GetEndpoint(consumer.Failure.DeadLetterEndpoint);
+            GetEndpoint(deadLetterEndpoint);
+
+            if (subscription.Filter.Length == 0 && subscription.Topic == deadLetterEndpoint)
+            {
+                throw new InvalidOperationException($"Pub/Sub consumer '{consumer.Source}': the unfiltered subscription receives every message published to '{deadLetterEndpoint}', including its own dead-letter copies. Set Failure.DeadLetterEndpoint to a separate dead-letter topic.");
+            }
+
             // Incoming keys can originate outside Relayer, even on unordered subscriptions.
             // Failure copies preserve them, and the native publisher rejects keys unless enabled.
             if (_options.PublisherSettings.EnableMessageOrdering != true)
@@ -141,7 +149,12 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
 
     internal string TopicFor(string source)
     {
-        return _subscriptions.TryGetValue(source, out var subscription) ? subscription.Topic
+        return GetSubscription(source).Topic;
+    }
+
+    private Subscription GetSubscription(string source)
+    {
+        return _subscriptions.TryGetValue(source, out var subscription) ? subscription
                 : throw new InvalidOperationException($"Pub/Sub transport '{Name}': undeclared subscription '{source}'. Declare it in Subscriptions using its fully qualified name.");
     }
 
