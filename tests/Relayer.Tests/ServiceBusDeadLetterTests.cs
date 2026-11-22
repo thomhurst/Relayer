@@ -1,3 +1,4 @@
+using Azure.Core.Amqp;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
@@ -55,6 +56,47 @@ public sealed class ServiceBusDeadLetterTests
         await Assert.That(page.Messages[0].Features.GetRequired<ServiceBusReceivedMessage>()).IsSameReferenceAs(message);
         await Assert.That(page.Messages[0].Body.ToArray()).IsEquivalentTo(new byte[] { 1, 2 });
         await Assert.That(client.Events.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Peek_includes_native_value_and_sequence_messages_with_data_messages()
+    {
+        var client = new Client();
+        var value = NativeMessage("value", AmqpMessageBody.FromValue("poison"));
+        var sequence = NativeMessage("sequence", AmqpMessageBody.FromSequence([new List<object> { "poison" }]));
+        var empty = NativeMessage("empty", AmqpMessageBody.FromData([ReadOnlyMemory<byte>.Empty]));
+        var data = NativeMessage("data", AmqpMessageBody.FromData([new byte[] { 1 }, new byte[] { 2 }]));
+        client.Receiver.Messages = [value, sequence, empty, data, Message("last", 42)];
+
+        var page = await Manager(client).PeekAsync("orders");
+
+        await Assert.That(page.Messages.Select(message => message.MessageId))
+            .IsEquivalentTo(new string?[] { "value", "sequence", "empty", "data", "last" });
+        await Assert.That(page.Messages[0].Features.GetRequired<ServiceBusReceivedMessage>()).IsSameReferenceAs(value);
+        await Assert.That(page.Messages[1].Features.GetRequired<ServiceBusReceivedMessage>()).IsSameReferenceAs(sequence);
+        await Assert.That(page.Messages[0].HasByteBody).IsFalse();
+        await Assert.That(page.Messages[0].Body.IsEmpty).IsTrue();
+        await Assert.That(page.Messages[1].HasByteBody).IsFalse();
+        await Assert.That(page.Messages[1].Body.IsEmpty).IsTrue();
+        await Assert.That(page.Messages[2].HasByteBody).IsTrue();
+        await Assert.That(page.Messages[2].Body.IsEmpty).IsTrue();
+        await Assert.That(page.Messages[3].HasByteBody).IsTrue();
+        await Assert.That(page.Messages[3].Body.ToArray()).IsEquivalentTo(new byte[] { 1, 2 });
+        await Assert.That(page.NextCursor).IsEqualTo("43");
+    }
+
+    [Test]
+    public async Task Filtered_redrive_can_select_data_after_value_and_sequence()
+    {
+        var client = new Client();
+        var value = NativeMessage("value", AmqpMessageBody.FromValue("poison"));
+        var sequence = NativeMessage("sequence", AmqpMessageBody.FromSequence([new List<object> { "poison" }]));
+        client.Receiver.Messages = [value, sequence, Message("selected", 3)];
+
+        var count = await Manager(client).RedriveAsync("orders", message => message.MessageId == "selected", 3);
+
+        await Assert.That(count).IsEqualTo(1);
+        await Assert.That(client.Events.SequenceEqual(["abandon:value", "abandon:sequence", "send:selected", "complete:selected"])).IsTrue();
     }
 
     [Test]
@@ -226,6 +268,13 @@ public sealed class ServiceBusDeadLetterTests
     {
         return new(client,
                 [new ConsumerDefinition<ServiceBusConsumerOptions>("orders", new(), [], 1, 1, TimeSpan.Zero)]);
+    }
+
+    private static ServiceBusReceivedMessage NativeMessage(string id, AmqpMessageBody body)
+    {
+        var message = new AmqpAnnotatedMessage(body);
+        message.Properties.MessageId = new AmqpMessageId(id);
+        return ServiceBusReceivedMessage.FromAmqpMessage(message, new BinaryData(Guid.NewGuid().ToByteArray()));
     }
 
     private static ServiceBusReceivedMessage Message(string id, long sequence)

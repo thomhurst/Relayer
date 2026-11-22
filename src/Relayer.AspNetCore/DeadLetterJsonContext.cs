@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace Relayer.AspNetCore;
 
-internal sealed record MessageSnapshot(string? MessageId, ReadOnlyMemory<byte> Body);
+internal sealed record MessageSnapshot(string? MessageId, ReadOnlyMemory<byte>? Body);
 
 internal sealed record PageSnapshot(MessageSnapshot[] Messages, string? NextCursor);
 

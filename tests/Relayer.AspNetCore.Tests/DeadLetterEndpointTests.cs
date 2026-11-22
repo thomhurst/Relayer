@@ -25,7 +25,11 @@ public sealed class DeadLetterEndpointTests
         await Assert.That(list).Contains("events/Subscriptions/audit");
         var page = await fixture.Client.GetStringAsync("/manage/messages?source=events%2FSubscriptions%2Faudit&maxMessages=3&cursor=42");
         using var json = JsonDocument.Parse(page);
-        await Assert.That(json.RootElement.GetProperty("messages")[0].GetProperty("body").GetString()).IsEqualTo("AQI=");
+        var messages = json.RootElement.GetProperty("messages");
+        await Assert.That(messages[0].GetProperty("body").GetString()).IsEqualTo("AQI=");
+        await Assert.That(messages[1].GetProperty("body").GetString()).IsEqualTo(string.Empty);
+        await Assert.That(messages[2].GetProperty("messageId").GetString()).IsEqualTo("native");
+        await Assert.That(messages[2].GetProperty("body").ValueKind).IsEqualTo(JsonValueKind.Null);
         await Assert.That(page.Contains("features", StringComparison.OrdinalIgnoreCase)).IsFalse();
         await Assert.That(fixture.Manager.Source).IsEqualTo("events/Subscriptions/audit");
         await Assert.That(fixture.Manager.Count).IsEqualTo(3);
@@ -234,7 +238,7 @@ public sealed class DeadLetterEndpointTests
 
             var message = new DeadLetterMessage { MessageId = "selected", Body = new byte[] { 1, 2 } };
             message.Features.Set(new object());
-            return new([message], "43");
+            return new([message, new() { MessageId = "empty" }, new() { MessageId = "native", HasByteBody = false }], "43");
         }
 
         public ValueTask<int> RedriveAsync(string source, Func<DeadLetterMessage, bool>? filter = null, int maxMessages = 20, CancellationToken cancellationToken = default)
