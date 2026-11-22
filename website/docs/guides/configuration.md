@@ -6,6 +6,7 @@ description: "Declare transports, routes and consumers, bind native options, and
 `AddRelayer` is the single entry point. Inside it you register message types and handlers, then declare each transport with its routes and consumers. Transport packages wrap `AddTransport` in typed extensions such as [`Kafka`](../transports/kafka.md) or [`ServiceBus`](../transports/service-bus.md) and supply their native option types. The generic core surface below also supports transport authors and adapters whose named integration has not shipped yet.
 
 ```csharp
+using Relayer;
 using Relayer.Transports;
 
 var services = new ServiceCollection();

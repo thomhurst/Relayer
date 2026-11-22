@@ -6,6 +6,7 @@ description: "Declared topology: validate or provision broker entities at startu
 Declare routes and consumers normally. Relayer builds an inspectable topology from those declarations; it never infers broker entities from CLR names.
 
 ```csharp
+using Relayer;
 using Relayer.Transports;
 
 services.AddRelayer(relayer =>
