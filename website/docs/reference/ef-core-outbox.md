@@ -44,6 +44,7 @@ the same scoped service provider used by `ISender`:
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
+using Relayer;
 using Relayer.Outbox.EntityFrameworkCore;
 
 // The application owns dataSource and keeps it alive until the host stops.
@@ -76,7 +77,8 @@ options; they come from `EntityFrameworkCoreOutboxOptions`, and a different valu
 `RetainSentMessages` must match on the ordered dispatch and maintenance options, and it then applies to
 direct dispatch as well.
 
-Several contexts can share one store. Call `UsePostgreSqlOutbox` once per context with the same data source
+Several contexts can share one store. Use the same imports as in the first registration example.
+Call `UsePostgreSqlOutbox` once per context with the same data source
 and options; the later calls only enlist their context, so the host runs one direct dispatcher, one ordered
 lane set and one maintenance worker for the store:
 

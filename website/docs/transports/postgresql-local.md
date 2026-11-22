@@ -16,6 +16,7 @@ The transport lives in `Relayer.Outbox.PostgreSql` and reuses the existing outbo
 
 ```csharp
 using Npgsql;
+using Relayer;
 using Relayer.Outbox.PostgreSql;
 
 var source = NpgsqlDataSource.Create(connectionString); // application-owned
