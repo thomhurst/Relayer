@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using Microsoft.Extensions.Logging;
@@ -116,6 +117,7 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
     private readonly ServiceBusAdministrationClient _admin;
     private readonly ServiceBusSendTransport _transport;
     private readonly ServiceBusSettlement _settlement;
+    private readonly TaskCompletionSource<Exception?> _deadLetterSettlement = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly ConsumerDefinition<ServiceBusConsumerOptions> _declaration;
     private readonly bool _sessions;
     private readonly ActivityListener _nativeInstrumentation;
@@ -218,14 +220,36 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
         }
     }
 
-    public ValueTask SettleAsync(TIncoming incoming, Disposition disposition, CancellationToken cancellationToken)
+    public async ValueTask SettleAsync(TIncoming incoming, Disposition disposition, CancellationToken cancellationToken)
     {
-        return _sessions ? _settlement.SettleAsync((ProcessSessionMessageEventArgs)(object)incoming!, disposition, cancellationToken)
-                    : _settlement.SettleAsync((ProcessMessageEventArgs)(object)incoming!, disposition, cancellationToken);
+        var deadLetter = disposition.Kind == DispositionKind.DeadLetter;
+
+        try
+        {
+            await (_sessions
+                ? _settlement.SettleAsync((ProcessSessionMessageEventArgs)(object)incoming!, disposition, cancellationToken)
+                : _settlement.SettleAsync((ProcessMessageEventArgs)(object)incoming!, disposition, cancellationToken));
+        }
+        catch (Exception error) when (deadLetter)
+        {
+            _deadLetterSettlement.TrySetResult(error);
+            throw;
+        }
+
+        if (deadLetter)
+        {
+            _deadLetterSettlement.TrySetResult(null);
+        }
     }
 
     public async ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken)
     {
+        // The handler reports delivery before the broker acknowledges dead-letter settlement.
+        if (await _deadLetterSettlement.Task.WaitAsync(cancellationToken) is { } error)
+        {
+            ExceptionDispatchInfo.Throw(error);
+        }
+
         await using var receiver = _client.CreateReceiver(Destination, new ServiceBusReceiverOptions { SubQueue = SubQueue.DeadLetter });
         // The fixture owns and deletes this queue. Inspect the DLQ without taking an unnecessary settlement lock.
         var message = await receiver.PeekMessageAsync(cancellationToken: cancellationToken)
