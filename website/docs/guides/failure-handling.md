@@ -126,9 +126,17 @@ Built-in outbox integrations do not register `IFailureScheduler`. [Scheduling ou
 
 Native dead-lettering is used only when the endpoint guarantees error metadata. Otherwise a copy goes to the dead-letter endpoint and the original is completed. If no mechanism is available, startup fails.
 
-## Retries never duplicate side effects
+## Buffered sends and transaction rollback
 
-Each immediate retry runs in a fresh DI scope. Messages the handler sends through `ISender` are buffered and only sent after the handler, middleware and scope disposal all succeed; a failed attempt discards them. Sends enlisted in an outbox transaction are rolled back with that transaction. Calls you make directly on a native client are your responsibility.
+Each immediate retry starts a new attempt with a fresh DI scope when it needs one. Relayer
+[buffers direct sends](sending.md#send-execution) made through the handler's scoped `ISender` and flushes
+them only after the handler, middleware, and scope disposal succeed. If the attempt fails before
+the flush, Relayer discards the buffered sends. When the attempt's transaction rolls back, it
+undoes the writes enlisted in it, including outbox writes.
+
+Retry or redelivery can repeat effects outside that transaction, such as an HTTP request that
+succeeded before the handler threw. Make those operations idempotent in your application, for
+example by using a stable idempotency key that the external service honors.
 
 ## Manual settlement
 
