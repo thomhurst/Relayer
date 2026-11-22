@@ -300,6 +300,21 @@ public class HealthCheckTests
     }
 
     [Test]
+    public async Task Empty_json_outbox_names_array_is_valid_at_startup()
+    {
+        using var json = new MemoryStream("""{"RelayerHealth":{"ConsumerStallTimeout":"00:00:24","OutboxNames":[]}}"""u8.ToArray());
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration.AddJsonStream(json);
+        builder.Services.AddRelayerHealthChecks(builder.Configuration.GetSection("RelayerHealth"));
+        using var host = builder.Build();
+        await host.StartAsync();
+        var options = host.Services.GetRequiredService<IOptions<RelayerHealthCheckOptions>>().Value;
+        await Assert.That(options.OutboxNames.Count).IsEqualTo(0);
+        await Assert.That(options.ConsumerStallTimeout).IsEqualTo(TimeSpan.FromSeconds(24));
+        await host.StopAsync();
+    }
+
+    [Test]
     public async Task Healthy_adapters_cover_every_configured_resource()
     {
         await using var provider = Create(BacklogOptions(), services =>

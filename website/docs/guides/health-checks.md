@@ -153,6 +153,8 @@ builder.Services.AddRelayerHealthChecks(builder.Configuration.GetSection("Relaye
 }
 ```
 
+Use `"OutboxNames": []` or omit the setting when the application has no outbox stores to check.
+
 Options use `IOptions<RelayerHealthCheckOptions>`, `IOptionsSnapshot<RelayerHealthCheckOptions>` and
 `IOptionsMonitor<RelayerHealthCheckOptions>` as usual, including registered validators. The checks read current
 monitor values for each poll. Configuration reload rebinds and validates the values. Values use invariant

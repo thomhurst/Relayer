@@ -103,7 +103,8 @@ public static class RelayerHealthCheckServiceCollectionExtensions
         var defaults = new RelayerHealthCheckOptions();
         var outboxes = configuration.GetSection(nameof(RelayerHealthCheckOptions.OutboxNames));
 
-        if (outboxes.Value is not null)
+        // The JSON configuration provider represents an empty array with an empty string.
+        if (outboxes.Value is { Length: > 0 })
         {
             throw new OptionsValidationException(Options.DefaultName, typeof(RelayerHealthCheckOptions),
                 ["OutboxNames must be an array of store names."]);
