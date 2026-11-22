@@ -37,7 +37,8 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
 
         foreach (var declaration in configuration.Transports)
         {
-            if (adapters.TryGetValue(declaration.Name, out var transport) && transport is ITransportCapabilityInitializer initializer)
+            if (adapters.TryGetValue(declaration.Name, out var transport) &&
+                ITransportWrapper.Unwrap(transport) is ITransportCapabilityInitializer initializer)
             {
                 await initializer.InitializeCapabilitiesAsync(declaration.TopologyMode ?? configuration.TopologyMode, cancellationToken).ConfigureAwait(false);
             }

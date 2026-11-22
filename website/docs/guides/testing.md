@@ -42,6 +42,7 @@ var handled = await harness.WaitForConsumedAsync<OrderPlaced>(
 
 The wait matches a successfully handled delivery, even if it completed before the wait began.
 The same test works with a real broker. The deadline bounds the wait if the handler never processes the order.
+With the harness enabled, RabbitMQ verifies delayed-exchange capabilities during hosted startup in `TopologyMode.Provision`.
 
 ## Inspect a whole message flow
 

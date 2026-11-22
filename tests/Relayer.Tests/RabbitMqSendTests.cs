@@ -9,6 +9,7 @@ using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
 using Relayer.RabbitMQ;
+using Relayer.Testing;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -240,6 +241,51 @@ public class RabbitMqSendTests
             await Assert.That(Header(sent, "cloudEvents:type")).IsEqualTo("rabbitmq.send.sample;v=1");
             await Assert.That(sent.BasicProperties.ContentType).IsEqualTo("application/json");
         }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Harness_preserves_hosted_startup_and_observes_native_sends(bool delayedExchange)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token, delayedExchange);
+        var factory = broker.Factory();
+        await using var connection = await factory.CreateConnectionAsync(token);
+        await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
+        await channel.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
+
+        var builder = Host.CreateApplicationBuilder();
+        Register(builder.Services, factory, ["orders"], options =>
+        {
+            if (delayedExchange)
+            {
+                options.DelayedExchanges.Add("", new("orders.delayed")
+                {
+                    Type = "x-delayed-message",
+                    Arguments = new Dictionary<string, object?> { ["x-delayed-type"] = "direct" },
+                });
+            }
+        }, outbox: null, mode: TopologyMode.Provision);
+        builder.Services.AddRelayerHarness();
+
+        var host = builder.Build();
+        await using var hostLifetime = (IAsyncDisposable)host;
+        await host.StartAsync(token);
+
+        var transport = host.Services.GetRequiredService<ITransport>();
+        await Assert.That(transport.GetCapabilities("orders").MaxDeliveryDelay.HasValue).IsEqualTo(delayedExchange);
+
+        using var scope = host.Services.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var message = new Sample(42);
+        await sender.SendAsync(message, cancellationToken: token);
+
+        var harness = host.Services.GetRequiredService<RelayerHarness>();
+        await Assert.That(harness.GetDispatched<Sample>().Single()).IsEqualTo(message);
+        await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).MessageCount).IsEqualTo(1u);
+        await host.StopAsync(token);
     }
 
     [Test]
