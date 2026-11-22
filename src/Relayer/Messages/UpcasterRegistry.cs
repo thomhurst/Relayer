@@ -51,6 +51,11 @@ public sealed class UpcasterRegistry
 
         foreach (var first in GetSources(target))
         {
+            if (serializer is JsonMessageSerializer json)
+            {
+                json.ValidateMetadata(first.From);
+            }
+
             var reader = first.CreateReader(serializer);
             var current = first.To;
 

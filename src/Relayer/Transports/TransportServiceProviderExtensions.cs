@@ -11,6 +11,6 @@ public static class TransportServiceProviderExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(transportName);
-        return services.GetKeyedService<IMessageSerializer>(transportName) ?? services.GetRequiredService<IMessageSerializer>();
+        return NamedMessageSerializer.Resolve(services, transportName) ?? services.GetRequiredService<IMessageSerializer>();
     }
 }
