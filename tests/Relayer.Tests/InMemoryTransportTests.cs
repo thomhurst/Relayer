@@ -962,6 +962,90 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    public async Task Unordered_queue_rejects_unschedulable_manual_redelivery_before_settling()
+    {
+        var clock = new InMemoryTestClock();
+        var delay = TimeSpan.FromSeconds(10);
+        clock.Advance(DateTimeOffset.MaxValue - clock.GetUtcNow() - delay);
+        await using var transport = Transport(clock: clock);
+        var completed = Signal();
+        transport.RegisterConsumer("orders", async (delivery, _) =>
+        {
+            await Assert.That(() => delivery.Redeliver(TimeSpan.MaxValue)).Throws<InvalidOperationException>()
+                .WithMessageContaining("MaxRedeliveryDelay");
+            clock.Advance(TimeSpan.FromTicks(1));
+            await Assert.That(() => delivery.Redeliver(delay)).Throws<InvalidOperationException>()
+                .WithMessageContaining("clock");
+            delivery.Complete();
+            completed.SetResult();
+            return Disposition.SettledByHandler;
+        });
+
+        await transport.StartAsync(default);
+        await Send(transport, 1);
+        var first = await Task.WhenAny(completed.Task, transport.Completion).WaitAsync(s_limit);
+        await first;
+        await transport.StopAsync(default);
+        await Assert.That(completed.Task.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    public async Task Unordered_queue_rejects_a_returned_redelivery_beyond_the_clock_range()
+    {
+        var clock = new InMemoryTestClock();
+        var delay = TimeSpan.FromSeconds(10);
+        clock.Advance(DateTimeOffset.MaxValue - clock.GetUtcNow() - delay);
+        await using var transport = Transport(clock: clock);
+        transport.RegisterConsumer("orders", (_, _) =>
+        {
+            clock.Advance(TimeSpan.FromTicks(1));
+            return new(Disposition.Redeliver(delay));
+        });
+
+        await transport.StartAsync(default);
+        await Send(transport, 1);
+        await Assert.That(async () => await transport.Completion.WaitAsync(s_limit)).Throws<InvalidOperationException>()
+            .WithMessageContaining("clock");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Unordered_queue_redelivery_accepts_the_last_representable_deadline(bool manual)
+    {
+        var clock = new InMemoryTestClock();
+        var delay = TimeSpan.FromSeconds(10);
+        clock.Advance(DateTimeOffset.MaxValue - clock.GetUtcNow() - delay);
+        await using var transport = Transport(clock: clock);
+        var redelivered = new TaskCompletionSource<DateTimeOffset>(TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.RegisterConsumer("orders", (delivery, _) =>
+        {
+            if (delivery.Attempt == 1)
+            {
+                if (manual)
+                {
+                    delivery.Redeliver(delay);
+                    clock.Advance(TimeSpan.FromSeconds(1));
+                    return new(Disposition.SettledByHandler);
+                }
+
+                return new(Disposition.Redeliver(delay));
+            }
+
+            redelivered.SetResult(clock.GetUtcNow());
+            return new(Disposition.Complete);
+        });
+
+        await Assert.That(transport.GetCapabilities("orders").MaxRedeliveryDelay).IsEqualTo(delay);
+        await transport.StartAsync(default);
+        await Send(transport, 1);
+        await clock.NextTimer();
+        clock.Advance(DateTimeOffset.MaxValue - clock.GetUtcNow());
+        await Assert.That(await redelivered.Task.WaitAsync(s_limit)).IsEqualTo(DateTimeOffset.MaxValue);
+        await transport.StopAsync(default);
+    }
+
+    [Test]
     public async Task Scheduling_and_redelivery_respect_exact_capability_boundaries()
     {
         var clock = new InMemoryTestClock();
