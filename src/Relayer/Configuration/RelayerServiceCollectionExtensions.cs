@@ -32,11 +32,11 @@ public static class RelayerServiceCollectionExtensions
 
         services.TryAddSingleton<IMessageSerializer>(static provider =>
         {
-            var contexts = provider.GetServices<JsonSerializerRegistration>().Select(registration => registration.Context).ToArray();
+            var registrations = provider.GetServices<JsonSerializerRegistration>().ToArray();
             var configuration = provider.GetRequiredService<RelayerConfiguration>();
             // Without declarations the default serializer serves standalone callers across the registry.
             HashSet<Type>? missingMetadata = configuration.Transports.Count == 0 ? null : [];
-            var types = provider.GetRequiredService<MessageTypeRegistry>().CreateJsonTypes(contexts, missingMetadata);
+            var types = provider.GetRequiredService<MessageTypeRegistry>().CreateJsonTypes(registrations, missingMetadata);
             return new JsonMessageSerializer(types, missingMetadata);
         });
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, MessageSerializerStartupValidator>());

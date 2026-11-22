@@ -174,6 +174,21 @@ public class AsyncApiTests
     }
 
     [Test]
+    public async Task Export_uses_the_generated_context_for_each_message_root()
+    {
+        using var provider = new ServiceCollection().AddRelayer(builder =>
+        {
+            builder.AddOrdersContracts(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            builder.AddBillingContracts();
+        }).BuildServiceProvider();
+        using var document = JsonDocument.Parse(Export(provider));
+        var messages = document.RootElement.GetProperty("components").GetProperty("messages");
+        var order = messages.EnumerateObject().Single(item => item.Value.GetProperty("name").GetString() == "orders.shared").Value;
+        var properties = order.GetProperty("payload").GetProperty("schema").GetProperty("properties");
+        await Assert.That(properties.EnumerateObject().Single().Name).IsEqualTo("messageId");
+    }
+
+    [Test]
     public async Task Tombstone_routes_reuse_original_message_identity()
     {
         using var provider = new ServiceCollection().AddRelayer(builder =>

@@ -264,7 +264,9 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         builder.AppendLine("        {");
         builder.AppendLine("            global::System.ArgumentNullException.ThrowIfNull(builder);");
 
-        foreach (var model in models.OrderBy(m => m.Name, StringComparer.Ordinal).ThenBy(m => m.Version))
+        var orderedModels = models.OrderBy(m => m.Name, StringComparer.Ordinal).ThenBy(m => m.Version).ToArray();
+
+        foreach (var model in orderedModels)
         {
             builder.Append("            global::Relayer.Transports.RelayerInfrastructureExtensions.Infrastructure(builder).MessageTypes.Add<")
                 .Append(model.FullyQualifiedName)
@@ -275,8 +277,26 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                 .AppendLine(");");
         }
 
-        builder.AppendLine(models.IsDefaultOrEmpty ? "            return builder;" :
-            "            return global::Relayer.JsonSerializerBuilderExtensions.UseJsonSerializer(builder, serializerOptions is null ? new RelayerGeneratedJsonContext() : new RelayerGeneratedJsonContext(new global::System.Text.Json.JsonSerializerOptions(serializerOptions)));");
+        if (orderedModels.Length == 0)
+        {
+            builder.AppendLine("            return builder;");
+        }
+        else
+        {
+            builder.AppendLine("            var context = serializerOptions is null");
+            builder.AppendLine("                ? new RelayerGeneratedJsonContext()");
+            builder.AppendLine("                : new RelayerGeneratedJsonContext(new global::System.Text.Json.JsonSerializerOptions(serializerOptions));");
+            builder.AppendLine("            return global::Relayer.JsonSerializerBuilderExtensions.UseJsonSerializer(builder, context,");
+            builder.AppendLine("            [");
+
+            foreach (var model in orderedModels)
+            {
+                builder.Append("                typeof(").Append(model.FullyQualifiedName).AppendLine("),");
+            }
+
+            builder.AppendLine("            ]);");
+        }
+
         builder.AppendLine("        }");
         builder.AppendLine("    }");
         builder.AppendLine("}");

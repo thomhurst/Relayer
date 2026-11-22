@@ -55,7 +55,7 @@ If the host declares its own `[Message]` contracts, also call `relayer.AddMessag
 
 Choose a distinct method name for each contracts library. The name must be a non-keyword C# identifier other than `AddMessageTypesFromThisAssembly`; [RLYM008](../reference/diagnostics.md#rlym008) diagnoses invalid names. The public extension class is named `<methodName>Extensions` in the `Relayer` namespace. The opt-in exports registration for all valid `[Message]` declarations in that library, including internal contracts, without scanning referenced assemblies. An empty library exports a no-op method. Duplicate wire identities across libraries still fail during registration.
 
-Each method registers its library's generated JSON context and accepts optional `JsonSerializerOptions`, just like local registration. Contexts compose across libraries and host-local messages; a later `UseJsonSerializer` overrides metadata for the types it covers. Custom `IMessageSerializer` registrations retain precedence. Registration remains trimming and Native AOT safe.
+Each method accepts optional `JsonSerializerOptions` and registers its library's generated context for the standalone messages declared in that library. A nested payload uses the options of the context that serializes its enclosing message. For example, if a billing message contains an order, the billing context controls the nested order and the orders context controls orders sent on their own. Rebuild contracts libraries generated with an older Relayer version to apply this scope. Custom `IMessageSerializer` registrations retain precedence. Registration remains trimming and Native AOT safe.
 
 For contracts without `[Message]`, including generated or referenced contracts, supply the stable identity explicitly:
 
@@ -104,7 +104,7 @@ services.AddRelayer(relayer =>
 });
 ```
 
-When contexts overlap, the last registered context supplies the metadata for a type. A custom context can also cover explicitly registered message types from a contracts assembly. At host startup, each transport using the default JSON serializer requires metadata for its send routes and the wire contracts its consumers deserialize, including older versions accepted through upcasters. With no transport declarations, resolving the default serializer requires metadata for every registered contract.
+The last applicable registration supplies the metadata for a standalone message. Generated registrations apply to their declared message roots. An explicit `UseJsonSerializer` registration applies to any message type its context covers, including explicitly registered message types from a contracts assembly. Call it after generated registration to override that metadata. At host startup, each transport using the default JSON serializer requires metadata for its send routes and the wire contracts its consumers deserialize, including older versions accepted through upcasters. With no transport declarations, resolving the default serializer requires metadata for every registered contract.
 
 For every contract a consumer reads, including an upcaster's input type, use `JsonSourceGenerationMode.Metadata` or the default generation mode. A context generated with `JsonSourceGenerationMode.Serialization` alone lacks the metadata needed to deserialize the contract. See [System.Text.Json source generation modes](https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/source-generation-modes).
 

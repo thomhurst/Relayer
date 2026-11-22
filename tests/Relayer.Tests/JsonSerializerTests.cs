@@ -72,6 +72,41 @@ public class JsonSerializerTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Exported_contexts_apply_their_own_options_to_each_message_root(bool billingFirst)
+    {
+        var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+        using var provider = new ServiceCollection().AddRelayer(builder =>
+        {
+            if (billingFirst)
+            {
+                builder.AddBillingContracts();
+                builder.AddOrdersContracts(options);
+            }
+            else
+            {
+                builder.AddOrdersContracts(options);
+                builder.AddBillingContracts();
+            }
+        }).BuildServiceProvider();
+        var serializer = provider.GetRequiredService<IMessageSerializer>();
+        var buffer = new ArrayBufferWriter<byte>();
+        var order = new Relayer.TestContracts.Orders.Order(42);
+        serializer.Serialize(order, buffer);
+        await Assert.That(Encoding.UTF8.GetString(buffer.WrittenSpan)).IsEqualTo("""{"messageId":42}""");
+        await Assert.That(serializer.Deserialize<Relayer.TestContracts.Orders.Order>(new ReadOnlySequence<byte>(buffer.WrittenMemory)))
+            .IsEqualTo(order);
+
+        buffer.Clear();
+        var audit = new Relayer.TestContracts.Billing.OrderAudit(order);
+        serializer.Serialize(audit, buffer);
+        await Assert.That(Encoding.UTF8.GetString(buffer.WrittenSpan)).IsEqualTo("""{"Order":{"MessageId":42}}""");
+        await Assert.That(serializer.Deserialize<Relayer.TestContracts.Billing.OrderAudit>(new ReadOnlySequence<byte>(buffer.WrittenMemory)))
+            .IsEqualTo(audit);
+    }
+
+    [Test]
     public async Task Exported_contexts_preserve_custom_serializer()
     {
         var custom = new CustomSerializer();

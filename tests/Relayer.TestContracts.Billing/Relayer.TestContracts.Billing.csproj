@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><IsAotCompatible>true</IsAotCompatible></PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../Relayer.TestContracts.Orders/Relayer.TestContracts.Orders.csproj" />
     <ProjectReference Include="../../src/Relayer/Relayer.csproj" />
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
