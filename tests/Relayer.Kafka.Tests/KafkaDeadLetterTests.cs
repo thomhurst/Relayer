@@ -3,6 +3,7 @@ using System.Text;
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -122,6 +123,67 @@ public class KafkaDeadLetterTests
         await Assert.That(remaining.Messages[0].Features.GetRequired<KafkaDeadLetterFeature>().Record.Offset).IsEqualTo(2L);
         await Assert.That(await resumed.RedriveAsync(source, maxMessages: 3, cancellationToken: token)).IsEqualTo(1);
         await Assert.That(await resumed.RedriveAsync(source, maxMessages: 3, cancellationToken: token)).IsEqualTo(0);
+    }
+
+    [Test]
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Management_reads_committed_records_unless_isolation_is_overridden(KafkaHeaderSnapshotBroker broker)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, Topic(), token);
+        var source = fixture.Destination + ".dead-letter";
+
+        await using var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
+            .WithTransactionalId(fixture.Destination).BuildAsync(token);
+        await producer.InitTransactionsAsync(token);
+
+        await using (var aborted = producer.BeginTransaction())
+        {
+            await aborted.ProduceAsync(new()
+            {
+                Topic = source,
+                Partition = 0,
+                Value = [12]
+            }, token);
+            await aborted.AbortAsync(token);
+        }
+
+        await using (var committed = producer.BeginTransaction())
+        {
+            await committed.ProduceAsync(new()
+            {
+                Topic = source,
+                Partition = 0,
+                Value = [21]
+            }, token);
+            await committed.CommitAsync(token);
+        }
+
+        await using var provider = Provider(fixture.Bootstrap, fixture.Destination);
+        var manager = provider.GetRequiredKeyedService<IDeadLetterManager>("events");
+        var page = await manager.PeekAsync(source, 2, cancellationToken: token);
+        await Assert.That(page.Messages.Count).IsEqualTo(1);
+        await Assert.That(page.Messages[0].Features.GetRequired<KafkaDeadLetterFeature>().Record.Value[0])
+            .IsEqualTo((byte)21);
+
+        await using var uncommittedProvider = Provider(fixture.Bootstrap, fixture.Destination, isolation: IsolationLevel.ReadUncommitted);
+        var uncommitted = uncommittedProvider.GetRequiredKeyedService<IDeadLetterManager>("events");
+        var uncommittedPage = await uncommitted.PeekAsync(source, 1, cancellationToken: token);
+        await Assert.That(uncommittedPage.Messages.Single().Features.GetRequired<KafkaDeadLetterFeature>().Record.Value[0])
+            .IsEqualTo((byte)12);
+
+        await Assert.That(await manager.RedriveAsync(source, maxMessages: 2, cancellationToken: token)).IsEqualTo(1);
+        await using var reader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest).WithIsolationLevel(IsolationLevel.ReadCommitted).Build();
+        reader.Assign(new TopicPartition(fixture.Destination, 0));
+        await reader.InitializeAsync(token);
+        var redriven = await reader.ConsumeOneAsync(TimeSpan.FromSeconds(10), token);
+        await Assert.That(redriven!.Value.Value[0]).IsEqualTo((byte)21);
+
+        await Assert.That(await manager.PurgeAsync(source, 2, token)).IsEqualTo(1);
     }
 
     [Test]
@@ -260,7 +322,8 @@ public class KafkaDeadLetterTests
         return destination + "-ordinary";
     }
 
-    private static ServiceProvider Provider(string bootstrap, string destination, bool failSend = false, bool slowFetch = false)
+    private static ServiceProvider Provider(string bootstrap, string destination, bool failSend = false, bool slowFetch = false,
+        IsolationLevel? isolation = null)
     {
         var services = new ServiceCollection();
         var group = OrdinaryGroup(destination);
@@ -272,6 +335,11 @@ public class KafkaDeadLetterTests
                 o.ConfigureConsumer = native =>
                 {
                     native.WithGroupId(group);
+
+                    if (isolation is { } level)
+                    {
+                        native.WithIsolationLevel(level);
+                    }
 
                     if (slowFetch)
                     {
