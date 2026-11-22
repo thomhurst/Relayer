@@ -212,7 +212,9 @@ server address/port at span creation. The delivered routing key is added only wh
 along with the delivery tag; it is not a sampler input. This replaces the previous
 `{exchange}:{routing key}:{queue}` destination and routing-key sampler attributes, keeping span names bounded
 for wildcard bindings such as `order.#`. Send telemetry retains its exchange/routing-key destination.
-The handler/failure pipeline is composed once at startup.
+Relayer composes each consumer's handler and failure pipeline at startup. If any pipeline fails to compose,
+Relayer discards the partial set. A successful retry of host startup on the same host starts one subscription
+per configured consumer.
 
 A suspended consumer callback must return `Task`. D52 treats that task as native-client boundary cost, measured
 against the equivalent raw callback. The upstream [8.0 consumer API proposal](https://github.com/rabbitmq/rabbitmq-dotnet-client/issues/964) discusses a `ValueTask` boundary. `RabbitMqReceiveBenchmarks` compares native JSON receive/ack with the

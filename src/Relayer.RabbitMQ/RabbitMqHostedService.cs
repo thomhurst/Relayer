@@ -94,15 +94,18 @@ internal sealed class RabbitMqConsumerControl(IServiceProvider provider, string 
         if (!_composed)
         {
             var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
+            // Publish only a complete set, so a retried start cannot compose a consumer twice.
+            var receivers = new List<RabbitMqConsumer>(definition.Consumers.Count);
 
             foreach (var declaration in definition.Consumers)
             {
                 var consumer = (ConsumerDefinition<RabbitMqConsumerOptions>)declaration;
                 var composer = new RabbitMqReceiveComposer(provider, name, consumer, _transport.Options);
-                _transport.Consumers.Add(new(consumer, consumer.Options, composer.ProcessAsync,
+                receivers.Add(new(consumer, consumer.Options, composer.ProcessAsync,
                     provider.GetRequiredService<MessageTracing>(), provider.GetService<TimeProvider>(), _transport.Options.ConnectionFactory, provider.GetService<ILogger<RabbitMqConsumer>>()));
             }
 
+            _transport.Consumers.AddRange(receivers);
             _composed = true;
         }
 

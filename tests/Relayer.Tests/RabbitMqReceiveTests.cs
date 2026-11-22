@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Exceptions;
 using Relayer.HealthChecks;
+using Relayer.Pipeline;
 using Relayer.RabbitMQ;
 using Relayer.Transports;
 
@@ -708,7 +709,8 @@ public class RabbitMqReceiveTests
         await host.StopAsync(token);
     }
 
-    internal static IHost Host(ConnectionFactory factory, RabbitMqReceiveControl control, bool declareDeadLetter = true, RabbitMqClock? clock = null, int concurrency = 1, bool autoStart = true, bool secondConsumer = false, bool thirdConsumer = false)
+    internal static IHost Host(ConnectionFactory factory, RabbitMqReceiveControl control, bool declareDeadLetter = true, RabbitMqClock? clock = null, int concurrency = 1, bool autoStart = true, bool secondConsumer = false, bool thirdConsumer = false,
+        Action<ConsumePipelineBuilder>? configureOrdersPipeline = null)
     {
         return new HostBuilder().ConfigureServices(services =>
                 {
@@ -763,6 +765,11 @@ public class RabbitMqReceiveTests
                                 consumer.Options.ChannelOptions = new(false, false, consumerDispatchConcurrency: (ushort)concurrency);
                                 consumer.Options.PrefetchCount = (ushort)concurrency;
                                 consumer.Handler<RabbitMqReceiveHandler>();
+
+                                if (configureOrdersPipeline is not null)
+                                {
+                                    consumer.ConfigurePipeline(configureOrdersPipeline);
+                                }
                             });
 
                             if (thirdConsumer)
