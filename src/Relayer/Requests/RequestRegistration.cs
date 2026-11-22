@@ -18,6 +18,8 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
         }
 
         var requestRoutes = 0;
+        var responseRoutes = 0;
+        ISendRouteDefinition? localResponseRoute = null;
 
         foreach (var transport in configuration.Transports)
         {
@@ -27,12 +29,47 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
                 {
                     requestRoutes++;
                 }
+
+                if (route.MessageType != typeof(TResponse) || route is not ISendRouteDefinition send)
+                {
+                    continue;
+                }
+
+                if (!send.IsAdditionalDestination)
+                {
+                    responseRoutes++;
+                }
+
+                if (transport.Name == replies.Transport && route.Destination == replies.Address)
+                {
+                    localResponseRoute = send;
+                }
             }
         }
 
         if (requestRoutes > 1)
         {
             failures.Add($"Request '{typeof(TRequest)}': requests need exactly one send route, but {requestRoutes} are declared. Remove the extra Send<TRequest> declarations.");
+        }
+
+        if (localResponseRoute is not null)
+        {
+            var location = $"Request replies on '{replies.Address}' on transport '{replies.Transport}'";
+
+            if (responseRoutes != 1)
+            {
+                failures.Add($"{location}: replies need exactly one send route for '{typeof(TResponse)}', but {responseRoutes} are declared. Remove the extra Send<TResponse> declarations.");
+            }
+
+            if (localResponseRoute.HasDestinationSelector)
+            {
+                failures.Add($"{location}: replies require a fixed destination. Declare Send<TResponse> with the reply address and without a destination selector.");
+            }
+
+            if (localResponseRoute.SendOptions.EnvelopeMode != MessageEnvelopeMode.CloudEvents)
+            {
+                failures.Add($"{location}: use a CloudEvents response route to preserve correlationid.");
+            }
         }
 
         foreach (var transport in configuration.Transports)
