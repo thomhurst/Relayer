@@ -156,6 +156,9 @@ The native `ITransport.SendBatchAsync` entry point creates one `create {destinat
 Disable per-message batch spans, or opt into serialized body sizes, through the Options pattern before building the provider:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+
 services.AddSingleton<Microsoft.Extensions.Options.IOptions<TracingOptions>>(
     Microsoft.Extensions.Options.Options.Create(new TracingOptions
     {
