@@ -46,6 +46,8 @@ var price = await client.RequestAsync(
 
 In separate applications, the requester declares `Request<GetPrice, Price>` and the responder declares `Send<Price>` plus its ordinary request consumer. Both register their stable message identities and serializers. Do not add a second `Send<GetPrice>` route: `Request` already declares it.
 
+When the requester also declares a response send route to its reply endpoint on the same named transport, startup validates that the response type has exactly one send route across all transports. That route must use a fixed destination and CloudEvents mode. A requester with an external responder can start without declaring a local response route.
+
 `ReplyAsync` requires the request's reply address to equal the response type's configured `Send` destination. Request and response types support exactly one declared route, even though ordinary sends can [fan out to several routes](sending.md#sending-to-several-routes). It does not create arbitrary endpoints, route to an untrusted header, or emulate native reply queues. Applications needing several independent reply destinations for one response type must currently use the native client's routing facilities. Give each requesting process its own reply endpoint and configure the responder's matching route. Do not run competing requesters on the same reply queue; process-local pending state cannot correlate another process's replies. For Kafka, also give each requester its own group and source topic.
 
 ## Timeouts and bounded state

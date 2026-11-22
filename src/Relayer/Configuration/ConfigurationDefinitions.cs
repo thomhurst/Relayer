@@ -150,6 +150,8 @@ public sealed class RouteDefinition<TMessage> : IRouteDefinition, ISendRouteDefi
 
     bool ISendRouteDefinition.IsAdditionalDestination => _group is not null && _group.Destinations[0] != Destination;
 
+    bool ISendRouteDefinition.HasDestinationSelector => _group is not null;
+
     SendRouteRegistration? ISendRouteDefinition.CreateSendRegistration(string transportName)
     {
         return ((ISendRouteDefinition)this).IsAdditionalDestination ? null

@@ -369,6 +369,69 @@ public class RequestResponseTests
     }
 
     [Test]
+    [Arguments("raw", "CloudEvents")]
+    [Arguments("single selector destination", "fixed destination")]
+    [Arguments("several selector destinations", "fixed destination")]
+    [Arguments("several routes", "exactly one send route")]
+    public async Task Startup_rejects_an_incompatible_local_reply_route(string configuration, string expectedError)
+    {
+        using var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("local", transport =>
+            {
+                transport.Request<RpcRequest, RpcResponse>("requests", "replies");
+                transport.Consume("requests", consumer => consumer.Handler<RequestEchoHandler>());
+
+                switch (configuration)
+                {
+                    case "raw":
+                        transport.Send<RpcResponse>("replies", route => route.SendOptions = new() { EnvelopeMode = MessageEnvelopeMode.Raw });
+                        break;
+                    case "single selector destination":
+                        transport.Send<RpcResponse>(["replies"], _ => "replies");
+                        break;
+                    case "several selector destinations":
+                        transport.Send<RpcResponse>(["other", "replies"], _ => "replies");
+                        break;
+                    case "several routes":
+                        transport.Send<RpcResponse>("replies");
+                        break;
+                }
+            });
+
+            if (configuration == "several routes")
+            {
+                builder.InMemory("other", transport => transport.Send<RpcResponse>("replies"));
+            }
+        })).Build();
+        await Assert.That(async () => await host.StartAsync()).Throws<Microsoft.Extensions.Options.OptionsValidationException>()
+            .WithMessageContaining(expectedError);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Requester_only_host_starts_without_a_local_reply_route(bool sendResponseElsewhere)
+    {
+        using var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("local", transport =>
+            {
+                transport.Request<RpcRequest, RpcResponse>("requests", "replies");
+
+                if (sendResponseElsewhere)
+                {
+                    transport.Send<RpcResponse>("elsewhere", route => route.SendOptions = new() { EnvelopeMode = MessageEnvelopeMode.Raw });
+                }
+            });
+        })).Build();
+        await host.StartAsync();
+        await host.StopAsync();
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Reply_omission_uses_context_token_but_explicit_None_is_uncancelable(bool explicitNone)

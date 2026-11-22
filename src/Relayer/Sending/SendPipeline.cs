@@ -59,6 +59,11 @@ internal interface ISendRouteDefinition
         get;
     }
 
+    bool HasDestinationSelector
+    {
+        get;
+    }
+
     SendRouteRegistration? CreateSendRegistration(string transportName);
 }
 
