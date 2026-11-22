@@ -17,7 +17,6 @@ using Relayer.AmazonSqs;
 services.AddRelayer(relayer =>
 {
     relayer.AddMessageTypesFromThisAssembly();
-    relayer.UseJsonSerializer(AppJsonContext.Default);
     relayer.AmazonSqs("orders", sqs =>
     {
         sqs.Options.Configure(options =>
@@ -32,7 +31,7 @@ services.AddRelayer(relayer =>
 await sender.SendAsync(new OrderPlaced(customerId));
 ```
 
-Messages need a stable `[Message]` identity and a source-generated JSON context. Start the host before sending. Every route destination must match a declared **queue name**, not a URL. Relayer resolves native queue URLs at startup. Named options support the [Options pattern](../guides/configuration.md).
+Give messages a stable `[Message]` identity. `AddMessageTypesFromThisAssembly()` registers their [generated JSON metadata](../guides/messages.md#serialization). Start the host before sending. Every route destination must match a declared **queue name**, not a URL. Relayer resolves native queue URLs at startup. Named options support the [Options pattern](../guides/configuration.md).
 
 The native `AmazonSQSConfig` passes unchanged to an owned client, which uses the AWS credential chain. Alternatively, set `SqsClient` to an existing `IAmazonSQS`; its configuration and credentials stay caller-owned, and Relayer never disposes it. Do not mutate captured configuration after startup. Use the separate typed `AmazonSns` declaration below for SNS topics.
 

@@ -11,6 +11,7 @@ Supply prepared `PublisherServiceApiClient` and `SubscriberServiceApiClient` ins
 
 ```csharp
 using Google.Cloud.PubSub.V1;
+using Relayer;
 using Relayer.GooglePubSub;
 
 var publisher = await new PublisherServiceApiClientBuilder().BuildAsync();
@@ -22,7 +23,6 @@ var subscription = SubscriptionName.FromProjectSubscription("my-project", "billi
 services.AddRelayer(relayer =>
 {
     relayer.AddMessageTypesFromThisAssembly();
-    relayer.UseJsonSerializer(AppJson.Default);
     relayer.GooglePubSub("events", pubsub =>
     {
         pubsub.TopologyMode = TopologyMode.Provision;
