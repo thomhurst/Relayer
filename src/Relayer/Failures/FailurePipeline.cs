@@ -385,7 +385,9 @@ public sealed class FailurePipeline
         else
         {
             var sender = CopyTransport ?? context.RedirectSend(_transport);
-            await sender.SendAsync(copy, timeout.Token).ConfigureAwait(false);
+            await (sender is ITransportFailureCopyObserver observer
+                    ? observer.SendCopyAsync(copy, context.EnvelopeNames, timeout.Token)
+                    : sender.SendAsync(copy, timeout.Token)).ConfigureAwait(false);
         }
 
         timeout.Token.ThrowIfCancellationRequested();

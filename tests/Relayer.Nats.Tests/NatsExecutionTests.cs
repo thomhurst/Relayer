@@ -10,6 +10,7 @@ using NATS.Client.JetStream;
 using NATS.Client.JetStream.Models;
 using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Testing;
 using Relayer.Transports;
 
 namespace Relayer.Nats.Tests;
@@ -417,6 +418,88 @@ public class NatsExecutionTests
         await Assert.That(settled.Info.NumAckPending).IsEqualTo(0L);
         await Assert.That(settled.Info.AckFloor.ConsumerSeq).IsEqualTo(2UL);
         await Assert.That(control.Attempts).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Harness_dispatch_retains_typed_poison_copy_identity_without_a_send_route()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var stream = TestContext.Current!.Isolation.GetIsolatedName("events");
+        var orders = TestContext.Current!.Isolation.GetIsolatedName("orders");
+        var deadSubject = TestContext.Current!.Isolation.GetIsolatedName("dead");
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(NatsExecutionJson.Default);
+            relayer.Nats("execution", transport =>
+            {
+                transport.TopologyMode = TopologyMode.Provision;
+                transport.Options.Configure(options =>
+                {
+                    options.ConnectionOptions = broker.Options();
+                    options.Streams.Add(new(stream)
+                    {
+                        Configuration = new(stream, [orders, deadSubject])
+                    });
+                    options.Consumers.Add(new(stream, "worker")
+                    {
+                        Configuration = new("worker")
+                        {
+                            FilterSubject = orders
+                        }
+                    });
+                });
+                transport.Send<ExecutionMessage>(orders);
+                transport.Consume("worker", consumer =>
+                {
+                    consumer.Options.Stream = stream;
+                    consumer.Failures(new()
+                    {
+                        RetryDelays = [],
+                        DeadLetterEndpoint = deadSubject
+                    });
+                    consumer.Handler<ConfirmedAckHandler>();
+                });
+            });
+        });
+        builder.Services.AddRelayerHarness();
+
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+        await host.StartAsync(token);
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        var dead = await js.CreateConsumerAsync(stream, new("dead_reader")
+        {
+            FilterSubject = deadSubject
+        }, token);
+        var poison = new ExecutionMessage(13); // ConfirmedAckHandler throws for values other than 42.
+        using var scope = host.Services.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(poison, cancellationToken: token);
+
+        var copy = await dead.NextAsync(NatsRawSerializer<byte[]>.Default, cancellationToken: token);
+        await Assert.That(copy).IsNotNull();
+        await copy!.AckAsync(new()
+        {
+            DoubleAck = true
+        }, token);
+        var harness = host.Services.GetRequiredService<RelayerHarness>();
+        await harness.WaitForIdleAsync(token);
+        await host.StopAsync(token);
+
+        var dispatched = harness.Dispatched;
+        var original = dispatched.Single(item => item.Destination == orders);
+        var deadLetter = dispatched.Single(item => item.Destination == deadSubject);
+        await Assert.That(original.MessageId).IsNotNull();
+        await Assert.That(original.WireType).IsNotNull();
+        await Assert.That(copy.Headers!["ce-id"].ToString()).IsEqualTo(original.MessageId);
+        await Assert.That(copy.Headers["ce-type"].ToString()).IsEqualTo(original.WireType);
+        await Assert.That(deadLetter.MessageId).IsEqualTo(original.MessageId);
+        await Assert.That(deadLetter.WireType).IsEqualTo(original.WireType);
+        await Assert.That(harness.GetDispatched<ExecutionMessage>()).IsEquivalentTo(new[] { poison, poison });
     }
 
     [Test]
