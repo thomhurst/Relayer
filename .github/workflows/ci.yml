@@ -4,7 +4,7 @@ on:
 permissions:
   contents: read
 jobs:
-  removal-probe:
+  broker-removal-probe:
     strategy:
       fail-fast: false
       matrix:
@@ -16,13 +16,51 @@ jobs:
           - runner: ubuntu-24.04
             engine: v29.10.0
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 8
+    timeout-minutes: 15
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
       - run: sudo bash scripts/Prepare-ContainerTests.sh
       - uses: docker/setup-docker-action@3f1ab1ab0e29231562e4db4ca600c1a49653bac6
         with:
           version: ${{ matrix.engine }}
           set-host: true
       - run: bash scripts/Test-ContainerPortAllocation.sh
-      - run: bash scripts/Probe-BrokerRemoval.sh
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+        with:
+          global-json-file: global.json
+      - name: Build affected test projects
+        run: |
+          dotnet build -c Release -f net11.0 tests/Relayer.Kafka.Tests
+          dotnet build -c Release -f net11.0 tests/Relayer.Tests
+      - name: Run Kafka and RabbitMQ conformance while Docker creates and removes published containers
+        run: |
+          docker pull apache/kafka:4.0.2
+          docker pull rabbitmq:4.1.4-alpine
+          mkdir -p /tmp/relayer-probe
+          timeout 240 docker events --filter type=container \
+            --format '{{.TimeNano}} {{.Action}} {{.Actor.ID}} {{index .Actor.Attributes "image"}}' > /tmp/relayer-probe/docker-events.log &
+          events=$!
+          dotnet test --no-build -c Release -f net11.0 --project tests/Relayer.Kafka.Tests \
+            --treenode-filter '/*/*/KafkaOutageConformanceTests/*' > /tmp/relayer-probe/kafka.log 2>&1 &
+          kafka=$!
+          dotnet test --no-build -c Release -f net11.0 --project tests/Relayer.Tests \
+            --treenode-filter '/*/*/RabbitMqConformanceTests/*' > /tmp/relayer-probe/rabbit.log 2>&1 &
+          rabbit=$!
+          bash scripts/Probe-BrokerRemoval.sh > /tmp/relayer-probe/probe.log &
+          probe=$!
+          result=0
+          for pid in "$kafka" "$rabbit" "$probe"; do wait "$pid" || result=1; done
+          kill "$events" 2>/dev/null || true
+          wait "$events" || true
+          for log in /tmp/relayer-probe/*.log; do
+            echo "::group::$(basename "$log")"
+            cat "$log"
+            echo "::endgroup::"
+          done
+          exit "$result"
