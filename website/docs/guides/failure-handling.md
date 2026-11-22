@@ -58,6 +58,8 @@ exception
 Compose your own rules once and share the classifier across consumers:
 
 ```csharp
+using Relayer;
+
 var classifier = new FailureClassifierBuilder()
     .On<ArgumentException>(FailureAction.DeadLetter)
     .On<TimeoutException>(FailureAction.DeadLetter,
@@ -78,6 +80,8 @@ To opt out and dead-letter on the first failure, call `consumer.Failures(Failure
 For adapters that support delayed redelivery, add `RedeliveryDelays` to the same options:
 
 ```csharp
+using Relayer;
+
 var policy = new FailureOptions
 {
     RetryDelays = [TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500)],
@@ -105,6 +109,9 @@ Delay arrays bind with the standard configuration binder. For example:
 ```
 
 ```csharp
+using Microsoft.Extensions.Configuration;
+using Relayer;
+
 consumer.Failures(configuration.GetSection("OrdersFailure").Get<FailureOptions>()!);
 ```
 
