@@ -372,6 +372,24 @@ public class OutboxRegistrationTests
     }
 
     [Test]
+    public async Task Direct_dispatch_rejects_conflicting_sent_history_even_when_another_recovery_worker_matches()
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.Configure<HostOptions>(options => options.ServicesStartConcurrently = true);
+        builder.Services.AddRelayerPostgreSqlDirectDispatch("orders", source,
+            new PostgreSqlOutboxOptions { RetainSentMessages = true });
+        builder.Services.AddRelayerPostgreSqlMaintenance("matching", source, new PostgreSqlMaintenanceOptions { RetainSentMessages = true });
+        builder.Services.AddRelayerPostgreSqlMaintenance("conflicting", source, new PostgreSqlMaintenanceOptions { Schema = "public" });
+        using var host = builder.Build();
+
+        var error = await Assert.ThrowsAsync<OptionsValidationException>(() => host.StartAsync());
+        await Assert.That(error!.Message).Contains("orders").And.Contains("conflicting").And.Contains("RetainSentMessages");
+        await Assert.That(host.Services.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("orders").ExecuteTask is null).IsTrue();
+        await Assert.That(host.Services.GetRequiredKeyedService<PostgreSqlMaintenanceWorker>("conflicting").ExecuteTask is null).IsTrue();
+    }
+
+    [Test]
     public async Task Recovery_matches_physical_store_with_a_different_worker_name_and_explicit_public_schema()
     {
         await using var source = NpgsqlDataSource.Create("Host=unused");

@@ -7,6 +7,8 @@ using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
 
+internal sealed record PostgreSqlOutboxWriterRegistration(string? DispatchStoreName);
+
 /// <summary>Registers scoped PostgreSQL transaction enlistment. Stores and dispatch are configured separately.</summary>
 public static class PostgreSqlOutboxRegistration
 {
@@ -54,8 +56,10 @@ public static class PostgreSqlOutboxRegistration
             }
 
             return new(snapshot, provider.GetServices<PostgreSqlSchedulingRegistration>(), provider.GetService<RelayerInstrumentation>(),
-                dispatchStoreName is null ? null : provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(dispatchStoreName));
+                dispatchStoreName is null ? null : provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(dispatchStoreName),
+                provider.GetService<PostgreSqlLocalStore[]>());
         });
+        services.TryAddSingleton(new PostgreSqlOutboxWriterRegistration(dispatchStoreName));
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<PostgreSqlOutbox>());
         services.TryAddSingleton<IValidateOptions<PostgreSqlOutboxOptions>, Validator>();
         services.AddOptions<PostgreSqlOutboxOptions>().ValidateOnStart();

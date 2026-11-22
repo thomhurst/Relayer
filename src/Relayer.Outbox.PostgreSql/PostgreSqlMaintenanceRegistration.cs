@@ -34,7 +34,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         services.AddOptions<PostgreSqlMaintenanceOptions>(name);
         services.AddSingleton(new MaintenanceRegistration(name, options));
         services.AddSingleton<PostgreSqlDispatchRegistration>(provider => new(name, dataSource,
-            provider.GetRequiredService<IOptionsMonitor<PostgreSqlMaintenanceOptions>>().Get(name).Validate(), Recovery: true));
+            provider.GetRequiredService<IOptionsMonitor<PostgreSqlMaintenanceOptions>>().Get(name).Validate(), PostgreSqlDispatchKind.Maintenance));
         services.TryAddSingleton<IOptionsFactory<PostgreSqlMaintenanceOptions>>(provider => new MaintenanceOptionsFactory(
             provider.GetServices<MaintenanceRegistration>(), provider.GetServices<IConfigureOptions<PostgreSqlMaintenanceOptions>>(),
             provider.GetServices<IPostConfigureOptions<PostgreSqlMaintenanceOptions>>(), provider.GetServices<IValidateOptions<PostgreSqlMaintenanceOptions>>()));

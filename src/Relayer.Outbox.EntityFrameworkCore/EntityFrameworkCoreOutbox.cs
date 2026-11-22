@@ -54,7 +54,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
             }
         }
 
-        configuration.ValidateProvider(context.Database.ProviderName);
+        configuration.ValidateWriter(context);
         var created = new OutboxContext(context, configuration);
         _contexts.Add(created);
         return created;

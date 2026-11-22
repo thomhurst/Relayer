@@ -107,7 +107,7 @@ public static class EntityFrameworkCoreOutboxExtensions
             }
         }
 
-        var configuration = new PostgreSqlOutboxConfiguration(options, dispatcher, workers);
+        var configuration = new PostgreSqlOutboxConfiguration(options, dispatcher, workers, services.GetService<PostgreSqlLocalStore[]>());
 
         foreach (var extension in builder.Options.Extensions)
         {
