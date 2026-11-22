@@ -104,8 +104,12 @@ internal static class GooglePubSubTopology
             Check(actual.EnableExactlyOnceDelivery == expected.EnableExactlyOnceDelivery, "EnableExactlyOnceDelivery", expected.EnableExactlyOnceDelivery, actual.EnableExactlyOnceDelivery);
             Check(actual.Filter == expected.Filter, "Filter", expected.Filter, actual.Filter);
             Check(actual.RetainAckedMessages == expected.RetainAckedMessages, "RetainAckedMessages", expected.RetainAckedMessages, actual.RetainAckedMessages);
-            Check(Equals(actual.DeadLetterPolicy, expected.DeadLetterPolicy), "DeadLetterPolicy", expected.DeadLetterPolicy, actual.DeadLetterPolicy);
-            Check(Equals(actual.RetryPolicy, expected.RetryPolicy), "RetryPolicy", expected.RetryPolicy, actual.RetryPolicy);
+            var expectedDeadLetter = WithNativeDefaults(expected.DeadLetterPolicy);
+            var actualDeadLetter = WithNativeDefaults(actual.DeadLetterPolicy);
+            Check(Equals(expectedDeadLetter, actualDeadLetter), "DeadLetterPolicy", expectedDeadLetter, actualDeadLetter);
+            var expectedRetry = WithNativeDefaults(expected.RetryPolicy);
+            var actualRetry = WithNativeDefaults(actual.RetryPolicy);
+            Check(Equals(expectedRetry, actualRetry), "RetryPolicy", expectedRetry, actualRetry);
 
             if (expected.AckDeadlineSeconds != 0)
             {
@@ -142,5 +146,37 @@ internal static class GooglePubSubTopology
         }
 
         return new(differences);
+    }
+
+    // Compare effective policy values without changing a declaration or broker response.
+    private static DeadLetterPolicy? WithNativeDefaults(DeadLetterPolicy? policy)
+    {
+        if (policy is not { MaxDeliveryAttempts: 0 })
+        {
+            return policy;
+        }
+
+        var normalized = policy.Clone();
+        normalized.MaxDeliveryAttempts = 5;
+        return normalized;
+    }
+
+    private static RetryPolicy? WithNativeDefaults(RetryPolicy? policy)
+    {
+        if (policy is null or { MinimumBackoff: not null, MaximumBackoff: not null })
+        {
+            return policy;
+        }
+
+        var normalized = policy.Clone();
+        normalized.MinimumBackoff ??= new()
+        {
+            Seconds = 10
+        };
+        normalized.MaximumBackoff ??= new()
+        {
+            Seconds = 600
+        };
+        return normalized;
     }
 }

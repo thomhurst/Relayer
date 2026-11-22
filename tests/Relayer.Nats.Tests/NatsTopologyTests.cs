@@ -149,6 +149,84 @@ public class NatsTopologyTests
     }
 
     [Test]
+    public async Task Validate_accepts_native_stream_subject_default_but_keeps_mirrors_and_sources_subjectless()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var isolation = TestContext.Current!.Isolation;
+        var ordinaryName = isolation.GetIsolatedName("ordinary");
+        var mirrorName = isolation.GetIsolatedName("mirror");
+        var sourcedName = isolation.GetIsolatedName("sourced");
+        var ordinary = new StreamConfig(ordinaryName, [])
+        {
+            Storage = StreamConfigStorage.Memory
+        };
+        var mirror = new StreamConfig(mirrorName, [])
+        {
+            Storage = StreamConfigStorage.Memory,
+            Mirror = new()
+            {
+                Name = ordinaryName
+            }
+        };
+        var sourced = new StreamConfig(sourcedName, [])
+        {
+            Storage = StreamConfigStorage.Memory,
+            Sources =
+            [
+                new()
+                {
+                    Name = ordinaryName
+                }
+            ]
+        };
+        await using var provider = Provider(ordinary, mirror, sourced);
+        var transport = provider.GetRequiredService<ITransport>();
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences).IsEmpty();
+
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        var actual = await js.GetStreamAsync(ordinaryName, cancellationToken: token);
+        var actualMirror = await js.GetStreamAsync(mirrorName, cancellationToken: token);
+        var actualSourced = await js.GetStreamAsync(sourcedName, cancellationToken: token);
+        await Assert.That(actual.Info.Config.Subjects!.Single()).IsEqualTo(ordinaryName);
+        await Assert.That(actualMirror.Info.Config.Subjects ?? []).IsEmpty();
+        await Assert.That(actualSourced.Info.Config.Subjects ?? []).IsEmpty();
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+        await using var explicitProvider = Provider(ordinary with
+        {
+            Subjects = [ordinaryName]
+        });
+        var explicitTransport = explicitProvider.GetRequiredService<ITransport>();
+        await Assert.That((await explicitTransport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+        await using var driftProvider = Provider(ordinary with
+        {
+            Subjects = [isolation.GetIsolatedName("different")]
+        });
+        var drift = driftProvider.GetRequiredService<ITransport>();
+        await Assert.That((await drift.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Single()).Contains("subjects");
+
+        ServiceProvider Provider(params StreamConfig[] streams)
+        {
+            return NatsConfigurationTests.Provider(options =>
+            {
+                options.ConnectionOptions = broker.Options();
+
+                foreach (var stream in streams)
+                {
+                    options.Streams.Add(new(stream.Name!)
+                    {
+                        Configuration = stream
+                    });
+                }
+            });
+        }
+    }
+
+    [Test]
     public async Task Existence_validation_uses_read_only_permissions_and_native_recovery_after_broker_restart()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));

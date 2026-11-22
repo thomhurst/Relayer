@@ -176,7 +176,21 @@ the attempt, dead copy and barrier together.
 services.AddRelayerPostgreSqlDeadLetters("orders", dataSource, storeOptions);
 var manager = serviceProvider.GetRequiredKeyedService<IDeadLetterManager>("orders");
 var page = await manager.PeekAsync("orders", maxMessages: 20);
-var details = page.Messages[0].Features.GetRequired<PostgreSqlDeadLetterDetails>();
+if (page.Messages.Count == 0)
+{
+    Console.WriteLine("No dead letters on this page.");
+}
+else
+{
+    var selected = page.Messages[0];
+    var details = selected.Features.GetRequired<PostgreSqlDeadLetterDetails>();
+    Console.WriteLine($"{selected.MessageId} failed at {details.FailedAt:O}");
+}
+```
+
+When you decide to redrive a message, use its `MessageId` as `selectedId`.
+
+```csharp
 await manager.RedriveAsync("orders", message => message.MessageId == selectedId, maxMessages: 1000);
 ```
 
@@ -210,7 +224,13 @@ that maintenance refreshes.
 
 ## Find a missing message
 
-Use the stable message UUID to inspect durable metadata without changing rows:
+Use `PostgreSqlMessageLookup.FindAsync` to inspect durable metadata without changing rows.
+Each call matches the supplied UUID against both the outbox row ID and the inbox message ID.
+All fan-out destinations share the original CloudEvents `id`. Each later outbox
+route has its own row ID. Use the row ID (the `MessageId` returned by dead-letter
+`PeekAsync`) to locate a particular route. Use the original CloudEvents UUID to find
+consumer inbox receipts. For example, a dead later route can appear in one lookup
+while the inbox receipt appears in a separate lookup by the original UUID.
 
 ```csharp
 var lookup = new PostgreSqlMessageLookup(dataSource, new PostgreSqlOutboxOptions
@@ -224,7 +244,7 @@ foreach (var receipt in location.InboxReceipts)
     Console.WriteLine($"{receipt.Consumer}: {receipt.ProcessedAt:O}");
 ```
 
-The `dotnet-relayer` tool provides the same lookup:
+The `dotnet-relayer` tool provides the same lookup. Pass the row ID or CloudEvents UUID to `--id`.
 
 ```bash
 export RELAYER_POSTGRES_CONNECTION_STRING='Host=localhost;Database=app;Username=app;Password=...'
