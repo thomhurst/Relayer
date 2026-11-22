@@ -20,6 +20,9 @@ services.AddRelayer(builder =>
 `TenantContext` is a scoped service. In an application scope, set its ID after authorizing the tenant:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+
 await using var scope = provider.CreateAsyncScope();
 var tenant = scope.ServiceProvider.GetRequiredService<TenantContext>();
 tenant.Id = new WireString(authorizedTenantId);
