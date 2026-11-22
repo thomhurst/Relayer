@@ -656,6 +656,48 @@ public class BatchPipelineTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task Buffered_send_success_after_cancellation_preserves_route_success_but_honors_receive_cancellation(bool cancelReceive)
+    {
+        await using var provider = Provider(sendTimeout: cancelReceive ? null : TimeSpan.FromSeconds(1));
+        using var receiveCancellation = new CancellationTokenSource();
+        var transport = provider.GetRequiredService<Transport>();
+        transport.Send = async (_, token) =>
+        {
+            if (cancelReceive)
+            {
+                receiveCancellation.Cancel();
+            }
+
+            // The transport accepted the send and returns success after observing cancellation.
+            await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            await Assert.That(token.IsCancellationRequested).IsTrue();
+        };
+        provider.GetRequiredService<Control>().Invoke = async (batch, _) =>
+        {
+            await batch.Items[0].Context.Services.GetRequiredService<ISender>().SendAsync(new Payload());
+            return BatchResult.Success;
+        };
+        var output = Sentinels(2);
+        var pending = Pipeline(provider).ProcessBatchAsync(Input(2), output, receiveCancellation.Token)
+            .AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+        if (cancelReceive)
+        {
+            await Assert.That(async () => await pending).Throws<OperationCanceledException>();
+            await Assert.That(output.All(item => item.Kind == DispositionKind.SettledByHandler)).IsTrue();
+        }
+        else
+        {
+            await pending;
+            await Assert.That(output.All(item => item.Kind == DispositionKind.Complete)).IsTrue();
+        }
+
+        await Assert.That(transport.Sends).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Partial_failure_with_buffered_sends_retries_whole_attempt_and_reaches_bounded_settlement(bool poison)
     {
         await using var provider = Provider();
@@ -987,7 +1029,7 @@ public class BatchPipelineTests
         internal static readonly ScopedBaseline Shared = new();
     }
 
-    internal static ServiceProvider Provider(int size = 4, int nativeSize = 10)
+    internal static ServiceProvider Provider(int size = 4, int nativeSize = 10, TimeSpan? sendTimeout = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton<Control>();
@@ -1004,7 +1046,16 @@ public class BatchPipelineTests
             new ConsumerBuilder<object>(builder.Services, builder.Infrastructure().Handlers, "manual").Handler<AllocationHandler>();
             builder.AddTransport<Options, Options>("test", transport =>
             {
-                transport.Send<Payload>("destination");
+                transport.Send<Payload>("destination", route =>
+                {
+                    if (sendTimeout is { } timeout)
+                    {
+                        route.SendOptions = new()
+                        {
+                            Timeout = timeout
+                        };
+                    }
+                });
                 transport.Consume("source", consumer => consumer.Handler<Handler>().Batch(size, TimeSpan.FromSeconds(10)));
             });
         });
