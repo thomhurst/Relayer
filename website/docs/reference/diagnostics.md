@@ -39,6 +39,8 @@ Alternatively, call `builder.Infrastructure().MessageTypes.Add<OrderPlaced>("ord
 
 For a generic handler whose message is nested in a generic type, such as `IHandler<Outer<T>.Message>`, RLY001 checks the closed message when you register the concrete handler. For example, `consumer.Handler<OuterHandler<int>>()` can use an identity registered with `builder.Infrastructure().MessageTypes.Add<Outer<int>.Message>("orders")`.
 
+When a generic local handler registration uses a message type parameter from an enclosing helper, the message stays open inside that helper. If the enclosing helper constrains its handler to `IHandler<TMessage>` or `IBatchHandler<TMessage>`, RLY001 checks the message identity at the call that supplies the concrete message type.
+
 When a helper registers the identity, for example a shared messaging library that registers it together with the route, mark the helper's type parameter with `[RegistersMessageIdentity]`. Each call with a concrete type argument then counts as a registration, including calls to a helper in a referenced assembly:
 
 ```csharp
