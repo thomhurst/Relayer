@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -672,6 +673,117 @@ public class HarnessTests
         instrumentation.AddOutboxPending(-1);
         await idle.WaitAsync(s_limit);
         fixture.Harness.Reset();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Caller_owned_instrumentation_outlives_the_provider(bool hosted)
+    {
+        using var instrumentation = new RelayerInstrumentation();
+        using var listener = new MeterListener();
+        var measurements = new List<long>();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "relayer.outbox.pending")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, delta, _, _) => measurements.Add(delta));
+        listener.Start();
+
+        var services = new ServiceCollection();
+        services.AddSingleton(instrumentation);
+        services.AddRelayer(_ =>
+        {
+        });
+        services.AddRelayerHarness();
+        RelayerHarness harness;
+
+        using (var provider = services.BuildServiceProvider())
+        {
+            if (hosted)
+            {
+                // The host resolves its hosted services before any startup callbacks.
+                _ = provider.GetServices<IHostedService>().ToArray();
+            }
+
+            var resolved = provider.GetRequiredService<RelayerInstrumentation>();
+
+            if (!hosted)
+            {
+                _ = provider.GetRequiredService<RelayerHarness>();
+            }
+
+            await Assert.That(resolved).IsSameReferenceAs(instrumentation);
+            resolved.AddOutboxPending(1);
+            harness = provider.GetRequiredService<RelayerHarness>();
+            var idle = harness.WaitForIdleAsync();
+            await Assert.That(idle.IsCompleted).IsFalse();
+            resolved.AddOutboxPending(-1);
+            await idle.WaitAsync(s_limit);
+        }
+
+        instrumentation.AddOutboxPending(1);
+        await Assert.That(measurements.ToArray()).IsEquivalentTo(new long[] { 1, -1, 1 });
+        await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsTrue();
+
+        using var nextProvider = services.BuildServiceProvider();
+        var nextHarness = nextProvider.GetRequiredService<RelayerHarness>();
+        instrumentation.AddOutboxPending(1);
+        var nextIdle = nextHarness.WaitForIdleAsync();
+        await Assert.That(nextIdle.IsCompleted).IsFalse();
+        await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsTrue();
+        instrumentation.AddOutboxPending(-1);
+        await nextIdle.WaitAsync(s_limit);
+    }
+
+    [Test]
+    public async Task Failed_harness_attachment_leaves_caller_owned_instrumentation_reusable()
+    {
+        using var shared = new RelayerInstrumentation();
+        using var distinct = new RelayerInstrumentation();
+        var services = new ServiceCollection();
+        services.AddSingleton(shared);
+        services.AddRelayer(_ =>
+        {
+        });
+        services.AddRelayerHarness();
+
+        using (var firstProvider = services.BuildServiceProvider())
+        {
+            var firstHarness = firstProvider.GetRequiredService<RelayerHarness>();
+            var secondServices = new ServiceCollection();
+            secondServices.AddSingleton(distinct);
+            secondServices.AddSingleton(shared);
+            secondServices.AddRelayer(_ =>
+            {
+            });
+            secondServices.AddRelayerHarness();
+            using var secondProvider = secondServices.BuildServiceProvider();
+
+            await Assert.That(() => secondProvider.GetRequiredService<RelayerHarness>()).Throws<InvalidOperationException>();
+            shared.AddOutboxPending(1);
+            var idle = firstHarness.WaitForIdleAsync();
+            await Assert.That(idle.IsCompleted).IsFalse();
+            shared.AddOutboxPending(-1);
+            await idle.WaitAsync(s_limit);
+
+            var thirdServices = new ServiceCollection();
+            thirdServices.AddSingleton(distinct);
+            thirdServices.AddRelayer(_ =>
+            {
+            });
+            thirdServices.AddRelayerHarness();
+            using var thirdProvider = thirdServices.BuildServiceProvider();
+            var thirdHarness = thirdProvider.GetRequiredService<RelayerHarness>();
+            distinct.AddOutboxPending(1);
+            var thirdIdle = thirdHarness.WaitForIdleAsync();
+            await Assert.That(thirdIdle.IsCompleted).IsFalse();
+            distinct.AddOutboxPending(-1);
+            await thirdIdle.WaitAsync(s_limit);
+        }
     }
 
     [Test]

@@ -5,8 +5,8 @@ using Relayer.Pipeline;
 
 namespace Relayer.Transports;
 
-/// <summary>Owns the application's Relayer meter. DI disposes it with the service provider.</summary>
-/// <remarks>Use the registered singleton across endpoints. Standalone callers must dispose their instance.</remarks>
+/// <summary>Owns the application's Relayer meter.</summary>
+/// <remarks>Use the registered singleton across endpoints. Dispose any instance you create and own.</remarks>
 public sealed class RelayerInstrumentation : IDisposable
 {
     private readonly Meter _meter;
@@ -82,9 +82,28 @@ public sealed class RelayerInstrumentation : IDisposable
     private OutboxDepth[] _depths = [];
 
     // Test harness only: committed outbox rows are outstanding work until dispatch settles them.
+    private IRelayerObserver? _observer;
+
     internal IRelayerObserver? Observer
     {
-        get; set;
+        get
+        {
+            return _observer;
+        }
+        set
+        {
+            _observer = value;
+        }
+    }
+
+    internal bool TryAttachObserver(IRelayerObserver observer)
+    {
+        return Interlocked.CompareExchange(ref _observer, observer, null) is null;
+    }
+
+    internal void DetachObserver(IRelayerObserver observer)
+    {
+        Interlocked.CompareExchange(ref _observer, null, observer);
     }
 
     /// <summary>Creates instrumentation with an optional application logger factory.</summary>
