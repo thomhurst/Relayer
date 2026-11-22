@@ -63,8 +63,8 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
 
         if (workers is not null)
         {
-            SupportsScheduling = PostgreSqlSchedulingRegistration.Supports(workers, options.Schema, options.TablePrefix);
-            SupportsOrderedScheduling = PostgreSqlSchedulingRegistration.Supports(workers, options.Schema, options.TablePrefix, options.Lanes);
+            (SupportsScheduling, SupportsOrderedScheduling) =
+                PostgreSqlSchedulingRegistration.GetCapabilities(workers, options.Schema, options.TablePrefix, options.Lanes);
         }
 
         var inbox = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +

@@ -689,6 +689,12 @@ disposing the data source. Database outbox durability does not imply native brok
 implement dispatch. Direct native lifecycle calls and SQL transaction-control commands bypass the wrapper
 and are outside this contract.
 
+For scheduled sends, startup checks that a due-row worker matches the writer's schema, table prefix and
+ordered lane count where applicable. Both ADO.NET transaction entry points refine those capabilities
+using the selected connection's Npgsql host, port and database. A scheduled send through `ISender` fails
+before enlistment unless a worker matches the active transaction. Separate data sources can share a
+target. The database comparison follows D33 and requires a database or configured username.
+
 ## D33. Commit-triggered dispatch transfers owned buffers to a named worker
 
 **Context.** Direct dispatch must start without a polling interval and must outlive the committing

@@ -386,7 +386,8 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         {
             get;
         } =
-            [new(entry.Options.Schema, entry.Options.TablePrefix), new(entry.Options.Schema, entry.Options.TablePrefix, entry.Options.Lanes)];
+            [new(entry.DataSource, entry.Options.Schema, entry.Options.TablePrefix),
+                new(entry.DataSource, entry.Options.Schema, entry.Options.TablePrefix, entry.Options.Lanes)];
 
         internal PostgreSqlDirectDispatcher Direct
         {

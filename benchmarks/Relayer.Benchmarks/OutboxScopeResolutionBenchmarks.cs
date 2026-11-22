@@ -1,6 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Outbox.PostgreSql;
 using Relayer.Transports;
@@ -11,13 +12,15 @@ namespace Relayer.Benchmarks;
 [MemoryDiagnoser]
 public class OutboxScopeResolutionBenchmarks
 {
+    private NpgsqlDataSource _dataSource = null!;
     private ServiceProvider _legacy = null!;
     private ServiceProvider _cached = null!;
 
     [GlobalSetup]
     public void Setup()
     {
-        var legacy = Services();
+        _dataSource = NpgsqlDataSource.Create("Host=unused");
+        var legacy = Services(_dataSource);
         // Reproduce the previous factory, including snapshot validation and SQL generation per scope.
         legacy.AddScoped<EntityFrameworkCoreOutbox>(static provider =>
         {
@@ -27,15 +30,15 @@ public class OutboxScopeResolutionBenchmarks
             return new(configuration.SupportsScheduling, configuration.SupportsOrderedScheduling);
         });
         _legacy = legacy.BuildServiceProvider();
-        _cached = Services().BuildServiceProvider();
+        _cached = Services(_dataSource).BuildServiceProvider();
         _ = Resolve(_legacy);
         _ = Resolve(_cached);
     }
 
-    private static IServiceCollection Services()
+    private static IServiceCollection Services(NpgsqlDataSource dataSource)
     {
         var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox();
-        services.AddSingleton(new PostgreSqlSchedulingRegistration(null, "relayer_"));
+        services.AddSingleton(new PostgreSqlSchedulingRegistration(dataSource, null, "relayer_"));
         return services;
     }
 
@@ -62,5 +65,6 @@ public class OutboxScopeResolutionBenchmarks
     {
         _legacy.Dispose();
         _cached.Dispose();
+        _dataSource.Dispose();
     }
 }
