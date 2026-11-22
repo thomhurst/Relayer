@@ -9,6 +9,9 @@ Request/response uses the normal [send](sending.md) and [consume](handlers.md) p
 This complete in-memory example registers the request route, reply consumer and responder:
 
 ```csharp
+using Relayer;
+using Relayer.InMemory;
+
 services.AddRelayer(relayer =>
 {
     relayer.AddMessageTypesFromThisAssembly();

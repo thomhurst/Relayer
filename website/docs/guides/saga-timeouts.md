@@ -85,9 +85,12 @@ Use the EF Core outbox and context registration from the [saga guide](sagas.md#e
 Register a matching due-row worker against the same database, schema and table prefix:
 
 ```csharp
-using Relayer.Transports;
-using Relayer.Outbox.PostgreSql;
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
 using Relayer.Kafka;
+using Relayer.Outbox.PostgreSql;
+using Relayer.Sagas.EntityFrameworkCore;
+using Relayer.Transports;
 
 services.AddLogging();
 services.AddSingleton<TimeProvider>(TimeProvider.System);
