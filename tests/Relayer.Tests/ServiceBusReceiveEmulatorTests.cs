@@ -423,7 +423,7 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
                   { "name": "management", "listen": "0.0.0.0:5300", "upstream": "servicebus:5300", "enabled": true }
                 ]
                 """), FilePath.Of("/proxies.json"))
-            .WithCommand("-config", "/proxies.json")
+            .WithCommand("-host=127.0.0.1", "-config", "/proxies.json")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Populated proxies from file"));
 
         if (OperatingSystem.IsLinux())
@@ -485,20 +485,35 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
         }
     }
 
-    internal Task DisconnectAsync(CancellationToken token)
+    internal async Task DisconnectAsync(CancellationToken token)
     {
-        return Dedicated().StopAsync(token);
+        // Close established AMQP connections and reject new ones before stopping the
+        // upstream. A listening proxy can leave the SDK waiting on an AMQP handshake.
+        await ToggleAmqpProxyAsync(GetDedicatedProxy(), token);
+        await _emulator.StopAsync(token);
     }
 
-    internal Task ReconnectAsync(CancellationToken token)
+    internal async Task ReconnectAsync(CancellationToken token)
     {
-        return Dedicated().StartAsync(token);
+        var proxy = GetDedicatedProxy();
+        await _emulator.StartAsync(token);
+        await ToggleAmqpProxyAsync(proxy, token);
     }
 
-    private ServiceBusContainer Dedicated()
+    private static async Task ToggleAmqpProxyAsync(IContainer proxy, CancellationToken token)
     {
-        return _proxy is not null ? _emulator
-                : throw new InvalidOperationException("Stopping the emulator needs StartAsync(dedicated: true); other tests share this one.");
+        var result = await proxy.ExecAsync(["/toxiproxy-cli", "toggle", "amqp"], token);
+
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Could not toggle the Service Bus AMQP proxy: {result.Stderr}");
+        }
+    }
+
+    private IContainer GetDedicatedProxy()
+    {
+        return _proxy
+            ?? throw new InvalidOperationException("Stopping the emulator needs StartAsync(dedicated: true); other tests share this one.");
     }
 
     public async ValueTask DisposeAsync()
