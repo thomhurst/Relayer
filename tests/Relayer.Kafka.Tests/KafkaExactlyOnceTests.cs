@@ -289,6 +289,71 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
     }
 
     [Test]
+    public async Task Consumer_callback_cannot_add_a_topic_to_the_transactional_source()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var topics = await TopicsAsync("eos-source", 1, token);
+        await using var archive = await TopicsAsync("eos-archive", 1, token);
+        await ProduceAsync(topics.Input, 1, token, [0]);
+        await ProduceAsync(archive.Input, 1, token, [1]);
+        var listener = new AssignedTopics();
+        using var host = BuildHost(topics, new(), TimeSpan.FromMilliseconds(200),
+            configureConsumer: native => native.SubscribeTo(archive.Input).AddRebalanceListener(listener));
+
+        await host.StartAsync(token);
+
+        while (await CommittedAsync(topics.Input, 0, token) != 1)
+        {
+            await Task.Delay(50, token);
+        }
+
+        await host.StopAsync(token);
+        await Assert.That(await ReadOutputAsync(topics.Output, 1, token)).IsEquivalentTo([0]);
+        await Assert.That(listener.Topics.Distinct()).IsEquivalentTo([topics.Input]);
+    }
+
+    [Test]
+    public async Task Manual_retry_reports_the_supported_policy_and_can_leave_the_send_transaction_intact()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var topics = await TopicsAsync("eos-manual-retry", 1, token);
+        await ProduceAsync(topics.Input, 1, token, [0]);
+        var scheduler = new CountingScheduler();
+        InvalidOperationException? error = null;
+        var control = new ExactlyOnceControl
+        {
+            BeforeSend = context =>
+            {
+                try
+                {
+                    context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.FromSeconds(1));
+                }
+                catch (InvalidOperationException exception)
+                {
+                    error = exception;
+                }
+            }
+        };
+        using var host = BuildHost(topics, control, TimeSpan.FromMilliseconds(200),
+            configureServices: services => services.AddSingleton<IFailureScheduler>(scheduler));
+
+        await host.StartAsync(token);
+
+        while (await CommittedAsync(topics.Input, 0, token) != 1)
+        {
+            await Task.Delay(50, token);
+        }
+
+        await host.StopAsync(token);
+        await Assert.That(error?.Message).Contains("Kafka does not support manual redelivery");
+        await Assert.That(error?.Message).Contains("RetryDelays");
+        await Assert.That(scheduler.Calls).IsEqualTo(0);
+        await Assert.That(await ReadOutputAsync(topics.Output, 1, token)).IsEquivalentTo([0]);
+    }
+
+    [Test]
     public async Task A_database_inbox_is_rejected_at_startup()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(1));
@@ -299,12 +364,14 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
     }
 
     private IHost BuildHost(Topics topics, ExactlyOnceControl control, TimeSpan commitInterval, bool missingDeadLetter = false,
-        bool inbox = false, string? transactionalId = null, bool observe = false)
+        bool inbox = false, string? transactionalId = null, bool observe = false,
+        Action<ConsumerBuilder<byte[], byte[]>>? configureConsumer = null, Action<IServiceCollection>? configureServices = null)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
         builder.Services.Configure<HostOptions>(options => options.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
         builder.Services.AddSingleton(control);
+        configureServices?.Invoke(builder.Services);
         builder.Services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
@@ -315,7 +382,11 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
                 kafka.Options.Configure(options =>
                 {
                     options.BootstrapServers.Add(broker.Bootstrap);
-                    options.ConfigureConsumer = native => native.WithAutoOffsetReset(AutoOffsetReset.Earliest);
+                    options.ConfigureConsumer = native =>
+                    {
+                        native.WithAutoOffsetReset(AutoOffsetReset.Earliest);
+                        configureConsumer?.Invoke(native);
+                    };
                     options.ConfigureProducer = native => native.WithAllowAutoCreateTopics(false);
                 });
                 kafka.Send<ExactlyOnceOutput>(topics.Output);
@@ -424,6 +495,47 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
         return topics;
     }
 
+    private sealed class AssignedTopics : IRebalanceListener
+    {
+        internal ConcurrentQueue<string> Topics
+        {
+            get;
+        } = new();
+
+        public ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
+        {
+            foreach (var partition in partitions)
+            {
+                Topics.Enqueue(partition.Topic);
+            }
+
+            return default;
+        }
+
+        public ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+
+        public ValueTask OnPartitionsLostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
+        {
+            return default;
+        }
+    }
+
+    private sealed class CountingScheduler : IFailureScheduler
+    {
+        private int _calls;
+
+        internal int Calls => Volatile.Read(ref _calls);
+
+        public ValueTask ScheduleAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _calls);
+            return default;
+        }
+    }
+
     private sealed class Topics(string input, IAdminClient admin) : IAsyncDisposable
     {
         internal string Input
@@ -473,6 +585,11 @@ public sealed class ExactlyOnceControl
         get; init;
     }
 
+    internal Action<MessageContext>? BeforeSend
+    {
+        get; init;
+    }
+
     internal ConcurrentQueue<int> Handled
     {
         get;
@@ -488,6 +605,7 @@ public sealed class ExactlyOnceHandler(ExactlyOnceControl control, ISender sende
             throw new InvalidOperationException("poison record");
         }
 
+        control.BeforeSend?.Invoke(context);
         await sender.SendAsync(new ExactlyOnceOutput(message.Number), cancellationToken);
 
         if (control.Block is { } entered)

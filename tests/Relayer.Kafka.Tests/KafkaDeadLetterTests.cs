@@ -127,6 +127,38 @@ public class KafkaDeadLetterTests
 
     [Test]
     [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Redrive_callback_cannot_forward_another_topic_or_skip_the_first_dead_letter(KafkaHeaderSnapshotBroker broker)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, Topic(), token);
+        await using var archive = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, fixture.Destination + ".archive", token);
+        var source = fixture.Destination + ".dead-letter";
+        await using var provider = Provider(fixture.Bootstrap, fixture.Destination,
+            configureConsumer: native => native.SubscribeTo(archive.Destination));
+        var manager = provider.GetRequiredKeyedService<IDeadLetterManager>("events");
+        await using var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).BuildAsync(token);
+        await producer.ProduceAsync(archive.Destination, null!, new byte[] { 1 }, token);
+
+        await Assert.That(await manager.RedriveAsync(source, maxMessages: 1, cancellationToken: token)).IsEqualTo(0);
+
+        await producer.ProduceAsync(source, null!, new byte[] { 2 }, token);
+        await Assert.That(await manager.RedriveAsync(source, maxMessages: 1, cancellationToken: token)).IsEqualTo(1);
+        await using var reader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest).WithPartitionEof().Build();
+        reader.Assign(new TopicPartition(fixture.Destination, 0));
+        await reader.InitializeAsync(token);
+
+        var forwarded = await reader.ConsumeOneAsync(TimeSpan.FromSeconds(10), token);
+        await Assert.That(forwarded!.Value.Value).IsEquivalentTo(new byte[] { 2 });
+        var end = await reader.ConsumeOneAsync(TimeSpan.FromSeconds(10), token);
+        await Assert.That(end!.Value.IsPartitionEof).IsTrue();
+    }
+
+    [Test]
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
     public async Task Management_reads_committed_records_unless_isolation_is_overridden(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -323,7 +355,7 @@ public class KafkaDeadLetterTests
     }
 
     private static ServiceProvider Provider(string bootstrap, string destination, bool failSend = false, bool slowFetch = false,
-        IsolationLevel? isolation = null)
+        IsolationLevel? isolation = null, Action<ConsumerBuilder<byte[], byte[]>>? configureConsumer = null)
     {
         var services = new ServiceCollection();
         var group = OrdinaryGroup(destination);
@@ -345,6 +377,8 @@ public class KafkaDeadLetterTests
                     {
                         native.WithFetchMinBytes(1_000_000).WithFetchMaxWait(TimeSpan.FromSeconds(3));
                     }
+
+                    configureConsumer?.Invoke(native);
                 };
 
                 if (failSend)
