@@ -16,6 +16,9 @@ Start with one endpoint and run both systems on separate destinations during ver
 For a consumer that previously read `context.Message`, use the message parameter directly:
 
 ```csharp
+using Microsoft.Extensions.Logging;
+using Relayer;
+
 [Message("orders.placed", Version = 1)]
 public sealed record OrderPlaced(string OrderId);
 
