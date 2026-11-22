@@ -1,6 +1,6 @@
 ---
 title: Diagnostics
-description: "Compile-time analyzers RLY001 to RLY004 and RLYH001, generator errors RLYM001 to RLYM007, and preview opt-ins RLYEXP001 to RLYEXP004: what each reports and how to fix it."
+description: "Compile-time analyzers RLY001 to RLY004 and RLYH001, generator errors RLYM001 to RLYM009, and preview opt-ins RLYEXP001 to RLYEXP004: what each reports and how to fix it."
 ---
 
 Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. They inspect symbols, not naming conventions, and add no runtime work. Startup validation still checks the complete configuration, including declarations assembled through helpers or other assemblies.
@@ -23,6 +23,8 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 | [RLYM005](#rlym005) | Error | A declared message name is null. |
 | [RLYM006](#rlym006) | Error | A message name is empty or whitespace. |
 | [RLYM007](#rlym007) | Error | A message version is below 1. |
+| [RLYM008](#rlym008) | Error | `GenerateMessageTypes` specifies an invalid exported registration name. |
+| [RLYM009](#rlym009) | Error | `GenerateMessageJsonType` specifies an invalid payload type. |
 
 ## RLY001
 

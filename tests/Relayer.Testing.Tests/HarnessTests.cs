@@ -54,25 +54,7 @@ public class HarnessTests
     [Test]
     public async Task Typed_logical_reads_distinguish_payloads_and_tombstones_with_the_same_identity()
     {
-        var services = new ServiceCollection();
-        services.AddRelayer(builder =>
-        {
-            builder.AddMessageTypesFromThisAssembly();
-            builder.UseSendMiddleware<LogicalSendOnly>();
-            builder.InMemory("logical", transport =>
-            {
-                transport.Send<Probe>("probes");
-                transport.Options.Configure(options => options.Endpoints["probes"] = new()
-                {
-                    Capabilities = new()
-                    {
-                        Tombstones = true
-                    },
-                });
-            });
-        });
-        services.AddRelayerHarness();
-        await using var provider = services.BuildServiceProvider();
+        await using var provider = CreateTombstoneProvider(logicalOnly: true);
         using var scope = provider.CreateScope();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         var payload = new Probe(42);
@@ -90,36 +72,109 @@ public class HarnessTests
     [Test]
     public async Task Typed_serialized_reads_preserve_tombstones_and_owned_binary_keys()
     {
-        await using var fixture = await Fixture.Create(tombstones: true);
-        var transport = fixture.Provider.GetServices<ITransport>().Single(item => item.Name == "first");
+        await using var provider = CreateTombstoneProvider();
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var transport = provider.GetRequiredService<ITransport>();
+        var harness = provider.GetRequiredService<RelayerHarness>();
+        var serializer = provider.GetRequiredService<IMessageSerializer>();
         var key = new byte[] { 0xff, 0x00, 0x80 };
         var headers = new KeyValuePair<string, WireString>[] { new("ce_type", new("harness.probe;v=1")), new("ce_id", new("deletion")) };
-        await fixture.Send(new Probe(42));
+        await sender.SendAsync(new Probe(42));
         await transport.SendAsync(new("probes", default, headers, orderingKey: new WireString(key), isTombstone: true), default);
-        var provider = fixture.Provider;
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
-            provider.GetRequiredService<MessageTypeRegistry>(), fixture.Serializer, static (_, _, _) => default)
+            provider.GetRequiredService<MessageTypeRegistry>(), serializer, static (_, _, _) => default)
             .Handler(provider.GetRequiredService<HandlerRegistry>().Descriptors.Single(item => item.HandlerType == typeof(ProbeHandler)))
             .Build(1);
         var receive = new ReceivePipeline<OutgoingMessage, TombstoneBinding>(pipeline, new(), 1);
         var body = new ArrayBufferWriter<byte>();
-        fixture.Serializer.Serialize(new Probe(7), body);
+        serializer.Serialize(new Probe(7), body);
         await receive.ProcessAsync(new("probes", body.WrittenMemory, headers));
         await receive.ProcessAsync(new("probes", default, headers, orderingKey: new WireString(key), isTombstone: true));
-        var dispatched = fixture.Harness.Dispatched.Single(item => item.IsTombstone);
-        var consumed = fixture.Harness.Consumed.Single(item => item.IsTombstone);
+        var dispatched = harness.Dispatched.Single(item => item.IsTombstone);
+        var consumed = harness.Consumed.Single(item => item.IsTombstone);
         Array.Clear(key);
-        await Assert.That(fixture.Harness.GetDispatched<Probe>().Single().Value).IsEqualTo(42);
-        await Assert.That(fixture.Harness.GetConsumed<Probe>().Single().Value).IsEqualTo(7);
-        await Assert.That(fixture.Harness.GetDispatched<Tombstone<Probe>>().Single().Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
-        await Assert.That(fixture.Harness.GetConsumed<Tombstone<Probe>>().Single().Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
-        await Assert.That(() => fixture.Harness.Read<Probe>(consumed)).Throws<InvalidOperationException>();
-        await Assert.That(() => fixture.Harness.Read<Tombstone<Probe>>(fixture.Harness.Consumed[0])).Throws<InvalidOperationException>();
-        await fixture.StartServices();
-        await fixture.Idle();
-        fixture.Harness.Reset();
-        await Assert.That(fixture.Harness.Read<Tombstone<Probe>>(consumed).Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
-        await Assert.That(dispatched.Read<Tombstone<Probe>>(fixture.Serializer).Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+        await Assert.That(harness.GetDispatched<Probe>().Single().Value).IsEqualTo(42);
+        await Assert.That(harness.GetConsumed<Probe>().Single().Value).IsEqualTo(7);
+        await Assert.That(harness.GetDispatched<Tombstone<Probe>>().Single().Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+        await Assert.That(harness.GetConsumed<Tombstone<Probe>>().Single().Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+        await Assert.That(() => harness.Read<Probe>(consumed)).Throws<InvalidOperationException>();
+        await Assert.That(() => harness.Read<Tombstone<Probe>>(harness.Consumed[0])).Throws<InvalidOperationException>();
+        await harness.WaitForIdleAsync().WaitAsync(s_limit);
+        harness.Reset();
+        await Assert.That(harness.Read<Tombstone<Probe>>(consumed).Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+        await Assert.That(dispatched.Read<Tombstone<Probe>>(serializer).Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+    }
+
+    private static ServiceProvider CreateTombstoneProvider(bool logicalOnly = false)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<ProbeControl>();
+        services.AddSingleton<ITransport, TombstoneTransport>();
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+
+            if (logicalOnly)
+            {
+                builder.UseSendMiddleware<LogicalSendOnly>();
+            }
+
+            builder.AddTransport<object, object>(TombstoneTransport.TransportName, transport =>
+            {
+                transport.Send<Probe>("probes");
+                transport.Consume("probes", consumer => consumer.Handler<ProbeHandler>());
+            });
+        });
+        services.AddRelayerHarness();
+        return services.BuildServiceProvider();
+    }
+
+    private sealed class TombstoneTransport : ITransport
+    {
+        internal const string TransportName = "tombstones";
+
+        public string Name => TransportName;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                Tombstones = true,
+                OrderedByKey = true
+            };
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 
     private readonly struct TombstoneBinding : IMessageBinding<OutgoingMessage>
@@ -1307,7 +1362,8 @@ public class HarnessTests
         private bool _started;
 
         internal static Task<Fixture> Create(ProbeControl? control = null, bool log = false,
-            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null, bool tombstones = false,
+            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null,
+            TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null,
             IFailureClassifier? classifier = null, bool nativeDeadLetter = true)
         {
             var services = new ServiceCollection();
@@ -1356,8 +1412,6 @@ public class HarnessTests
                                 MaxDeliveryDelay = TimeSpan.MaxValue,
                                 MaxRedeliveryDelay = maxRedeliveryDelay ?? TimeSpan.MaxValue,
                                 MaxBatchSize = 100,
-                                OrderedByKey = tombstones,
-                                Tombstones = tombstones,
                             }
                         };
                     });

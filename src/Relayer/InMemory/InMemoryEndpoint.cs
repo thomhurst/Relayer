@@ -72,6 +72,11 @@ internal sealed class InMemoryEndpoint
             throw new NotSupportedException($"Endpoint '{name}': in-memory Replay, Transactions and PauseResume are not implemented. Disable these capabilities.");
         }
 
+        if (Capabilities.Tombstones)
+        {
+            throw new NotSupportedException($"Endpoint '{name}': in-memory endpoints cannot preserve native null values. Disable Tombstones.");
+        }
+
         var sharedQueue = IsUnorderedQueue;
 
         if (sharedQueue && options.Partitions != 1)

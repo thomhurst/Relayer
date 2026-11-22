@@ -6,6 +6,7 @@ description: "A process-local transport in the core package for tests, samples a
 The in-memory transport ships in `Relayer`. Use it for process-local delivery, tests and samples. Each instance owns its endpoints; named transports and service providers do not share messages.
 
 ```csharp
+using Relayer;
 using Relayer.InMemory;
 
 services.AddRelayer(relayer =>
@@ -14,7 +15,7 @@ services.AddRelayer(relayer =>
     relayer.InMemory("local", local =>
     {
         local.Send<OrderPlaced>("orders");
-        local.Consume("orders", consumer => consumer.Handler<OrderHandler>());
+        local.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>());
     });
 });
 ```
@@ -28,6 +29,8 @@ The host composes all consumers for a named in-memory transport before registeri
 A typed CloudEvents send route to an endpoint with a hosted consumer must use the default `ce_` header prefix. Startup reports incompatible `SendRouteOptions.HeaderNames` values before any receiver starts for that transport. Send-only endpoints can use a custom prefix.
 
 Configure declared endpoints through named Options. An endpoint with no override uses queue defaults. An override for an undeclared endpoint fails startup.
+
+Keep `TransportCapabilities.Tombstones` disabled. In-memory endpoints store byte bodies and reject this capability during construction because they cannot preserve native null values. Native single and batch sends also reject any `OutgoingMessage` marked as a tombstone. Ordinary empty byte bodies are supported.
 
 ```csharp
 using Relayer.Transports;

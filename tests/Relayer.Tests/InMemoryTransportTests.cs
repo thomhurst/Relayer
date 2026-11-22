@@ -842,6 +842,38 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    public async Task Endpoint_construction_rejects_tombstones()
+    {
+        var options = new InMemoryEndpointOptions();
+        var capabilities = options.Capabilities with
+        {
+            Tombstones = true
+        };
+
+        await Assert.That(() => Transport(options with { Capabilities = capabilities }))
+            .Throws<NotSupportedException>()
+            .WithMessage("Endpoint 'orders': in-memory endpoints cannot preserve native null values. Disable Tombstones.");
+    }
+
+    [Test]
+    public async Task Native_sends_reject_tombstones_and_accept_empty_bodies()
+    {
+        await using var transport = Transport(new()
+        {
+            Capabilities = new()
+            {
+                OrderedByKey = true
+            }
+        });
+        var key = new WireString("order-1");
+        var tombstone = new OutgoingMessage("orders", ReadOnlyMemory<byte>.Empty, orderingKey: key, isTombstone: true);
+
+        await Assert.That(async () => await transport.SendAsync(tombstone, default)).Throws<NotSupportedException>();
+        await Assert.That(async () => await transport.SendBatchAsync(new[] { tombstone }, default)).Throws<NotSupportedException>();
+        await transport.SendAsync(new("orders", ReadOnlyMemory<byte>.Empty, orderingKey: key), default);
+    }
+
+    [Test]
     public async Task Unsupported_native_operations_fail_explicitly()
     {
         await using var transport = Transport(new()
