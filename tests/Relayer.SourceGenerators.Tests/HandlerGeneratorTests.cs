@@ -289,29 +289,37 @@ public class HandlerGeneratorTests
     }
 
     [Test]
-    public async Task Inaccessible_message_types_report_actionable_diagnostic()
+    [Arguments("IConsumerBuilder", "builder.Handler<Handler>()")]
+    [Arguments("IConsumerBuilder", "RelayerGeneratedHandlers.Handler<Handler>(builder)")]
+    [Arguments("ITransportConsumerBuilder", "builder.Consume<Handler>(\"orders\")")]
+    public async Task Generated_registration_reports_inaccessible_message_at_the_call(string builderType, string registration)
     {
-        var compilation = CreateCompilation("""
+        var compilation = CreateCompilation($$"""
             using Relayer;
             using System.Threading;
             using System.Threading.Tasks;
             public class Container
             {
                 private sealed class HiddenMessage { }
+
                 public sealed class Handler : IHandler<HiddenMessage>
                 {
                     ValueTask IHandler<HiddenMessage>.HandleAsync(HiddenMessage m, MessageContext c, CancellationToken ct) => default;
                 }
+
+                public static void Register({{builderType}} builder) => {{registration}};
             }
             """);
-        await Assert.That(compilation.GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error)).IsFalse();
-        GeneratorDriver driver = CSharpGeneratorDriver.Create(new HandlerGenerator());
-        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
-        await Assert.That(diagnostics.Single().Id).IsEqualTo("RLYH001");
-        await Assert.That(diagnostics.Single().Descriptor.HelpLinkUri)
+        var driver = Run(compilation, out var output);
+        var diagnostics = await output.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        var diagnostic = diagnostics.Single(d => d.Severity == DiagnosticSeverity.Error);
+
+        await Assert.That(Generated(driver)).DoesNotContain("HandlerDescriptor<");
+        await Assert.That(diagnostic.Id).IsEqualTo("RLYH001");
+        await Assert.That(diagnostic.Location.SourceTree!.GetText().ToString(diagnostic.Location.SourceSpan)).IsEqualTo(registration);
+        await Assert.That(diagnostic.Descriptor.HelpLinkUri)
             .IsEqualTo("https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyh001");
-        await Assert.That(diagnostics.Single().GetMessage()).Contains("Make the message type assembly-accessible");
-        await Assert.That(output.GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error)).IsFalse();
+        await Assert.That(diagnostic.GetMessage()).Contains("HiddenMessage").And.Contains("Make the message type assembly-accessible");
     }
 
     [Test]

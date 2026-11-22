@@ -13,12 +13,6 @@ public sealed class HandlerGenerator : IIncrementalGenerator
     private static readonly SymbolDisplayFormat s_nullableTypeFormat = SymbolDisplayFormat.FullyQualifiedFormat
         .AddMiscellaneousOptions(SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
 
-    private static readonly DiagnosticDescriptor s_inaccessibleMessage = new(
-        "RLYH001", "Handler message type is inaccessible",
-        "Handler '{0}' uses message type '{1}', which generated dispatch cannot access. Make the message type assembly-accessible and non-file-local.",
-        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
-        helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyh001");
-
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         // [Embedded] keeps the internal generated types out of friend assemblies (InternalsVisibleTo),
@@ -145,7 +139,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         return builder.ToString();
     }
 
-    private static bool CanReference(ITypeSymbol type, Compilation compilation)
+    internal static bool CanReference(ITypeSymbol type, Compilation compilation)
     {
         return type switch
         {
@@ -161,15 +155,8 @@ public sealed class HandlerGenerator : IIncrementalGenerator
 
     private static void Emit(SourceProductionContext context, ImmutableArray<DispatchModel> models)
     {
-        foreach (var invalid in models.Where(static m => !m.IsAccessible)
-                     .Select(static m => (Handler: m.Handler.Identity, Message: m.Message.Identity)).Distinct())
-        {
-            context.ReportDiagnostic(Diagnostic.Create(s_inaccessibleMessage, Location.None, invalid.Handler, invalid.Message));
-        }
-
         // Nullable reference annotations affect the source signature but not the registered CLR types.
-        var contracts = models.Where(static m => m.IsAccessible)
-            .GroupBy(static m => (m.Handler.Identity, m.Message.Identity, m.IsBatch))
+        var contracts = models.GroupBy(static m => (m.Handler.Identity, m.Message.Identity, m.IsBatch))
             .Select(static group => group.OrderBy(static m => m.Handler.Source, StringComparer.Ordinal)
                 .ThenBy(static m => m.Message.Source, StringComparer.Ordinal).First())
             .OrderBy(static m => m.Handler.Identity, StringComparer.Ordinal)
@@ -196,10 +183,18 @@ public sealed class HandlerGenerator : IIncrementalGenerator
 
         builder.Append("namespace Relayer;\n\n[global::Microsoft.CodeAnalysis.EmbeddedAttribute]\ninternal static class RelayerGeneratedHandlers\n{\n");
         EmitRegistration(builder, contracts);
+        var inaccessibleHandlers = new HashSet<string>(contracts.Where(static model => !model.IsAccessible)
+            .Select(static model => model.Handler.Identity), StringComparer.Ordinal);
 
         for (var i = 0; i < contracts.Length; i++)
         {
             var model = contracts[i];
+
+            if (inaccessibleHandlers.Contains(model.Handler.Identity))
+            {
+                continue;
+            }
+
             builder.AppendLine();
             builder.Append("    private sealed class Dispatcher").Append(i).Append(" : global::Relayer.Pipeline.")
                 .Append(model.IsBatch ? "BatchHandlerDescriptor<" : model.TombstoneMessage is not null ? "TombstoneHandlerDescriptor<" : "HandlerDescriptor<")
@@ -258,6 +253,18 @@ public sealed class HandlerGenerator : IIncrementalGenerator
             var handler = handlerGroup.First().Handler.Source;
             builder.Append("        if (typeof(THandler) == typeof(").Append(handler).AppendLine("))");
             builder.AppendLine("        {");
+            var inaccessible = handlerGroup.FirstOrDefault(static model => !model.IsAccessible);
+
+            if (inaccessible is not null)
+            {
+                // An indirect call with a handler type parameter may not be diagnosable until registration.
+                var message = Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatLiteral(
+                    $"Handler '{handler}' uses message type '{inaccessible.Message.Identity}', which generated dispatch cannot access. "
+                    + "Make the message type assembly-accessible and non-file-local, or select a single contract with Handler<THandler, TMessage>().", true);
+                builder.Append("            throw new global::System.InvalidOperationException(").Append(message).AppendLine(");");
+                builder.AppendLine("        }");
+                continue;
+            }
 
             for (var i = 0; i < contracts.Length; i++)
             {
