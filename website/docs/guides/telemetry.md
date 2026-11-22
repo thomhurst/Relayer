@@ -75,7 +75,9 @@ For the built-in integrations, see [send tracing](sending.md#send-tracing), [del
 Adapters compose operations once at startup, using native metadata rather than the configured transport instance name:
 
 ```csharp
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
+
 var tracing = provider.GetRequiredService<MessageTracing>();
 var endpoint = new MessagingEndpoint
 {
@@ -106,8 +108,10 @@ The [provider-owned tracing source](#tracing-registration-and-primitives) suppli
 Compose tracing once per consumer, alongside the metrics recorder:
 
 ```csharp
-using Relayer.Transports;
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Pipeline;
+using Relayer.Transports;
+
 var tracing = provider.GetRequiredService<MessageTracing>();
 var endpoint = new MessagingEndpoint
 {
