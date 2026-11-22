@@ -36,7 +36,7 @@ services.AddRelayerPostgreSqlDeadLetters("local", source);
 
 `AddRelayerPostgreSqlOutbox("local")` selects the direct-dispatch store for commit notifications. `PostgreSqlLocal` defaults to a worker matching its transport name. Pass `dispatchStoreName:` to select another named worker.
 
-Use the same `NpgsqlDataSource` instance, schema and table prefix for the local transport and its workers. Startup rejects a worker that points at the same database and tables through a separate data source because local delivery requires the shared instance. Before workers start, Relayer checks that direct dispatch, maintenance and ordered dispatch for those tables agree with the local transport on `MaxDispatchAttempts` and `RetainSentMessages`. Registration names can differ.
+Use the same `NpgsqlDataSource` instance, schema and table prefix for the local transport and its workers. Startup checks the selected direct-dispatch worker and also rejects workers on a separate data source when the configured host, port, database, schema and table prefix match the local transport. Host aliases can point to the same server and still compare as different hosts. Before workers start, Relayer checks that direct dispatch, maintenance and ordered dispatch for those tables agree with the local transport on `MaxDispatchAttempts` and `RetainSentMessages`. Registration names can differ.
 
 To enable [sent-message history](../reference/postgres-maintenance.md#sent-message-history), set `RetainSentMessages = true` in the `PostgreSqlOutboxOptions` passed to `PostgreSqlLocal` and in the matching store and worker options.
 
