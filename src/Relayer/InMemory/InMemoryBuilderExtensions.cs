@@ -61,12 +61,7 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
     {
         var registered = provider.GetServices<ITransport>().Single(transport => transport.Name == name);
 
-        while (registered is ITransportWrapper wrapper)
-        {
-            registered = wrapper.InnerTransport;
-        }
-
-        _transport = (InMemoryTransport)registered;
+        _transport = (InMemoryTransport)ITransportWrapper.Unwrap(registered);
         var configuration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(transport => transport.Name == name);
         var handlers = provider.GetRequiredService<HandlerRegistry>();
 
