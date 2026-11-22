@@ -14,7 +14,7 @@ public sealed class MessageTypeRegistry
 {
     private readonly Dictionary<Type, MessageType> _byType = [];
     private readonly Dictionary<MessageType, Type> _byName = [];
-    private readonly List<Func<JsonSerializerContext[], JsonMessageType>> _jsonTypes = [];
+    private readonly List<(Type Type, Func<JsonSerializerContext[], JsonMessageType?> Resolve)> _jsonTypes = [];
     private FrozenDictionary<Type, MessageType>? _frozenByType;
     private FrozenDictionary<MessageType, Type>? _frozenByName;
 
@@ -52,7 +52,7 @@ public sealed class MessageTypeRegistry
 
         if (!_byType.ContainsKey(typeof(TMessage)))
         {
-            _jsonTypes.Add(static contexts => ResolveJsonType<TMessage>(contexts));
+            _jsonTypes.Add((typeof(TMessage), static contexts => ResolveJsonType<TMessage>(contexts)));
         }
 
         _byType[typeof(Tombstone<TMessage>)] = identity;
@@ -68,19 +68,37 @@ public sealed class MessageTypeRegistry
         _frozenByType ??= _byType.ToFrozenDictionary();
     }
 
-    internal JsonMessageType[] CreateJsonTypes(JsonSerializerContext[] contexts)
+    internal JsonMessageType[] CreateJsonTypes(JsonSerializerContext[] contexts, HashSet<Type>? missingMetadata = null)
     {
         var types = new JsonMessageType[_jsonTypes.Count];
+        var count = 0;
 
-        for (var i = 0; i < types.Length; i++)
+        foreach (var (type, resolve) in _jsonTypes)
         {
-            types[i] = _jsonTypes[i](contexts);
+            if (resolve(contexts) is { } jsonType)
+            {
+                types[count++] = jsonType;
+            }
+            else if (missingMetadata is not null)
+            {
+                missingMetadata.Add(type);
+            }
+            else
+            {
+                throw MissingJsonMetadata(type);
+            }
         }
 
+        Array.Resize(ref types, count);
         return types;
     }
 
-    private static JsonMessageType ResolveJsonType<TMessage>(JsonSerializerContext[] contexts)
+    internal static InvalidOperationException MissingJsonMetadata(Type type)
+    {
+        return new InvalidOperationException($"No source-generated JSON metadata exists for '{type}'. Call AddMessageTypesFromThisAssembly or UseJsonSerializer with a context covering that message type, or register an IMessageSerializer.");
+    }
+
+    private static JsonMessageType? ResolveJsonType<TMessage>(JsonSerializerContext[] contexts)
     {
         for (var i = contexts.Length - 1; i >= 0; i--)
         {
@@ -91,7 +109,7 @@ public sealed class MessageTypeRegistry
             }
         }
 
-        throw new InvalidOperationException($"No source-generated JSON metadata exists for '{typeof(TMessage)}'. Call AddMessageTypesFromThisAssembly or UseJsonSerializer with a context covering that message type, or register an IMessageSerializer.");
+        return null;
     }
 
     /// <summary>Gets the identity of <paramref name="type"/>, if registered.</summary>
