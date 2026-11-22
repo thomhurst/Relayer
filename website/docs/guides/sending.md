@@ -61,6 +61,9 @@ When runtime `ITransport` services are registered, route composition resolves me
 Declare `Send<T>` more than once to send one message to several destinations, on the same transport or on different ones. For example, a domain event can go to a Kafka topic for other services and to a Service Bus queue for a billing worker:
 
 ```csharp
+using Relayer.AzureServiceBus;
+using Relayer.Kafka;
+
 relayer.Kafka("events", kafka => kafka.Send<OrderPlaced>("orders",
     route => route.OrderingKey(static message => message.CustomerId)));
 relayer.ServiceBus("bus", bus => bus.Send<OrderPlaced>("billing"));
@@ -104,6 +107,8 @@ await sender.SendAsync(message, options =>
 Declare known send requirements on the existing route settings:
 
 ```csharp
+using Relayer;
+
 broker.Send<OrderPlaced>("orders", route => route.SendOptions = new()
 {
     RequiredDeliveryDelay = TimeSpan.FromDays(1),
