@@ -916,30 +916,35 @@ public class BatchPipelineTests
             TimerQueueWarmup.WarmContention();
         }
 
+        var capturePath = bufferedSends ? Environment.GetEnvironmentVariable("RELAYER_ALLOCATION_BOUNDARIES") : null;
+        var boundaries = capturePath is null ? null : new AllocationBoundaries[Iterations];
         (int Batch, long Native, long Pipeline)? firstMismatch = null;
         long nativeTotal = 0;
         long pipelineTotal = 0;
 
         for (var iteration = 0; iteration < Iterations; iteration++)
         {
-            var start = GC.GetAllocatedBytesForCurrentThread();
+            var collectionsBefore = boundaries is null ? 0 : GC.CollectionCount(0);
+            var nativeStart = GC.GetAllocatedBytesForCurrentThread();
 
             using (var scope = scopes.CreateScope())
             {
                 _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
             }
 
-            var native = GC.GetAllocatedBytesForCurrentThread() - start;
-            start = GC.GetAllocatedBytesForCurrentThread();
+            var nativeEnd = GC.GetAllocatedBytesForCurrentThread();
+            var pipelineStart = GC.GetAllocatedBytesForCurrentThread();
 
             for (var i = 0; i < contexts.Length; i++)
             {
                 contexts[i] = consumer.RentContext(message, deliveries[i].Token);
             }
 
+            var rented = boundaries is null ? 0 : GC.GetAllocatedBytesForCurrentThread();
             var pending = consumer.ProcessBatchAsync(contexts, batchCancellation.Token);
             var completedSynchronously = pending.IsCompleted;
             await pending;
+            var processed = boundaries is null ? 0 : GC.GetAllocatedBytesForCurrentThread();
 
             for (var i = 0; i < contexts.Length; i++)
             {
@@ -951,7 +956,16 @@ public class BatchPipelineTests
                 throw new InvalidOperationException("Expected synchronous completion for the thread-local allocation comparison.");
             }
 
-            var pipeline = GC.GetAllocatedBytesForCurrentThread() - start;
+            var pipelineEnd = GC.GetAllocatedBytesForCurrentThread();
+            var native = nativeEnd - nativeStart;
+            var pipeline = pipelineEnd - pipelineStart;
+
+            if (boundaries is not null)
+            {
+                boundaries[iteration] = new(nativeStart, nativeEnd, pipelineStart, rented, processed, pipelineEnd,
+                    collectionsBefore, GC.CollectionCount(0));
+            }
+
             nativeTotal += native;
             pipelineTotal += pipeline;
 
@@ -966,11 +980,46 @@ public class BatchPipelineTests
             delivery.Dispose();
         }
 
+        if (capturePath is not null && boundaries is not null)
+        {
+            WriteAllocationBoundaries(capturePath, boundaries);
+        }
+
         if (firstMismatch is { } mismatch)
         {
             Console.WriteLine($"Batch {mismatch.Batch}: native DI {mismatch.Native} B, pipeline {mismatch.Pipeline} B. " +
                 $"Totals: native DI {nativeTotal} B, pipeline {pipelineTotal} B.");
             await Assert.That(mismatch.Pipeline).IsEqualTo(mismatch.Native);
+        }
+    }
+
+    private readonly record struct AllocationBoundaries(
+        long NativeStart,
+        long NativeEnd,
+        long PipelineStart,
+        long Rented,
+        long Processed,
+        long PipelineEnd,
+        int CollectionsBefore,
+        int CollectionsAfter);
+
+    private static void WriteAllocationBoundaries(string capturePath, AllocationBoundaries[] boundaries)
+    {
+        using var output = new StreamWriter(capturePath);
+        output.WriteLine("batch,nativeStart,nativeEnd,pipelineStart,rented,processed,pipelineEnd,collectionsBefore,collectionsAfter");
+
+        for (var i = 0; i < boundaries.Length; i++)
+        {
+            var sample = boundaries[i];
+            output.WriteLine(FormattableString.Invariant(
+                $"{i + 1},{sample.NativeStart},{sample.NativeEnd},{sample.PipelineStart},{sample.Rented},{sample.Processed},{sample.PipelineEnd},{sample.CollectionsBefore},{sample.CollectionsAfter}"));
+        }
+
+        using var configuration = new StreamWriter(capturePath + ".gc.txt");
+
+        foreach (var entry in GC.GetConfigurationVariables())
+        {
+            configuration.WriteLine(FormattableString.Invariant($"{entry.Key}={entry.Value}"));
         }
     }
 
