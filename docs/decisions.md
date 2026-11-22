@@ -1355,7 +1355,9 @@ settlement or retry, and portable and native settlement cannot be combined in on
 
 **Consequences.** Immediate abandon and dead-letter operations retain failure metadata through native
 property modifications. Positive delayed redelivery is rejected at composition; applications can use
-in-process RetryDelays. No retry copy is broadcast through a topic. The optional
+in-process RetryDelays. No retry copy is broadcast through a topic. Composition checks that a declared
+queue or subscription's MaxDeliveryCount allows the first delivery plus the policy's native abandons.
+An implied entity has no known limit, so this check only uses explicit declarations. The optional
 Relayer.AzureServiceBus.HealthChecks companion package keeps health dependencies out of the transport.
 Its receiver slots track the oldest active callback only when explicitly enabled, and connectivity
 uses read-only peek or a fresh send-link attachment on the existing client, never a probe message.
