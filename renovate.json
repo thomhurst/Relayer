@@ -23,7 +23,7 @@
     {
       "description": "Keep the .NET 10 entries of these framework-specific packages on 10.x. The .NET 11 entries already use 11.x.",
       "matchFileNames": ["Directory.Packages.props"],
-      "matchPackageNames": ["Microsoft.Extensions.*", "System.Security.Cryptography.Pkcs", "Microsoft.EntityFrameworkCore.Relational", "Npgsql", "Npgsql.EntityFrameworkCore.PostgreSQL"],
+      "matchPackageNames": ["Microsoft.Extensions.*", "Microsoft.AspNetCore.TestHost", "System.Security.Cryptography.Pkcs", "Microsoft.EntityFrameworkCore.Relational", "Npgsql", "Npgsql.EntityFrameworkCore.PostgreSQL"],
       "matchCurrentValue": "/^10\\./",
       "allowedVersions": "<11.0.0"
     },
