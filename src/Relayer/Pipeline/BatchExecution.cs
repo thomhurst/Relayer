@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
 
@@ -248,6 +249,12 @@ internal sealed class BatchExecution
                     pendingFailure = true;
                     owner.LogFailure(context, error);
                     loggedFailure = error;
+
+                    if (context.ObservedDisposition.Kind == DispositionKind.SettledByHandler)
+                    {
+                        ExceptionDispatchInfo.Throw(error);
+                    }
+
                     var action = _classifier.Classify(error, context);
 
                     if (_failures is not null)
