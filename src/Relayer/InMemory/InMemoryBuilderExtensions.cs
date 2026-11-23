@@ -56,12 +56,31 @@ public static class InMemoryBuilderExtensions
 internal sealed class InMemoryHostedService(IServiceProvider provider, string name) : BackgroundService
 {
     private InMemoryTransport? _transport;
+    private bool _started;
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        var registered = provider.GetServices<ITransport>().Single(transport => transport.Name == name);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        _transport = (InMemoryTransport)ITransportWrapper.Unwrap(registered);
+        // The host can retry after a later hosted service fails while this transport is still running.
+        if (_started)
+        {
+            return;
+        }
+
+        // Keep completed registrations if native startup observes cancellation before starting its loops.
+        _transport ??= RegisterConsumers(cancellationToken);
+        await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
+
+        // Once native loops start, observe their completion even if the startup token is canceled.
+        await base.StartAsync(CancellationToken.None).ConfigureAwait(false);
+        _started = true;
+    }
+
+    private InMemoryTransport RegisterConsumers(CancellationToken cancellationToken)
+    {
+        var registered = provider.GetServices<ITransport>().Single(transport => transport.Name == name);
+        var transport = (InMemoryTransport)ITransportWrapper.Unwrap(registered);
         var configuration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(transport => transport.Name == name);
         var handlers = provider.GetRequiredService<HandlerRegistry>();
         var headerNames = new HeaderNames();
@@ -80,7 +99,7 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
                 throw new NotSupportedException($"In-memory consumer '{consumer.Source}': batch-handler composition is not implemented. Use single-message handlers.");
             }
 
-            if (!_transport.GetCapabilities(consumer.Source).DeadLetter &&
+            if (!transport.GetCapabilities(consumer.Source).DeadLetter &&
                 string.Equals(consumer.Failure.DeadLetterEndpoint, consumer.Source, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException($"In-memory consumer '{consumer.Source}': DeadLetterEndpoint must differ from the source so a dead-letter copy does not wait on its own admission credit. Enable native dead-lettering or select a separate endpoint.");
@@ -113,13 +132,14 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
             receivers.Add((consumer.Source, receive.ProcessAsync, consumer.Options.Group, consumer.Concurrency));
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         foreach (var receiver in receivers)
         {
-            _transport.RegisterConsumer(receiver.Source, receiver.Receive, receiver.Group, receiver.Concurrency);
+            transport.RegisterConsumer(receiver.Source, receiver.Receive, receiver.Group, receiver.Concurrency);
         }
 
-        await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
-        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+        return transport;
     }
 
     private static void ValidateHostedRouteHeaders(TransportDefinition configuration, HeaderNames receiveHeaders)
@@ -177,6 +197,7 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
     {
         if (_transport is not null)
         {
+            _started = false;
             await _transport.StopAsync(cancellationToken).ConfigureAwait(false);
         }
 

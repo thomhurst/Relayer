@@ -75,7 +75,8 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         }
     }
 
-    /// <summary>Failed sends, dispatches and consume attempts.</summary>
+    /// <summary>Failures observed by send middleware, native dispatch and consume instrumentation.</summary>
+    /// <remarks>Route and destination selection errors occur before send middleware and are reported to the caller.</remarks>
     public IReadOnlyList<HarnessFailure> Failed
     {
         get
