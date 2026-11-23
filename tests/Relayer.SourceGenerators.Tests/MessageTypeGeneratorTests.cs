@@ -726,6 +726,49 @@ public class MessageTypeGeneratorTests
         await Assert.That(UserFacingSource(driver)).Contains("JsonSerializable(typeof(global::OrderPlaced)");
     }
 
+    [Test]
+    [Arguments("ExternalRef::ExternalContract.Payload", false)]
+    [Arguments("ExternalRef::ExternalContract.Payload[]", false)]
+    [Arguments("Envelope<ExternalRef::ExternalContract.Payload>.Nested", false)]
+    [Arguments("ExternalRef::ExternalContract.Payload", true)]
+    public async Task Explicit_json_type_requires_a_global_reference(string payloadType, bool globallyVisible)
+    {
+        var external = CreateCompilation("ExternalContract", """
+            namespace ExternalContract;
+            public sealed record Payload(int Value);
+            """);
+        var compilation = CreateCompilation("AliasPayload", $$"""
+            extern alias ExternalRef;
+            using Relayer;
+            [assembly: GenerateMessageJsonType(typeof({{payloadType}}))]
+            [Message("orders.placed")] public sealed record OrderPlaced(int Id);
+            public static class Envelope<T> { public sealed record Nested(int Id); }
+            """).AddReferences(external.ToMetadataReference(globallyVisible ? ["ExternalRef", "global"] : ["ExternalRef"]));
+        await Assert.That(string.Join("\n", compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)))
+            .IsEqualTo("");
+
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+
+        if (globallyVisible)
+        {
+            await Assert.That(string.Join("\n", diagnostics)).IsEqualTo("");
+            await Assert.That(UserFacingSource(driver)).Contains("JsonSerializable(typeof(global::ExternalContract.Payload)");
+        }
+        else
+        {
+            var diagnostic = diagnostics.Single();
+            await Assert.That(diagnostic.Id).IsEqualTo("RLYM009");
+            await Assert.That(diagnostic.GetMessage()).Contains("Add 'global'");
+            await Assert.That(diagnostic.Location.SourceTree).IsEqualTo(compilation.SyntaxTrees.Single());
+            await Assert.That(UserFacingSource(driver)).DoesNotContain("global::ExternalContract.Payload");
+        }
+
+        await Assert.That(string.Join("\n", output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)))
+            .IsEqualTo("");
+        await Assert.That(UserFacingSource(driver)).Contains("JsonSerializable(typeof(global::OrderPlaced)");
+    }
+
     private static string UserFacingSource(GeneratorDriver driver)
     {
         return string.Join("\n", driver.GetRunResult().GeneratedTrees

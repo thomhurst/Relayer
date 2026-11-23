@@ -173,6 +173,8 @@ Use `dotnet_diagnostic.<ID>.severity` in `.editorconfig`, or a targeted `#pragma
 
 `[GenerateMessageJsonType]` requires a closed type that the generated JSON context can reference. Pass `typeof` with an accessible, non-file-local type. For a generic type, supply all type arguments, for example `typeof(Envelope<OrderPlaced>)`. Static types and ref structs cannot be serialized. See [payload metadata names](../guides/messages.md#payload-types-that-need-distinct-metadata-names).
 
+For a payload type that's visible only through an `extern alias`, add `global` to the project or assembly reference's MSBuild `Aliases` metadata. The generated JSON context uses `global::` to resolve the payload type.
+
 ## Preview feature opt-in
 
 These compiler diagnostics come from `ExperimentalAttribute`. Preview APIs may change outside the first stable release compatibility promise. Suppress only the ID for the feature you accept, using `#pragma warning disable RLYEXP001` around the use or `<NoWarn>$(NoWarn);RLYEXP001</NoWarn>` in your project. This does not change runtime behavior.
