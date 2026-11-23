@@ -13,6 +13,65 @@ public class KafkaSendDurationTests
 {
     [Test]
     [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Cancellation_during_record_preparation_emits_no_native_metrics(KafkaHeaderSnapshotBroker broker)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var instrumentation = new RelayerInstrumentation();
+        using var durations = new SendDurationCapture(instrumentation);
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), [], instrumentation: instrumentation);
+        long sent = 0;
+        using var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, meter) =>
+            {
+                if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                {
+                    meter.EnableMeasurementEvents(instrument);
+                }
+            },
+        };
+        listener.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref sent, count));
+        listener.Start();
+        await broker.Started.WaitAsync(token);
+        var topic = TestContext.Current!.Isolation.GetIsolatedName("send-cancel").ToLowerInvariant();
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, topic, token);
+        await fixture.Transport.StartAsync(token);
+        var first = new OutgoingMessage(fixture.Destination, new byte[] { 1 });
+
+        using var singleCancellation = new CancellationTokenSource();
+        var single = new OutgoingMessage(fixture.Destination, new byte[] { 2 }, options: CancelRecord(singleCancellation));
+        await Assert.That(async () => await fixture.Transport.SendAsync(single, singleCancellation.Token)).Throws<OperationCanceledException>();
+
+        using var batchCancellation = new CancellationTokenSource();
+        var transformed = new OutgoingMessage(fixture.Destination, new byte[] { 2 }, options: CancelRecord(batchCancellation));
+        await Assert.That(async () => await fixture.Transport.SendBatchAsync(new[] { first, transformed }, batchCancellation.Token)).Throws<OperationCanceledException>();
+
+        using var headerCancellation = new CancellationTokenSource();
+        var headers = new SendOptions().Kafka(_ => headerCancellation.Cancel());
+        var headerOnly = new OutgoingMessage(fixture.Destination, new byte[] { 2 }, options: headers);
+        await Assert.That(async () => await fixture.Transport.SendBatchAsync(new[] { first, headerOnly }, headerCancellation.Token)).Throws<OperationCanceledException>();
+        await Assert.That(sent).IsEqualTo(0);
+        await Assert.That(durations.Values).IsEmpty();
+
+        var unchanged = new OutgoingMessage(fixture.Destination, new byte[] { 2 }, options: new SendOptions().KafkaRecord(static record => record));
+        await fixture.Transport.SendBatchAsync(new[] { first, unchanged }, token);
+        await Assert.That(sent).IsEqualTo(2);
+        await Assert.That(durations.Values.Count).IsEqualTo(2);
+        await Assert.That(durations.Values.All(value => !value.Tags.ContainsKey("error.type"))).IsTrue();
+
+        static SendOptions CancelRecord(CancellationTokenSource source)
+        {
+            return new SendOptions().KafkaRecord(record =>
+            {
+                source.Cancel();
+                return record;
+            });
+        }
+    }
+
+    [Test]
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
     public async Task Acknowledged_singles_batches_mixed_destinations_and_tombstones_record_native_durations(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
