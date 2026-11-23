@@ -11,6 +11,8 @@ namespace Relayer;
 
 internal static class AsyncApiExporter
 {
+    private static readonly string s_typeHeader = new HeaderNames().Type;
+
     internal static void Export(Stream destination, AsyncApiOptions options,
         IReadOnlyList<TransportDefinition> transports, MessageTypeRegistry registry, HandlerRegistry handlers,
         UpcasterRegistry upcasters, IEnumerable<JsonSerializerRegistration> registrations)
@@ -119,11 +121,21 @@ internal static class AsyncApiExporter
             schemaObject["$id"] = "urn:relayer:message:" + key + ":" + Convert.ToHexString(hash);
         }
 
+        var wireType = identity.ToString();
         return new JsonObject
         {
             ["name"] = identity.Name,
             ["x-relayer-version"] = identity.Version,
-            ["x-relayer-wire-type"] = identity.ToString(),
+            ["x-relayer-wire-type"] = wireType,
+            ["headers"] = new JsonObject
+            {
+                ["type"] = "object",
+                ["required"] = new JsonArray(s_typeHeader),
+                ["properties"] = new JsonObject
+                {
+                    [s_typeHeader] = new JsonObject { ["const"] = wireType }
+                }
+            },
             ["payload"] = new JsonObject
             {
                 ["schemaFormat"] = "application/schema+json;version=draft-2020-12",

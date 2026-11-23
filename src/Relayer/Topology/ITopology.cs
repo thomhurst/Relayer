@@ -19,6 +19,7 @@ public interface ITopology
     /// <summary>
     /// Exports AsyncAPI 3.0.0 with JSON contract schemas from registered source-generated metadata.
     /// Receive operations include declared consumer aliases and older wire contracts accepted through upcasters.
+    /// Message headers constrain the normalized CloudEvents type (<c>ce_type</c>) to the versioned wire identity.
     /// Requires source-generated JSON metadata for every registered message, including messages using custom serializers.
     /// Does not export protocol bindings or custom serializer formats. Leaves the stream open.
     /// </summary>
