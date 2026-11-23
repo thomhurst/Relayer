@@ -3,7 +3,8 @@ namespace Relayer.Outbox.SqlServer;
 /// <summary>Explicit initial schema deployment for SQL Server outbox primitives.</summary>
 public static class SqlServerOutboxSchema
 {
-    /// <summary>Returns idempotent creation SQL; existing columns are never upgraded.</summary>
+    /// <summary>Returns SQL that creates the schema and restores missing indexes on current tables.</summary>
+    /// <remarks>Existing columns and index definitions are left as deployed.</remarks>
     public static string CreateScript(SqlServerOutboxOptions? options = null)
     {
         options ??= new();
@@ -16,7 +17,6 @@ public static class SqlServerOutboxSchema
         var deadIndex = QuoteIdentifier(options.TablePrefix + "dead_retention_idx");
         var inboxIndex = QuoteIdentifier(options.TablePrefix + "inbox_expiry_idx");
         var sequence = Sequence(options);
-        var index = QuoteIdentifier(options.TablePrefix + "outbox_pending_idx");
         var outboxDdl = $"""
                 CREATE TABLE {table} (
                     id binary(16) NOT NULL PRIMARY KEY CHECK (id <> 0x00000000000000000000000000000000),
@@ -41,13 +41,6 @@ public static class SqlServerOutboxSchema
                         OR (claim_token IS NOT NULL AND claim_expires_at IS NOT NULL))
                 );
                 ALTER TABLE {table} ADD DEFAULT (NEXT VALUE FOR {sequence}) FOR seq;
-                CREATE INDEX {index} ON {table} (lane, id)
-                    INCLUDE (deliver_at, claim_expires_at) WHERE status = 'pending';
-                CREATE UNIQUE INDEX {QuoteIdentifier(options.TablePrefix + "outbox_seq_idx")} ON {table} (seq);
-                CREATE INDEX {QuoteIdentifier(options.TablePrefix + "outbox_lane_seq_idx")} ON {table} (lane, seq)
-                    INCLUDE (deliver_at, claim_expires_at) WHERE status = 'pending';
-                CREATE INDEX {QuoteIdentifier(options.TablePrefix + "outbox_parked_idx")} ON {table} (lane, seq)
-                    WHERE status = 'parked';
             """;
         // Dynamic DDL is needed for CREATE SCHEMA. Escape both identifier and SQL literal contexts.
         return $"""
@@ -64,9 +57,9 @@ public static class SqlServerOutboxSchema
                     PRIMARY KEY (consumer, message_id)
                 );
             IF OBJECT_ID(N'{Literal(table)}', N'U') IS NULL
-            BEGIN
                 EXEC(N'{Literal(outboxDdl)}');
-            END;
+            IF COL_LENGTH(N'{Literal(table)}', N'seq') IS NOT NULL
+                EXEC(N'{Literal(CreateOutboxIndexesScript(table, options.TablePrefix))}');
             IF OBJECT_ID(N'{Literal(dead)}', N'U') IS NULL
                 CREATE TABLE {dead} (
                     id binary(16) NOT NULL PRIMARY KEY, lane int NULL, ordering_key nvarchar(max) NULL,
@@ -117,6 +110,37 @@ public static class SqlServerOutboxSchema
             EXEC(N'CREATE UNIQUE INDEX {Literal(QuoteIdentifier(options.TablePrefix + "outbox_seq_idx"))} ON {Literal(table)} (seq); CREATE INDEX {Literal(QuoteIdentifier(options.TablePrefix + "outbox_lane_seq_idx"))} ON {Literal(table)} (lane, seq) INCLUDE (deliver_at, claim_expires_at) WHERE status = ''pending'';');
             EXEC(N'CREATE INDEX {Literal(QuoteIdentifier(options.TablePrefix + "outbox_parked_idx"))} ON {Literal(table)} (lane, seq) WHERE status = ''parked'';');
             {CreateLeaseScript(options)}
+            """;
+    }
+
+    private static string CreateOutboxIndexesScript(string table, string prefix)
+    {
+        var pending = prefix + "outbox_pending_idx";
+        var sequence = prefix + "outbox_seq_idx";
+        var laneSequence = prefix + "outbox_lane_seq_idx";
+        var parked = prefix + "outbox_parked_idx";
+
+        // The nested batch applies the filtered-index settings without changing the caller's session.
+        return $"""
+            SET ANSI_NULLS ON;
+            SET ANSI_PADDING ON;
+            SET ANSI_WARNINGS ON;
+            SET ARITHABORT ON;
+            SET CONCAT_NULL_YIELDS_NULL ON;
+            SET NUMERIC_ROUNDABORT OFF;
+            SET QUOTED_IDENTIFIER ON;
+
+            DECLARE @outboxObjectId int = OBJECT_ID(N'{Literal(table)}', N'U');
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = @outboxObjectId AND name = N'{Literal(pending)}')
+                CREATE INDEX {QuoteIdentifier(pending)} ON {table} (lane, id)
+                    INCLUDE (deliver_at, claim_expires_at) WHERE status = 'pending';
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = @outboxObjectId AND name = N'{Literal(sequence)}')
+                CREATE UNIQUE INDEX {QuoteIdentifier(sequence)} ON {table} (seq);
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = @outboxObjectId AND name = N'{Literal(laneSequence)}')
+                CREATE INDEX {QuoteIdentifier(laneSequence)} ON {table} (lane, seq)
+                    INCLUDE (deliver_at, claim_expires_at) WHERE status = 'pending';
+            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = @outboxObjectId AND name = N'{Literal(parked)}')
+                CREATE INDEX {QuoteIdentifier(parked)} ON {table} (lane, seq) WHERE status = 'parked';
             """;
     }
 
