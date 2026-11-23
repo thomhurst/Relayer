@@ -132,7 +132,7 @@ using Relayer;
 
 Repeat the attribute for each type that needs a distinct name. If closed collection types also collide, add an attribute for one of the collections, such as `typeof(IReadOnlyList<Logistics.Line>)`. This applies to both `AddMessageTypesFromThisAssembly()` and exported registration methods. The attribute adds metadata to the Relayer-generated context.
 
-System.Text.Json references payload types through `global::` in generated code. If a payload type or one of its type arguments comes from a reference with an `extern alias`, include `global` in that reference's MSBuild `Aliases` metadata, for example `Aliases="ExternalRef,global"`. A payload visible only through the external alias triggers [RLYM009](../reference/diagnostics.md#rlym009).
+System.Text.Json references payload types through `global::` in generated code. If a payload type or one of its type arguments comes from a reference with an `extern alias`, include `global` in that reference's MSBuild `Aliases` metadata, for example `Aliases="ExternalRef,global"`. The order of the aliases does not matter. A payload visible only through the external alias triggers [RLYM009](../reference/diagnostics.md#rlym009).
 
 ## Custom serializers
 

@@ -406,6 +406,75 @@ public class HandlerGeneratorTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Same_named_handlers_keep_their_extern_aliases_with_split_references(bool globalLast)
+    {
+        const string Handler = """
+            using Relayer;
+            using System.Threading;
+            using System.Threading.Tasks;
+            namespace Billing;
+            public sealed class Order { }
+            public sealed class OrderHandler : IHandler<Order>
+            {
+                public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken cancellationToken) => default;
+            }
+            """;
+        var first = CreateReference("First", Handler + """
+
+            public sealed class UniqueHandler : IHandler<string>
+            {
+                public ValueTask HandleAsync(string message, MessageContext context, CancellationToken cancellationToken) => default;
+            }
+            """);
+        var second = CreateReference("Second", Handler);
+        var compilation = CreateCompilation("""
+            extern alias First;
+            extern alias Second;
+            using Relayer;
+
+            public static class Registration
+            {
+                public static void Add(ITransportConsumerBuilder transport)
+                {
+                    transport.Consume<First::Billing.OrderHandler>("first");
+                    transport.Consume<Second::Billing.OrderHandler>("second");
+                    transport.Consume<Billing.UniqueHandler>("unique");
+                }
+            }
+            """).AddReferences(Aliases(first, "First")).AddReferences(Aliases(second, "Second"));
+
+        var driver = Run(compilation, out _);
+        var generated = Generated(driver);
+        await Assert.That(generated).Contains("TryAddScoped<@First::Billing.OrderHandler>");
+        await Assert.That(generated).Contains("TryAddScoped<@Second::Billing.OrderHandler>");
+        await Assert.That(generated).Contains("HandlerDescriptor<@First::Billing.Order>");
+        await Assert.That(generated).Contains("HandlerDescriptor<@Second::Billing.Order>");
+        await Assert.That(generated).Contains("TryAddScoped<global::Billing.UniqueHandler>");
+
+        static PortableExecutableReference CreateReference(string name, string source)
+        {
+            using var stream = new MemoryStream();
+            var result = CreateCompilation(source).WithAssemblyName(name).Emit(stream);
+
+            if (!result.Success)
+            {
+                throw new InvalidOperationException(string.Join(Environment.NewLine, result.Diagnostics));
+            }
+
+            return MetadataReference.CreateFromImage(stream.ToArray());
+        }
+
+        MetadataReference[] Aliases(PortableExecutableReference reference, string alias)
+        {
+            // MSBuild passes each alias as a separate /reference entry.
+            var named = reference.WithAliases([alias]);
+            return globalLast ? [named, reference] : [reference, named];
+        }
+    }
+
+    [Test]
     public async Task Generated_types_keep_distinct_aliases_inside_nested_generic_arguments()
     {
         const string Contract = "namespace Shared; public sealed class Order { }";

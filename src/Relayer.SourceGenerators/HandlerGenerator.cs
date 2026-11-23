@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Text;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 
@@ -18,18 +19,22 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         // [Embedded] keeps the internal generated types out of friend assemblies (InternalsVisibleTo),
         // which would otherwise see two Handler<THandler>() extensions.
         context.RegisterPostInitializationOutput(static output => output.AddEmbeddedAttributeDefinition());
+        var referenceAliases = context.CompilationProvider.Select(static (compilation, ct) =>
+            BindReferenceAliases(compilation, ct));
         var handlers = context.SyntaxProvider.CreateSyntaxProvider(
                 static (node, _) => node is TypeDeclarationSyntax { BaseList: not null }
                     or GenericNameSyntax { Identifier.ValueText: "Handler" or "Consume", TypeArgumentList.Arguments.Count: 1 },
-                static (ctx, ct) => Discover(ctx, ct))
-            .SelectMany(static (models, _) => models)
+                static (ctx, _) => ctx)
+            .Combine(referenceAliases)
+            .SelectMany(static (pair, ct) => Discover(pair.Left, pair.Right, ct))
             .WithTrackingName("HandlerModels")
             .Collect();
 
         context.RegisterSourceOutput(handlers, static (spc, models) => Emit(spc, models));
     }
 
-    private static ImmutableArray<DispatchModel> Discover(GeneratorSyntaxContext context, CancellationToken ct)
+    private static ImmutableArray<DispatchModel> Discover(GeneratorSyntaxContext context,
+        ReferenceAliases? referenceAliases, CancellationToken ct)
     {
         INamedTypeSymbol? type;
 
@@ -78,13 +83,13 @@ public sealed class HandlerGenerator : IIncrementalGenerator
 
             var aliases = new SortedSet<string>(StringComparer.Ordinal);
             var message = contract.TypeArguments[0];
-            var handlerName = FormatDispatchType(type.WithNullableAnnotation(NullableAnnotation.NotAnnotated), compilation, aliases);
-            var messageName = FormatDispatchType(message, compilation, aliases);
+            var handlerName = FormatDispatchType(type.WithNullableAnnotation(NullableAnnotation.NotAnnotated), referenceAliases, aliases);
+            var messageName = FormatDispatchType(message, referenceAliases, aliases);
             var tombstoneMessage = !isBatch && message is INamedTypeSymbol named
                 && SymbolEqualityComparer.Default.Equals(named.OriginalDefinition, compilation.GetTypeByMetadataName("Relayer.Tombstone`1"))
-                ? FormatType(named.TypeArguments[0], compilation, aliases, s_nullableTypeFormat) : null;
+                ? FormatType(named.TypeArguments[0], referenceAliases, aliases, s_nullableTypeFormat) : null;
             var sagaState = !isBatch && sagaBase is not null && SymbolEqualityComparer.Default.Equals(sagaBase.TypeArguments[1], message)
-                ? FormatType(sagaBase.TypeArguments[0], compilation, aliases, s_nullableTypeFormat) : null;
+                ? FormatType(sagaBase.TypeArguments[0], referenceAliases, aliases, s_nullableTypeFormat) : null;
 
             result.Add(new DispatchModel(handlerName, messageName, isBatch, CanReference(message, compilation),
                 tombstoneMessage, sagaState, string.Join("\n", aliases)));
@@ -93,7 +98,49 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         return result.ToImmutable();
     }
 
-    private static TypeName FormatDispatchType(ITypeSymbol type, Compilation compilation, SortedSet<string> aliases)
+    private static ReferenceAliases? BindReferenceAliases(
+        Compilation compilation, CancellationToken ct)
+    {
+        var names = compilation.References.SelectMany(static reference => reference.Properties.Aliases)
+            .Where(static name => name != "global")
+            .Distinct(StringComparer.Ordinal).OrderBy(static name => name, StringComparer.Ordinal).ToArray();
+
+        if (names.Length == 0)
+        {
+            return null;
+        }
+
+        // MSBuild can pass separate references for one assembly. Bind aliases through Roslyn
+        // so the generator sees the merged alias scopes regardless of which reference Roslyn kept.
+        var declarations = string.Join("\n", names.Select(static name => $"extern alias @{name};"));
+        var options = compilation.SyntaxTrees.FirstOrDefault()?.Options as CSharpParseOptions;
+        var tree = CSharpSyntaxTree.ParseText(declarations, options, cancellationToken: ct);
+        var model = compilation.AddSyntaxTrees(tree).GetSemanticModel(tree);
+        var bindings = new List<(AssemblyIdentity Assembly, ReferenceAlias Alias)>();
+
+        foreach (var directive in tree.GetCompilationUnitRoot(ct).Externs)
+        {
+            if (model.GetDeclaredSymbol(directive, ct)?.Target is not INamespaceSymbol scope)
+            {
+                continue;
+            }
+
+            var alias = new ReferenceAlias(directive.Identifier.ValueText, scope);
+
+            foreach (var root in scope.ConstituentNamespaces)
+            {
+                if (root.ContainingAssembly is { } assembly)
+                {
+                    bindings.Add((assembly.Identity, alias));
+                }
+            }
+        }
+
+        return new ReferenceAliases(model.Compilation, bindings.ToLookup(static pair => pair.Assembly, static pair => pair.Alias));
+    }
+
+    private static TypeName FormatDispatchType(ITypeSymbol type,
+        ReferenceAliases? referenceAliases, SortedSet<string> aliases)
     {
         if (type is IDynamicTypeSymbol)
         {
@@ -102,41 +149,87 @@ public sealed class HandlerGenerator : IIncrementalGenerator
             return new TypeName(source, ObjectType);
         }
 
-        return new TypeName(FormatType(type, compilation, aliases, s_nullableTypeFormat),
-            FormatType(type, compilation, aliases, SymbolDisplayFormat.FullyQualifiedFormat));
+        return new TypeName(FormatType(type, referenceAliases, aliases, s_nullableTypeFormat),
+            FormatType(type, referenceAliases, aliases, SymbolDisplayFormat.FullyQualifiedFormat));
     }
 
-    private static string FormatType(ITypeSymbol type, Compilation compilation, SortedSet<string> aliases, SymbolDisplayFormat format)
+    private static string FormatType(ITypeSymbol type,
+        ReferenceAliases? referenceAliases, SortedSet<string> aliases,
+        SymbolDisplayFormat format)
     {
         var builder = new StringBuilder();
+        var parts = type.ToDisplayParts(format);
 
         // Roslyn attaches the owning namespace to each global qualifier, including those inside type arguments.
-        foreach (var part in type.ToDisplayParts(format))
+        for (var i = 0; i < parts.Length; i++)
         {
-            if (part.Symbol is INamespaceSymbol { IsGlobalNamespace: true, ContainingAssembly: { } assembly }
-                && compilation.GetMetadataReference(assembly) is { } reference
-                && reference.Properties.Aliases is { IsDefaultOrEmpty: false } names
-                && !names.Contains("global"))
-            {
-                var alias = names[0];
+            var part = parts[i];
 
-                if (names.Length > 1)
+            if (referenceAliases is not null
+                && part.Symbol is INamespaceSymbol { IsGlobalNamespace: true, ContainingAssembly: { } assembly }
+                && referenceAliases.ByAssembly.Contains(assembly.Identity))
+            {
+                var outerType = parts.Skip(i + 1).FirstOrDefault(static part => part.Symbol is INamedTypeSymbol).Symbol;
+                var alias = outerType is INamedTypeSymbol named ? SelectAlias(named, referenceAliases) : null;
+
+                if (alias is not null)
                 {
-                    // Prefer an alias that cannot also expose a same-named type from another reference.
-                    alias = names.FirstOrDefault(name => !compilation.References.Any(
-                        other => other != reference && other.Properties.Aliases.Contains(name))) ?? alias;
+                    aliases.Add(alias);
+                    builder.Append('@').Append(alias);
+                    continue;
                 }
+            }
 
-                aliases.Add(alias);
-                builder.Append('@').Append(alias);
-            }
-            else
-            {
-                builder.Append(part.ToString());
-            }
+            builder.Append(part.ToString());
         }
 
         return builder.ToString();
+    }
+
+    private static string? SelectAlias(INamedTypeSymbol type, ReferenceAliases aliases)
+    {
+        var compilation = aliases.Compilation;
+
+        if (ResolvesType(compilation.GlobalNamespace, type, compilation))
+        {
+            return null;
+        }
+
+        // A shared alias can still resolve the type if the other assemblies do not expose it.
+        foreach (var alias in aliases.ByAssembly[type.ContainingAssembly.Identity])
+        {
+            if (ResolvesType(alias.Scope, type, compilation))
+            {
+                return alias.Name;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool ResolvesType(INamespaceSymbol scope, INamedTypeSymbol type, Compilation compilation)
+    {
+        var target = FindNamespace(scope, type.ContainingNamespace);
+
+        if (target is null)
+        {
+            return false;
+        }
+
+        var matches = target.GetTypeMembers(type.Name, type.Arity)
+            .Where(match => compilation.IsSymbolAccessibleWithin(match, compilation.Assembly)).Take(2).ToArray();
+        return matches.Length == 1 && matches[0].ContainingAssembly.Identity.Equals(type.ContainingAssembly.Identity);
+    }
+
+    private static INamespaceSymbol? FindNamespace(INamespaceSymbol scope, INamespaceSymbol target)
+    {
+        if (target.IsGlobalNamespace)
+        {
+            return scope;
+        }
+
+        return FindNamespace(scope, target.ContainingNamespace)?.GetNamespaceMembers()
+            .FirstOrDefault(member => member.Name == target.Name);
     }
 
     internal static bool CanReference(ITypeSymbol type, Compilation compilation)
@@ -293,6 +386,10 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         builder.AppendLine("        throw new global::System.InvalidOperationException($\"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>(), or call Handler<THandler, TMessage>() from generic code.\");");
         builder.AppendLine("    }");
     }
+
+    private sealed record ReferenceAliases(Compilation Compilation, ILookup<AssemblyIdentity, ReferenceAlias> ByAssembly);
+
+    private sealed record ReferenceAlias(string Name, INamespaceSymbol Scope);
 
     private sealed record TypeName(string Source, string Identity);
 
