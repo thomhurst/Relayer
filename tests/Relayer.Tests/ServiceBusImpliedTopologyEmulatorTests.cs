@@ -105,6 +105,75 @@ public sealed class ServiceBusImpliedTopologyEmulatorTests
         }
     }
 
+    [Test]
+    [Arguments(TopologyMode.Validate)]
+    [Arguments(TopologyMode.None)]
+    public async Task Mixed_case_subscription_consumer_receives_from_the_declared_topic(TopologyMode mode)
+    {
+        var stack = await SharedBrokers.ServiceBus.Value;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        var topicName = TestContext.Current!.Isolation.GetIsolatedName("case-events").ToLowerInvariant();
+        var topic = new CreateTopicOptions(topicName)
+        {
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
+        };
+        var subscription = new CreateSubscriptionOptions(topicName, "billing")
+        {
+            DefaultMessageTimeToLive = TimeSpan.FromHours(1)
+        };
+        var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
+        await admin.CreateTopicAsync(topic, token);
+
+        try
+        {
+            await admin.CreateSubscriptionAsync(subscription, token);
+            await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString());
+            var received = Channel.CreateUnbounded<string>();
+            var services = new ServiceCollection();
+            services.AddSingleton(received);
+            services.AddRelayer(builder =>
+            {
+                builder.Infrastructure().MessageTypes.Add<ImpliedPayload>("servicebus.implied");
+                builder.UseJsonSerializer(ServiceBusImpliedTopologyEmulatorJson.Default);
+                builder.ServiceBus("bus", bus =>
+                {
+                    bus.TopologyMode = mode;
+                    bus.Options.Configure(options =>
+                    {
+                        options.Client = client;
+                        options.Topics.Add(topic);
+                        options.Subscriptions.Add(subscription);
+                    });
+                    bus.Consume(topicName.ToUpperInvariant(), consumer =>
+                    {
+                        consumer.Options.Subscription = "BILLING";
+                        consumer.Handler<ImpliedHandler>();
+                    });
+                });
+            });
+            await using var provider = services.BuildServiceProvider();
+            await ServiceBusReceiveTests.Start(provider, token);
+
+            try
+            {
+                await using var sender = client.CreateSender(topicName);
+                await sender.SendMessageAsync(Message(42), token);
+                await Assert.That(await received.Reader.ReadAsync(token)).IsEqualTo("42/");
+            }
+            finally
+            {
+                await ServiceBusReceiveTests.Stop(provider, token);
+            }
+        }
+        finally
+        {
+            await admin.DeleteTopicAsync(topicName, CancellationToken.None);
+        }
+    }
+
     private static ServiceBusMessage Message(int value, string? session = null)
     {
         var message = new ServiceBusMessage(new BinaryData($"{{\"Value\":{value}}}")) { SessionId = session, ContentType = "application/json" };

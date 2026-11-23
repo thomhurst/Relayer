@@ -94,7 +94,9 @@ bus.Consume("orders", consumer =>
 });
 ```
 
-For a topic subscription, consume the topic name and set `consumer.Options.Subscription` to the declared subscription name. Native processors own delivery, prefetch, lock renewal and reconnect. Shutdown stops new receives and drains callbacks through settlement; the host's shutdown cancellation token bounds the drain. A stopped processor can restart on the same host services.
+For a topic subscription, consume the topic name and set `consumer.Options.Subscription` to the declared subscription name. Startup and infrastructure export match both names case-insensitively. Declare each subscription once per topic. In `TopologyMode.None`, a matching declaration still supplies the native settings for validation.
+
+Native processors own delivery, prefetch, lock renewal and reconnect. Shutdown stops new receives and drains callbacks through settlement; the host's shutdown cancellation token bounds the drain. A stopped processor can restart on the same host services.
 
 The SDK cancels its callback token as soon as processor shutdown starts. The composed pipeline uses `context.CancellationToken` for durable work and settlement; Relayer cancels it only when the host's drain deadline expires or the adapter is disposed. The original callback and its native token remain unchanged. Use the context token when draining application work.
 
@@ -186,7 +188,7 @@ bus.Options.Configure(options =>
 bus.Send<Order>("orders", route => route.OrderingKey(order => order.CustomerId));
 ```
 
-This works with the default `TopologyMode.Validate` and with `None`. The queue advertises ordering by key, so ordered outbox sends retain their key and receive lanes through the existing outbox integration. Validate still opens its Send link without an administration call. For a topic, set `RequiresSession = true` on **every declared subscription** and trust each full path, for example `options.TrustedSessionEntities.Add("events/Subscriptions/audit")`. A send-only application does not peek trusted subscriptions; a declared consumer still needs Listen rights and validates its receive link. Undeclared subscriptions cannot be discovered with Send rights, so the application owns the completeness of these declarations.
+This works with the default `TopologyMode.Validate` and with `None`. `TrustedSessionEntities` matches native names case-insensitively. The queue advertises ordering by key, so ordered outbox sends retain their key and receive lanes through the existing outbox integration. Validate still opens its Send link without an administration call. For a topic, set `RequiresSession = true` on **every declared subscription** and trust each full path, for example `options.TrustedSessionEntities.Add("events/Subscriptions/audit")`. A send-only application does not peek trusted subscriptions; a declared consumer still needs Listen rights and validates its receive link. Undeclared subscriptions cannot be discovered with Send rights, so the application owns the completeness of these declarations.
 
 A producer usually does not own its topic's subscriptions: consumers add their own, often from other deployments. Trust the topic name instead of listing each subscription:
 

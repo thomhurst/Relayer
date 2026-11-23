@@ -85,14 +85,14 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
 
         var subscription = options.Subscription;
         var queue = subscription is null ? transport.FindQueue(consumer.Source) : null;
-        var topic = subscription is null ? null : transport.Subscriptions.SingleOrDefault(item => item.TopicName == consumer.Source && item.SubscriptionName == subscription);
+        var subscriptionDeclaration = subscription is null ? null : transport.FindSubscription(consumer.Source, subscription);
 
-        if (queue is null && topic is null)
+        if (queue is null && subscriptionDeclaration is null)
         {
             throw Invalid("declare the native queue or topic/subscription in transport Options before consuming it.");
         }
 
-        var requiresSession = queue?.RequiresSession ?? topic!.RequiresSession;
+        var requiresSession = queue?.RequiresSession ?? subscriptionDeclaration!.RequiresSession;
 
         if (requiresSession != (options.SessionProcessorOptions is not null))
         {
