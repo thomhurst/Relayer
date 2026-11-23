@@ -9,6 +9,7 @@ using RabbitMQ.Client.Exceptions;
 using Relayer.HealthChecks;
 using Relayer.Pipeline;
 using Relayer.RabbitMQ;
+using Relayer.Testing;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -291,7 +292,9 @@ public class RabbitMqReceiveTests
     }
 
     [Test]
-    public async Task Optional_health_tracks_oldest_active_callback_and_stop_drains_before_closing_channel()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Optional_health_tracks_oldest_active_callback_and_stop_drains_before_closing_channel(bool useHarness)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -300,7 +303,8 @@ public class RabbitMqReceiveTests
         var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var second = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var control = new RabbitMqReceiveControl { Handle = value => new(value == 1 ? first.Task : second.Task) };
-        using var host = Host(broker.Factory(), control, clock: clock, concurrency: 2);
+        var host = Host(broker.Factory(), control, clock: clock, concurrency: 2, useHarness: useHarness);
+        await using var hostLifetime = (IAsyncDisposable)host;
         var probe = host.Services.GetRequiredKeyedService<ITransportHealthProbe>("rabbit");
         await Assert.That((await probe.CheckAsync(token)).Status).IsEqualTo(HealthStatus.Unhealthy);
         await Assert.That(host.Services.GetKeyedService<ITransportHealthProbe>("other")).IsNull();
@@ -835,7 +839,7 @@ public class RabbitMqReceiveTests
     }
 
     internal static IHost Host(ConnectionFactory factory, RabbitMqReceiveControl control, bool declareDeadLetter = true, RabbitMqClock? clock = null, int concurrency = 1, bool autoStart = true, bool secondConsumer = false, bool thirdConsumer = false,
-        Action<ConsumePipelineBuilder>? configureOrdersPipeline = null, FailureOptions? ordersFailure = null)
+        Action<ConsumePipelineBuilder>? configureOrdersPipeline = null, FailureOptions? ordersFailure = null, bool useHarness = false)
     {
         return new HostBuilder().ConfigureServices(services =>
                 {
@@ -908,6 +912,11 @@ public class RabbitMqReceiveTests
                             }
                         });
                     });
+
+                    if (useHarness)
+                    {
+                        services.AddRelayerHarness();
+                    }
                 }).Build();
     }
 

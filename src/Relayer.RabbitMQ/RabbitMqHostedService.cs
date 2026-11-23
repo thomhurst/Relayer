@@ -107,8 +107,7 @@ internal sealed class RabbitMqConsumerControl(IServiceProvider provider, string 
 
     protected override async Task ComposeAsync(CancellationToken cancellationToken)
     {
-        _transport ??= (RabbitMqNativeTransport)ITransportWrapper.Unwrap(
-            provider.GetServices<ITransport>().Single(item => item.Name == name));
+        _transport ??= RabbitMqNativeTransport.Resolve(provider, name);
 
         if (!_composed)
         {

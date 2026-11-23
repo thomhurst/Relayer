@@ -1,4 +1,6 @@
+using Microsoft.Extensions.DependencyInjection;
 using RabbitMQ.Client;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
@@ -29,6 +31,12 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
     public string Name
     {
         get;
+    }
+
+    internal static RabbitMqNativeTransport Resolve(IServiceProvider provider, string name)
+    {
+        var transport = provider.GetServices<ITransport>().Single(item => item.Name == name);
+        return (RabbitMqNativeTransport)ITransportWrapper.Unwrap(transport);
     }
 
     public TransportCapabilities GetCapabilities(string endpoint)

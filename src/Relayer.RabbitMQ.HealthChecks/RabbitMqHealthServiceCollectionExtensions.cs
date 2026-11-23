@@ -17,9 +17,9 @@ public static class RabbitMqHealthServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         services.TryAddKeyedSingleton<ITransportHealthProbe>(name, (provider, _) =>
-            new RabbitMqHealthProvider((RabbitMqNativeTransport)provider.GetServices<Relayer.Transports.ITransport>().Single(transport => transport.Name == name)));
+            new RabbitMqHealthProvider(RabbitMqNativeTransport.Resolve(provider, name)));
         services.TryAddKeyedSingleton<IConsumerHealthProvider>(name, (provider, _) =>
-            new RabbitMqHealthProvider((RabbitMqNativeTransport)provider.GetServices<Relayer.Transports.ITransport>().Single(transport => transport.Name == name)));
+            new RabbitMqHealthProvider(RabbitMqNativeTransport.Resolve(provider, name)));
 
         if (!services.Any(descriptor => descriptor.ServiceType == typeof(HealthRegistration) && Equals(descriptor.ServiceKey, name)))
         {
@@ -37,7 +37,7 @@ public static class RabbitMqHealthServiceCollectionExtensions
         public Task StartingAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var transport = (RabbitMqNativeTransport)provider.GetServices<Relayer.Transports.ITransport>().Single(transport => transport.Name == name);
+            var transport = RabbitMqNativeTransport.Resolve(provider, name);
             transport.HealthTracking = true;
             return Task.CompletedTask;
         }

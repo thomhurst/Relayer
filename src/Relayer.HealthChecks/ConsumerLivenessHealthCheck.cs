@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
@@ -16,6 +17,10 @@ internal sealed class ConsumerLivenessHealthCheck(RelayerConfiguration configura
 
         foreach (var transport in configuration.Transports)
         {
+            // Escape the transport separator and the escape marker to keep the first slash unambiguous.
+            var transportKey = transport.Name.Replace("%", "%25", StringComparison.Ordinal)
+                .Replace("/", "%2F", StringComparison.Ordinal);
+
             for (var index = 0; index < transport.Consumers.Count; index++)
             {
                 var consumer = transport.Consumers[index];
@@ -51,7 +56,8 @@ internal sealed class ConsumerLivenessHealthCheck(RelayerConfiguration configura
                         ? HealthCheckResult.Unhealthy($"Active consumer has made no progress for {elapsed}; threshold is {timeout}.")
                         : HealthCheckResult.Healthy("Active consumer is making progress.");
                 }, cancellationToken).ConfigureAwait(false);
-                report.Add($"{transport.Name}/{index}:{consumer.Source}", result);
+                var key = string.Create(CultureInfo.InvariantCulture, $"{transportKey}/{index}:{consumer.Source}");
+                report.Add(key, result);
             }
         }
 
