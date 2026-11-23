@@ -28,9 +28,10 @@ public static class HarnessServiceCollectionExtensions
             throw new InvalidOperationException("Harness observation requires singleton ITransport registrations.");
         }
 
-        var callerOwnedInstrumentation = new HashSet<RelayerInstrumentation>();
+        RelayerInstrumentation? callerOwnedInstrumentation = null;
 
-        for (var i = 0; i < services.Count; i++)
+        // The provider resolves the last unkeyed registration for a single service.
+        for (int i = services.Count - 1; i >= 0; i--)
         {
             var original = services[i];
 
@@ -42,8 +43,8 @@ public static class HarnessServiceCollectionExtensions
             if (original.ImplementationInstance is RelayerInstrumentation instance)
             {
                 // A constant registration keeps disposal with the caller.
-                callerOwnedInstrumentation.Add(instance);
-                continue;
+                callerOwnedInstrumentation = instance;
+                break;
             }
 
             // Outbox stores report committed and settled rows through the provider's instrumentation.
@@ -54,9 +55,10 @@ public static class HarnessServiceCollectionExtensions
                 instrumentation.Observer = provider.GetRequiredService<RelayerHarness>();
                 return instrumentation;
             });
+            break;
         }
 
-        if (callerOwnedInstrumentation.Count == 0)
+        if (callerOwnedInstrumentation is null)
         {
             services.AddSingleton(CreateHarness);
         }
@@ -126,21 +128,17 @@ public static class HarnessServiceCollectionExtensions
 
     private sealed class InstrumentationObservation : IDisposable
     {
-        private readonly HashSet<RelayerInstrumentation> _instrumentation;
+        private readonly RelayerInstrumentation _instrumentation;
 
-        internal InstrumentationObservation(RelayerHarness harness, HashSet<RelayerInstrumentation> instrumentation)
+        internal InstrumentationObservation(RelayerHarness harness, RelayerInstrumentation instrumentation)
         {
             Harness = harness;
             _instrumentation = instrumentation;
 
-            foreach (var instance in instrumentation)
+            if (!instrumentation.TryAttachObserver(harness))
             {
-                if (!instance.TryAttachObserver(harness))
-                {
-                    Dispose();
-                    throw new InvalidOperationException(
-                        "This RelayerInstrumentation is already observed by another harness. Use a separate instance for each active provider.");
-                }
+                throw new InvalidOperationException(
+                    "This RelayerInstrumentation is already observed by another harness. Use a separate instance for each active provider.");
             }
         }
 
@@ -151,10 +149,7 @@ public static class HarnessServiceCollectionExtensions
 
         public void Dispose()
         {
-            foreach (var instance in _instrumentation)
-            {
-                instance.DetachObserver(Harness);
-            }
+            _instrumentation.DetachObserver(Harness);
         }
     }
 }

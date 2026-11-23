@@ -938,6 +938,156 @@ public class HarnessTests
     }
 
     [Test]
+    public async Task Disposing_in_memory_transport_completes_idle_for_discarded_messages()
+    {
+        var clock = new Relayer.Tests.InMemoryTestClock();
+        var services = new ServiceCollection();
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("local", transport => transport.Send<Probe>("probes"));
+        });
+        services.AddSingleton<Microsoft.Extensions.Options.IOptionsMonitor<InMemoryTransportOptions>>(new ClockOptions(clock));
+        services.AddRelayerHarness();
+        RelayerHarness harness;
+        Task idle;
+
+        await using (var provider = services.BuildServiceProvider())
+        {
+            var hosted = provider.GetServices<IHostedService>().OfType<InMemoryHostedService>().Single();
+            await hosted.StartAsync(default);
+
+            using (var scope = provider.CreateScope())
+            {
+                var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+                await sender.SendAsync(new Probe(1));
+                await sender.SendAsync(new Probe(2), options => options.DeliverAt = clock.GetUtcNow().AddMinutes(1));
+            }
+
+            await clock.NextTimer();
+            harness = provider.GetRequiredService<RelayerHarness>();
+            idle = harness.WaitForIdleAsync();
+            await Assert.That(idle.IsCompleted).IsFalse();
+            await hosted.StopAsync(default);
+            await Assert.That(idle.IsCompleted).IsFalse();
+        }
+
+        await idle.WaitAsync(s_limit);
+        harness.Reset();
+    }
+
+    [Test]
+    public async Task Disposing_in_memory_log_releases_receiver_and_partial_fan_out_work()
+    {
+        var harness = new RelayerHarness();
+        await using var transport = new InMemoryTransport("local", new Dictionary<string, InMemoryEndpointOptions>
+        {
+            ["probes"] = new()
+            {
+                Capacity = 1,
+                Partitions = 3,
+                Capabilities = new()
+                {
+                    ConsumptionModel = ConsumptionModel.Log,
+                    OrderedByKey = true,
+                    MaxRedeliveryDelay = TimeSpan.FromMinutes(1),
+                }
+            }
+        });
+        transport.Observe(harness);
+        var fastGroupReachedThird = Signal();
+        var slowGroupEntered = Signal();
+        var release = Signal();
+        transport.RegisterConsumer("probes", (delivery, _) =>
+        {
+            if (delivery.Position == 2)
+            {
+                fastGroupReachedThird.SetResult();
+            }
+
+            return new(Disposition.Complete);
+        }, "fast", concurrency: 3);
+        transport.RegisterConsumer("probes", async (_, _) =>
+        {
+            slowGroupEntered.TrySetResult();
+            await release.Task;
+            return Disposition.Redeliver(TimeSpan.FromMinutes(1));
+        }, "slow", concurrency: 3);
+        await transport.StartAsync(default);
+
+        try
+        {
+            var message = new OutgoingMessage("probes", default, default, orderingKey: new WireString("same"));
+            await transport.SendAsync(message, default).AsTask().WaitAsync(s_limit);
+            await slowGroupEntered.Task.WaitAsync(s_limit);
+            await transport.SendAsync(message, default).AsTask().WaitAsync(s_limit);
+            await transport.SendAsync(message, default).AsTask().WaitAsync(s_limit);
+            await fastGroupReachedThird.Task.WaitAsync(s_limit);
+
+            // The slow group holds the first delivery and has room to queue only the second.
+            var stop = transport.StopAsync(default);
+            release.SetResult();
+            await stop.WaitAsync(s_limit);
+            var idle = harness.WaitForIdleAsync();
+            await Assert.That(idle.IsCompleted).IsFalse();
+
+            await transport.DisposeAsync();
+            await idle.WaitAsync(s_limit);
+            harness.Reset();
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Harness_observes_only_the_effective_instrumentation(bool callerOwned)
+    {
+        using var shared = new RelayerInstrumentation();
+        var firstServices = new ServiceCollection();
+        firstServices.AddSingleton(shared);
+        firstServices.AddRelayer(_ =>
+        {
+        });
+        firstServices.AddRelayerHarness();
+        using var firstProvider = firstServices.BuildServiceProvider();
+        var firstHarness = firstProvider.GetRequiredService<RelayerHarness>();
+
+        using RelayerInstrumentation? local = callerOwned ? new() : null;
+        var secondServices = new ServiceCollection();
+        secondServices.AddSingleton(shared);
+
+        if (local is not null)
+        {
+            secondServices.AddSingleton(local);
+        }
+        else
+        {
+            secondServices.AddSingleton<RelayerInstrumentation>(static _ => new());
+        }
+
+        secondServices.AddRelayer(_ =>
+        {
+        });
+        secondServices.AddRelayerHarness();
+
+        using (var secondProvider = secondServices.BuildServiceProvider())
+        {
+            _ = secondProvider.GetServices<IHostedService>().ToArray();
+            var secondHarness = secondProvider.GetRequiredService<RelayerHarness>();
+            var effective = secondProvider.GetRequiredService<RelayerInstrumentation>();
+            await Assert.That(shared.Observer).IsSameReferenceAs(firstHarness);
+            await Assert.That(effective.Observer).IsSameReferenceAs(secondHarness);
+        }
+
+        await Assert.That(local?.Observer).IsNull();
+        await Assert.That(shared.Observer).IsSameReferenceAs(firstHarness);
+    }
+
+    [Test]
     public async Task Delayed_native_message_keeps_harness_busy()
     {
         var clock = new Relayer.Tests.InMemoryTestClock();
