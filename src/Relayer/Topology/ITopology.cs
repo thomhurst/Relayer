@@ -18,6 +18,7 @@ public interface ITopology
 
     /// <summary>
     /// Exports AsyncAPI 3.0.0 with JSON contract schemas from registered source-generated metadata.
+    /// Receive operations include declared consumer aliases and older wire contracts accepted through upcasters.
     /// Requires source-generated JSON metadata for every registered message, including messages using custom serializers.
     /// Does not export protocol bindings or custom serializer formats. Leaves the stream open.
     /// </summary>
@@ -29,13 +30,14 @@ public interface ITopology
 }
 
 internal sealed class Topology(RelayerConfiguration configuration, MessageTypeRegistry messages, HandlerRegistry handlers,
+    UpcasterRegistry upcasters,
     IEnumerable<JsonSerializerRegistration> jsonContexts) : ITopology
 {
     public IReadOnlyList<TransportDefinition> Transports => configuration.Transports;
 
     public void ExportAsyncApi(Stream destination, AsyncApiOptions options)
     {
-        AsyncApiExporter.Export(destination, options, Transports, messages, handlers, jsonContexts);
+        AsyncApiExporter.Export(destination, options, Transports, messages, handlers, upcasters, jsonContexts);
     }
 
     public void ExportJson(Stream destination)
