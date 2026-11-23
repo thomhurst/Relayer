@@ -130,11 +130,85 @@ public class HarnessTests
         return services.BuildServiceProvider();
     }
 
+    [Test]
+    public async Task Harness_preserves_disposal_of_a_keyed_transport_alias()
+    {
+        int controlDisposals = await CountAliasDisposalsAsync(observe: false);
+#if NET11_0_OR_GREATER
+        await Assert.That(controlDisposals).IsEqualTo(1);
+#endif
+        await Assert.That(await CountAliasDisposalsAsync(observe: true)).IsEqualTo(controlDisposals);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Harness_preserves_ownership_of_transport_singletons(bool callerOwned)
+    {
+        var services = new ServiceCollection();
+        var transport = new TombstoneTransport();
+
+        if (callerOwned)
+        {
+            services.AddSingleton<ITransport>(transport);
+        }
+        else
+        {
+            services.AddSingleton<ITransport>(_ => transport);
+        }
+
+        services.AddRelayer(_ =>
+        {
+        });
+        services.AddRelayerHarness();
+
+        await using (var provider = services.BuildServiceProvider())
+        {
+            var wrapper = (ITransportWrapper)provider.GetRequiredService<ITransport>();
+            await Assert.That(wrapper.InnerTransport).IsSameReferenceAs(transport);
+        }
+
+        await Assert.That(transport.DisposalCount).IsEqualTo(callerOwned ? 0 : 1);
+    }
+
+    private static async Task<int> CountAliasDisposalsAsync(bool observe)
+    {
+        var services = new ServiceCollection();
+        string name = TombstoneTransport.TransportName;
+        services.AddKeyedSingleton<TombstoneTransport>(name);
+        services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<TombstoneTransport>(name));
+        services.AddRelayer(builder => builder.AddTransport<object, object>(name, _ =>
+        {
+        }));
+
+        if (observe)
+        {
+            services.AddRelayerHarness();
+        }
+
+        TombstoneTransport transport;
+
+        await using (var provider = services.BuildServiceProvider())
+        {
+            var registered = provider.GetRequiredService<ITransport>();
+            transport = provider.GetRequiredKeyedService<TombstoneTransport>(name);
+            var inner = observe ? ((ITransportWrapper)registered).InnerTransport : registered;
+            await Assert.That(inner).IsSameReferenceAs(transport);
+        }
+
+        return transport.DisposalCount;
+    }
+
     private sealed class TombstoneTransport : ITransport
     {
         internal const string TransportName = "tombstones";
 
         public string Name => TransportName;
+
+        internal int DisposalCount
+        {
+            get; private set;
+        }
 
         public TransportCapabilities GetCapabilities(string endpoint)
         {
@@ -173,6 +247,7 @@ public class HarnessTests
 
         public ValueTask DisposeAsync()
         {
+            DisposalCount++;
             return default;
         }
     }

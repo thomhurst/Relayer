@@ -17,7 +17,7 @@ public static class RelayerServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
 
-        if (services.Any(d => d.ServiceType == typeof(IRelayerBuilder)))
+        if (services.Any(d => d.ServiceType == typeof(IRelayerBuilder) || d.ServiceType == typeof(RegistrationInProgress)))
         {
             throw new InvalidOperationException("AddRelayer has already been called. Configure everything in a single call.");
         }
@@ -25,7 +25,18 @@ public static class RelayerServiceCollectionExtensions
         var builder = new RelayerBuilder(services);
         builder.Telemetry();
         services.TryAddSingleton<RelayerInstrumentation>();
-        configure(builder);
+        var registration = ServiceDescriptor.Singleton(new RegistrationInProgress());
+        services.Add(registration);
+
+        try
+        {
+            configure(builder);
+        }
+        finally
+        {
+            services.Remove(registration);
+        }
+
         builder.MessageTypes.Freeze();
         builder.Handlers.Freeze();
         builder.Upcasters.Freeze(builder.MessageTypes);
@@ -59,4 +70,6 @@ public static class RelayerServiceCollectionExtensions
 
         return services;
     }
+
+    private sealed class RegistrationInProgress;
 }
