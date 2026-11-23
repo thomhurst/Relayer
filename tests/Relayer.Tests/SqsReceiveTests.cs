@@ -175,6 +175,54 @@ public sealed class SqsReceiveTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Poll_cancellation_source_survives_an_overlapping_stop(bool restart)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var releaseCancellation = new ManualResetEventSlim();
+        var cancelEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken poll = default;
+        using var client = new ReceiveClient(token => poll = token);
+        await using var receiver = new SqsConsumer(Declaration(), client, "url", static (_, _) => default);
+        await receiver.StartAsync(default);
+        CancellationToken firstPoll = poll;
+        bool signaled = false;
+        using var registration = firstPoll.Register(() =>
+        {
+            cancelEntered.SetResult();
+            releaseCancellation.Wait(deadline.Token);
+            signaled = firstPoll.WaitHandle.WaitOne(0);
+        });
+        Task stop = Task.Run(() => receiver.StopAsync(deadline.Token));
+
+        try
+        {
+            await cancelEntered.Task.WaitAsync(deadline.Token);
+            // Complete the native poll while the first stop still runs a cancellation callback.
+            await client.Deliveries.Writer.WriteAsync(Message("body", 1), deadline.Token);
+
+            if (restart)
+            {
+                await receiver.StopAsync(deadline.Token);
+                await receiver.StartAsync(deadline.Token);
+            }
+            else
+            {
+                await receiver.DisposeAsync();
+            }
+        }
+        finally
+        {
+            releaseCancellation.Set();
+            await stop;
+        }
+
+        await Assert.That(signaled).IsTrue();
+        await Assert.That(() => firstPoll.WaitHandle).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
     public async Task Named_health_is_read_only_preserves_connectivity_failure_and_cancellation()
     {
         using var client = new ReceiveClient();

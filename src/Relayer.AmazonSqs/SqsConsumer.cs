@@ -99,7 +99,7 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
                     throw new InvalidOperationException("SQS consumer is already running.");
                 }
 
-                previous.Dispose();
+                previous.Release();
             }
 
             run = new();
@@ -418,9 +418,29 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
         }
     }
 
-    internal Task StopAsync(CancellationToken token)
+    internal async Task StopAsync(CancellationToken token)
     {
-        return Volatile.Read(ref _run) is { } run ? StopAsync(run, token) : Task.CompletedTask;
+        WorkerRun? run;
+
+        lock (_lifecycle)
+        {
+            run = _run;
+            run?.Retain();
+        }
+
+        if (run is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await StopAsync(run, token).ConfigureAwait(false);
+        }
+        finally
+        {
+            run.Release();
+        }
     }
 
     private static async Task StopAsync(WorkerRun run, CancellationToken token)
@@ -517,12 +537,15 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
         }
         finally
         {
-            run.Dispose();
+            run.Release();
         }
     }
 
-    private sealed class WorkerRun : IDisposable
+    private sealed class WorkerRun
     {
+        // The consumer owns one reference. Each stop keeps the sources alive through cancellation and drain.
+        private int _references = 1;
+
         internal readonly CancellationTokenSource Poll = new();
         internal readonly CancellationTokenSource Abort = new();
         internal readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -530,10 +553,18 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
         internal Task[]? Workers;
         internal bool Stopped;
 
-        public void Dispose()
+        internal void Retain()
         {
-            Poll.Dispose();
-            Abort.Dispose();
+            Interlocked.Increment(ref _references);
+        }
+
+        internal void Release()
+        {
+            if (Interlocked.Decrement(ref _references) == 0)
+            {
+                Poll.Dispose();
+                Abort.Dispose();
+            }
         }
     }
 }

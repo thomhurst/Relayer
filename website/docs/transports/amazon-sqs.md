@@ -113,6 +113,8 @@ If automatic or deferred consumer startup fails after polling begins, Relayer st
 
 If the host shutdown deadline expires during deferred startup, Relayer cancels startup, stops any polls already in progress, and cancels active handlers. The deadline still applies while `ConfigureReceive` runs. When the callback returns, startup checks for cancellation before launching further workers.
 
+Overlapping stop calls keep their cancellation state until they finish, even if another caller restarts or disposes the consumer after the workers drain.
+
 ## Health
 
 Reference `Relayer.AmazonSqs.HealthChecks` and register before host startup:
