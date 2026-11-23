@@ -86,7 +86,6 @@ Reference `Relayer.Kafka.HealthChecks` and `Relayer.AzureServiceBus.HealthChecks
 from the application and register the existing adapters explicitly:
 
 ```csharp
-using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Aspire;
 using Relayer.AzureServiceBus;
@@ -97,9 +96,12 @@ builder.Services.AddRelayerHealthChecks();
 builder.Services.AddRelayerKafkaHealthProviders("events");
 builder.Services.AddRelayerServiceBusHealthProviders("commands");
 builder.Services.AddOpenTelemetry().AddRelayerInstrumentation();
-// Later, after builder.Build():
-app.MapHealthChecks("/health");
 ```
+
+If you use Aspire ServiceDefaults, call `app.MapDefaultEndpoints()` after
+`builder.Build()`. Its Development `/health` endpoint runs all registered health
+checks, including Relayer's. In apps without an existing `/health` endpoint, call
+`app.MapHealthChecks("/health")` after `builder.Build()` when the endpoint is needed.
 
 The AppHost's native `WithHttpHealthCheck("/health")` probes this endpoint and
 surfaces readiness in the dashboard. Relayer's transport, consumer and outbox checks
