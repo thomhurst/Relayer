@@ -110,6 +110,86 @@ public class TransportSerializerTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Host_disposes_application_serializer_once_when_named_factory_resolves_it(bool useFallback)
+    {
+        var shared = new DisposableSerializer();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton<IMessageSerializer>(_ => shared);
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.InMemory("alias", transport => transport.UseSerializer(provider => provider.GetRequiredService<IMessageSerializer>()));
+
+            if (useFallback)
+            {
+                relayer.InMemory("default", _ =>
+                {
+                });
+            }
+        });
+
+        var host = builder.Build();
+
+        await using ((IAsyncDisposable)host)
+        {
+            await host.StartAsync();
+            await Assert.That(host.Services.GetMessageSerializer("alias")).IsSameReferenceAs(shared);
+            await Assert.That(shared.Initializations).IsEqualTo(1);
+            await host.StopAsync();
+            await Assert.That(shared.Disposals).IsEqualTo(0);
+        }
+
+        await Assert.That(shared.Disposals).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Disposable_named_serializer_does_not_resolve_unused_application_serializer()
+    {
+        var serializer = new DisposableSerializer();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton<IMessageSerializer>(_ => throw new InvalidOperationException("Unused serializer."));
+        builder.Services.AddKeyedSingleton<IMessageSerializer>("custom", serializer);
+        builder.Services.AddRelayer(relayer => relayer.InMemory("named", transport =>
+            transport.UseSerializer(provider => provider.GetRequiredKeyedService<IMessageSerializer>("custom"))));
+
+        var host = builder.Build();
+
+        await using ((IAsyncDisposable)host)
+        {
+            await host.StartAsync();
+            await host.StopAsync();
+        }
+
+        await Assert.That(serializer.Disposals).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Startup_retry_prepares_only_serializers_that_have_not_succeeded()
+    {
+        var prepared = new PreparedSerializer();
+        var retry = new PreparedSerializer { Fail = true };
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.InMemory("first", transport => transport.UseSerializer(_ => prepared));
+            relayer.InMemory("alias", transport => transport.UseSerializer(_ => prepared));
+            relayer.InMemory("retry", transport => transport.UseSerializer(_ => retry));
+        });
+
+        using var host = builder.Build();
+        await Assert.That(() => host.StartAsync()).Throws<InvalidOperationException>().WithMessageContaining("registry unavailable");
+        await Assert.That(prepared.Initializations).IsEqualTo(1);
+        await Assert.That(retry.Initializations).IsEqualTo(0);
+
+        retry.Fail = false;
+        await host.StartAsync();
+        await Assert.That(prepared.Initializations).IsEqualTo(1);
+        await Assert.That(retry.Initializations).IsEqualTo(1);
+        await host.StopAsync();
+    }
+
+    [Test]
     public async Task Default_json_transport_accepts_missing_metadata_for_custom_only_contracts()
     {
         var custom = new PreparedSerializer();
