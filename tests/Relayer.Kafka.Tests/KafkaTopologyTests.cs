@@ -5,6 +5,8 @@ using Dekaf.Errors;
 using Dekaf.Protocol;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Relayer.Transports;
 
 namespace Relayer.Kafka.Tests;
@@ -355,7 +357,7 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
     }
 
     [Test]
-    public async Task Provision_bounds_verification_with_the_native_creation_timeout()
+    public async Task Provision_expires_zero_timeout_before_building_verification_client()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -363,10 +365,18 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
         var topic = TopicName();
         await using var admin = Admin();
         await admin.CreateTopicsAsync([new() { Name = topic }], cancellationToken: token);
+        using var loggerFactory = new AdminClientBuildObserver();
         using var host = CreateHost(kafka =>
         {
             kafka.Send<Order>(topic);
-            kafka.Options.Configure(options => options.TopicCreationOptions = new() { TimeoutMs = 0 });
+            kafka.Options.Configure(options =>
+            {
+                options.TopicCreationOptions = new()
+                {
+                    TimeoutMs = 0,
+                };
+                options.ConfigureAdmin = builder => builder.WithLoggerFactory(loggerFactory);
+            });
         });
 
         try
@@ -374,6 +384,8 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
             await Assert.That(async () => await host.Services.GetServices<ITransport>().Single()
                 .ApplyTopologyAsync(TopologyMode.Provision, token))
                 .Throws<TimeoutException>().WithMessageContaining("within 0 ms");
+            // The initial topic listing is the only admin client construction.
+            await Assert.That(loggerFactory.AdminClientsCreated).IsEqualTo(1);
             await Assert.That(token.IsCancellationRequested).IsFalse();
         }
         finally
@@ -401,6 +413,32 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
             configure(kafka);
         }));
         return builder.Build();
+    }
+
+    private sealed class AdminClientBuildObserver : ILoggerFactory
+    {
+        public int AdminClientsCreated
+        {
+            get; private set;
+        }
+
+        public ILogger CreateLogger(string categoryName)
+        {
+            if (categoryName == typeof(AdminClient).FullName)
+            {
+                AdminClientsCreated++;
+            }
+
+            return NullLogger.Instance;
+        }
+
+        public void AddProvider(ILoggerProvider provider)
+        {
+        }
+
+        public void Dispose()
+        {
+        }
     }
 }
 

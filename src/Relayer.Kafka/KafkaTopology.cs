@@ -104,12 +104,22 @@ internal static class KafkaTopology
         CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(timeoutMs);
+
+        if (timeoutMs == 0)
+        {
+            deadline.Cancel();
+        }
+        else
+        {
+            deadline.CancelAfter(timeoutMs);
+        }
 
         try
         {
             while (true)
             {
+                deadline.Token.ThrowIfCancellationRequested();
+
                 // ListTopicsAsync caches metadata. Fresh clients read all topics without targeted
                 // metadata requests that can auto-create topics. See D88 and Dekaf #4190.
                 await using var verification = builder.Build();

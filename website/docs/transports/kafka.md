@@ -77,7 +77,7 @@ relayer.Kafka("events", kafka =>
 
 Explicit declarations are passed to Dekaf unchanged. Both Validate and Provision compare their partition counts, replication factors, manual replica assignments and declared configuration values. Native `-1` counts request broker defaults and are not compared; non-empty `ReplicaAssignments` take precedence over counts. Configuration values are compared as strings. Topics without explicit declarations get existence checks only, including topics that already exist when Provision runs. Relayer reports unresolved differences with expected and actual values and fails host startup before consumers start.
 
-`options.TopicCreationOptions` passes native `CreateTopicsOptions` through to Dekaf. Its `TimeoutMs` also bounds waiting for created topics to become visible before verification; null uses Dekaf's default options. Provision requires `ValidateOnly = false`. A concurrent creator is accepted only after reading and checking the resulting topic. Broker errors and cancellation propagate; provisioning across topics is not transactional.
+`options.TopicCreationOptions` passes native `CreateTopicsOptions` through to Dekaf. Its `TimeoutMs` also bounds the verification phase. A value of `0` raises `TimeoutException` as soon as Provision reaches verification, even if all topics already exist. Null options use Dekaf's defaults. Provision requires `ValidateOnly = false`. A concurrent creator is accepted only after reading and checking the resulting topic. Broker errors and cancellation propagate; provisioning across topics is not transactional.
 
 ## Register a consumer
 
