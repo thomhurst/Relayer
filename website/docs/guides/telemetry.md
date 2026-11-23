@@ -262,7 +262,8 @@ so an alert can stay raised while dead letters wait for redrive or purge:
 - `relayer.outbox.parked.depth`: parked ordered rows, each holding back its ordering key.
 
 Each maintenance worker counts both tables once per `CleanupInterval` (one minute by default),
-and only while a listener observes either gauge. Metric collection reads the cached counts and
+even when the outbox is idle and `SweepInterval` is longer. The worker counts rows only while a
+listener observes either gauge. Metric collection reads the cached counts and
 never queries the database. A store reports nothing until its first count succeeds; a failed
 count is logged and keeps the previous value. The gauges carry `db.system.name` (`postgresql`,
 `microsoft.sql_server` or `mysql`) and `relayer.outbox.store`, the name passed to

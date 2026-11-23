@@ -146,9 +146,9 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
             committed = true;
             return count;
         }
-        catch
+        catch when (!cleanup)
         {
-            // A rolled-back traversal must revisit its rows.
+            // A rolled-back recovery pass must revisit its rows.
             _hasAfter = _hasThrough = false;
             throw;
         }
@@ -254,9 +254,16 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
     {
         var preserve = column == "failed_at" ? $" AND NOT EXISTS (SELECT 1 FROM {_table} p WHERE p.id=d.id AND p.status='parked')" : "";
         return $"""
+            DECLARE @now datetime2(7) = SYSUTCDATETIME();
+            IF DATEDIFF_BIG(millisecond, '0001-01-01', @now) < CAST(@days AS bigint) * 86400000 + @remainder
+            BEGIN
+                SELECT 0;
+                RETURN;
+            END;
+
             ;WITH expired AS (
                 SELECT TOP (@limit) * FROM {table} d
-                WHERE {column} <= DATEADD(millisecond, -@remainder, DATEADD(day, -@days, SYSUTCDATETIME())){preserve}
+                WHERE {column} <= DATEADD(millisecond, -@remainder, DATEADD(day, -@days, @now)){preserve}
                 ORDER BY {column}
             )
             DELETE FROM expired;

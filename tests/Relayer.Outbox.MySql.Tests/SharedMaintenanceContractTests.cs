@@ -34,14 +34,14 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
 
         public override MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
             bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null, TimeProvider? idleTimeProvider = null,
-            RelayerInstrumentation? instrumentation = null)
+            RelayerInstrumentation? instrumentation = null, TimeSpan? sweepInterval = null, TimeSpan? cleanupInterval = null)
         {
             return new WorkerAdapter(new(data.Source, new()
             {
                 BatchSize = batchSize,
                 CleanupBatchLimit = cleanupBatchLimit,
-                SweepInterval = TimeSpan.FromMilliseconds(1),
-                CleanupInterval = TimeSpan.FromHours(1),
+                SweepInterval = sweepInterval ?? TimeSpan.FromMilliseconds(1),
+                CleanupInterval = cleanupInterval ?? TimeSpan.FromHours(1),
                 RecoveryDelay = TimeSpan.FromHours(1),
                 DeadRetention = deadRetention ? TimeSpan.FromDays(30) : null,
                 InboxRetention = inboxRetention ? TimeSpan.FromDays(7) : null

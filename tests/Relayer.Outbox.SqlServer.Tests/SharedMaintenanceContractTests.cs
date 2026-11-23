@@ -12,12 +12,30 @@ public sealed class SharedMaintenanceContractTests(SqlServerFixture database) : 
 {
     protected override async Task<MaintenanceFixture> CreateFixtureAsync()
     {
-        var data = new StoreData(database);
-        await data.Create();
-        return new Fixture(new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString, data);
+        return await CreateFixtureAsync(TimeSpan.FromDays(30));
     }
 
-    private sealed class Fixture(string connectionString, StoreData data) : MaintenanceFixture
+    [Test]
+    public async Task Retention_before_the_datetime2_range_leaves_dead_rows_and_cleans_the_inbox()
+    {
+        await using var fixture = await CreateFixtureAsync(TimeSpan.MaxValue);
+        await fixture.InsertDead(Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(-60));
+        await fixture.InsertInbox("consumer", Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(-8));
+        using var worker = fixture.Worker(new());
+
+        await Assert.That(await worker.CleanupAsync()).IsEqualTo(1);
+        await Assert.That(await fixture.Count(Table.Dead)).IsEqualTo(1L);
+        await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(0L);
+    }
+
+    private async Task<MaintenanceFixture> CreateFixtureAsync(TimeSpan deadRetentionPeriod)
+    {
+        var data = new StoreData(database);
+        await data.Create();
+        return new Fixture(new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString, data, deadRetentionPeriod);
+    }
+
+    private sealed class Fixture(string connectionString, StoreData data, TimeSpan deadRetentionPeriod) : MaintenanceFixture
     {
         private string Dead => SqlServerOutboxSchema.DeadTable(data.Options);
 
@@ -25,17 +43,17 @@ public sealed class SharedMaintenanceContractTests(SqlServerFixture database) : 
 
         public override MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
             bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null, TimeProvider? idleTimeProvider = null,
-            RelayerInstrumentation? instrumentation = null)
+            RelayerInstrumentation? instrumentation = null, TimeSpan? sweepInterval = null, TimeSpan? cleanupInterval = null)
         {
             return new WorkerAdapter(new(connectionString, new()
             {
                 TablePrefix = data.Options.TablePrefix,
                 BatchSize = batchSize,
                 CleanupBatchLimit = cleanupBatchLimit,
-                SweepInterval = TimeSpan.FromMilliseconds(1),
-                CleanupInterval = TimeSpan.FromHours(1),
+                SweepInterval = sweepInterval ?? TimeSpan.FromMilliseconds(1),
+                CleanupInterval = cleanupInterval ?? TimeSpan.FromHours(1),
                 RecoveryDelay = TimeSpan.FromHours(1),
-                DeadRetention = deadRetention ? TimeSpan.FromDays(30) : null,
+                DeadRetention = deadRetention ? deadRetentionPeriod : null,
                 InboxRetention = inboxRetention ? TimeSpan.FromDays(7) : null
             }, [transport], new FailureLogger<SqlServerMaintenanceWorker>(failure), instrumentation: instrumentation, idleTimeProvider: idleTimeProvider, storeName: "store"));
         }

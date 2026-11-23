@@ -42,34 +42,44 @@ internal abstract class OutboxMaintenanceWorker(int tableCount, int batchSize, i
             }
         }
 
-        var nextCleanup = DateTimeOffset.MinValue;
-        var nextDepth = DateTimeOffset.MinValue;
+        var clock = idleTimeProvider ?? TimeProvider.System;
+        var start = clock.GetTimestamp();
+        var nextSweep = TimeSpan.Zero;
+        var nextCleanup = TimeSpan.Zero;
+        var nextDepth = TimeSpan.Zero;
 
         try
         {
             while (!stoppingToken.IsCancellationRequested && !MaintenanceStopping)
             {
-                var scanned = 0;
+                if (clock.GetElapsedTime(start) >= nextSweep)
+                {
+                    var scanned = 0;
 
-                try
-                {
-                    scanned = await RecoverAsync(stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception error)
-                {
-                    ReportFailure("sweeper", error);
+                    try
+                    {
+                        scanned = await RecoverAsync(stoppingToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (Exception error)
+                    {
+                        ReportFailure("sweeper", error);
+                    }
+
+                    // Drain the fixed scan before delaying retries. Cleanup and gauge wakeups
+                    // during the delay leave this recovery deadline in place.
+                    nextSweep = clock.GetElapsedTime(start) + (scanned == 0 ? sweepInterval : TimeSpan.Zero);
                 }
 
                 if (MaintenanceStopping)
                 {
                     break;
                 }
-                // Recovery failure must not suppress the independently admitted retention turn.
-                if (DateTimeOffset.UtcNow >= nextCleanup)
+
+                if (clock.GetElapsedTime(start) >= nextCleanup)
                 {
                     try
                     {
@@ -84,10 +94,12 @@ internal abstract class OutboxMaintenanceWorker(int tableCount, int batchSize, i
                         ReportFailure("cleanup", error);
                     }
 
-                    nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : cleanupInterval);
+                    // A full cleanup turn resumes only after the next recovery turn.
+                    nextCleanup = CleanupPending ? nextSweep : clock.GetElapsedTime(start) + cleanupInterval;
                 }
+
                 // Gauges read the cached counts; the store is queried only while a listener observes them.
-                if (depth is { Enabled: true } && DateTimeOffset.UtcNow >= nextDepth)
+                if (depth is { Enabled: true } && clock.GetElapsedTime(start) >= nextDepth)
                 {
                     try
                     {
@@ -102,13 +114,22 @@ internal abstract class OutboxMaintenanceWorker(int tableCount, int batchSize, i
                         ReportFailure("depth", error);
                     }
 
-                    nextDepth = DateTimeOffset.UtcNow + cleanupInterval;
+                    nextDepth = clock.GetElapsedTime(start) + cleanupInterval;
                 }
-                // Native recovery returns the scanned count within its fixed boundary. Its empty
-                // terminal pass provides the retry delay even when every send failed.
-                if (scanned == 0)
+
+                var next = nextSweep < nextCleanup ? nextSweep : nextCleanup;
+
+                if (depth is { Enabled: true } && nextDepth < next)
                 {
-                    await Task.Delay(sweepInterval, idleTimeProvider ?? TimeProvider.System, idleToken).ConfigureAwait(false);
+                    next = nextDepth;
+                }
+
+                var delay = next - clock.GetElapsedTime(start);
+
+                if (delay > TimeSpan.Zero)
+                {
+                    // Task.Delay truncates to milliseconds. Round up to avoid spinning before the deadline.
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(delay.TotalMilliseconds)), clock, idleToken).ConfigureAwait(false);
                 }
             }
         }

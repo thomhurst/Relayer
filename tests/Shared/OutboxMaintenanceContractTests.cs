@@ -20,7 +20,7 @@ public abstract class OutboxMaintenanceContractTests
     {
         public abstract MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
             bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null, TimeProvider? idleTimeProvider = null,
-            RelayerInstrumentation? instrumentation = null);
+            RelayerInstrumentation? instrumentation = null, TimeSpan? sweepInterval = null, TimeSpan? cleanupInterval = null);
 
         public abstract Task Insert(Guid id, DateTimeOffset createdAt, int? lane = null,
             DateTimeOffset? deliverAt = null, string status = "pending", DateTimeOffset? claimExpiresAt = null);
@@ -127,6 +127,19 @@ public abstract class OutboxMaintenanceContractTests
     private sealed class IdleClock : TimeProvider
     {
         private readonly Channel<IdleTimer> _timers = Channel.CreateUnbounded<IdleTimer>();
+        private long _timestamp;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp()
+        {
+            return Interlocked.Read(ref _timestamp);
+        }
+
+        public void Advance(TimeSpan elapsed)
+        {
+            Interlocked.Add(ref _timestamp, elapsed.Ticks);
+        }
 
         public async Task<IdleTimer> NextIdle()
         {
@@ -135,16 +148,19 @@ public abstract class OutboxMaintenanceContractTests
 
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
-            var timer = new IdleTimer(callback, state);
+            var timer = new IdleTimer(this, dueTime, callback, state);
             _timers.Writer.TryWrite(timer);
             return timer;
         }
     }
 
-    private sealed class IdleTimer(TimerCallback callback, object? state) : ITimer
+    private sealed class IdleTimer(IdleClock clock, TimeSpan dueTime, TimerCallback callback, object? state) : ITimer
     {
+        public TimeSpan DueTime => dueTime;
+
         public void Fire()
         {
+            clock.Advance(dueTime);
             callback(state);
         }
 
@@ -420,30 +436,75 @@ public abstract class OutboxMaintenanceContractTests
     }
 
     [Test]
-    public async Task Hosted_maintenance_refreshes_depth_gauges_while_observed()
+    public async Task Hosted_cleanup_and_depth_refresh_wake_before_the_next_recovery_sweep()
     {
         await using var fixture = await CreateFixtureAsync();
-        await fixture.InsertDead(Id(1), DateTimeOffset.UtcNow);
+        var now = DateTimeOffset.UtcNow;
+        await fixture.InsertDead(Id(1), now);
         using var instrumentation = new RelayerInstrumentation();
         using var depth = new DepthCapture(instrumentation);
-        using var worker = fixture.Worker(new(), instrumentation: instrumentation);
+        var clock = new IdleClock();
+        var transport = new RecordingTransport();
+        using var worker = fixture.Worker(transport, deadRetention: false, cleanupBatchLimit: 1,
+            idleTimeProvider: clock, instrumentation: instrumentation, sweepInterval: TimeSpan.FromSeconds(5),
+            cleanupInterval: TimeSpan.FromSeconds(2));
         await worker.StartAsync();
 
         try
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-            while (!depth.Collect().ContainsKey("relayer.outbox.dead.depth"))
-            {
-                await Task.Delay(10, timeout.Token);
-            }
-
+            var idle = await clock.NextIdle();
+            await Assert.That(idle.DueTime).IsEqualTo(TimeSpan.FromSeconds(2));
             await Assert.That(depth.Collect()["relayer.outbox.dead.depth"]).IsEqualTo(1L);
+
+            await fixture.InsertDead(Id(2), now);
+            await fixture.Insert(Id(3), now.AddDays(-1));
+            await fixture.InsertInbox("consumer", Id(4), now.AddDays(-8));
+            await fixture.InsertInbox("consumer", Id(5), now.AddDays(-8));
+            idle.Fire();
+
+            idle = await clock.NextIdle();
+            await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(1L);
+            await Assert.That(depth.Collect()["relayer.outbox.dead.depth"]).IsEqualTo(2L);
+            await Assert.That(transport.Ids).IsEmpty();
+            await Assert.That(idle.DueTime).IsEqualTo(TimeSpan.FromSeconds(2));
+            idle.Fire();
+
+            idle = await clock.NextIdle();
+            // A full cleanup turn must yield to recovery even if a depth refresh wakes it first.
+            await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(1L);
+            await Assert.That(transport.Ids).IsEmpty();
+            await Assert.That(idle.DueTime).IsEqualTo(TimeSpan.FromSeconds(1));
+            idle.Fire();
+
+            await clock.NextIdle();
+            await Assert.That(transport.Ids).Contains(Id(3));
+            await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(0L);
         }
         finally
         {
             await worker.StopAsync();
         }
+    }
+
+    [Test]
+    public async Task Failed_cleanup_preserves_the_recovery_cursor()
+    {
+        await using var fixture = await CreateFixtureAsync();
+        var old = DateTimeOffset.UtcNow.AddDays(-1);
+        await fixture.Insert(Id(1), old);
+        await fixture.Insert(Id(2), old);
+        using var worker = fixture.Worker(new RecordingTransport(
+            (_, _) => ValueTask.FromException(new InvalidOperationException("offline"))), deadRetention: false);
+
+        await Assert.That(await worker.SweepAsync()).IsEqualTo(1);
+        await Assert.That(await fixture.Attempts(Id(1))).IsEqualTo(1);
+        await fixture.DropInboxTable();
+        await Assert.ThrowsAsync<System.Data.Common.DbException>(async () => await worker.CleanupAsync());
+        await fixture.MakeDueAndExpireClaims();
+
+        await Assert.That(await worker.SweepAsync()).IsEqualTo(1);
+        await Assert.That(await fixture.Attempts(Id(1))).IsEqualTo(1);
+        await Assert.That(await fixture.Attempts(Id(2))).IsEqualTo(1);
     }
 
     private sealed class DepthCapture : IDisposable
