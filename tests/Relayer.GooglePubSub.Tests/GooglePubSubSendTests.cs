@@ -110,6 +110,26 @@ public class GooglePubSubSendTests
     }
 
     [Test]
+    [Arguments("")]
+    [Arguments("billing")]
+    public async Task Invalid_subscription_declaration_identifies_the_name_and_required_format(string name)
+    {
+        await using var provider = Provider(new GatedPublisher(), transport => transport.Options.Configure(options =>
+        {
+            options.Subscriptions.Add(new()
+            {
+                Name = name,
+                Topic = Topic
+            });
+        }));
+
+        var error = await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
+        await Assert.That(error!.Message).Contains("Pub/Sub transport 'test'");
+        await Assert.That(error.Message).Contains($"Subscriptions[1].Name is '{name}'");
+        await Assert.That(error.Message).Contains("projects/{project}/subscriptions/{subscription}");
+    }
+
+    [Test]
     [Arguments(false, true, true, false)]
     [Arguments(true, false, false, false)]
     [Arguments(true, true, false, false)]
