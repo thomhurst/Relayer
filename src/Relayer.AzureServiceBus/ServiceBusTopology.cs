@@ -266,13 +266,28 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
         Difference<string>(entity, property, expected ?? string.Empty, actual ?? string.Empty, differences);
     }
 
+    private static void CompareMessageTimeToLive(string entity, TimeSpan expected, TimeSpan actual, List<string> differences)
+    {
+        // The SDK omits MaxValue from the create request, leaving the TTL to the broker.
+        if (expected != TimeSpan.MaxValue)
+        {
+            Difference(entity, nameof(CreateQueueOptions.DefaultMessageTimeToLive), expected, actual, differences);
+        }
+    }
+
     private static void Compare(CreateQueueOptions expected, CreateQueueOptions actual, List<string> differences)
     {
         var entity = expected.Name;
         Difference(entity, nameof(expected.AutoDeleteOnIdle), expected.AutoDeleteOnIdle, actual.AutoDeleteOnIdle, differences);
         Difference(entity, nameof(expected.DeadLetteringOnMessageExpiration), expected.DeadLetteringOnMessageExpiration, actual.DeadLetteringOnMessageExpiration, differences);
-        Difference(entity, nameof(expected.DefaultMessageTimeToLive), expected.DefaultMessageTimeToLive, actual.DefaultMessageTimeToLive, differences);
-        Difference(entity, nameof(expected.DuplicateDetectionHistoryTimeWindow), expected.DuplicateDetectionHistoryTimeWindow, actual.DuplicateDetectionHistoryTimeWindow, differences);
+        CompareMessageTimeToLive(entity, expected.DefaultMessageTimeToLive, actual.DefaultMessageTimeToLive, differences);
+
+        if (expected.RequiresDuplicateDetection || actual.RequiresDuplicateDetection)
+        {
+            Difference(entity, nameof(expected.DuplicateDetectionHistoryTimeWindow),
+                expected.DuplicateDetectionHistoryTimeWindow, actual.DuplicateDetectionHistoryTimeWindow, differences);
+        }
+
         Difference(entity, nameof(expected.EnableBatchedOperations), expected.EnableBatchedOperations, actual.EnableBatchedOperations, differences);
         Difference(entity, nameof(expected.EnablePartitioning), expected.EnablePartitioning, actual.EnablePartitioning, differences);
         Difference(entity, nameof(expected.ForwardDeadLetteredMessagesTo), expected.ForwardDeadLetteredMessagesTo, actual.ForwardDeadLetteredMessagesTo, differences);
@@ -301,8 +316,14 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
     {
         var entity = expected.Name;
         Difference(entity, nameof(expected.AutoDeleteOnIdle), expected.AutoDeleteOnIdle, actual.AutoDeleteOnIdle, differences);
-        Difference(entity, nameof(expected.DefaultMessageTimeToLive), expected.DefaultMessageTimeToLive, actual.DefaultMessageTimeToLive, differences);
-        Difference(entity, nameof(expected.DuplicateDetectionHistoryTimeWindow), expected.DuplicateDetectionHistoryTimeWindow, actual.DuplicateDetectionHistoryTimeWindow, differences);
+        CompareMessageTimeToLive(entity, expected.DefaultMessageTimeToLive, actual.DefaultMessageTimeToLive, differences);
+
+        if (expected.RequiresDuplicateDetection || actual.RequiresDuplicateDetection)
+        {
+            Difference(entity, nameof(expected.DuplicateDetectionHistoryTimeWindow),
+                expected.DuplicateDetectionHistoryTimeWindow, actual.DuplicateDetectionHistoryTimeWindow, differences);
+        }
+
         Difference(entity, nameof(expected.EnableBatchedOperations), expected.EnableBatchedOperations, actual.EnableBatchedOperations, differences);
         Difference(entity, nameof(expected.EnablePartitioning), expected.EnablePartitioning, actual.EnablePartitioning, differences);
 
@@ -328,7 +349,7 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
         var entity = expected.TopicName + "/Subscriptions/" + expected.SubscriptionName;
         Difference(entity, nameof(expected.AutoDeleteOnIdle), expected.AutoDeleteOnIdle, actual.AutoDeleteOnIdle, differences);
         Difference(entity, nameof(expected.DeadLetteringOnMessageExpiration), expected.DeadLetteringOnMessageExpiration, actual.DeadLetteringOnMessageExpiration, differences);
-        Difference(entity, nameof(expected.DefaultMessageTimeToLive), expected.DefaultMessageTimeToLive, actual.DefaultMessageTimeToLive, differences);
+        CompareMessageTimeToLive(entity, expected.DefaultMessageTimeToLive, actual.DefaultMessageTimeToLive, differences);
         Difference(entity, nameof(expected.EnableBatchedOperations), expected.EnableBatchedOperations, actual.EnableBatchedOperations, differences);
         Difference(entity, nameof(expected.EnableDeadLetteringOnFilterEvaluationExceptions), expected.EnableDeadLetteringOnFilterEvaluationExceptions, actual.EnableDeadLetteringOnFilterEvaluationExceptions, differences);
         Difference(entity, nameof(expected.ForwardDeadLetteredMessagesTo), expected.ForwardDeadLetteredMessagesTo, actual.ForwardDeadLetteredMessagesTo, differences);
