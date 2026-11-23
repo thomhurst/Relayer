@@ -33,6 +33,10 @@ Give messages a stable `[Message]` identity. `AddMessageTypesFromThisAssembly()`
 
 Declare destinations with native `CreateQueueOptions` or `CreateTopicOptions` in `Queues` or `Topics`. Every send destination needs exactly one declaration. Send destinations match native queue and topic names case-insensitively. Queue consumer sources also match native queue names case-insensitively. Declare each native name once, even if routes or queue consumers use different casing. Native `CreateSubscriptionOptions` in `Subscriptions` declare subscriptions of a declared topic. Every consumer needs a matching native queue or topic/subscription declaration.
 
+Add these declarations in `bus.Options.Configure` by constructing the native options, as in the example above. The standard .NET configuration binder cannot construct the entries in `Queues`, `Topics`, or `Subscriptions` through `bus.Options.Bind`. You can still bind supported settings such as `AutoStartConsumers`.
+
+On the same named Service Bus transport, each message type can route to a queue or topic only once, even if the routes use different casing. Startup rejects duplicates across fixed routes and the destinations listed for selector routes. A selector must return a destination exactly as listed.
+
 With `TopologyMode.None`, routes and consumers already name their entities, so these declarations are optional. A consumer implies its queue, or with `Subscription` set, its topic and subscription; `SessionProcessorOptions` implies `RequiresSession = true`. A send destination is implied as a queue, or as a topic when its name is in `TrustedSessionEntities`; the native sender is the same for both. An explicit declaration always wins, so declare an entity to override these defaults. Implied entities are not added to your options. The [infrastructure export](../guides/topology.md#service-bus-infrastructure-export) renders only explicit declarations, so it fails when a route or consumer names an undeclared entity rather than emitting incomplete infrastructure; declare every entity to export it:
 
 ```csharp
