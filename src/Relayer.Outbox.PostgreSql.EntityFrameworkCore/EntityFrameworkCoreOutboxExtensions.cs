@@ -120,6 +120,7 @@ public static class EntityFrameworkCoreOutboxExtensions
 
         ((IDbContextOptionsBuilderInfrastructure)builder).AddOrUpdateExtension(configuration);
         OutboxSaveChangesInterceptorAggregator.Configure(builder);
+        OutboxTransactionInterceptorAggregator.Configure(builder);
         builder.AddInterceptors(new OutboxSaveChangesInterceptor(outbox, configuration, services),
             new OutboxTransactionInterceptor(outbox, configuration));
         return builder;

@@ -1,8 +1,10 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Data.Common;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -305,6 +307,93 @@ public class OutboxTelemetryTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Suppressed_ef_commit_never_reports_pending_rows(bool synchronous, bool registerLast)
+    {
+        await using var database = new PostgreSqlFixture();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        using var instrumentation = new RelayerInstrumentation();
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), [], instrumentation: instrumentation);
+        using var capture = new Capture(tracing, instrumentation);
+        var services = new ServiceCollection().AddLogging();
+        services.AddSingleton(instrumentation);
+        services.AddRelayerEntityFrameworkCoreOutbox();
+        await using var provider = services.BuildServiceProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var suppress = new SuppressCommit();
+        var options = new DbContextOptionsBuilder<Context>().UseNpgsql(database.ConnectionString);
+
+        if (registerLast)
+        {
+            options.AddRelayerOutbox(scope.ServiceProvider).AddInterceptors(suppress);
+        }
+        else
+        {
+            options.AddInterceptors(suppress).AddRelayerOutbox(scope.ServiceProvider);
+        }
+
+        await using var context = new Context(options.Options);
+        var enlistment = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+        var store = new PostgreSqlOutboxStore(source);
+
+        var scenarios = new (bool Suppressed, bool Buffered, int Pending)[]
+        {
+            (true, false, 0),
+            (true, true, 0),
+            (false, true, 1),
+        };
+
+        foreach (var scenario in scenarios)
+        {
+            suppress.Enabled = scenario.Suppressed;
+
+            await using (var transaction = await context.Database.BeginTransactionAsync())
+            {
+                using var selection = context.EnlistRelayerOutbox();
+
+                if (scenario.Buffered)
+                {
+                    await enlistment.EnlistAsync(new(Guid.CreateVersion7(), "local", "outbox.trace;v=1",
+                        new OutgoingMessage("orders", new byte[] { 1 }), DateTimeOffset.UtcNow), default);
+                }
+
+                if (scenario.Suppressed && scenario.Buffered)
+                {
+                    if (synchronous)
+                    {
+                        await Assert.That(transaction.Commit).Throws<InvalidOperationException>()
+                            .WithMessageContaining("Suppressing a transaction commit");
+                    }
+                    else
+                    {
+                        await Assert.That(() => transaction.CommitAsync()).Throws<InvalidOperationException>()
+                            .WithMessageContaining("Suppressing a transaction commit");
+                    }
+
+                    await transaction.RollbackAsync();
+                }
+                else if (synchronous)
+                {
+                    transaction.Commit();
+                }
+                else
+                {
+                    await transaction.CommitAsync();
+                }
+            }
+
+            await Assert.That(capture.Pending.Count).IsEqualTo(scenario.Pending);
+            await Assert.That(capture.Pending.Sum()).IsEqualTo(scenario.Pending);
+            await Assert.That(await store.GetPendingCountAsync(DateTimeOffset.UtcNow, default)).IsEqualTo((long)scenario.Pending);
+        }
+    }
+
+    [Test]
     [Arguments(false, "missing")]
     [Arguments(true, "missing")]
     [Arguments(false, "invalid")]
@@ -451,6 +540,26 @@ public class OutboxTelemetryTests
         await Assert.That(messages[1].Destination).IsEqualTo("third");
         await Assert.That(times[0]).IsEqualTo(second);
         await Assert.That(times[1]).IsEqualTo(third);
+    }
+
+    private sealed class SuppressCommit : DbTransactionInterceptor
+    {
+        internal bool Enabled
+        {
+            get; set;
+        }
+
+        public override InterceptionResult TransactionCommitting(DbTransaction transaction, TransactionEventData eventData,
+            InterceptionResult result)
+        {
+            return Enabled ? InterceptionResult.Suppress() : result;
+        }
+
+        public override ValueTask<InterceptionResult> TransactionCommittingAsync(DbTransaction transaction, TransactionEventData eventData,
+            InterceptionResult result, CancellationToken cancellationToken = default)
+        {
+            return new(TransactionCommitting(transaction, eventData, result));
+        }
     }
 
     private sealed class FailingTransport : ITransport, ITransportSendTracing

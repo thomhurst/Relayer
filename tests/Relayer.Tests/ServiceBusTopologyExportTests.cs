@@ -160,7 +160,7 @@ public sealed class ServiceBusTopologyExportTests
         await Assert.That(queue).Contains("\n    " + prefix + "queue1");
         await Assert.That(queue).Contains("\n    " + prefix + "topic2");
         await Assert.That(subscription).Contains(dependency);
-        await Assert.That(subscription).Contains("\n    " + prefix + "queue1");
+        await Assert.That(subscription.Split("\n    " + prefix + "queue1", StringSplitOptions.None).Length).IsEqualTo(2);
         var separator = format == ServiceBusTopologyFormat.Bicep ? ": '" : " = \"";
         await Assert.That(queue).Contains("forwardTo" + separator + "archive");
         await Assert.That(queue).Contains("forwardDeadLetteredMessagesTo" + separator + "EVENTS");

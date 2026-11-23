@@ -209,8 +209,15 @@ bypasses enlistment. See [Upgrade outbox sends](../migration/outbox-sends.md) fo
 
 Commit through EF's `IDbContextTransaction`, including the wrapper returned by `UseTransactionAsync`.
 Calling `Commit` directly on the underlying `DbTransaction` bypasses EF interceptors and is unsupported.
-Use EF's rollback and disposal APIs too. Cancellation or insertion failure prevents commit; disposing or
+Use EF's rollback and disposal APIs too. Cancellation or insertion failure prevents commit. Disposing or
 rolling back a transaction discards its buffered rows. Native callbacks cannot be persisted and fail before buffering.
+
+Relayer runs its transaction callbacks after the other EF Core transaction interceptors. If the final
+interceptor result suppresses commit while the transaction has buffered outbox messages, Relayer throws
+before writing the outbox batch. Roll back or dispose the transaction, then retry the whole unit with
+an interceptor configuration that allows EF Core to commit. This also applies when Relayer opens the
+transaction for `SaveChanges` or `SaveChangesAsync`. When the transaction has no buffered
+messages, EF Core honors suppression and Relayer skips outbox commit telemetry and dispatch.
 
 EF's automatic savepoints let a failed save recover inside an explicit transaction when the native
 rollback succeeds. Each context retains sends covered by its last successful `SaveChanges` (including

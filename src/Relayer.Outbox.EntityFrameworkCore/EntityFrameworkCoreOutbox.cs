@@ -186,7 +186,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
         }
     }
 
-    internal IOutboxBatch? Prepare(DbTransaction transaction)
+    internal IOutboxBatch? Prepare(DbTransaction transaction, bool commitSuppressed)
     {
         OutboxConfiguration? configuration = null;
         var count = 0;
@@ -220,6 +220,17 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
                 state.Configuration.ValidateTransaction(transaction);
                 participants++;
             }
+        }
+
+        if (commitSuppressed)
+        {
+            if (count != 0)
+            {
+                throw new InvalidOperationException("Suppressing a transaction commit with buffered Relayer outbox messages is unsupported. Roll back the transaction and allow EF Core to commit when retrying the unit of work.");
+            }
+
+            Ended(transaction);
+            return null;
         }
 
         if (count == 0)
