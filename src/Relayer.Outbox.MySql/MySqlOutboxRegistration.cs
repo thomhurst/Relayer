@@ -1,8 +1,8 @@
-using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Relayer.Outbox;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
@@ -52,17 +52,18 @@ public static class MySqlOutboxRegistration
         ArgumentNullException.ThrowIfNull(configuration);
         services.AddRelayerMySqlOutbox();
         AddFactory(services, new(), configuration);
-        services.AddSingleton<IOptionsChangeTokenSource<MySqlOutboxOptions>>(
-            new ConfigurationChangeTokenSource<MySqlOutboxOptions>(configuration));
         return services;
     }
 
     private static void AddFactory(IServiceCollection services, MySqlOutboxOptions options, IConfiguration? configuration)
     {
-        services.AddSingleton<IOptionsFactory<MySqlOutboxOptions>>(provider => new Factory(options, configuration,
-                    provider.GetServices<IConfigureOptions<MySqlOutboxOptions>>(),
-                    provider.GetServices<IPostConfigureOptions<MySqlOutboxOptions>>(),
-                    provider.GetServices<IValidateOptions<MySqlOutboxOptions>>()));
+        var sections = OutboxOptionsConfiguration<MySqlOutboxOptions>.Register(services, configuration);
+        services.Add(new ServiceDescriptor(typeof(IOptionsFactory<MySqlOutboxOptions>),
+            provider => new Factory(options, sections,
+                provider.GetServices<IConfigureOptions<MySqlOutboxOptions>>(),
+                provider.GetServices<IPostConfigureOptions<MySqlOutboxOptions>>(),
+                provider.GetServices<IValidateOptions<MySqlOutboxOptions>>()),
+            configuration is null ? ServiceLifetime.Singleton : ServiceLifetime.Transient));
     }
 
     private sealed class Validator : IValidateOptions<MySqlOutboxOptions>
@@ -82,7 +83,7 @@ public static class MySqlOutboxRegistration
     }
 
     // Configuration's source generator skips init-only setters. Bind scalars without runtime reflection.
-    private sealed class Factory(MySqlOutboxOptions defaults, IConfiguration? configuration,
+    private sealed class Factory(MySqlOutboxOptions defaults, OutboxOptionsConfiguration<MySqlOutboxOptions>? configuration,
         IEnumerable<IConfigureOptions<MySqlOutboxOptions>> setups,
         IEnumerable<IPostConfigureOptions<MySqlOutboxOptions>> postConfigures,
         IEnumerable<IValidateOptions<MySqlOutboxOptions>> validations)
@@ -94,26 +95,9 @@ public static class MySqlOutboxRegistration
             {
                 TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
                 DispatchStoreName = configuration?[nameof(defaults.DispatchStoreName)] ?? defaults.DispatchStoreName,
-                MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
-                Lanes = Read(nameof(defaults.Lanes), defaults.Lanes)
+                MaxDispatchAttempts = configuration?.Read<int>(nameof(defaults.MaxDispatchAttempts)) ?? defaults.MaxDispatchAttempts,
+                Lanes = configuration?.Read<int>(nameof(defaults.Lanes)) ?? defaults.Lanes
             };
-        }
-
-        private T Read<T>(string key, T fallback) where T : IParsable<T>
-        {
-            var value = configuration?[key];
-
-            if (value is null)
-            {
-                return fallback;
-            }
-
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
-            {
-                return parsed;
-            }
-
-            throw new OptionsValidationException(Options.DefaultName, typeof(MySqlOutboxOptions), [$"{key}: '{value}' is invalid."]);
         }
     }
 }

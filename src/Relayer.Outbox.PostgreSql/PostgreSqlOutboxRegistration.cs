@@ -1,8 +1,8 @@
-using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Relayer.Outbox;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
@@ -78,17 +78,18 @@ public static class PostgreSqlOutboxRegistration
         ArgumentNullException.ThrowIfNull(configuration);
         services.AddRelayerPostgreSqlOutbox();
         AddFactory(services, new(), configuration);
-        services.AddSingleton<IOptionsChangeTokenSource<PostgreSqlOutboxOptions>>(
-            new ConfigurationChangeTokenSource<PostgreSqlOutboxOptions>(configuration));
         return services;
     }
 
     private static void AddFactory(IServiceCollection services, PostgreSqlOutboxOptions options, IConfiguration? configuration)
     {
-        services.AddSingleton<IOptionsFactory<PostgreSqlOutboxOptions>>(provider => new Factory(options, configuration,
-                    provider.GetServices<IConfigureOptions<PostgreSqlOutboxOptions>>(),
-                    provider.GetServices<IPostConfigureOptions<PostgreSqlOutboxOptions>>(),
-                    provider.GetServices<IValidateOptions<PostgreSqlOutboxOptions>>()));
+        var sections = OutboxOptionsConfiguration<PostgreSqlOutboxOptions>.Register(services, configuration);
+        services.Add(new ServiceDescriptor(typeof(IOptionsFactory<PostgreSqlOutboxOptions>),
+            provider => new Factory(options, sections,
+                provider.GetServices<IConfigureOptions<PostgreSqlOutboxOptions>>(),
+                provider.GetServices<IPostConfigureOptions<PostgreSqlOutboxOptions>>(),
+                provider.GetServices<IValidateOptions<PostgreSqlOutboxOptions>>()),
+            configuration is null ? ServiceLifetime.Singleton : ServiceLifetime.Transient));
     }
 
     private sealed class Validator : IValidateOptions<PostgreSqlOutboxOptions>
@@ -108,7 +109,7 @@ public static class PostgreSqlOutboxRegistration
     }
 
     // Configuration's source generator skips init-only setters. Bind scalars without runtime reflection.
-    private sealed class Factory(PostgreSqlOutboxOptions defaults, IConfiguration? configuration,
+    private sealed class Factory(PostgreSqlOutboxOptions defaults, OutboxOptionsConfiguration<PostgreSqlOutboxOptions>? configuration,
         IEnumerable<IConfigureOptions<PostgreSqlOutboxOptions>> setups,
         IEnumerable<IPostConfigureOptions<PostgreSqlOutboxOptions>> postConfigures,
         IEnumerable<IValidateOptions<PostgreSqlOutboxOptions>> validations)
@@ -121,28 +122,11 @@ public static class PostgreSqlOutboxRegistration
                 TenantBinding = defaults.TenantBinding,
                 Schema = configuration?[nameof(defaults.Schema)] ?? defaults.Schema,
                 TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
-                Lanes = Read(nameof(defaults.Lanes), defaults.Lanes),
-                LeaseDuration = Read(nameof(defaults.LeaseDuration), defaults.LeaseDuration),
-                RetainSentMessages = Read(nameof(defaults.RetainSentMessages), defaults.RetainSentMessages),
-                MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts)
+                Lanes = configuration?.Read<int>(nameof(defaults.Lanes)) ?? defaults.Lanes,
+                LeaseDuration = configuration?.Read<TimeSpan>(nameof(defaults.LeaseDuration)) ?? defaults.LeaseDuration,
+                RetainSentMessages = configuration?.Read<bool>(nameof(defaults.RetainSentMessages)) ?? defaults.RetainSentMessages,
+                MaxDispatchAttempts = configuration?.Read<int>(nameof(defaults.MaxDispatchAttempts)) ?? defaults.MaxDispatchAttempts
             };
-        }
-
-        private T Read<T>(string key, T fallback) where T : IParsable<T>
-        {
-            var value = configuration?[key];
-
-            if (value is null)
-            {
-                return fallback;
-            }
-
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
-            {
-                return parsed;
-            }
-
-            throw new OptionsValidationException(Options.DefaultName, typeof(PostgreSqlOutboxOptions), [$"{key}: '{value}' is invalid."]);
         }
     }
 }

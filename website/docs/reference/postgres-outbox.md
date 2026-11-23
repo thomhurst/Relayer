@@ -39,6 +39,10 @@ Relayer's validation runs alongside application validators in either registratio
 `LeaseDuration` and `MaxDispatchAttempts` do not configure enqueue; enqueue uses schema, prefix and lanes. Configure dispatch and recovery through their separate worker options.
 To expose durable reads and backlog health, register the [keyed store](postgres-store.md) separately.
 
+Successive configuration registrations combine their sections. A later section overrides keys it supplies.
+Reloading a contributing section refreshes the options monitor. A new scope reads the combined settings and resolves
+fresh validator dependencies, while an existing scope keeps its resolved snapshot.
+
 ## ADO.NET and Dapper
 
 ```csharp
