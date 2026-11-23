@@ -1,0 +1,105 @@
+name: Buffered allocation counter soak (#1154)
+
+on:
+  push:
+    branches: [diagnostics/issue-1154-counter-soak]
+
+permissions:
+  contents: read
+
+env:
+  ORIGINAL_CHECKOUT: 5e064a687be1cc2ccd52518702dca7ee6a569fb3
+  FRAMEWORK: net10.0
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_NOLOGO: 'true'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Separate Docker publications from outbound ports
+        run: sudo bash scripts/Prepare-ContainerTests.sh
+      - uses: docker/setup-docker-action@3f1ab1ab0e29231562e4db4ca600c1a49653bac6
+        with:
+          version: v29.10.0
+          set-host: true
+          daemon-config: '{"userland-proxy": false}'
+      - name: Verify mixed-address port allocation and forwarding
+        run: bash scripts/Test-ContainerPortAllocation.sh
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+        with:
+          global-json-file: global.json
+          dotnet-version: '10.0.404'
+      - name: Build the failed CI checkout with the longer comparison
+        run: |
+          mkdir -p .artifacts results
+          git fetch --no-tags origin "$ORIGINAL_CHECKOUT"
+          git worktree add --detach .artifacts/ci-source "$ORIGINAL_CHECKOUT"
+          git -C .artifacts/ci-source rev-parse HEAD > results/checkout.txt
+          git rev-parse HEAD > results/diagnostic-commit.txt
+          uname -a > results/host.txt
+          cat /etc/os-release >> results/host.txt
+          nproc >> results/host.txt
+          dotnet --info > results/runtime.txt
+          runtime=$(dotnet --list-runtimes | awk '$1 == "Microsoft.NETCore.App" && $2 ~ /^10[.]0[.]/ {print $2}' | sort -V | tail -n 1)
+          test "$runtime" = 10.0.15
+          git -C .artifacts/ci-source apply --unidiff-zero "$PWD/.github/scripts/issue-1154-counter-soak.patch"
+          cd .artifacts/ci-source
+          dotnet restore
+          dotnet build --no-restore -c Release
+      - name: Prefetch CI broker images
+        run: |
+          docker pull apache/kafka:4.0.2
+          docker pull postgres:18-alpine
+          docker pull mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04
+          docker pull mysql:8.4
+          docker pull gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935
+          docker pull ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa
+      - name: Capture 65,536 buffered comparisons during the CI workload
+        id: capture
+        timeout-minutes: 10
+        run: |
+          results="$PWD/results"
+          cd .artifacts/ci-source
+          timeout --kill-after=10s 8m dotnet test --no-build -c Release -f "$FRAMEWORK" \
+            --environment "RELAYER_ALLOCATION_BOUNDARIES=$results/windows.csv" \
+            2>&1 | tee "$results/tests.log"
+      - name: Report differences and overlapping collections
+        if: ${{ !cancelled() && (steps.capture.outcome == 'success' || steps.capture.outcome == 'failure') }}
+        run: |
+          cat results/windows.csv.gc.txt
+          rg -iq '^ConcurrentGC=false$' results/windows.csv.gc.txt
+          python3 .github/scripts/summarize-issue-1154-soak.py results/windows.csv | tee results/summary.txt
+      - name: Inventory the retained inputs and results
+        if: always()
+        run: |
+          mkdir -p results
+          sha256sum .github/scripts/issue-1154-counter-soak.patch > results/patch.sha256
+          paths=(results .github/scripts/issue-1154-counter-soak.patch)
+          binaries=".artifacts/ci-source/tests/Relayer.Tests/bin/Release/$FRAMEWORK"
+          if [[ -d "$binaries" ]]; then
+            paths+=("$binaries")
+          fi
+          find "${paths[@]}" -type f -exec sha256sum {} + > results-sha256.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: allocation-counter-soak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            results-sha256.txt
+            .github/scripts/issue-1154-counter-soak.patch
+            .artifacts/ci-source/tests/Relayer.Tests/bin/Release/${{ env.FRAMEWORK }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
