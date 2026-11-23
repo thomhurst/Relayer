@@ -20,6 +20,8 @@ def verify_packages(directory, commit, version=None):
     root = Path(__file__).resolve().parents[2]
     expected = {project.stem for project in (root / "src").glob("*/*.csproj")
                 if ET.parse(project).findtext(".//IsPackable") != "false"}
+    target_frameworks = ET.parse(root / "src/Directory.Build.props").findtext(".//TargetFrameworks").split(";")
+    source_url = f"https://raw.githubusercontent.com/thomhurst/Relayer/{commit}/".encode()
     found = set()
     versions = set()
     for package in sorted(directory.glob("*.nupkg")):
@@ -48,12 +50,23 @@ def verify_packages(directory, commit, version=None):
                     assert dependency.get("version") == package_version, f"{package_id}: inconsistent internal dependency"
             if package_id == "Relayer":
                 verify_analyzers(archive)
-        with ZipFile(package.with_suffix(".snupkg")) as symbols:
-            pdb = next(name for name in symbols.namelist() if name.endswith(f"/{package_id}.pdb"))
-            content = symbols.read(pdb)
-            assert content.startswith(b"BSJB"), f"{package_id}: symbols must be portable PDBs"
-            source_url = f"https://raw.githubusercontent.com/thomhurst/Relayer/{commit}/".encode()
-            assert source_url in content, f"{package_id}: missing commit-bound SourceLink"
+            runtime_assets = [
+                f"tools/{framework}/any/{package_id}" if package_id == "Relayer.Cli"
+                else f"lib/{framework}/{package_id}"
+                for framework in target_frameworks
+            ]
+            for asset in runtime_assets:
+                dll = f"{asset}.dll"
+                assert dll in archive.namelist(), f"{package_id}: missing {dll}"
+        symbol_package = package.with_suffix(".snupkg")
+        assert symbol_package.is_file(), f"{package_id}: missing {symbol_package.name}"
+        with ZipFile(symbol_package) as symbols:
+            for asset in runtime_assets:
+                pdb = f"{asset}.pdb"
+                assert pdb in symbols.namelist(), f"{package_id}: missing {pdb}"
+                content = symbols.read(pdb)
+                assert content.startswith(b"BSJB"), f"{package_id}: {pdb} must be a portable PDB"
+                assert source_url in content, f"{package_id}: {pdb} missing commit-bound SourceLink"
         print(f"Verified {package_id} {package_version}")
     assert found == expected, f"Package inventory mismatch: missing={expected - found}, unexpected={found - expected}"
     assert len(versions) == 1, f"Package versions differ: {versions}"

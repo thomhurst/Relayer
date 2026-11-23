@@ -6,6 +6,7 @@ description: "Readiness checks for transport connectivity, consumer liveness and
 Reference `Relayer.HealthChecks` and register its three checks in the application:
 
 ```csharp
+using Relayer;
 using Relayer.HealthChecks;
 
 var builder = WebApplication.CreateBuilder(args);

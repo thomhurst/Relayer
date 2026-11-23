@@ -173,6 +173,8 @@ Delivery is still at least once: only the database work is deduplicated. Side ef
 Set Dekaf's `PartitionCommitPolicy.CommitCompletedInTransaction` to commit the consumed offsets and the handler's Kafka output in one native transaction:
 
 ```csharp
+using Dekaf.Consumer;
+
 kafka.Send<OrderShipped>("shipments");
 kafka.Consume("orders", consumer =>
 {
