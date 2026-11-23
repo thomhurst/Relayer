@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.InMemory;
 using Relayer.Serialization;
 
 namespace Relayer.Tests;
@@ -139,6 +140,38 @@ public class AsyncApiTests
         await Assert.That(OperationMessages(root, "operation2").Keys).IsEquivalentTo(new[] { "order;v=1" });
         await Assert.That(root.GetProperty("channels").GetProperty("channel0").GetProperty("messages").EnumerateObject().Count()).IsEqualTo(4);
         await Assert.That(root.GetProperty("channels").GetProperty("channel1").GetProperty("messages").EnumerateObject().Count()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Receive_matches_aliases_by_required_wire_type_headers()
+    {
+        using var provider = new ServiceCollection().AddRelayer(builder =>
+        {
+            builder.Infrastructure().MessageTypes.Add<ExportOrder>("order.placed");
+            builder.UseJsonSerializer(ExportJsonContext.Default);
+            builder.InMemory("events", transport =>
+            {
+                transport.Consume("migration", consumer => consumer.Handler<ExportHandler>()
+                    .Accepts<ExportOrder>(new MessageType("order.created", 2)));
+                transport.Consume("canonical-only", consumer => consumer.Handler<ExportHandler>());
+            });
+        }).BuildServiceProvider();
+        using var document = JsonDocument.Parse(Export(provider));
+        var root = document.RootElement;
+        var channels = root.GetProperty("channels");
+
+        foreach (var (index, expectedTypes) in new[]
+        {
+            (0, new[] { "order.placed;v=1", "order.created;v=2" }),
+            (1, new[] { "order.placed;v=1" })
+        })
+        {
+            var operationMessages = OperationMessages(root, $"operation{index}");
+            var channelMessages = channels.GetProperty($"channel{index}").GetProperty("messages").EnumerateObject()
+                .Select(entry => ResolveReference(root, entry.Value.GetProperty("$ref").GetString()!));
+            await Assert.That(operationMessages.Values.Select(RequiredWireType)).IsEquivalentTo(expectedTypes);
+            await Assert.That(channelMessages.Select(RequiredWireType)).IsEquivalentTo(expectedTypes);
+        }
     }
 
     [Test]
@@ -317,6 +350,19 @@ public class AsyncApiTests
         }
 
         return root;
+    }
+
+    private static string RequiredWireType(JsonElement message)
+    {
+        var headers = message.GetProperty("headers");
+
+        if (headers.GetProperty("type").GetString() != "object" ||
+            !headers.GetProperty("required").EnumerateArray().Any(header => header.GetString() == "ce_type"))
+        {
+            throw new InvalidOperationException("Expected a required ce_type application header.");
+        }
+
+        return headers.GetProperty("properties").GetProperty("ce_type").GetProperty("const").GetString()!;
     }
 
     private static JsonElement Schema(JsonElement message)

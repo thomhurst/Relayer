@@ -655,7 +655,7 @@ Relayer-specific instruments, for which the conventions define nothing:
 
 ## 9. Topology
 
-- Topology is **declared, not inferred.** Routes and consumers form a topology model you can inspect at runtime (`ITopology`). See [Topology](https://relayer.tomlonghurst.dev/docs/guides/topology) for startup modes, the adapter contract, JSON export and AsyncAPI 3.0.0 export of registered JSON contracts. Protocol bindings and custom wire-format schemas are not exported.
+- Topology is **declared, not inferred.** Routes and consumers form a topology model you can inspect at runtime (`ITopology`). See [Topology](https://relayer.tomlonghurst.dev/docs/guides/topology) for startup modes, the adapter contract, JSON export and AsyncAPI 3.0.0 export of registered JSON contracts. AsyncAPI message schemas require the versioned wire identity as the normalized CloudEvents type header. Protocol bindings and custom wire-format schemas are not exported.
 - Mode is chosen per transport:
   - `Provision` creates missing entities (development).
   - `Validate` checks that entities exist and fails fast with a diff (**default**). It needs only least-privilege permissions (MassTransit #5613, EasyNetQ #1000).
