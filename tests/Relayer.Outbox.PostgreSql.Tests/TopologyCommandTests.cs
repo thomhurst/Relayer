@@ -52,6 +52,30 @@ public sealed class TopologyCommandTests
     }
 
     [Test]
+    public async Task Generic_overload_does_not_hide_the_non_generic_factory()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var result = await RelayerCommand.RunAsync(Command(typeof(OverloadedDeclarations), "--format", "bicep", "--transport", "events"),
+            output, error);
+        await Assert.That(error.ToString()).IsEqualTo("");
+        await Assert.That(result).IsEqualTo(0);
+        await Assert.That(output.ToString()).Contains("Microsoft.ServiceBus/namespaces/queues");
+    }
+
+    [Test]
+    public async Task Standard_provider_with_async_only_services_exports_successfully()
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var result = await RelayerCommand.RunAsync(Command(typeof(AsyncServiceDeclarations), "--format", "bicep", "--transport", "events"),
+            output, error);
+        await Assert.That(error.ToString()).IsEqualTo("");
+        await Assert.That(result).IsEqualTo(0);
+        await Assert.That(output.ToString()).Contains("'async-orders'");
+    }
+
+    [Test]
     public async Task Aws_command_preserves_native_queue_topic_and_subscription_export()
     {
         using var provider = (ServiceProvider)AwsDeclarations.CreateTopologyServices();
@@ -211,6 +235,44 @@ public static class AwsDeclarations
             });
         })));
         return services.BuildServiceProvider();
+    }
+}
+
+public static class OverloadedDeclarations
+{
+    public static IServiceProvider CreateTopologyServices()
+    {
+        return ServiceBusDeclarations.CreateTopologyServices();
+    }
+
+    public static IServiceProvider CreateTopologyServices<T>()
+    {
+        throw new InvalidOperationException("The generic overload must not be invoked.");
+    }
+}
+
+public static class AsyncServiceDeclarations
+{
+    public static IServiceProvider CreateTopologyServices()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<AsyncQueueSettings>();
+        services.AddRelayer(r => r.ServiceBus("events", t => t.Options.Configure<AsyncQueueSettings>((o, settings) =>
+        {
+            o.ConnectionString = "not a connection string";
+            o.Queues.Add(new(settings.QueueName));
+        })));
+        return services.BuildServiceProvider();
+    }
+
+    private sealed class AsyncQueueSettings : IAsyncDisposable
+    {
+        public string QueueName => "async-orders";
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }
 

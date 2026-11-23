@@ -22,6 +22,12 @@ public readonly struct OutgoingMessage
         get; private init;
     }
 
+    // The store already enforced the due time. A transport can bypass its default delay without scheduling again.
+    internal bool OutboxDelayElapsed
+    {
+        get; private init;
+    }
+
     /// <summary>Creates a send without copying its body, headers, or native options.</summary>
     /// <param name="destination">The native destination on the selected named transport.</param>
     /// <param name="body">The serialized body.</param>
@@ -116,11 +122,12 @@ public readonly struct OutgoingMessage
     }
 
     // A new send span must link to stored creation headers, even when enqueue was already traced.
-    internal OutgoingMessage ForOutboxDispatch()
+    internal OutgoingMessage ForOutboxDispatch(bool delayElapsed = false)
     {
         return new(Destination, Body, Headers, OrderingKey, DeliverAt, _options, IsTombstone)
         {
-            IsOutboxDispatch = true
+            IsOutboxDispatch = true,
+            OutboxDelayElapsed = delayElapsed
         };
     }
 

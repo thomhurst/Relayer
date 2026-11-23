@@ -165,6 +165,47 @@ public class SqsSendFlociTests
         }
     }
 
+    [Test]
+    public async Task Due_outbox_row_is_visible_before_the_queue_default_delay()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        var externalUrl = Environment.GetEnvironmentVariable("RELAYER_SQS_SERVICE_URL");
+        using var client = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig
+        {
+            ServiceURL = externalUrl ?? await SharedBrokers.FlociUrlAsync(token),
+            AuthenticationRegion = "us-east-1",
+        });
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("outbox-delay");
+        var options = new AmazonSqsTransportOptions { SqsClient = client };
+        var declaration = new CreateQueueRequest(queue)
+        {
+            Attributes = new() { ["DelaySeconds"] = "60" },
+        };
+        options.Queues.Add(declaration);
+        var url = (await client.CreateQueueAsync(declaration, token)).QueueUrl;
+
+        try
+        {
+            // The outbox database can consider a row due while this process's clock is still behind.
+            var clock = new InMemoryTestClock();
+            var due = clock.GetUtcNow().AddSeconds(30);
+            var row = new BufferedOutboxMessage();
+            row.Copy(new(Guid.CreateVersion7(), "test", "test.message",
+                new(queue, "outbox"u8.ToArray(), deliverAt: due), due.AddMinutes(-1)), lanes: 1);
+            await using var transport = new SqsSendTransport("test", client, false, options, time: clock);
+            await transport.StartAsync(token);
+            await transport.SendBatchAsync(new OutgoingMessage[] { new(queue, "unscheduled"u8.ToArray()), row.ToMessage() }, token);
+
+            var received = await ReceiveAsync(client, url, token);
+            await Assert.That(received.Body).IsEqualTo("outbox");
+        }
+        finally
+        {
+            await client.DeleteQueueAsync(url, CancellationToken.None);
+        }
+    }
+
     private sealed class AdvancingSqsClient(InMemoryTestClock clock, AmazonSQSConfig config)
         : AmazonSQSClient(new BasicAWSCredentials("test", "test"), config)
     {

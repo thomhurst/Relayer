@@ -187,6 +187,7 @@ public abstract class OutboxMaintenanceContractTests
         await Assert.That(transport.Ids.SequenceEqual([Id(2), Id(8)])).IsTrue();
         await Assert.That(transport.LastBody).IsEquivalentTo(new byte[] { 7, 8, 9 });
         await Assert.That(transport.LastDeliverAt).IsNull();
+        await Assert.That(transport.LastOutboxDelayElapsed).IsTrue();
         await Assert.That(await fixture.Count(Table.Outbox)).IsEqualTo(6L);
         await Assert.That(await fixture.Attempts(Id(1))).IsEqualTo(1);
     }
@@ -543,6 +544,11 @@ public abstract class OutboxMaintenanceContractTests
             get; private set;
         }
 
+        public bool LastOutboxDelayElapsed
+        {
+            get; private set;
+        }
+
         public TransportCapabilities GetCapabilities(string endpoint)
         {
             return new()
@@ -561,6 +567,7 @@ public abstract class OutboxMaintenanceContractTests
             Ids.Enqueue(HeaderId(message));
             LastBody = message.Body.ToArray();
             LastDeliverAt = message.DeliverAt;
+            LastOutboxDelayElapsed = message.OutboxDelayElapsed;
         }
 
         public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)

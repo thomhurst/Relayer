@@ -284,7 +284,11 @@ dotnet tool install --global Relayer.Cli --prerelease
 dotnet relayer --help
 ```
 
-The input is an **explicit, trusted, untrimmed managed application assembly**, not an `ExportJson` snapshot. JSON snapshots intentionally omit native settings and cannot reconstruct infrastructure. Build a small class-library project alongside your application, reference the same Relayer package versions as the tool, and share your application's registration method. Keep the `.deps.json` and dependencies from the build/publish output beside the assembly. No entry point is executed or assembly scanning performed: `--type` selects exactly one type declaring `public static IServiceProvider CreateTopologyServices()` with no arguments. Return type must be `IServiceProvider`, not its concrete implementation. The tool owns the returned provider. It calls `IDisposable.Dispose()` when available and otherwise awaits `IAsyncDisposable.DisposeAsync()` if implemented. Cleanup finishes before the tool writes the artifact. If cleanup fails, the tool reports the error and writes no artifact.
+The input is an **explicit, trusted, untrimmed managed application assembly**, not an `ExportJson` snapshot. JSON snapshots intentionally omit native settings and cannot reconstruct infrastructure. Build a small class-library project alongside your application, reference the same Relayer package versions as the tool, and share your application's registration method. Keep the `.deps.json` and dependencies from the build/publish output beside the assembly.
+
+`--type` selects the type that supplies `public static IServiceProvider CreateTopologyServices()`. The tool selects the parameterless, non-generic overload and requires an `IServiceProvider` return type. It loads that type directly without running the assembly's entry point or scanning for declarations.
+
+The tool owns the returned provider. It awaits `IAsyncDisposable.DisposeAsync()` when available and falls back to `IDisposable.Dispose()` for providers that support synchronous cleanup only. Cleanup finishes before the tool writes the artifact. If cleanup fails, the tool reports the error and writes no artifact.
 
 For a standalone Service Bus example:
 

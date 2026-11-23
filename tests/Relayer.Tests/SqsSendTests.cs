@@ -420,6 +420,34 @@ public class SqsSendTests
     }
 
     [Test]
+    public async Task Due_outbox_rows_override_standard_queue_delay_in_single_and_batch_sends()
+    {
+        using var client = new SqsTestClient();
+        await using var transport = Transport(client);
+        await transport.StartAsync(default);
+        var row = new BufferedOutboxMessage();
+        var now = DateTimeOffset.UtcNow;
+        row.Copy(new(Guid.CreateVersion7(), "test", "order",
+            new("orders", "{}"u8.ToArray(), deliverAt: now.AddSeconds(-1)), now), lanes: 1);
+        var due = row.ToMessage();
+        var unscheduled = new OutgoingMessage("orders", "{}"u8.ToArray()).ForOutboxDispatch();
+
+        await transport.SendAsync(due, default);
+        await transport.SendAsync(unscheduled, default);
+        await transport.SendBatchAsync(new[] { due, unscheduled }, default);
+        var fifo = new OutgoingMessage("ordered.fifo", "{}"u8.ToArray(), orderingKey: new("key"))
+            .ForOutboxDispatch(delayElapsed: true);
+        await transport.SendAsync(fifo, default);
+
+        await Assert.That(client.Sent[0].Delay).IsEqualTo(0);
+        await Assert.That(client.Sent[1].Delay).IsNull();
+        await Assert.That(client.Sent[2].Delay).IsNull();
+        var batch = client.Batches.Single();
+        await Assert.That(batch[0].Message.Delay).IsEqualTo(0);
+        await Assert.That(batch[1].Message.Delay).IsNull();
+    }
+
+    [Test]
     public async Task Invalid_attributes_payload_ordering_and_size_fail_without_native_sends()
     {
         using var client = new SqsTestClient();
