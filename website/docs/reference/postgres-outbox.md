@@ -35,6 +35,7 @@ start workers or take ownership of a data source.
 `PostgreSqlOutboxOptions` has init-only properties. For configuration binding and startup validation, pass an
 `IConfiguration` section to `services.AddRelayerPostgreSqlOutbox(configuration.GetSection("Outbox"))`.
 New scopes read updated configuration through `IOptionsSnapshot<PostgreSqlOutboxOptions>`.
+Relayer's validation runs alongside application validators in either registration order.
 `LeaseDuration` and `MaxDispatchAttempts` do not configure enqueue; enqueue uses schema, prefix and lanes. Configure dispatch and recovery through their separate worker options.
 To expose durable reads and backlog health, register the [keyed store](postgres-store.md) separately.
 

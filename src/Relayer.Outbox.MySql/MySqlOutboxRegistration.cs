@@ -35,7 +35,7 @@ public static class MySqlOutboxRegistration
             return new(snapshot, provider.GetService<RelayerInstrumentation>(), dispatcher, provider.GetRequiredService<MySqlInboxPools>());
         });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<MySqlOutbox>());
-        services.TryAddSingleton<IValidateOptions<MySqlOutboxOptions>, Validator>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<MySqlOutboxOptions>, Validator>());
         services.AddOptions<MySqlOutboxOptions>().ValidateOnStart();
 
         if (options is not null)

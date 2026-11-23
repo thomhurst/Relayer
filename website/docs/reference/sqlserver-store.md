@@ -113,6 +113,7 @@ if a timeout occurs, the unit rolls back rather than committing business writes 
 
 Options are init-only. `AddRelayerSqlServerOutbox(configurationSection)` binds `Schema`, `TablePrefix`
 and positive `Lanes` without runtime reflection, validates at host startup, and reloads for new scopes.
+Relayer's validation runs alongside application validators in either registration order.
 Keep the lane count identical across writers. Lanes use the UTF-8 ordering key's FNV-1a hash modulo
 `Lanes`, matching PostgreSQL. One scoped `IOutboxEnlistment` integration is allowed.
 
