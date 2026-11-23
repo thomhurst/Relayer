@@ -58,7 +58,25 @@ The stream protocol does not expose retention/configuration readback through thi
 
 `Provision` passes each supplied `StreamSpec` unchanged to native `CreateStream`. Its name must match the declaration. The broker enforces native argument equivalence for existing streams; conflicts appear in the topology report. Relayer continues with unrelated declarations and never calls update, delete or purge operations. Name-only declarations still check existence and do not create missing streams.
 
-Super-stream provisioning and stream consumer declarations remain planned. A stream declaration does not start a Relayer receiver.
+### Super streams
+
+Add a native `PartitionsSuperStreamSpec` or `BindingsSuperStreamSpec` to provision a super stream on RabbitMQ 3.13 or later:
+
+```csharp
+options.SuperStreams.Add(new("events")
+{
+    Configuration = new PartitionsSuperStreamSpec("events", 3)
+    {
+        MaxAge = TimeSpan.FromDays(7),
+    },
+});
+```
+
+`Provision` forwards the specification unchanged to native `CreateSuperStream`. If the name already exists, RabbitMQ can return success without comparing the requested partition count, binding keys or settings. Relayer verifies that native partition lookup returns at least one stream. Manage changes and verify existing settings externally.
+
+A name-only declaration (`options.SuperStreams.Add(new("events"))`) checks for native partitions in either `Validate` or `Provision`. In `Validate`, a declaration with `Configuration` fails because the native API cannot verify configuration equivalence. An ordinary exchange without stream partitions fails both modes.
+
+Stream and super-stream declarations manage topology only. Relayer receivers remain planned.
 
 ## Message execution status
 
