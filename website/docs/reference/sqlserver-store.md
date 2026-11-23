@@ -24,10 +24,15 @@ Schema SQL/options remain AOT safe. This restriction is specific to this optiona
 
 ## Deployment and registration
 
-Write the initial schema with your application's deployment tooling. Initial creation is idempotent and
-does not validate or upgrade an existing table. Schema evolution and rollback remain application-owned.
-This script creates the outbox and inbox tables, pending/ordered indexes and a filtered `(lane, seq)` parked-row index, native insert sequence, maintenance leases and a separate `ordered_leases` membership table.
-Existing outbox definitions are unchanged; use the explicit upgrade below for pre-sequence tables. It also creates the dead-letter table and retention indexes.
+Write the initial schema with your application's deployment tooling. The script creates the outbox and inbox
+tables, pending and ordered indexes, and a filtered `(lane, seq)` parked-row index. It also creates the native
+insert sequence, maintenance leases, a separate `ordered_leases` membership table, and the dead-letter
+table and retention indexes. The script sets the SQL Server options required to create filtered indexes,
+so ODBC `sqlcmd` can apply it with default settings.
+
+If a deployment stops before creating all indexes, rerun the script to create the missing indexes on outbox
+tables that already have the insert sequence. Existing column and index definitions stay as deployed.
+Use the explicit upgrade below for pre-sequence tables. Your application owns schema evolution and rollback.
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;

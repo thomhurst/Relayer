@@ -17,6 +17,49 @@ public sealed class OrderedSchemaUpgradeTests(SqlServerFixture database)
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Initial_schema_creates_missing_indexes_with_quoted_identifier_off(bool resume)
+    {
+        var options = new SqlServerOutboxOptions
+        {
+            Schema = "outbox]'" + TestContext.Current!.Isolation.GetIsolatedName("schema"),
+            TablePrefix = "deploy]'_"
+        };
+        var table = SqlServerOutboxSchema.Table(options);
+        var script = SqlServerOutboxSchema.CreateScript(options);
+        await using var connection = new SqlConnection(database.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new SqlCommand(script, connection);
+
+        if (resume)
+        {
+            await command.ExecuteNonQueryAsync();
+            command.CommandText = $"""
+                DROP INDEX [deploy]]'_outbox_pending_idx] ON {table},
+                    [deploy]]'_outbox_lane_seq_idx] ON {table},
+                    [deploy]]'_outbox_parked_idx] ON {table};
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        command.CommandText = "SET QUOTED_IDENTIFIER OFF;";
+        await command.ExecuteNonQueryAsync();
+        command.CommandText = script;
+        await command.ExecuteNonQueryAsync();
+        await command.ExecuteNonQueryAsync();
+
+        command.CommandText = "SELECT CONVERT(int, SESSIONPROPERTY('QUOTED_IDENTIFIER'));";
+        await Assert.That((int)(await command.ExecuteScalarAsync())!).IsEqualTo(0);
+
+        command.CommandText = """
+            SELECT COUNT(*) FROM sys.indexes WHERE object_id = OBJECT_ID(@table) AND is_primary_key = 0;
+            """;
+        command.Parameters.AddWithValue("@table", table);
+        await Assert.That((int)(await command.ExecuteScalarAsync())!).IsEqualTo(4);
+    }
+
+    [Test]
     public async Task Ordered_membership_preserves_existing_maintenance_lease_schema()
     {
         var data = new StoreData(database);
@@ -71,6 +114,11 @@ public sealed class OrderedSchemaUpgradeTests(SqlServerFixture database)
             """, connection))
         {
             await old.ExecuteNonQueryAsync();
+        }
+
+        await using (var initial = new SqlCommand(SqlServerOutboxSchema.CreateScript(options), connection))
+        {
+            await initial.ExecuteNonQueryAsync();
         }
 
         await using (var unguarded = new SqlCommand(SqlServerOutboxSchema.UpgradeOrderedDispatchScript(options), connection))

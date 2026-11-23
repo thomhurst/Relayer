@@ -39,9 +39,12 @@ public sealed class AvroMessageSerializer(ISchemaRegistryClient client) : IMessa
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         config ??= new();
 
+        // Dekaf gives a synchronous custom strategy precedence over both asynchronous settings.
+        var usesAsyncSubjectStrategy = config.CustomSubjectNameStrategy is null
+            && (config.AsyncSubjectNameStrategy is not null || config.SubjectNameStrategy == SubjectNameStrategy.AssociatedName);
+
         if (config.UseLatestVersion || config.RuleExecutor is not null || config.ValidationRulesExecution != ValidationRulesExecution.Disabled
-            || config.SchemaIdStrategy != SchemaIdSerializerStrategy.Prefix || config.AsyncSubjectNameStrategy is not null
-            || config.SubjectNameStrategy == SubjectNameStrategy.AssociatedName)
+            || config.SchemaIdStrategy != SchemaIdSerializerStrategy.Prefix || usesAsyncSubjectStrategy)
         {
             throw new NotSupportedException("Use a fixed Avro writer schema with prefix schema IDs and a synchronous subject strategy, without latest-version selection or registry rules. Per-record registry preparation is unsupported.");
         }
