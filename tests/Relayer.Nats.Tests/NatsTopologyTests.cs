@@ -149,6 +149,117 @@ public class NatsTopologyTests
     }
 
     [Test]
+    public async Task Provision_reports_unsupported_replicas_and_creates_the_next_stream()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var isolation = TestContext.Current!.Isolation;
+        var replicated = isolation.GetIsolatedName("replicated");
+        var ordinary = isolation.GetIsolatedName("ordinary");
+        var nativeOptions = broker.Options();
+        await using var provider = StreamProvider(nativeOptions, new StreamConfig(replicated, [replicated])
+        {
+            NumReplicas = 2
+        }, new(ordinary, [ordinary]));
+        var transport = provider.GetRequiredService<ITransport>();
+
+        var report = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+
+        var difference = report.Differences.Single();
+        await Assert.That(difference).Contains($"Stream '{replicated}'");
+        await Assert.That(difference).Contains("replicas > 1 not supported in non-clustered mode");
+        await using var native = new NatsConnection(nativeOptions);
+        var js = new NatsJSContext(native);
+        await js.GetStreamAsync(ordinary, cancellationToken: token);
+    }
+
+    [Test]
+    public async Task Missing_stream_guidance_uses_the_mode_and_available_configuration()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var name = TestContext.Current!.Isolation.GetIsolatedName("missing");
+        var nativeOptions = broker.Options();
+        var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder => builder.Nats("nats", nats =>
+            nats.Options.Configure(options =>
+            {
+                options.ConnectionOptions = nativeOptions;
+                options.Streams.Add(new(name)
+                {
+                    Configuration = new(name, [name])
+                });
+            })))).Build();
+        await using var hostLifetime = (IAsyncDisposable)host;
+
+        var error = await Assert.That(async () => await host.StartAsync(token)).Throws<OptionsValidationException>();
+        await Assert.That(error!.Message).Contains($"Stream '{name}': stream not found");
+        await Assert.That(error.Message).Contains("Create it externally or select Provision");
+        await Assert.That(error.Message).Contains("Validate is read-only");
+        await Assert.That(error.Message).DoesNotContain("supply native Configuration");
+
+        await using var names = NatsConfigurationTests.Provider(options =>
+        {
+            options.ConnectionOptions = nativeOptions;
+            options.Streams.Add(new(name));
+        });
+        var nameOnly = names.GetRequiredService<ITransport>();
+        var report = await nameOnly.ApplyTopologyAsync(TopologyMode.Provision, token);
+        await Assert.That(report.Differences.Single()).Contains("supply native Configuration for Provision");
+
+        var configured = host.Services.GetRequiredService<ITransport>();
+        await Assert.That((await configured.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences).IsEmpty();
+        await Assert.That((await configured.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+    }
+
+    [Test]
+    public async Task Validate_accepts_native_unlimited_stream_limits_and_reports_positive_drift()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var isolation = TestContext.Current!.Isolation;
+        var unlimitedName = isolation.GetIsolatedName("unlimited");
+        var limitedName = isolation.GetIsolatedName("limited");
+        var unlimited = new StreamConfig(unlimitedName, [unlimitedName])
+        {
+            MaxConsumers = -2,
+            MaxMsgs = -2,
+            MaxMsgsPerSubject = -2,
+            MaxBytes = -2,
+            MaxMsgSize = -2
+        };
+        var limited = new StreamConfig(limitedName, [limitedName])
+        {
+            MaxMsgs = 10
+        };
+        var nativeOptions = broker.Options();
+        await using var provider = StreamProvider(nativeOptions, unlimited, limited);
+        var transport = provider.GetRequiredService<ITransport>();
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences).IsEmpty();
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences).IsEmpty();
+
+        await using var native = new NatsConnection(nativeOptions);
+        var js = new NatsJSContext(native);
+        var actual = (await js.GetStreamAsync(unlimitedName, cancellationToken: token)).Info.Config;
+        await Assert.That(actual.MaxConsumers).IsEqualTo(-1);
+        await Assert.That(actual.MaxMsgs).IsEqualTo(-1L);
+        await Assert.That(actual.MaxMsgsPerSubject).IsEqualTo(-1L);
+        await Assert.That(actual.MaxBytes).IsEqualTo(-1L);
+        await Assert.That(actual.MaxMsgSize).IsEqualTo(-1);
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+        await using var driftProvider = StreamProvider(nativeOptions, limited with
+        {
+            MaxMsgs = 20
+        });
+        var drift = driftProvider.GetRequiredService<ITransport>();
+        var report = await drift.ApplyTopologyAsync(TopologyMode.Validate, token);
+        await Assert.That(report.Differences.Single()).Contains($"Stream '{limitedName}': setting 'max_msgs' expected 20, actual 10");
+    }
+
+    [Test]
     public async Task Validate_accepts_native_stream_subject_default_but_keeps_mirrors_and_sources_subjectless()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));

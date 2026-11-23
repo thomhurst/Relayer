@@ -7,6 +7,8 @@ namespace Relayer.Nats;
 
 internal sealed class NatsTopology
 {
+    private const int StreamReplicasNotSupported = 10074;
+
     private readonly NatsStream[] _streams;
     private readonly NatsConsumer[] _consumers;
 
@@ -78,9 +80,9 @@ internal sealed class NatsTopology
                     }
                 }
             }
-            catch (NatsJSApiException error) when (error.Error.Code is 400 or 404)
+            catch (NatsJSApiException error) when (error.Error is { Code: 400 or 404 } or { ErrCode: StreamReplicasNotSupported })
             {
-                differences.Add($"{entity}: {error.Error.Description}. Supply native Configuration to provision a missing entity; reconcile conflicting settings externally. Relayer never updates or deletes entities.");
+                differences.Add(DescribeApiError(entity, error.Error, mode, stream.Configuration is not null));
             }
         }
 
@@ -107,11 +109,24 @@ internal sealed class NatsTopology
             }
             catch (NatsJSApiException error) when (error.Error.Code is 400 or 404)
             {
-                differences.Add($"{entity}: {error.Error.Description}. Supply native Configuration to provision a missing entity; reconcile conflicting settings externally. Relayer never updates or deletes entities.");
+                differences.Add(DescribeApiError(entity, error.Error, mode, consumer.Configuration is not null));
             }
         }
 
         return new(differences);
+    }
+
+    private static string DescribeApiError(string entity, ApiError error, TopologyMode mode, bool hasConfiguration)
+    {
+        var guidance = (error.Code, mode, hasConfiguration) switch
+        {
+            (404, TopologyMode.Validate, true) => "Create it externally or select Provision. Validate is read-only.",
+            (404, TopologyMode.Validate, false) => "Create it externally or supply native Configuration and select Provision. Validate is read-only.",
+            (404, TopologyMode.Provision, false) => "Create it externally or supply native Configuration for Provision.",
+            _ => "Reconcile the declaration and broker settings externally. Relayer never updates or deletes entities."
+        };
+
+        return $"{entity}: {error.Description}. {guidance}";
     }
 
     // Use the client's generated metadata, including its nanosecond durations and enum wire names.
@@ -164,11 +179,11 @@ internal sealed class NatsTopology
         }
         else
         {
-            Default(config, "max_consumers", -1);
-            Default(config, "max_msgs", -1);
-            Default(config, "max_msgs_per_subject", -1);
-            Default(config, "max_bytes", -1);
-            Default(config, "max_msg_size", -1);
+            NormalizeStreamLimit(config, "max_consumers");
+            NormalizeStreamLimit(config, "max_msgs");
+            NormalizeStreamLimit(config, "max_msgs_per_subject");
+            NormalizeStreamLimit(config, "max_bytes");
+            NormalizeStreamLimit(config, "max_msg_size");
             Default(config, "num_replicas", 1);
             config["persist_mode"] ??= "default";
 
@@ -219,6 +234,14 @@ internal sealed class NatsTopology
         if (config[name] is null || config[name]!.ToJsonString() == "0")
         {
             config[name] = value;
+        }
+    }
+
+    private static void NormalizeStreamLimit(JsonObject config, string name)
+    {
+        if (config[name]?.GetValue<long>() is null or <= 0)
+        {
+            config[name] = -1;
         }
     }
 
