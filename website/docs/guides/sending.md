@@ -56,6 +56,8 @@ For atomic business changes and outgoing messages, follow the [outbox guide](out
 
 When runtime `ITransport` services are registered, route composition resolves message identities, named transports, and destination capabilities once at host startup. Unknown transports, duplicate names, a repeated route to the same destination, missing message identities, nonpositive or infinite timeouts, and ordering-key declarations on endpoints without `OrderedByKey` support fail at startup. Declaration-only hosts remain usable without native adapters; resolving `ISender` still validates its routes. Both hosted startup and standalone `ISender` resolution reject a route-level native callback declared for the wrong transport. A send without a route fails with an actionable error. Routing uses the generic message type passed to `SendAsync<TMessage>`, so send the concrete contract type rather than `object`.
 
+Hosted and standalone route composition both validate destination capability values. When a send transport needs asynchronous capability initialization, resolving `ISender` before startup defers route composition. The same sender uses initialized capabilities after the host starts, including for destinations selected per message. Start the host before sending when a route depends on broker-discovered capabilities.
+
 ## Sending to several routes
 
 Declare `Send<T>` more than once to send one message to several destinations, on the same transport or on different ones. For example, a domain event can go to a Kafka topic for other services and to a Service Bus queue for a billing worker:

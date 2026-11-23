@@ -99,7 +99,7 @@ public class CapabilityValidationTests
     [Arguments("bytes")]
     [Arguments("negative-bytes")]
     [Arguments("model")]
-    public async Task Invalid_capability_values_fail_startup(string field)
+    public async Task Invalid_capability_values_fail_startup_and_standalone_composition(string field)
     {
         var (capabilities, property) = field switch
         {
@@ -118,6 +118,12 @@ public class CapabilityValidationTests
         {
             await Assert.That(failure!.Message).Contains(expected);
         }
+
+        await using var standalone = Create(new TestTransport("events", _ => capabilities));
+        using var scope = standalone.CreateScope();
+        var standaloneFailure = await Assert.That(() => scope.ServiceProvider.GetRequiredService<ISender>())
+            .Throws<OptionsValidationException>();
+        await Assert.That(standaloneFailure!.Message).Contains(failure!.Failures.Single());
     }
 
     [Test]

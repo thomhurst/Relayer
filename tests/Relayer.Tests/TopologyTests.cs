@@ -181,6 +181,26 @@ public class TopologyTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Cancellation_wins_when_the_final_adapter_returns_a_report(bool hasDifferences)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var adapter = new InMemoryTransport("events") { CancelBeforeReport = cancellation };
+        var receiver = new Receiver();
+
+        if (!hasDifferences)
+        {
+            adapter.Entities.Add("orders");
+        }
+
+        await using var provider = Create(adapter, extra: builder => builder.Services.AddSingleton<IHostedService>(receiver));
+        var error = await Assert.That(async () => await Start(provider, cancellation.Token)).Throws<OperationCanceledException>();
+        await Assert.That(error!.CancellationToken).IsEqualTo(cancellation.Token);
+        await Assert.That(receiver.Started).IsFalse();
+    }
+
+    [Test]
     public async Task Model_and_export_work_without_adapters_and_preserve_declarations()
     {
         await using var provider = Create(null);
@@ -363,6 +383,11 @@ public class TopologyTests
             get; init;
         }
 
+        public CancellationTokenSource? CancelBeforeReport
+        {
+            get; init;
+        }
+
         public TaskCompletionSource? TopologyEntered
         {
             get; init;
@@ -419,6 +444,7 @@ public class TopologyTests
                 }
             }
 
+            CancelBeforeReport?.Cancel();
             return new TopologyReport(differences);
         }
 

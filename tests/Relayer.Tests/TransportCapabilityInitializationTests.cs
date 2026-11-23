@@ -7,6 +7,44 @@ namespace Relayer.Tests;
 public class TransportCapabilityInitializationTests
 {
     [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Sender_resolved_before_startup_uses_initialized_capabilities_for_selected_destination(bool concurrent, bool sendBeforeStartup)
+    {
+        var transport = new InitializingTransport { ReportConservativeCapabilities = true };
+        using var host = CreateHost(transport, concurrent, native =>
+            native.Send<Notice>(["orders", "billing"], static notice => notice.Destination));
+        await using var lifetime = (IAsyncDisposable)host;
+        using var scope = host.Services.CreateScope();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        await Assert.That(transport.Lookups).IsEqualTo(0);
+
+        if (sendBeforeStartup)
+        {
+            await sender.SendAsync(new Notice("orders"), timeout.Token);
+            await Assert.That(transport.LastDestination).IsEqualTo("orders");
+        }
+
+        transport.Release.TrySetResult();
+        await host.StartAsync(timeout.Token);
+
+        try
+        {
+            await sender.SendAsync(new Notice("billing"), options => options.OrderingKey = "west", timeout.Token);
+            await Assert.That(transport.LastDestination).IsEqualTo("billing");
+            await Assert.That(transport.LastOrderingKey).IsEqualTo("west");
+            await Assert.That(transport.Lookups).IsEqualTo(sendBeforeStartup ? 4 : 2);
+        }
+        finally
+        {
+            await host.StopAsync(timeout.Token);
+        }
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Native_capabilities_finish_before_validation_and_route_composition_even_with_concurrent_startup(bool concurrent)
@@ -61,7 +99,8 @@ public class TransportCapabilityInitializationTests
         await host.StopAsync(timeout.Token);
     }
 
-    private static IHost CreateHost(InitializingTransport transport, bool concurrent)
+    private static IHost CreateHost(InitializingTransport transport, bool concurrent,
+        Action<TransportBuilder<Options, Options>>? configure = null)
     {
         return new HostBuilder().ConfigureServices(services =>
         {
@@ -73,7 +112,15 @@ public class TransportCapabilityInitializationTests
                 builder.AddTransport<Options, Options>("native", native =>
                 {
                     native.TopologyMode = TopologyMode.None;
-                    native.Send<Sample>("orders", route => route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromMinutes(1) });
+
+                    if (configure is null)
+                    {
+                        native.Send<Sample>("orders", route => route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromMinutes(1) });
+                    }
+                    else
+                    {
+                        configure(native);
+                    }
                 });
             });
         }).Build();
@@ -83,6 +130,9 @@ public class TransportCapabilityInitializationTests
 
     [Message("capabilities.initialization.sample")]
     public sealed record Sample;
+
+    [Message("capabilities.initialization.notice")]
+    public sealed record Notice(string Destination);
 
     private sealed class InitializingTransport : ITransport, ITransportCapabilityInitializer
     {
@@ -94,6 +144,21 @@ public class TransportCapabilityInitializationTests
         private bool _initialized;
 
         public string Name => "native";
+
+        internal bool ReportConservativeCapabilities
+        {
+            get; init;
+        }
+
+        internal string? LastDestination
+        {
+            get; private set;
+        }
+
+        internal string? LastOrderingKey
+        {
+            get; private set;
+        }
 
         public async ValueTask InitializeCapabilitiesAsync(TopologyMode mode, CancellationToken token)
         {
@@ -110,12 +175,18 @@ public class TransportCapabilityInitializationTests
 
             if (!_initialized)
             {
+                if (ReportConservativeCapabilities)
+                {
+                    return new();
+                }
+
                 throw new InvalidOperationException("Native capability evidence is pending.");
             }
 
             return new()
             {
-                MaxDeliveryDelay = TimeSpan.FromHours(1)
+                MaxDeliveryDelay = TimeSpan.FromHours(1),
+                OrderedByKey = true
             };
         }
 
@@ -126,6 +197,8 @@ public class TransportCapabilityInitializationTests
 
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
         {
+            LastDestination = message.Destination;
+            LastOrderingKey = message.OrderingKey.ToString();
             return ValueTask.CompletedTask;
         }
 
