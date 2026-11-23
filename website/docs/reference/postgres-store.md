@@ -263,9 +263,11 @@ or pass `--sent-history` to the tool. Deploy the history table first by rerunnin
 `PostgreSqlOutboxSchema.CreateScript`; an enabled lookup reports an actionable error if it is missing.
 Default lookups continue to work with older schemas and do not query sent history.
 
-Optional `--schema` and `--prefix` select the writer's tables. Credentials stay in
-the environment. Failures return exit code 1; successful lookups return 0 even
-when the ID is absent. Authorize database/schema access before exposing the API:
+Optional `--schema` and `--prefix` select the writer's tables. Supply a value after
+each option that takes one. If the next argument is another lookup flag such as
+`--sent-history`, the tool reports the missing value before checking database
+settings. Credentials stay in the environment. Failures return exit code 1.
+A successful lookup returns 0 even when the ID is absent. Authorize access to the database and schema before exposing the API:
 results include destinations, consumer names, claim tokens and error text.
 
 The state is `pending`, `scheduled`, `claimed`, `parked`, `dead`, `sent`, or `not present`.

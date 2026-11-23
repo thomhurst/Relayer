@@ -205,7 +205,11 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
 
     internal async Task StopAsync(CancellationToken cancellationToken, bool closeConnection)
     {
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // An expired deadline bounds waiting, but still allows shutdown to begin if the gate is free.
+        if (!_lifecycle.Wait(0))
+        {
+            await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         try
         {

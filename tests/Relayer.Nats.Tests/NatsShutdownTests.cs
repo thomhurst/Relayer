@@ -11,6 +11,53 @@ namespace Relayer.Nats.Tests;
 public sealed class NatsShutdownTests
 {
     [Test]
+    public async Task Host_stop_with_expired_token_closes_send_only_nats()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var stream = TestContext.Current!.Isolation.GetIsolatedName("shutdown");
+        var subject = TestContext.Current!.Isolation.GetIsolatedName("output");
+        await using var native = new NatsConnection(broker.Options());
+        var jetStream = new NatsJSContext(native);
+        await jetStream.CreateStreamAsync(new(stream, [subject]), token);
+
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(NatsShutdownJson.Default);
+            relayer.Nats("nats", transport =>
+            {
+                transport.TopologyMode = TopologyMode.None;
+                transport.Options.Configure(options => options.ConnectionOptions = broker.Options());
+                transport.Send<Output>(subject);
+            });
+        });
+
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+        await host.StartAsync(token);
+        await using var scope = host.Services.CreateAsyncScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await sender.SendAsync(new Output(42), cancellationToken: token);
+
+        try
+        {
+            await host.StopAsync(new CancellationToken(true));
+        }
+        catch (OperationCanceledException)
+        {
+            // Cleanup must still happen when host stop reports cancellation.
+        }
+
+        await Assert.That(async () => await sender.SendAsync(new Output(43), cancellationToken: token))
+            .Throws<InvalidOperationException>().WithMessageContaining("Start the NATS transport before sending.");
+        await Assert.That((await jetStream.GetStreamAsync(stream, cancellationToken: token)).Info.State.Messages)
+            .IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Concurrent_host_stop_keeps_send_only_nats_open_for_buffered_handler_sends()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
