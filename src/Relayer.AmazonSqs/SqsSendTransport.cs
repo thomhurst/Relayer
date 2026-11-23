@@ -23,6 +23,8 @@ internal sealed partial class SqsSendTransport : ITransport, ITransportSendTraci
 
     internal IAmazonSQS Client => _client;
 
+    internal bool HasDeclaredQueues => _endpoints.Count > 0;
+
     internal List<SqsConsumer> Consumers
     {
         get;

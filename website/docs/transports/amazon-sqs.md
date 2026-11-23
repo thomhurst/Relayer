@@ -129,9 +129,13 @@ services.AddRelayerHealthChecks();
 ```
 
 Both optional health contracts use the exact, case-sensitive transport name. Connectivity calls native `GetQueueUrl`
-and `GetQueueAttributes` without sending, receiving or settling probe messages. Receiver snapshots distinguish idle
-pollers from active handlers and report the oldest active worker's activation time. A busy healthy worker cannot hide
-a stalled one. Receivers report unavailable state during startup and after stopping. A faulted worker reports failure.
+when needed to resolve queue URLs, then calls `GetQueueAttributes` for each declared queue without sending, receiving
+or settling probe messages. A transport with no declared queues reports `Unhealthy`. Add at least one queue to
+`options.Queues` to verify connectivity.
+
+Receiver snapshots distinguish idle pollers from active handlers and report the oldest active worker's activation time.
+A busy healthy worker cannot hide a stalled one. Receivers report unavailable state during startup and after stopping.
+A faulted worker reports failure.
 Tracking is enabled only with this companion and adds no per-message allocation.
 
 `SqsReceiveBindingBenchmarks` compares pooled receive-body preparation with raw-client UTF-8 preparation using `MemoryDiagnoser`. This isolates adapter work; it does not establish the end-to-end 5% default-JSON throughput budget.
