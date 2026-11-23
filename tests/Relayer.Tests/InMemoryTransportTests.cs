@@ -1109,6 +1109,71 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    public async Task Scheduler_considers_earlier_deadline_accepted_during_clock_read()
+    {
+        var clock = new InMemoryTestClock();
+        var start = clock.GetUtcNow();
+        using var resume = new ManualResetEventSlim();
+        await using var transport = Transport(clock: clock);
+        var values = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", (delivery, _) =>
+        {
+            values.Writer.TryWrite(Value(delivery));
+            return new(Disposition.Complete);
+        });
+        await Send(transport, 10, at: start.AddMinutes(10));
+
+        var reading = Signal();
+        clock.BeforeNextUtcRead(() =>
+        {
+            reading.SetResult();
+
+            if (!resume.Wait(s_limit))
+            {
+                throw new TimeoutException("The test did not resume the scheduler's clock read.");
+            }
+        });
+
+        try
+        {
+            await transport.StartAsync(default);
+            await reading.Task.WaitAsync(s_limit);
+            await Send(transport, 9, at: start.AddMinutes(9));
+            clock.Advance(TimeSpan.FromMinutes(11));
+        }
+        finally
+        {
+            resume.Set();
+        }
+
+        await Assert.That(await Next(values)).IsEqualTo(9);
+        await Assert.That(await Next(values)).IsEqualTo(10);
+        await transport.StopAsync(default);
+    }
+
+    [Test]
+    public async Task Scheduler_delivers_when_deadline_passes_during_timer_arming()
+    {
+        var clock = new InMemoryTestClock();
+        var delay = TimeSpan.FromMinutes(5);
+        var due = clock.GetUtcNow() + delay;
+        await using var transport = Transport(clock: clock);
+        var received = new TaskCompletionSource<DateTimeOffset>(TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.RegisterConsumer("orders", (_, _) =>
+        {
+            received.SetResult(clock.GetUtcNow());
+            return new(Disposition.Complete);
+        });
+        clock.BeforeNextTimerArm(() => clock.Advance(delay));
+        await transport.StartAsync(default);
+        await Send(transport, 1, at: due);
+        await clock.NextTimer();
+
+        await Assert.That(await received.Task.WaitAsync(s_limit)).IsEqualTo(due);
+        await transport.StopAsync(default);
+    }
+
+    [Test]
     [Arguments(1)]
     [Arguments(4)]
     public async Task Scheduling_reuses_one_timer_per_partition_across_idle_and_future_waits(int partitions)
