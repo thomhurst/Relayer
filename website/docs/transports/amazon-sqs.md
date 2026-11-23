@@ -37,7 +37,7 @@ The native `AmazonSQSConfig` passes unchanged to an owned client, which uses the
 
 ## Queue topology
 
-Declare queues with native `CreateQueueRequest` objects in `Queues`, including native attributes and tags. The default `Validate` mode calls only read APIs: `GetQueueUrl`, `GetQueueAttributes`, and, when tags are declared, `ListQueueTags`. It sends no probe message and requires no create, update or delete permission. Missing queues and mismatched declared settings fail startup with a topology report.
+Declare queues with native `CreateQueueRequest` objects in `Queues`, including native attributes and tags. The default `Validate` mode calls only read APIs: `GetQueueUrl`, `GetQueueAttributes`, and, when tags are declared, `ListQueueTags`. It sends no probe message and requires no create, update or delete permission. Missing queues and mismatched declared settings fail startup with a topology report. For numeric queue settings such as `DelaySeconds` and `MaximumMessageSize`, the report shows the declared and observed values.
 
 `Provision` creates missing queues with the original request and reports drift on existing queues. It never modifies or deletes existing queues. Declare native `RedrivePolicy` and related queue settings in `Attributes`; receivers validate that `maxReceiveCount` exceeds the longest run of consecutive native visibility retries by at least one, leaving a receive to schedule a replacement or copy failure metadata. A durably scheduled replacement starts with a fresh SQS receive count. For example, `[1 second, 13 hours, 1 second]` needs a durable scheduler and a `maxReceiveCount` of at least 2. Policy JSON is compared structurally rather than by whitespace or property order. Additional undeclared attributes/tags are allowed.
 

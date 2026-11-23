@@ -103,10 +103,14 @@ public class SqsSendFlociTests
             await client.DeleteMessageAsync(standardUrl, delayed.ReceiptHandle, token);
 
             options.Queues[0].Attributes["MaximumMessageSize"] = "8192";
-            await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Single()).Contains("MaximumMessageSize");
+            options.Queues[0].Attributes["DelaySeconds"] = "30";
+            var drift = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+            await Assert.That(drift.Differences.Single(difference => difference.Contains("MaximumMessageSize"))).Contains("expected '8192', observed '4096'");
+            await Assert.That(drift.Differences.Single(difference => difference.Contains("DelaySeconds"))).Contains("expected '30', observed '0'");
             var unchanged = await client.GetQueueAttributesAsync(standardUrl, ["MaximumMessageSize"], token);
             await Assert.That(unchanged.Attributes["MaximumMessageSize"]).IsEqualTo("4096");
             options.Queues[0].Attributes["MaximumMessageSize"] = "4096";
+            options.Queues[0].Attributes.Remove("DelaySeconds");
             options.Queues[0].Tags["application"] = "changed";
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Single()).Contains("tag 'application'");
             var tags = await client.ListQueueTagsAsync(new ListQueueTagsRequest { QueueUrl = standardUrl }, token);

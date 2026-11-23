@@ -221,13 +221,20 @@ public class AmazonTerraformTests
     }
 
     [Test]
-    public async Task External_arns_remain_literal_and_non_sqs_subscriptions_fail()
+    [Arguments(QueueArn)]
+    [Arguments("arn:aws:sqs:us-west-2:123456789012:orders.fifo")]
+    public async Task External_arns_remain_literal(string queueArn)
     {
-        using var external = Create(options => options.Subscriptions.Add(new() { TopicArn = TopicArn, Endpoint = QueueArn, Protocol = "sqs" }));
+        using var external = Create(options => options.Subscriptions.Add(new() { TopicArn = TopicArn, Endpoint = queueArn, Protocol = "sqs" }));
         using var document = JsonDocument.Parse(Export(external));
         var subscription = document.RootElement.GetProperty("resource").GetProperty("aws_sns_topic_subscription").EnumerateObject().Single().Value;
         await Assert.That(subscription.GetProperty("topic_arn").GetString()).IsEqualTo(TopicArn);
-        await Assert.That(subscription.GetProperty("endpoint").GetString()).IsEqualTo(QueueArn);
+        await Assert.That(subscription.GetProperty("endpoint").GetString()).IsEqualTo(queueArn);
+    }
+
+    [Test]
+    public async Task Non_sqs_subscriptions_fail()
+    {
         using var unsupported = Create(options => options.Subscriptions.Add(new() { Protocol = "email" }));
         await Assert.That(() => Export(unsupported)).Throws<InvalidOperationException>().WithMessageContaining("Protocol=sqs");
     }

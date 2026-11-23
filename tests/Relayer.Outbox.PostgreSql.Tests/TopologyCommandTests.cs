@@ -96,6 +96,14 @@ public sealed class TopologyCommandTests
     }
 
     [Test]
+    public async Task Aws_command_rejects_a_subscription_to_a_topic_in_another_region()
+    {
+        await Failure(Command(typeof(CrossRegionAwsDeclarations), "--format", "terraform", "--account-id", "123456789012",
+                "--region", "eu-west-1"),
+            "SNS topic 'arn:aws:sns:us-west-2:123456789012:external-events' is in region 'us-west-2', which differs from export region 'eu-west-1'.");
+    }
+
+    [Test]
     public async Task Invalid_options_emit_no_artifact()
     {
         string[][] cases = [[], ["--format"], ["--format", "xml"], ["--format", "json", "--format", "json"],
@@ -205,9 +213,22 @@ public static class ServiceBusDeclarations
     }
 }
 
+public static class CrossRegionAwsDeclarations
+{
+    public static IServiceProvider CreateTopologyServices()
+    {
+        return AwsDeclarations.Create("arn:aws:sns:us-west-2:123456789012:external-events");
+    }
+}
+
 public static class AwsDeclarations
 {
     public static IServiceProvider CreateTopologyServices()
+    {
+        return Create("arn:aws:sns:eu-west-1:123456789012:order-events");
+    }
+
+    internal static IServiceProvider Create(string topicArn)
     {
         var services = new ServiceCollection();
         services.AddRelayer(r => r.AmazonSns("events", t => t.Options.Configure(o =>
@@ -225,7 +246,7 @@ public static class AwsDeclarations
             });
             o.Subscriptions.Add(new()
             {
-                TopicArn = "arn:aws:sns:eu-west-1:123456789012:order-events",
+                TopicArn = topicArn,
                 Protocol = "sqs",
                 Endpoint = "arn:aws:sqs:eu-west-1:123456789012:orders",
                 Attributes = new()

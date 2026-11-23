@@ -242,9 +242,15 @@ internal sealed partial class SqsSendTransport : ITransport, ITransportSendTraci
             {
                 foreach (var attribute in expected)
                 {
-                    if (actual.Attributes?.TryGetValue(attribute.Key, out var value) != true || value is null || !AttributeEquals(attribute.Key, attribute.Value, value))
+                    string? value = actual.Attributes?.GetValueOrDefault(attribute.Key);
+
+                    if (value is null || !AttributeEquals(attribute.Key, attribute.Value, value))
                     {
-                        differences.Add($"SQS queue '{endpoint.Declaration.QueueName}': {attribute.Key} differs. Reconcile it through infrastructure configuration; Relayer never modifies or deletes existing queues.");
+                        string detail = attribute.Key is "DelaySeconds" or "MaximumMessageSize" or "MessageRetentionPeriod"
+                            or "ReceiveMessageWaitTimeSeconds" or "VisibilityTimeout" or "KmsDataKeyReusePeriodSeconds"
+                            ? $" (expected '{attribute.Value}', observed '{value ?? "missing"}')"
+                            : "";
+                        differences.Add($"SQS queue '{endpoint.Declaration.QueueName}': {attribute.Key} differs{detail}. Reconcile it through infrastructure configuration; Relayer never modifies or deletes existing queues.");
                     }
                 }
             }
