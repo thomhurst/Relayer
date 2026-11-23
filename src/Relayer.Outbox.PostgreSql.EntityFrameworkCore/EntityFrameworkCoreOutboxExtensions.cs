@@ -32,7 +32,7 @@ public static class EntityFrameworkCoreOutboxExtensions
             return new(capabilities.Scheduling, capabilities.OrderedScheduling, provider.GetService<RelayerInstrumentation>());
         });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<EntityFrameworkCoreOutbox>());
-        services.TryAddSingleton<IValidateOptions<EntityFrameworkCoreOutboxOptions>, OutboxOptionsValidator>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<EntityFrameworkCoreOutboxOptions>, OutboxOptionsValidator>());
         services.AddOptions<EntityFrameworkCoreOutboxOptions>().ValidateOnStart();
         return services;
     }
@@ -42,11 +42,8 @@ public static class EntityFrameworkCoreOutboxExtensions
     {
         ArgumentNullException.ThrowIfNull(configuration);
         services.AddRelayerEntityFrameworkCoreOutbox();
-        services.AddSingleton<IOptionsFactory<EntityFrameworkCoreOutboxOptions>>(provider =>
-            new OutboxOptionsFactory(configuration,
-                provider.GetServices<IConfigureOptions<EntityFrameworkCoreOutboxOptions>>(),
-                provider.GetServices<IPostConfigureOptions<EntityFrameworkCoreOutboxOptions>>(),
-                provider.GetServices<IValidateOptions<EntityFrameworkCoreOutboxOptions>>()));
+        services.AddSingleton(new OutboxConfigurationSection(configuration));
+        services.TryAddEnumerable(ServiceDescriptor.Transient<IOptionsFactory<EntityFrameworkCoreOutboxOptions>, OutboxOptionsFactory>());
         services.AddSingleton<IOptionsChangeTokenSource<EntityFrameworkCoreOutboxOptions>>(
             new ConfigurationChangeTokenSource<EntityFrameworkCoreOutboxOptions>(configuration));
         return services;
@@ -176,8 +173,10 @@ public static class EntityFrameworkCoreOutboxExtensions
         }
     }
 
-    // The configuration binding generator skips init-only setters; match the health integration's explicit binding.
-    private sealed class OutboxOptionsFactory(IConfiguration configuration,
+    private sealed record OutboxConfigurationSection(IConfiguration Configuration);
+
+    // The configuration binding generator skips init-only setters; bind scalars without runtime reflection.
+    private sealed class OutboxOptionsFactory(IEnumerable<OutboxConfigurationSection> sections,
         IEnumerable<IConfigureOptions<EntityFrameworkCoreOutboxOptions>> setups,
         IEnumerable<IPostConfigureOptions<EntityFrameworkCoreOutboxOptions>> postConfigures,
         IEnumerable<IValidateOptions<EntityFrameworkCoreOutboxOptions>> validations)
@@ -185,19 +184,26 @@ public static class EntityFrameworkCoreOutboxExtensions
     {
         protected override EntityFrameworkCoreOutboxOptions CreateInstance(string name)
         {
-            var defaults = new EntityFrameworkCoreOutboxOptions();
-            return new()
+            var options = new EntityFrameworkCoreOutboxOptions();
+
+            foreach (var section in sections)
             {
-                Schema = configuration[nameof(defaults.Schema)],
-                TablePrefix = configuration[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
-                Lanes = Read(nameof(defaults.Lanes), defaults.Lanes),
-                DispatchStoreName = configuration[nameof(defaults.DispatchStoreName)],
-                LeaseDuration = Read(nameof(defaults.LeaseDuration), defaults.LeaseDuration),
-                MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts)
-            };
+                var configuration = section.Configuration;
+                options = new()
+                {
+                    Schema = configuration[nameof(options.Schema)] ?? options.Schema,
+                    TablePrefix = configuration[nameof(options.TablePrefix)] ?? options.TablePrefix,
+                    Lanes = Read(configuration, name, nameof(options.Lanes), options.Lanes),
+                    DispatchStoreName = configuration[nameof(options.DispatchStoreName)] ?? options.DispatchStoreName,
+                    LeaseDuration = Read(configuration, name, nameof(options.LeaseDuration), options.LeaseDuration),
+                    MaxDispatchAttempts = Read(configuration, name, nameof(options.MaxDispatchAttempts), options.MaxDispatchAttempts)
+                };
+            }
+
+            return options;
         }
 
-        private T Read<T>(string key, T fallback) where T : IParsable<T>
+        private static T Read<T>(IConfiguration configuration, string name, string key, T fallback) where T : IParsable<T>
         {
             var value = configuration[key];
 
@@ -211,7 +217,7 @@ public static class EntityFrameworkCoreOutboxExtensions
                 return parsed;
             }
 
-            throw new OptionsValidationException(Options.DefaultName, typeof(EntityFrameworkCoreOutboxOptions),
+            throw new OptionsValidationException(name, typeof(EntityFrameworkCoreOutboxOptions),
                 [$"{key}: '{value}' is invalid."]);
         }
     }

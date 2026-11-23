@@ -13,7 +13,7 @@ public static class PostgreSqlOutboxBuilderExtensions
 {
     /// <summary>Enlists one scoped DbContext and registers direct dispatch, ordered dispatch and recovery.</summary>
     /// <remarks>
-    /// Configure the native provider with AddDbContext separately, using the same application-owned data source.
+    /// Register the context with AddDbContext separately, using the same application-owned data source.
     /// Call again for another context with the same data source and options to enlist it in the same store and workers.
     /// Deploy the outbox schema before starting the host. For independent worker deployment, use the individual registrations instead.
     /// The worker options tune direct dispatch, ordered dispatch and maintenance. Schema, table prefix, lanes, the ordered
@@ -123,7 +123,7 @@ public static class PostgreSqlOutboxBuilderExtensions
                     "Pass the same data source and options to share the store, or set a distinct DispatchStoreName and separate store tables.");
             }
 
-            services.AddDbContext<TContext>((provider, native) => native.AddRelayerOutbox(provider, writer));
+            services.ConfigureDbContext<TContext>((provider, native) => native.AddRelayerOutbox(provider, writer), ServiceLifetime.Scoped);
             return builder;
         }
 
@@ -131,14 +131,14 @@ public static class PostgreSqlOutboxBuilderExtensions
         services.AddRelayerEntityFrameworkCoreOutbox();
         // A selected context always uses its own settings. The first composed registration supplies
         // defaults for capability validation before a context is selected, unless the app configured them.
-        services.TryAddSingleton<IOptionsFactory<EntityFrameworkCoreOutboxOptions>>(provider => new WriterOptionsFactory(writer,
+        services.TryAddTransient<IOptionsFactory<EntityFrameworkCoreOutboxOptions>>(provider => new WriterOptionsFactory(writer,
             provider.GetServices<IConfigureOptions<EntityFrameworkCoreOutboxOptions>>(),
             provider.GetServices<IPostConfigureOptions<EntityFrameworkCoreOutboxOptions>>(),
             provider.GetServices<IValidateOptions<EntityFrameworkCoreOutboxOptions>>()));
         services.AddRelayerPostgreSqlDirectDispatch(name, dataSource, store, directDispatch);
         services.AddRelayerPostgreSqlOrderedDispatch(name, dataSource, ordered);
         services.AddRelayerPostgreSqlMaintenance(name, dataSource, recovery);
-        services.AddDbContext<TContext>((provider, native) => native.AddRelayerOutbox(provider, writer));
+        services.ConfigureDbContext<TContext>((provider, native) => native.AddRelayerOutbox(provider, writer), ServiceLifetime.Scoped);
         return builder;
     }
 
@@ -164,7 +164,15 @@ public static class PostgreSqlOutboxBuilderExtensions
     {
         protected override EntityFrameworkCoreOutboxOptions CreateInstance(string name)
         {
-            return options;
+            return new()
+            {
+                Schema = options.Schema,
+                TablePrefix = options.TablePrefix,
+                Lanes = options.Lanes,
+                DispatchStoreName = options.DispatchStoreName,
+                LeaseDuration = options.LeaseDuration,
+                MaxDispatchAttempts = options.MaxDispatchAttempts
+            };
         }
     }
 }

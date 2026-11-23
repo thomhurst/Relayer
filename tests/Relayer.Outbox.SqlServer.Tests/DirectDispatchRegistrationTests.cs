@@ -11,6 +11,51 @@ public sealed class DirectDispatchRegistrationTests
     private const string ConnectionString = "Server=localhost;Database=orders;Integrated Security=True;Encrypt=False";
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task SqlServer_outbox_validation_composes_with_application_validation(bool applicationFirst, bool invalidLanes)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Lanes"] = invalidLanes ? "0" : "16",
+            ["TablePrefix"] = invalidLanes ? "orders_" : "other_"
+        }).Build();
+        var services = new ServiceCollection();
+
+        void AddApplicationValidator()
+        {
+            services.AddOptions<SqlServerOutboxOptions>().Validate(
+                options => options.TablePrefix == "orders_", "Use the orders_ prefix.");
+        }
+
+        if (applicationFirst)
+        {
+            AddApplicationValidator();
+        }
+
+        services.AddRelayerSqlServerOutbox(configuration);
+        services.AddRelayerSqlServerOutbox();
+
+        if (!applicationFirst)
+        {
+            AddApplicationValidator();
+        }
+
+        await using var provider = services.BuildServiceProvider();
+        var expectedError = invalidLanes ? "Lanes must be positive." : "Use the orders_ prefix.";
+#if NET11_0_OR_GREATER
+        await Assert.That(async () => await provider.GetRequiredService<IAsyncStartupValidator>().ValidateAsync(default))
+            .Throws<OptionsValidationException>().WithMessageContaining(expectedError);
+#else
+        await Assert.That(() => provider.GetRequiredService<IStartupValidator>().Validate())
+            .Throws<OptionsValidationException>().WithMessageContaining(expectedError);
+#endif
+        await Assert.That(provider.GetServices<IValidateOptions<SqlServerOutboxOptions>>().Count()).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Keyed_enlistment_coexists_with_the_default_outbox()
     {
         var services = new ServiceCollection();

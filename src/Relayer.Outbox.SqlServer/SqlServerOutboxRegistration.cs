@@ -37,7 +37,7 @@ public static class SqlServerOutboxRegistration
             return new(snapshot, provider.GetService<RelayerInstrumentation>(), dispatcher);
         });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<SqlServerOutbox>());
-        services.TryAddSingleton<IValidateOptions<SqlServerOutboxOptions>, Validator>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<SqlServerOutboxOptions>, Validator>());
         services.AddOptions<SqlServerOutboxOptions>().ValidateOnStart();
 
         if (options is not null)

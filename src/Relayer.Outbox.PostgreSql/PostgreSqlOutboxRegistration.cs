@@ -61,7 +61,7 @@ public static class PostgreSqlOutboxRegistration
         });
         services.TryAddSingleton(new PostgreSqlOutboxWriterRegistration(dispatchStoreName));
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<PostgreSqlOutbox>());
-        services.TryAddSingleton<IValidateOptions<PostgreSqlOutboxOptions>, Validator>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<PostgreSqlOutboxOptions>, Validator>());
         services.AddOptions<PostgreSqlOutboxOptions>().ValidateOnStart();
 
         if (options is not null)

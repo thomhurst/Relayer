@@ -1,6 +1,7 @@
 using System.Buffers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -37,6 +38,96 @@ public class OutboxRegistrationTests
 
         await Assert.That(keyed).IsTypeOf<IndependentEnlistment>();
         await Assert.That(ReferenceEquals(enlistment, keyed)).IsFalse();
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task EntityFrameworkCore_outbox_validation_composes_with_application_validation(bool applicationFirst, bool invalidLanes)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Lanes"] = invalidLanes ? "0" : "16",
+            ["TablePrefix"] = invalidLanes ? "orders_" : "other_"
+        }).Build();
+        var services = new ServiceCollection();
+
+        void AddApplicationValidator()
+        {
+            services.AddOptions<EntityFrameworkCoreOutboxOptions>().Validate(
+                options => options.TablePrefix == "orders_", "Use the orders_ prefix.");
+        }
+
+        if (applicationFirst)
+        {
+            AddApplicationValidator();
+        }
+
+        services.AddRelayerEntityFrameworkCoreOutbox(configuration);
+        services.AddRelayerEntityFrameworkCoreOutbox();
+
+        if (!applicationFirst)
+        {
+            AddApplicationValidator();
+        }
+
+        await using var provider = services.BuildServiceProvider();
+        var expectedError = invalidLanes ? "Lanes must be positive." : "Use the orders_ prefix.";
+#if NET11_0_OR_GREATER
+        await Assert.That(async () => await provider.GetRequiredService<IAsyncStartupValidator>().ValidateAsync(default))
+            .Throws<OptionsValidationException>().WithMessageContaining(expectedError);
+#else
+        await Assert.That(() => provider.GetRequiredService<IStartupValidator>().Validate())
+            .Throws<OptionsValidationException>().WithMessageContaining(expectedError);
+#endif
+        await Assert.That(provider.GetServices<IValidateOptions<EntityFrameworkCoreOutboxOptions>>().Count()).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task PostgreSql_outbox_validation_composes_with_application_validation(bool applicationFirst, bool invalidLanes)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Lanes"] = invalidLanes ? "0" : "16",
+            ["TablePrefix"] = invalidLanes ? "orders_" : "other_"
+        }).Build();
+        var services = new ServiceCollection();
+
+        void AddApplicationValidator()
+        {
+            services.AddOptions<PostgreSqlOutboxOptions>().Validate(
+                options => options.TablePrefix == "orders_", "Use the orders_ prefix.");
+        }
+
+        if (applicationFirst)
+        {
+            AddApplicationValidator();
+        }
+
+        services.AddRelayerPostgreSqlOutbox(configuration);
+        services.AddRelayerPostgreSqlOutbox();
+
+        if (!applicationFirst)
+        {
+            AddApplicationValidator();
+        }
+
+        await using var provider = services.BuildServiceProvider();
+        var expectedError = invalidLanes ? "Lanes must be positive." : "Use the orders_ prefix.";
+#if NET11_0_OR_GREATER
+        await Assert.That(async () => await provider.GetRequiredService<IAsyncStartupValidator>().ValidateAsync(default))
+            .Throws<OptionsValidationException>().WithMessageContaining(expectedError);
+#else
+        await Assert.That(() => provider.GetRequiredService<IStartupValidator>().Validate())
+            .Throws<OptionsValidationException>().WithMessageContaining(expectedError);
+#endif
+        await Assert.That(provider.GetServices<IValidateOptions<PostgreSqlOutboxOptions>>().Count()).IsEqualTo(2);
     }
 
     [Test]
@@ -179,6 +270,137 @@ public class OutboxRegistrationTests
         await Assert.That(outbox.IsActive).IsFalse();
         using var other = provider.CreateScope();
         await Assert.That(other.ServiceProvider.GetRequiredService<IOutboxEnlistment>()).IsNotSameReferenceAs(outbox);
+    }
+
+    [Test]
+    public async Task Composed_registration_keeps_default_and_named_options_independent()
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var secondary = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MaxDispatchAttempts"] = "7"
+        }).Build();
+        var services = new ServiceCollection();
+        services.AddRelayer(relayer => relayer.UsePostgreSqlOutbox<OrdersContext>(source,
+            new()
+            {
+                MaxDispatchAttempts = 4
+            }));
+        services.Configure<EntityFrameworkCoreOutboxOptions>("secondary", secondary);
+
+        await using var provider = services.BuildServiceProvider();
+        var monitor = provider.GetRequiredService<IOptionsMonitor<EntityFrameworkCoreOutboxOptions>>();
+        var defaults = monitor.CurrentValue;
+        await Assert.That(defaults.MaxDispatchAttempts).IsEqualTo(4);
+
+        var named = monitor.Get("secondary");
+        await Assert.That(named.MaxDispatchAttempts).IsEqualTo(7);
+        await Assert.That(named).IsNotSameReferenceAs(defaults);
+        await Assert.That(defaults.MaxDispatchAttempts).IsEqualTo(4);
+        await Assert.That(monitor.CurrentValue.MaxDispatchAttempts).IsEqualTo(4);
+
+        using var scope = provider.CreateScope();
+        var snapshot = scope.ServiceProvider.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>();
+        await Assert.That(snapshot.Value.MaxDispatchAttempts).IsEqualTo(4);
+        await Assert.That(snapshot.Value).IsNotSameReferenceAs(defaults);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Composed_registration_preserves_native_context_alias(bool configureNativeFirst)
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var services = new ServiceCollection().AddLogging();
+        services.AddSingleton<ITransport>(new FailingTransport());
+
+        if (configureNativeFirst)
+        {
+            services.AddDbContext<IOrdersContext, OrdersContext>(options => options.UseNpgsql(source));
+        }
+
+        services.AddRelayer(relayer => relayer.UsePostgreSqlOutbox<OrdersContext>(source));
+
+        if (!configureNativeFirst)
+        {
+            services.AddDbContext<IOrdersContext, OrdersContext>(options => options.UseNpgsql(source));
+        }
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+        await Assert.That(scope.ServiceProvider.GetRequiredService<IOrdersContext>()).IsSameReferenceAs(context);
+        await Assert.That(scope.ServiceProvider.GetRequiredService<DbContextOptions<OrdersContext>>().HasRelayerOutbox()).IsTrue();
+    }
+
+    [Test]
+    public async Task Configured_options_combine_sections_and_reload_each_section_in_registration_order()
+    {
+        var first = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MaxDispatchAttempts"] = "4",
+            ["TablePrefix"] = "first_"
+        }).Build();
+        var second = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Lanes"] = "16",
+            ["TablePrefix"] = "second_"
+        }).Build();
+        var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox(first)
+            .AddRelayerEntityFrameworkCoreOutbox(second);
+
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var snapshot = scope.ServiceProvider.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>();
+        var monitor = provider.GetRequiredService<IOptionsMonitor<EntityFrameworkCoreOutboxOptions>>();
+        var notifications = new List<EntityFrameworkCoreOutboxOptions>();
+        using var subscription = monitor.OnChange((options, _) => notifications.Add(options));
+        var initial = snapshot.Value;
+
+        await Assert.That(initial.MaxDispatchAttempts).IsEqualTo(4);
+        await Assert.That(initial.Lanes).IsEqualTo(16);
+        await Assert.That(initial.TablePrefix).IsEqualTo("second_");
+
+        first["MaxDispatchAttempts"] = "7";
+        first.Reload();
+        second["Lanes"] = "8";
+        second.Reload();
+
+        await Assert.That(notifications.Count).IsEqualTo(2);
+        await Assert.That(notifications[0].MaxDispatchAttempts).IsEqualTo(7);
+        await Assert.That(notifications[0].Lanes).IsEqualTo(16);
+        await Assert.That(notifications[1].MaxDispatchAttempts).IsEqualTo(7);
+        await Assert.That(notifications[1].Lanes).IsEqualTo(8);
+        await Assert.That(monitor.CurrentValue).IsSameReferenceAs(notifications[1]);
+        await Assert.That(snapshot.Value).IsSameReferenceAs(initial);
+    }
+
+    [Test]
+    public async Task Configured_options_snapshots_resolve_fresh_validator_dependencies()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Outbox:TablePrefix"] = "before_",
+            ["ExpectedPrefix"] = "before_"
+        }).Build();
+        var services = new ServiceCollection().AddSingleton<IConfiguration>(configuration)
+            .AddTransient<PrefixPolicy>().AddRelayerEntityFrameworkCoreOutbox(configuration.GetSection("Outbox"));
+        services.AddOptions<EntityFrameworkCoreOutboxOptions>().Validate<PrefixPolicy>(
+            (options, policy) => options.TablePrefix == policy.Prefix, "Use the configured table prefix.");
+
+        await using var provider = services.BuildServiceProvider();
+        using var originalScope = provider.CreateScope();
+        var original = originalScope.ServiceProvider.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>();
+        await Assert.That(original.Value.TablePrefix).IsEqualTo("before_");
+
+        configuration["Outbox:TablePrefix"] = "after_";
+        configuration["ExpectedPrefix"] = "after_";
+        configuration.Reload();
+
+        using var updatedScope = provider.CreateScope();
+        var updated = updatedScope.ServiceProvider.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>();
+        await Assert.That(updated.Value.TablePrefix).IsEqualTo("after_");
+        await Assert.That(original.Value.TablePrefix).IsEqualTo("before_");
     }
 
     [Test]
@@ -470,7 +692,17 @@ public class OutboxRegistrationTests
         }
     }
 
-    public sealed class OrdersContext(DbContextOptions<OrdersContext> options) : DbContext(options);
+    public interface IOrdersContext;
+
+    public sealed class OrdersContext(DbContextOptions<OrdersContext> options) : DbContext(options), IOrdersContext;
+
+    private sealed class PrefixPolicy(IConfiguration configuration)
+    {
+        public string Prefix
+        {
+            get;
+        } = configuration["ExpectedPrefix"]!;
+    }
 
     public sealed class BillingContext(DbContextOptions<BillingContext> options) : DbContext(options);
 

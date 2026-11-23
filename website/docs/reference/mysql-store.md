@@ -108,6 +108,7 @@ disposes only the connection it opens. Neither overload disposes the data source
 transaction at a time per scope; overlapping operations are unsupported. Configuration can
 also bind through `AddRelayerMySqlOutbox(configurationSection)`, with immutable Options
 snapshots per scope, reload for new scopes, and startup validation.
+Relayer's validation runs alongside application validators in either registration order.
 
 Enqueue takes an owned copy of the original UUIDv7 identity, stable message type, payload,
 headers, ordering key and tenant metadata. At commit, Relayer uses MySqlConnector's native

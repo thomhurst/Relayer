@@ -59,9 +59,9 @@ services.AddRelayer(relayer =>
 });
 ```
 
-The combined registration adds scoped interceptors to the native `AddDbContext` configuration, in either
-registration order. It does not configure the EF provider or create tables. Configure `UseNpgsql` with
-the same data source. The default store name is `default`; use the optional `EntityFrameworkCoreOutboxOptions`
+Register the context with EF Core's scoped `AddDbContext` and configure `UseNpgsql` with the same data
+source. The combined registration adds scoped interceptors in either registration order.
+`AddDbContext<TService, TContext>` keeps both service types bound to the same context in a scope. The default store name is `default`; use the optional `EntityFrameworkCoreOutboxOptions`
 argument to set `DispatchStoreName`, schema, table prefix, lanes, ordered lease duration and dispatch attempt limit.
 These store settings flow to the workers automatically. Stop the host before disposing the data source.
 
@@ -98,7 +98,9 @@ lane count, lease duration, attempt limit or worker options instance fails at re
 worker options instances to every call for a store. To keep contexts in separate stores, give
 each one a distinct `DispatchStoreName` and separate store tables; each store then runs its own workers.
 The first composed registration supplies default capability settings before a context is selected, unless
-the application already registered configuration-bound defaults. A selected context always uses its own settings.
+the application registered configuration-bound defaults. A selected context always uses its own settings.
+Named options and scoped snapshots each get their own instance, so configuring a named option
+preserves the default settings.
 
 Context pooling, concurrent use of one service scope and ambient
 `TransactionScope` enlistment are not supported. Other EF database providers fail on first use;
@@ -152,8 +154,11 @@ options.UseNpgsql(connectionString).AddRelayerOutbox(provider,
 ```
 
 Alternatively, `services.AddRelayerEntityFrameworkCoreOutbox(configuration.GetSection("Outbox"))`
-binds immutable defaults through the Options pattern. `IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>`
-keeps a scope's settings stable; configuration changes apply to newly created scopes. Invalid identifiers,
+binds immutable defaults through the Options pattern. Repeated registrations apply sections in order.
+Later non-null values override earlier values for the same key. A reload of any registered section
+refreshes the monitored defaults. `IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>` keeps a scope's
+settings stable. New scopes resolve current settings and fresh transient validator dependencies.
+Relayer's validation runs alongside application validators in either registration order. Invalid identifiers,
 nonpositive lane counts and malformed numeric values fail validation. A per-context options argument
 overrides those defaults. Always match the deployed schema and prefix. Drain the outbox before changing lanes.
 With individual registrations, `LeaseDuration` and `MaxDispatchAttempts` do not affect enlistment. Configure ordered worker deadlines
