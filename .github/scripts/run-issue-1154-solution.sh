@@ -15,15 +15,13 @@ if [[ "$CAPTURE_MODE" == profiled ]]; then
     --environment "RELAYER_ALLOCATION_OUTPUT=$results/objects.jsonl"
     --environment "RELAYER_ALLOCATION_STACKS=$results/stacks.jsonl"
   )
-else
+elif [[ "$CAPTURE_MODE" == counters ]]; then
   capture_args=(--environment "RELAYER_ALLOCATION_BOUNDARIES=$results/boundaries.csv")
 fi
 
 cd .artifacts/ci-source
 status=0
 timeout --kill-after=10s 8m dotnet test --no-build -c Release -f "$FRAMEWORK" "${capture_args[@]}" \
-  > "$results/tests.log" 2>&1 || status=$?
+  2>&1 | tee "$results/tests.log" || status=$?
 printf '%s\n' "$status" > "$results/exit-code"
-grep -aE 'Warmed_batches_add_no_allocations|Batch [0-9]+: native DI|Test run summary|Test run failed' \
-  "$results/tests.log" || true
 exit "$status"

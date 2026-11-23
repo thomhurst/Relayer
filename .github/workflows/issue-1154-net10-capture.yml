@@ -1,10 +1,11 @@
-name: Buffered allocation capture from PR 1442 (#1154)
+name: Buffered allocation capture with PR 1442 CI settings (#1154)
 
 on:
   push:
     branches: [diagnostics/issue-1154-pr1442]
 
 permissions:
+  actions: read
   contents: read
 
 defaults:
@@ -19,12 +20,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [counters, profiled]
+        mode: [unmodified, counters, profiled]
     env:
       ORIGINAL_CHECKOUT: efadc0c7fba8dc3d3822f5505f2518c9e25c0083
       FRAMEWORK: net10.0
       CAPTURE_MODE: ${{ matrix.mode }}
-      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+      DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+      DOTNET_NOLOGO: 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -44,11 +47,10 @@ jobs:
         with:
           version: v29.10.0
           set-host: true
+          daemon-config: '{"userland-proxy": false}'
       - name: Verify mixed-address port allocation and forwarding
         run: bash scripts/Test-ContainerPortAllocation.sh
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
-        env:
-          DOTNET_INSTALL_DIR: ${{ runner.temp }}/issue1154-dotnet
         with:
           global-json-file: global.json
           dotnet-version: '10.0.404'
@@ -78,14 +80,30 @@ jobs:
             cmake --build .artifacts/profiler
             git -C .artifacts/ci-source apply "$PWD/.github/scripts/issue-1154-caller-checkpoints.patch"
             cp .github/scripts/Issue1154AllocationRegion.cs .artifacts/ci-source/tests/Relayer.Tests/
-          else
+          elif [[ "$CAPTURE_MODE" == counters ]]; then
             git -C .artifacts/ci-source apply "$PWD/.github/scripts/issue-1154-counter-checkpoints.patch"
           fi
 
           cd .artifacts/ci-source
           dotnet restore
           dotnet build --no-restore -c Release
-          cp "tests/Relayer.Tests/bin/Release/$FRAMEWORK/Relayer.Tests.runtimeconfig.json" ../../results/
+      - name: Restore the failing job's original core test binaries
+        if: matrix.mode == 'unmodified'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          original="$RUNNER_TEMP/issue1154-original"
+          gh run download 45218487670 --repo "$GITHUB_REPOSITORY" \
+            --name ci-test-failure-net10.0-45218487670-1 --dir "$original"
+          original_evidence=.artifacts/ci-test-failure
+          test "$(cat "$original/$original_evidence/commit.txt")" = "$ORIGINAL_CHECKOUT"
+          (cd "$original" && sha256sum --check --quiet "$original_evidence/binaries.sha256")
+          binaries="tests/Relayer.Tests/bin/Release/$FRAMEWORK"
+          mv ".artifacts/ci-source/$binaries" "$RUNNER_TEMP/issue1154-rebuilt-core-tests"
+          cp -a "$original/$binaries" ".artifacts/ci-source/$binaries"
+          cp "$original/$original_evidence/binaries.sha256" results/original-binaries.sha256
+      - name: Record the core test runtime configuration
+        run: cp ".artifacts/ci-source/tests/Relayer.Tests/bin/Release/$FRAMEWORK/Relayer.Tests.runtimeconfig.json" results/
       - name: Prefetch CI broker images
         run: |
           docker pull apache/kafka:4.0.2
