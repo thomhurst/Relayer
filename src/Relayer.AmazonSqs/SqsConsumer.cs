@@ -10,6 +10,8 @@ namespace Relayer.AmazonSqs;
 // FIFO polls stay single-message so SQS itself serializes groups across processes.
 internal sealed partial class SqsConsumer : IAsyncDisposable
 {
+    private static readonly Task[] s_starting = [];
+
     private readonly IAmazonSQS _client;
     private readonly string _url;
     private readonly Func<SqsDelivery, CancellationToken, ValueTask> _receive;
@@ -19,7 +21,8 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
     private CancellationTokenSource? _poll;
     private CancellationTokenSource? _abort;
     private Task[] _workers = [];
-    private int _running;
+    // Null while stopped, empty during startup, and a complete array while running or draining.
+    private Task[]? _runningWorkers;
     private int _disposed;
 
     internal ConsumerDefinition<AmazonSqsConsumerOptions> Declaration
@@ -90,7 +93,7 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
             throw new InvalidOperationException("Recreate the host after an aborted SQS drain or stopped worker.");
         }
 
-        if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _runningWorkers, s_starting, null) is not null)
         {
             throw new InvalidOperationException("SQS consumer is already running.");
         }
@@ -112,7 +115,7 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
         catch
         {
             _workers = [];
-            Volatile.Write(ref _running, 0);
+            Volatile.Write(ref _runningWorkers, null);
             throw;
         }
 
@@ -121,6 +124,7 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
             _workers[i] = RunAsync(i, requests[i], _poll.Token, _abort.Token);
         }
 
+        Interlocked.CompareExchange(ref _runningWorkers, _workers, s_starting);
         return Task.CompletedTask;
     }
 
@@ -411,18 +415,18 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
         }
         finally
         {
-            Volatile.Write(ref _running, 0);
+            Volatile.Write(ref _runningWorkers, null);
         }
     }
 
     internal (bool IsIdle, DateTimeOffset LastProgressAt)? GetHealthState()
     {
-        if (!TrackHealth || Volatile.Read(ref _running) == 0)
+        if (!TrackHealth || Volatile.Read(ref _runningWorkers) is not { Length: > 0 } workers)
         {
             return null;
         }
 
-        foreach (var worker in _workers)
+        foreach (var worker in workers)
         {
             if (worker.IsFaulted)
             {
