@@ -290,6 +290,81 @@ public class SenderTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Destination_selector_counts_toward_the_route_timeout(bool fanOut)
+    {
+        var transport = new RecordingTransport("events");
+        var outbox = new TestOutbox { IsActive = true };
+        var services = Services(transport);
+
+        if (fanOut)
+        {
+            services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        }
+
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.AddTransport<SenderTransportOptions, SenderTransportOptions>("events", routes =>
+            {
+                routes.Send<OrderPlaced>(["orders", "billing"], static _ =>
+                {
+                    Thread.Sleep(TimeSpan.FromMilliseconds(200));
+                    return "billing";
+                }, route => route.SendOptions = new() { Timeout = TimeSpan.FromMilliseconds(50) });
+
+                if (fanOut)
+                {
+                    routes.Send<OrderPlaced>("audit");
+                }
+            });
+        });
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var configured = false;
+
+        await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), _ => configured = true))
+            .Throws<TimeoutException>().WithMessageContaining("route timeout");
+        await Assert.That(configured).IsFalse();
+        await Assert.That(transport.Count).IsEqualTo(0);
+        await Assert.That(outbox.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Middleware_cancellation_preserves_the_caller_token(bool suspend)
+    {
+        using var caller = new CancellationTokenSource();
+        var transport = new RecordingTransport("events");
+        var services = Services(transport);
+        var middleware = new CancelSendMiddleware(caller, suspend);
+        services.AddSingleton<ISendMiddleware>(middleware);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders");
+        });
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        var send = sender.SendAsync(new OrderPlaced(Guid.NewGuid()), caller.Token);
+
+        if (suspend)
+        {
+            await middleware.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            caller.Cancel();
+        }
+
+        var error = await Assert.That(async () => await send).Throws<OperationCanceledException>();
+        await Assert.That(error!.CancellationToken).IsEqualTo(caller.Token);
+        await Assert.That(transport.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Caller_cancellation_stays_cancellation_and_does_not_become_a_timeout()
     {
         var transport = new RecordingTransport("events") { WaitForCancellation = true };
@@ -1437,6 +1512,27 @@ public class SenderTests
         public ValueTask DisposeAsync()
         {
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class CancelSendMiddleware(CancellationTokenSource caller, bool suspend) : ISendMiddleware
+    {
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ValueTask InvokeAsync(SendContext context, SendDelegate next)
+        {
+            if (suspend)
+            {
+                Entered.SetResult();
+                return new ValueTask(Task.Delay(Timeout.InfiniteTimeSpan, context.CancellationToken));
+            }
+
+            caller.Cancel();
+            context.CancellationToken.ThrowIfCancellationRequested();
+            return next(context);
         }
     }
 

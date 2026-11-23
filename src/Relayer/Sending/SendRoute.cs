@@ -70,7 +70,7 @@ internal static class SendRouteTimeout
         return !callerToken.IsCancellationRequested && timeout.IsCancellationRequested;
     }
 
-    internal static TimeoutException CreateException(OperationCanceledException cancellation)
+    internal static TimeoutException CreateException(OperationCanceledException? cancellation = null)
     {
         return new TimeoutException(
             "The send exceeded its route timeout. Check broker connectivity or increase SendRouteOptions.Timeout.", cancellation);
@@ -155,19 +155,35 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
         IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
         ReplyMetadata reply = default, WireString tenant = default)
     {
-        return (_selector is null ? this : Select(message)).Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, default, default);
+        return SendAsync(message, configure, outbox, callerToken, buffer, reply, tenant, default, default);
     }
 
     internal ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
         IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
         ReplyMetadata reply, WireString tenant, MessageEnvelopeMetadata metadata, Guid rowId)
     {
-        return (_selector is null ? this : Select(message)).Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, metadata, rowId);
+        var route = this;
+        var timeout = _options.Timeout;
+
+        if (_selector is { } selector)
+        {
+            var started = Stopwatch.GetTimestamp();
+            route = Select(selector(message));
+            timeout -= Stopwatch.GetElapsedTime(started);
+
+            if (timeout <= TimeSpan.Zero)
+            {
+                return callerToken.IsCancellationRequested
+                    ? ValueTask.FromCanceled(callerToken)
+                    : ValueTask.FromException(SendRouteTimeout.CreateException());
+            }
+        }
+
+        return route.Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, metadata, rowId, timeout);
     }
 
-    private SendRoute<TMessage> Select(TMessage message)
+    private SendRoute<TMessage> Select(string destination)
     {
-        var destination = _selector!(message);
 
         if (destination is not null && _targets!.TryGetValue(destination, out var route))
         {
@@ -249,7 +265,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
         public override CancellationToken CancellationToken => Timeout.Token;
 
         internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer, ReplyMetadata reply, WireString tenant,
-            MessageEnvelopeMetadata metadata, Guid rowId)
+            MessageEnvelopeMetadata metadata, Guid rowId, TimeSpan timeout)
         {
             _reply = reply;
             _tenant = tenant;
@@ -264,7 +280,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
 
             try
             {
-                Timeout.CancelAfter(_route._options.Timeout);
+                Timeout.CancelAfter(timeout);
                 _registration = callerToken.UnsafeRegister(static state => ((Operation)state!).Timeout.Cancel(), this);
                 configure?.Invoke(Options);
                 CancellationToken.ThrowIfCancellationRequested();
@@ -312,6 +328,13 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
             catch (Exception exception)
             {
                 error = Translate(exception);
+
+                if (error is OperationCanceledException cancellation && _callerToken.IsCancellationRequested &&
+                    cancellation.CancellationToken != _callerToken)
+                {
+                    error = new OperationCanceledException(cancellation.Message, cancellation, _callerToken);
+                }
+
                 _route._tracing?.Fail(_activity, error);
             }
 

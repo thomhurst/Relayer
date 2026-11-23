@@ -34,8 +34,19 @@ public class SendPipelineBenchmarks
         get; set;
     }
 
-    [GlobalSetup]
+    [GlobalSetup(Targets = [nameof(SerializeAndCallNative), nameof(TombstoneSend), nameof(DirectSend), nameof(SelectedDestinationSend)])]
     public void Setup()
+    {
+        Setup(useSelector: true);
+    }
+
+    [GlobalSetup(Target = nameof(FixedDestinationRegionalSend))]
+    public void SetupFixedDestination()
+    {
+        Setup(useSelector: false);
+    }
+
+    private void Setup(bool useSelector)
     {
         var services = new ServiceCollection();
 
@@ -48,11 +59,21 @@ public class SendPipelineBenchmarks
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            builder.AddTransport<SendBenchmarkOptions, SendBenchmarkOptions>("sink",
-                transport => transport
-                    .Send<SendOrder>("orders", route => route.OrderingKey(static message => message.Id))
-                    .Send<RegionalSendOrder>(["orders-eu", "orders-us"], static message => message.Region,
-                        route => route.OrderingKey(static message => message.Id)));
+            builder.AddTransport<SendBenchmarkOptions, SendBenchmarkOptions>("sink", transport =>
+            {
+                transport.Send<SendOrder>("orders", route => route.OrderingKey(static message => message.Id));
+
+                if (useSelector)
+                {
+                    transport.Send<RegionalSendOrder>(["orders-eu", "orders-us"], static message => message.Region,
+                        route => route.OrderingKey(static message => message.Id));
+                }
+                else
+                {
+                    transport.Send<RegionalSendOrder>(_regionalMessage.Region,
+                        route => route.OrderingKey(static message => message.Id));
+                }
+            });
 
             if (Middleware)
             {
@@ -89,6 +110,12 @@ public class SendPipelineBenchmarks
     public ValueTask DirectSend()
     {
         return _sender.SendAsync(_message);
+    }
+
+    [Benchmark]
+    public ValueTask FixedDestinationRegionalSend()
+    {
+        return _sender.SendAsync(_regionalMessage);
     }
 
     [Benchmark]
