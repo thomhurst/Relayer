@@ -149,35 +149,26 @@ public class TopologyTests
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
         var broker = await RabbitMqStreamsTestBroker.Current.WaitAsync(token);
-        var isolation = TestContext.Current!.Isolation;
-        var ownedName = isolation.GetIsolatedName("owned-locator");
-        var independentName = isolation.GetIsolatedName("independent-locator");
-        var ownedConfiguration = broker.Configuration();
-        ownedConfiguration.ClientProvidedName = ownedName;
-        var independentConfiguration = broker.Configuration();
-        independentConfiguration.ClientProvidedName = independentName;
-        await using var independent = await StreamSystem.Create(independentConfiguration);
+        await using var independent = await StreamSystem.Create(broker.Configuration());
         var host = new HostBuilder().ConfigureServices(services =>
         {
             services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromMilliseconds(250));
             services.AddRelayer(builder => builder.RabbitMQStreams("streams", streams =>
-                streams.Options.Configure(options => options.Configuration = ownedConfiguration)));
+                streams.Options.Configure(options => options.Configuration = broker.Configuration())));
             // The host stops services in reverse registration order.
             services.AddHostedService<WaitForShutdownTimeout>();
         }).Build();
         await using var hostLifetime = (IAsyncDisposable)host;
         await host.StartAsync(token);
 
-        string[] listConnections = ["rabbitmq-streams", "list_stream_connections", "client_properties", "--formatter=json"];
-        var beforeStop = await broker.CommandAsync(listConnections, token);
-        await Assert.That(beforeStop).Contains(ownedName);
-        await Assert.That(beforeStop).Contains(independentName);
+        var owned = GetNativeSystem(host.Services.GetRequiredService<ITransport>());
+        await Assert.That(owned.IsClosed).IsFalse();
+        await Assert.That(independent.IsClosed).IsFalse();
 
         await host.StopAsync(token);
 
-        var afterStop = await broker.CommandAsync(listConnections, token);
-        await Assert.That(afterStop).DoesNotContain(ownedName);
-        await Assert.That(afterStop).Contains(independentName);
+        await Assert.That(owned.IsClosed).IsTrue();
+        await Assert.That(independent.IsClosed).IsFalse();
     }
 
     [Test]
@@ -196,10 +187,7 @@ public class TopologyTests
         });
         var transport = provider.GetRequiredService<ITransport>();
         await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
-        // Inspect only the owned native instance in this test. Keeping this observation
-        // test-local avoids adding a public API just to synchronize fault injection.
-        var native = (StreamSystem)transport.GetType()
-            .GetField("_system", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(transport)!;
+        var native = GetNativeSystem(transport);
         await Assert.That(native.IsClosed).IsFalse();
         // RabbitMQ's connection tracker includes stream protocol connections. Assert the
         // close actually targets our locator, rather than passing through a no-op fault.
@@ -218,6 +206,13 @@ public class TopologyTests
         await transport.StartAsync(token);
         await Assert.That(native.IsClosed).IsFalse();
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
+    }
+
+    private static StreamSystem GetNativeSystem(ITransport transport)
+    {
+        // Inspect the owned native connection without exposing it through the transport API.
+        return (StreamSystem)transport.GetType()
+            .GetField("_system", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(transport)!;
     }
 
     private sealed class WaitForShutdownTimeout : IHostedService
