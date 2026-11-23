@@ -121,6 +121,88 @@ public class GooglePubSubSendBenchmarks
     }
 }
 
+/// <summary>Alternating-topic native and Relayer batches with identical payloads and publisher settings.</summary>
+[MemoryDiagnoser]
+public class GooglePubSubMixedBatchBenchmarks
+{
+    private GrpcChannel _channel = null!;
+    private ServiceProvider _provider = null!;
+    private PublisherServiceApiClient _api = null!;
+    private ITransport _transport = null!;
+    private TopicName _firstTopic = null!;
+    private TopicName _secondTopic = null!;
+    private PublisherClient _firstPublisher = null!;
+    private PublisherClient _secondPublisher = null!;
+    private OutgoingMessage[] _messages = null!;
+    private PubsubMessage[] _nativeMessages = null!;
+
+    [GlobalSetup]
+    public async Task Setup()
+    {
+        var address = Environment.GetEnvironmentVariable("PUBSUB_EMULATOR_HOST")
+            ?? throw new InvalidOperationException("Set PUBSUB_EMULATOR_HOST to a Pub/Sub emulator.");
+        _channel = GrpcChannel.ForAddress("http://" + address);
+        _api = new PublisherServiceApiClientImpl(new Publisher.PublisherClient(_channel), null, null);
+        var subscriber = new SubscriberServiceApiClientImpl(new Subscriber.SubscriberClient(_channel), null, null);
+        var topicPrefix = "mixed-batch-" + Guid.NewGuid().ToString("N");
+        _firstTopic = TopicName.FromProjectTopic("relayer-test", topicPrefix + "-first");
+        _secondTopic = TopicName.FromProjectTopic("relayer-test", topicPrefix + "-second");
+        var services = new ServiceCollection();
+        services.AddRelayer(relayer => relayer.GooglePubSub("benchmark", transport =>
+        {
+            transport.Options.Configure(options =>
+            {
+                options.Publisher = _api;
+                options.Subscriber = subscriber;
+                // A delay also lets the benchmark run on an adapter that serializes destination runs.
+                options.PublisherSettings.BatchingSettings = new(2, null, TimeSpan.FromMilliseconds(10));
+                options.Topics.Add(_firstTopic);
+                options.Topics.Add(_secondTopic);
+            });
+        }));
+        _provider = services.BuildServiceProvider();
+        _transport = _provider.GetRequiredService<ITransport>();
+        await _transport.ApplyTopologyAsync(TopologyMode.Provision, default);
+        var firstDestination = _firstTopic.ToString();
+        var secondDestination = _secondTopic.ToString();
+        var publishers = (IGooglePubSubClients)_transport;
+        _firstPublisher = publishers.PublisherFor(firstDestination);
+        _secondPublisher = publishers.PublisherFor(secondDestination);
+        byte[] body = [1, 2, 3, 4];
+        _messages = [new(firstDestination, body), new(secondDestination, body), new(firstDestination, body), new(secondDestination, body)];
+        _nativeMessages = Array.ConvertAll(_messages,
+            static message => new PubsubMessage { Data = UnsafeByteOperations.UnsafeWrap(message.Body) });
+    }
+
+    [Benchmark(Baseline = true)]
+    public async ValueTask NativeMixedBatch()
+    {
+        var first = _firstPublisher.PublishAsync(_nativeMessages[0]);
+        var second = _secondPublisher.PublishAsync(_nativeMessages[1]);
+        var third = _firstPublisher.PublishAsync(_nativeMessages[2]);
+        var fourth = _secondPublisher.PublishAsync(_nativeMessages[3]);
+        await first;
+        await second;
+        await third;
+        await fourth;
+    }
+
+    [Benchmark]
+    public ValueTask RelayerMixedBatch()
+    {
+        return _transport.SendBatchAsync(_messages, default);
+    }
+
+    [GlobalCleanup]
+    public async Task Cleanup()
+    {
+        await _provider.DisposeAsync();
+        await _api.DeleteTopicAsync(_firstTopic);
+        await _api.DeleteTopicAsync(_secondTopic);
+        _channel.Dispose();
+    }
+}
+
 /// <summary>Already-delivered native messages: both paths deserialize JSON and resolve the same scoped handler.</summary>
 [MemoryDiagnoser]
 public class GooglePubSubReceiveBenchmarks

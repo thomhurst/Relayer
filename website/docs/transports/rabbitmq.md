@@ -253,6 +253,8 @@ The host still applies topology, validates and composes every consumer, and open
 Reference `Relayer.RabbitMQ.HealthChecks` alongside `Relayer.HealthChecks` and register before host startup:
 
 ```csharp
+using Relayer.HealthChecks;
+
 services.AddRelayerRabbitMqHealthProviders("orders"); // Exact transport name.
 services.AddRelayerHealthChecks();
 ```

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
@@ -258,19 +259,71 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
             Validate(messages.Span[i], cancellationToken);
         }
 
-        var start = 0;
+        var pending = ArrayPool<ValueTask>.Shared.Rent(messages.Length);
+        var count = 0;
+        Exception? admissionFailure = null;
 
-        while (start < messages.Length)
+        try
         {
-            var end = start + 1;
-
-            while (end < messages.Length && messages.Span[end].Destination == messages.Span[start].Destination)
+            try
             {
-                end++;
+                // A topic may need messages from later runs to reach its native batch threshold.
+                var start = 0;
+
+                while (start < messages.Length)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var destination = messages.Span[start].Destination;
+                    var end = start + 1;
+
+                    while (end < messages.Length && messages.Span[end].Destination == destination)
+                    {
+                        end++;
+                    }
+
+                    var operation = GetEndpoint(destination).Tracing
+                        .SendBatchAsync(messages.Slice(start, end - start), cancellationToken);
+
+                    if (operation.IsCompleted)
+                    {
+                        await operation.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        pending[count++] = operation;
+                    }
+
+                    start = end;
+                }
+            }
+            catch (Exception error)
+            {
+                admissionFailure = error;
             }
 
-            await SendBatchAsync(messages.Slice(start, end - start), cancellationToken).ConfigureAwait(false);
-            start = end;
+            // Await all started runs before the caller can reuse borrowed message storage.
+            Exception? failure = null;
+
+            for (var i = 0; i < count; i++)
+            {
+                try
+                {
+                    await pending[i].ConfigureAwait(false);
+                }
+                catch (Exception error)
+                {
+                    failure ??= error;
+                }
+            }
+
+            if ((failure ?? admissionFailure) is { } firstFailure)
+            {
+                ExceptionDispatchInfo.Capture(firstFailure).Throw();
+            }
+        }
+        finally
+        {
+            ArrayPool<ValueTask>.Shared.Return(pending, clearArray: true);
         }
     }
 
@@ -284,7 +337,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
         }
 
         var endpoint = GetEndpoint(messages.Span[0].Destination);
-        var pending = System.Buffers.ArrayPool<SendState>.Shared.Rent(messages.Length);
+        var pending = ArrayPool<SendState>.Shared.Rent(messages.Length);
         var count = 0;
         Exception? failure = null;
         var duration = endpoint.Tracing.StartNativeSend();
@@ -353,7 +406,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
                 endpoint.Return(pending[i]);
             }
 
-            System.Buffers.ArrayPool<SendState>.Shared.Return(pending, clearArray: true);
+            ArrayPool<SendState>.Shared.Return(pending, clearArray: true);
         }
     }
 

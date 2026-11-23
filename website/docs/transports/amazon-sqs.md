@@ -122,6 +122,8 @@ Overlapping stop calls keep their cancellation state until they finish, even if 
 Reference `Relayer.AmazonSqs.HealthChecks` and register before host startup:
 
 ```csharp
+using Relayer.HealthChecks;
+
 services.AddRelayerAmazonSqsHealthProviders("orders");
 services.AddRelayerHealthChecks();
 ```
