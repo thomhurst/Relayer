@@ -57,6 +57,46 @@ public class SnsTopicSizeTests
     }
 
     [Test]
+    [Arguments("262144", null, null)]
+    [Arguments("262144", "262144", null)]
+    [Arguments("262144", "524288", "524288")]
+    [Arguments("262144", "1048576", "1048576")]
+    [Arguments("524288", null, "262144")]
+    public async Task Topology_compares_and_reports_effective_topic_size(string declared, string? observed, string? differentSize)
+    {
+        using var client = new SnsTestClient();
+        var options = SnsSendTests.Options(client);
+        options.Topics[0].Attributes = new()
+        {
+            ["MaximumMessageSize"] = declared
+        };
+
+        if (observed is not null)
+        {
+            client.TopicMaximumSizes[SnsTestClient.Arn("orders")] = observed;
+        }
+
+        await using var transport = new SnsSendTransport("sns", client, false, options);
+
+        foreach (var mode in new[] { TopologyMode.Validate, TopologyMode.Provision })
+        {
+            var report = await transport.ApplyTopologyAsync(mode, default);
+
+            if (differentSize is null)
+            {
+                await Assert.That(report.Differences).IsEmpty();
+            }
+            else
+            {
+                await Assert.That(report.Differences.Single())
+                    .Contains($"MaximumMessageSize differs (expected '{declared}', observed '{differentSize}')");
+            }
+        }
+
+        await Assert.That(client.Creates).IsEmpty();
+    }
+
+    [Test]
     public async Task Batch_keeps_its_topic_limit_through_a_topology_refresh()
     {
         using var client = new SnsTestClient();

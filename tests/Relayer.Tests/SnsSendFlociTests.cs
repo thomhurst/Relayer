@@ -136,9 +136,21 @@ public class SnsSendFlociTests
 
             await transport.SendAsync(batch[0], token);
             await Assert.That((await sqs.ReceiveMessageAsync(new ReceiveMessageRequest { QueueUrl = fifoUrl, WaitTimeSeconds = 1 }, token)).Messages?.Count ?? 0).IsEqualTo(0);
-            options.Subscriptions[0].Attributes["RawMessageDelivery"] = "false";
+            var declared = options.Subscriptions[0];
+            var subscription = (await sns.ListSubscriptionsByTopicAsync(declared.TopicArn, token)).Subscriptions.Single();
+            await sns.SetSubscriptionAttributesAsync(subscription.SubscriptionArn, "FilterPolicy",
+                """{"category":["games","books"]}""", token);
+            declared.Attributes["FilterPolicy"] = """{"category":["books","games"]}""";
+            await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+            declared.Attributes["FilterPolicy"] = """{"category":["music","games"]}""";
+            var difference = (await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Single();
+            await Assert.That(difference).Contains($"'{declared.TopicArn}' to '{declared.Endpoint}'");
+            await Assert.That(difference).Contains("FilterPolicy differs");
+            declared.Attributes.Remove("FilterPolicy");
+
+            declared.Attributes["RawMessageDelivery"] = "false";
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Single()).Contains("RawMessageDelivery");
-            var subscription = (await sns.ListSubscriptionsByTopicAsync(options.Subscriptions[0].TopicArn, token)).Subscriptions.Single();
             await Assert.That((await sns.GetSubscriptionAttributesAsync(subscription.SubscriptionArn, token)).Attributes["RawMessageDelivery"]).IsEqualTo("true");
             options.Topics[0].Tags[0].Value = "changed";
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Any(difference => difference.Contains("tag 'application'"))).IsTrue();

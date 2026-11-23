@@ -267,6 +267,10 @@ options.Subscriptions.Add(new Amazon.SimpleNotificationService.Model.SubscribeRe
 
 Default `Validate` uses read APIs for topics, tags, subscriptions and optional queues, and reports missing resources or declared attribute drift. `Provision` creates only missing topics, queues and subscriptions with the native declarations. It never updates policies, subscription attributes, tags or existing resources; reconcile reported differences through infrastructure configuration. `None` skips topology checks; startup still resolves declared topics. Unconfirmed subscriptions are reported rather than treated as ready. There is no SNS receiver: consume from the subscribed queue with the SQS receiver above.
 
+SNS topology checks treat reordered alternatives in a subscription [filter policy](https://docs.aws.amazon.com/sns/latest/dg/and-or-logic.html) as equivalent. A subscription attribute difference identifies both the topic and queue ARNs. Relayer rejects conflicting attribute declarations for the same topic and queue before provisioning.
+
+If SNS omits a topic's `MaximumMessageSize`, topology checks compare the declaration with the effective default of 262144 bytes (256 KiB). A size difference reports the declared and effective broker values.
+
 On a running SNS transport, Relayer refreshes the cached topic ARNs and size limits after validation or provisioning completes. If either operation is canceled or throws, the previous values stay cached. Each single send or batch group for one destination captures its ARN and size limit together. Later sends use the refreshed cache. Amazon SNS enforces the topic's current settings when it receives each request.
 
 SNS send spans and native metrics use `messaging.system = aws.sns`, with `aws.sns.topic.arn` and native `aws.request_id` on sends. Duration covers each native request through acknowledgement or failure; partial batch failures remain failures, and native attempt counts include each submitted entry.
