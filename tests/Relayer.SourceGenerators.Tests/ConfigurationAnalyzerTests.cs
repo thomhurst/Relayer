@@ -420,6 +420,71 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("", "consumer.Handler<H, Order>();")]
+    [Arguments("<T>", "Relayer.HandlerRegistrationExtensions.Handler<H<int>, Order>(consumer);")]
+    [Arguments("", "System.Func<IConsumerBuilder> add = consumer.Handler<H, Order>; add();")]
+    public async Task Typed_registration_skips_an_unselected_private_message(string typeParameters, string registration)
+    {
+        await Verify(Imports + $$"""
+            [Message("order")] public record Order;
+            static class Setup
+            {
+                private sealed record Replay;
+                internal sealed class H{{typeParameters}} : IHandler<Order>, IHandler<Replay>
+                {
+                    public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken ct) => default;
+                    ValueTask IHandler<Replay>.HandleAsync(Replay message, MessageContext context, CancellationToken ct) => default;
+                }
+
+                public static void Add(IConsumerBuilder consumer)
+                {
+                    {{registration}}
+                }
+            }
+            """, "");
+    }
+
+    [Test]
+    [Arguments("consumer.Handler<H, Replay>();")]
+    [Arguments("consumer.Handler<H>();")]
+    [Arguments("System.Action<string> add = broker.Consume<H>; add(\"orders\");")]
+    [Arguments("broker.Send<Replay>(\"replay\");")]
+    public async Task A_message_used_elsewhere_still_requires_an_identity(string registration)
+    {
+        var diagnostics = await Analyze(Imports + """
+            [Message("order")] public record Order;
+            public record Replay;
+            internal sealed class H : IHandler<Order>, IHandler<Replay>
+            {
+                public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken ct) => default;
+                public ValueTask HandleAsync(Replay message, MessageContext context, CancellationToken ct) => default;
+            }
+            """ + $$"""
+
+            static class Setup
+            {
+                public static void Add(Broker broker, IConsumerBuilder consumer)
+                {
+                    consumer.Handler<H, Order>();
+                    {{registration}}
+                }
+            }
+            """);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        await Assert.That(diagnostics[0].GetMessage()).Contains("'Replay'");
+    }
+
+    [Test]
+    [Arguments("System.Action<string> add = broker.Consume<H>; add(\"orders\"); add(\"backorders\");")]
+    [Arguments("System.Action<ITransportConsumerBuilder, string> add = RelayerGeneratedHandlers.Consume<H>; add(broker, \"orders\");")]
+    public async Task Generated_consume_method_groups_register_the_handler(string registration)
+    {
+        await Verify(Imports + s_internalHandler + $$"""
+            static class Setup { public static void Add(Broker broker) { {{registration}} } }
+            """, "");
+    }
+
+    [Test]
     [Arguments("THandler", "TLocalHandler")]
     [Arguments("THandler, int", "TLocalHandler, TUnused")]
     public async Task Local_handler_helper_preserves_the_enclosing_message_type(string arguments, string parameters)

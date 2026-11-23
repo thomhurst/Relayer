@@ -54,6 +54,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var consumerInterface = compilation.GetTypeByMetadataName("Relayer.IConsumerBuilder");
             var consumerExtensions = compilation.GetTypeByMetadataName("Relayer.ConsumeBuilderExtensions");
             var registration = compilation.GetTypeByMetadataName("Relayer.RelayerGeneratedHandlers");
+            var typedRegistration = compilation.GetTypeByMetadataName("Relayer.HandlerRegistrationExtensions");
             var marker = compilation.GetTypeByMetadataName("Relayer.IHandlerMarker");
             var messageRegistry = compilation.GetTypeByMetadataName("Relayer.Pipeline.MessageTypeRegistry");
             var helperRegistration = compilation.GetTypeByMetadataName("Relayer.RegistersMessageIdentityAttribute");
@@ -67,8 +68,8 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 .Select(static t => t is INamedTypeSymbol { IsUnboundGenericType: true } generic ? generic.OriginalDefinition : t!)
                 .ToImmutableHashSet<ITypeSymbol>(identityComparer);
             var explicitIdentities = new ConcurrentDictionary<ITypeSymbol, byte>(identityComparer);
-            var handlers = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
-            var registered = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
+            var declaredHandlers = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
+            var registered = new ConcurrentDictionary<INamedTypeSymbol, HandlerRegistration>(SymbolEqualityComparer.Default);
             var messages = new ConcurrentDictionary<INamedTypeSymbol, AttributeData>(SymbolEqualityComparer.Default);
             var missing = new ConcurrentDictionary<ITypeSymbol, ConcurrentDictionary<Location, byte>>(SymbolEqualityComparer.Default);
 
@@ -100,6 +101,47 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 missing.GetOrAdd(message, static _ => new ConcurrentDictionary<Location, byte>()).TryAdd(location, 0);
             }
 
+            bool CheckRelayerRegistration(OperationAnalysisContext context, IMethodSymbol method)
+            {
+                if (method.Name == "Handler" && method.TypeArguments.Length == 2
+                    && SymbolEqualityComparer.Default.Equals(method.ContainingType, typedRegistration))
+                {
+                    RecordRegistration(registered, method.TypeArguments[0], HandlerRegistration.Selective);
+                    CheckMessage(method.TypeArguments[1], context.Operation.Syntax.GetLocation());
+                    return true;
+                }
+
+                if (method.Name is not ("Handler" or "Consume") || method.TypeArguments.Length != 1
+                    || !SymbolEqualityComparer.Default.Equals(method.ContainingType, registration))
+                {
+                    return false;
+                }
+
+                var handler = method.TypeArguments[0];
+                RecordRegistration(registered, handler, HandlerRegistration.Other);
+                var location = context.Operation.Syntax.GetLocation();
+                var canReferenceHandler = HandlerGenerator.CanReference(handler, compilation);
+
+                foreach (var contract in handler.AllInterfaces)
+                {
+                    if (!IsHandlerContract(contract, single, batch))
+                    {
+                        continue;
+                    }
+
+                    var message = contract.TypeArguments[0];
+                    CheckMessage(message, location);
+
+                    if (canReferenceHandler && !HandlerGenerator.CanReference(message, compilation))
+                    {
+                        context.ReportDiagnostic(Diagnostic.Create(s_inaccessibleMessage, location,
+                            handler.ToDisplayString(), message.ToDisplayString()));
+                    }
+                }
+
+                return true;
+            }
+
             start.RegisterSymbolAction(symbolContext =>
             {
                 var type = (INamedTypeSymbol)symbolContext.Symbol;
@@ -112,19 +154,10 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
 
                 foreach (var contract in type.AllInterfaces)
                 {
-                    if (!SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, single)
-                        && !SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, batch))
+                    if (IsHandlerContract(contract, single, batch))
                     {
-                        continue;
-                    }
-
-                    CheckMessage(contract.TypeArguments[0], type.Locations[0]);
-                    // A public handler can be registered by a referencing assembly, so only
-                    // handlers that this compilation alone can register are candidates.
-                    if (type.TypeKind == TypeKind.Class && !type.IsAbstract && CanReference(type, compilation)
-                        && !IsPublic(type))
-                    {
-                        handlers.TryAdd(type, 0);
+                        declaredHandlers.TryAdd(type, 0);
+                        break;
                     }
                 }
             }, SymbolKind.NamedType);
@@ -168,48 +201,48 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                     CheckConsumer(operationContext, invocation, consumer, consumerInterface, consumerExtensions);
                 }
 
-                if (method.TypeArguments.Length > 0)
+                if (method.TypeArguments.Length > 0 && !CheckRelayerRegistration(operationContext, method))
                 {
                     foreach (var message in AddHandlerArguments(method, marker, single, batch, registered, operationContext.Compilation))
                     {
                         CheckMessage(message, invocation.Syntax.GetLocation());
                     }
                 }
-
-                // Only our generated registration methods count. Unrelated APIs with the same
-                // names must not hide an unregistered handler.
-                if (!SymbolEqualityComparer.Default.Equals(method.ContainingType, registration))
-                {
-                    return;
-                }
-
-                if (method.Name is "Handler" or "Consume" && method.TypeArguments.Length == 1)
-                {
-                    var handler = method.TypeArguments[0];
-                    registered.TryAdd(handler, 0);
-                    var location = invocation.Syntax.GetLocation();
-                    var canReferenceHandler = HandlerGenerator.CanReference(handler, compilation);
-
-                    foreach (var contract in handler.AllInterfaces)
-                    {
-                        if (SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, single)
-                            || SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, batch))
-                        {
-                            var message = contract.TypeArguments[0];
-                            CheckMessage(message, location);
-
-                            if (canReferenceHandler && !HandlerGenerator.CanReference(message, compilation))
-                            {
-                                operationContext.ReportDiagnostic(Diagnostic.Create(s_inaccessibleMessage, location,
-                                    handler.ToDisplayString(), message.ToDisplayString()));
-                            }
-                        }
-                    }
-                }
             }, OperationKind.Invocation);
+
+            start.RegisterOperationAction(operationContext =>
+            {
+                var reference = (IMethodReferenceOperation)operationContext.Operation;
+                CheckRelayerRegistration(operationContext, reference.Method);
+            }, OperationKind.MethodReference);
 
             start.RegisterCompilationEndAction(end =>
             {
+                foreach (var handler in declaredHandlers.Keys)
+                {
+                    registered.TryGetValue(handler, out var registrationKind);
+
+                    // A typed registration checks its selected message at the use site. Keep the
+                    // declaration checks when registration is absent or its full scope is unknown.
+                    if (registrationKind != HandlerRegistration.Selective)
+                    {
+                        foreach (var contract in handler.AllInterfaces)
+                        {
+                            if (IsHandlerContract(contract, single, batch))
+                            {
+                                CheckMessage(contract.TypeArguments[0], handler.Locations[0]);
+                            }
+                        }
+                    }
+
+                    // A public handler can be registered by a referencing assembly.
+                    if (registrationKind == HandlerRegistration.None && handler.TypeKind == TypeKind.Class && !handler.IsAbstract
+                        && CanReference(handler, compilation) && !IsPublic(handler))
+                    {
+                        end.ReportDiagnostic(Diagnostic.Create(s_unregisteredHandler, handler.Locations[0], handler.ToDisplayString()));
+                    }
+                }
+
                 foreach (var pair in missing)
                 {
                     if (explicitIdentities.ContainsKey(pair.Key))
@@ -240,16 +273,31 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                             pair.Key.ToDisplayString(), group.Key.Name, group.Key.Version));
                     }
                 }
-
-                foreach (var handler in handlers.Keys)
-                {
-                    if (!registered.ContainsKey(handler))
-                    {
-                        end.ReportDiagnostic(Diagnostic.Create(s_unregisteredHandler, handler.Locations[0], handler.ToDisplayString()));
-                    }
-                }
             });
         });
+    }
+
+    [Flags]
+    private enum HandlerRegistration
+    {
+        None = 0,
+        Selective = 1,
+        Other = 2,
+    }
+
+    private static bool IsHandlerContract(ITypeSymbol contract, INamedTypeSymbol? single, INamedTypeSymbol? batch)
+    {
+        return SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, single)
+            || SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, batch);
+    }
+
+    private static void RecordRegistration(ConcurrentDictionary<INamedTypeSymbol, HandlerRegistration> registered,
+        ITypeSymbol handler, HandlerRegistration kind)
+    {
+        if (handler is INamedTypeSymbol named)
+        {
+            registered.AddOrUpdate(named.OriginalDefinition, kind, (_, previous) => previous | kind);
+        }
     }
 
     private sealed class MessageIdentityTypeComparer(Compilation compilation) : IEqualityComparer<ITypeSymbol>
@@ -297,11 +345,10 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
         }
     }
 
-    // A generic method whose type parameter must be a handler (Handler<THandler, TMessage>() or an
-    // application helper that forwards to it) registers its type argument. Returns the message
-    // types its IHandler<T>/IBatchHandler<T> constraints select, so their identities are checked.
+    // A generic helper whose type parameter must be a handler counts as a registration. Check
+    // the messages its constraints select, while keeping the declaration checks for its handler.
     private static List<ITypeSymbol> AddHandlerArguments(IMethodSymbol method, INamedTypeSymbol? marker, INamedTypeSymbol? single,
-        INamedTypeSymbol? batch, ConcurrentDictionary<ITypeSymbol, byte> registered, Compilation compilation)
+        INamedTypeSymbol? batch, ConcurrentDictionary<INamedTypeSymbol, HandlerRegistration> registered, Compilation compilation)
     {
         var messages = new List<ITypeSymbol>();
         var parameters = method.OriginalDefinition.TypeParameters;
@@ -310,8 +357,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
         {
             foreach (var constraint in parameters[i].ConstraintTypes)
             {
-                var contract = SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, single)
-                    || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, batch);
+                var contract = IsHandlerContract(constraint, single, batch);
 
                 var handlerConstraint = contract || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker)
                     || (marker is not null && constraint.AllInterfaces.Contains(marker, SymbolEqualityComparer.Default));
@@ -321,7 +367,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                     continue;
                 }
 
-                registered.TryAdd(method.TypeArguments[i], 0);
+                RecordRegistration(registered, method.TypeArguments[i], HandlerRegistration.Other);
 
                 if (contract && constraint is INamedTypeSymbol { TypeArguments.Length: 1 } named)
                 {
