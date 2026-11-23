@@ -19,6 +19,9 @@ concurrency:
 
 jobs:
   publish:
+    # Other releases, such as performance evidence, are not versions: skip them without a red run
+    # or an environment approval. verify_release.py remains the real tag check.
+    if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: release
@@ -101,6 +104,7 @@ jobs:
           VERSION: ${{ needs.publish.outputs.version }}
         run: |
           set -euo pipefail
+          shopt -s inherit_errexit
           endpoint="repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"
           body=$(gh api "$endpoint" --jq '.body // ""')
           # Only GitHub's generated line; compare links the maintainer wrote are left alone.

@@ -56,8 +56,16 @@ jobs:
           PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
         run: |
           set -euo pipefail
+          shopt -s inherit_errexit
           repo="repos/$GITHUB_REPOSITORY"
           suggested="v$VERSION"
+
+          # A re-run of an older run keeps its original commit; it must not move the draft back.
+          tip=$(git ls-remote --exit-code origin refs/heads/main | cut -f1)
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "main is at $tip, not $GITHUB_SHA; a newer run owns the draft. Leaving it unchanged." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
           # Whether a tag or a published release already has this name. Drafts have no tag yet, so
           # the draft itself never counts. A failed lookup fails the step.
