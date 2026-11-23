@@ -162,4 +162,20 @@ public class MessageLookupTests
         await Assert.That(await RelayerCommand.RunAsync(["message", "locate", "--unknown", "x"], output, error)).IsEqualTo(1);
         await Assert.That(error.ToString()).Contains("Unknown lookup option");
     }
+
+    [Test]
+    [Arguments("--prefix", "--sent-history")]
+    [Arguments("--schema", "--prefix")]
+    public async Task Lookup_command_reports_option_followed_by_another_flag(string option, string nextFlag)
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        // An invalid UUID keeps this test independent of database settings if option parsing regresses.
+        var result = await RelayerCommand.RunAsync(["message", "locate", "--id", "invalid", option, nextFlag], output, error);
+
+        await Assert.That(result).IsEqualTo(1);
+        await Assert.That(error.ToString().TrimEnd()).IsEqualTo($"Incomplete lookup option: {option}.");
+        await Assert.That(output.ToString()).IsEmpty();
+    }
 }

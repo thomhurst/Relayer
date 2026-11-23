@@ -36,9 +36,11 @@ internal static class RelayerCommand
                 continue;
             }
 
-            if (i + 1 == args.Length)
+            if (i + 1 == args.Length
+                || (args[i] is "--id" or "--schema" or "--prefix"
+                    && args[i + 1] is "--id" or "--schema" or "--prefix" or "--sent-history"))
             {
-                return Fail(error, "Incomplete lookup option.");
+                return Fail(error, $"Incomplete lookup option: {args[i]}.");
             }
 
             switch (args[i])
