@@ -12,6 +12,9 @@ def release_version(tag):
     identifier = rf"(?:{number}|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
     if not re.fullmatch(rf"v{number}\.{number}\.{number}(?:-{identifier}(?:\.{identifier})*)?", tag):
         raise ValueError("Release tag must be vMAJOR.MINOR.PATCH with optional SemVer prerelease identifiers.")
+    # MinVer stamps MAJOR.MINOR.PATCH.0 as the file version, whose parts cannot exceed 65534.
+    if any(int(part) > 65534 for part in tag[1:].split("-", 1)[0].split(".")):
+        raise ValueError("Release version parts must not exceed 65534.")
     return tag[1:]
 
 

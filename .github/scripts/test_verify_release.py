@@ -5,12 +5,14 @@ from verify_release import release_version, require_ci
 
 class ReleaseTests(unittest.TestCase):
     def test_stable_and_prerelease_versions(self):
-        for version in ("0.1.0", "1.2.3", "1.2.3-preview.1", "1.2.3-alpha-beta.0"):
+        for version in ("0.0.0", "0.1.0", "1.2.3", "1.2.3-preview.1", "1.2.3-alpha-beta.0",
+                        "1.2.3-beta.1", "1.2.3-beta01", "1.2.3-0", "65534.65534.65534"):
             self.assertEqual(release_version("v" + version), version)
 
     def test_rejects_invalid_or_ambiguous_versions(self):
-        for tag in ("1.2.3", "v1.2", "v01.2.3", "v1.2.3-preview.01", "v1.2.3+build",
-                    "v1.2.3-", "v1.2.3\n", "v1.2.3;echo bad"):
+        for tag in ("1.2.3", "v1.2", "v01.2.3", "v1.02.3", "v1.2.03", "v1.2.3-preview.01", "v1.2.3-01",
+                    "v1.2.3-beta..1", "v1.2.3-beta.", "v1.2.3+build", "v1.2.3-", "v1.2.3\n",
+                    "v1.2.3;echo bad", "v65535.0.0", "v0.65535.0", "v0.0.65535", "release-1", ""):
             with self.subTest(tag=tag), self.assertRaises(ValueError):
                 release_version(tag)
 

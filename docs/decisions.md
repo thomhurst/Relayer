@@ -351,8 +351,11 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
   use preview versions (minimum `0.1`). Full Git history is required for CI and release builds.
 - Packages include the repository README and icon, commit-bound SourceLink from the .NET SDK, and
   portable PDB symbol packages. Release builds are deterministic with normalized source paths.
-- Tag pushes publish through NuGet trusted publishing only for commits on `main` with successful
-  `CI Passed`. See the [release workflow guide](../website/docs/contributing/releases.md) for setup.
+- A draft GitHub release tracks `main`, suggesting one patch above the latest version tag; the
+  maintainer picks the version by editing its tag. Publishing it releases through NuGet trusted
+  publishing, stamped with the tag's version, only for commits on `main` with successful `CI Passed`.
+  Commit messages never choose a version. See the
+  [release workflow guide](../website/docs/contributing/releases.md) for setup.
 
 ## D22. The Kafka transport wraps Dekaf
 
