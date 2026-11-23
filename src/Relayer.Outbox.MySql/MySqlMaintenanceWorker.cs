@@ -138,7 +138,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
             await renew.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             return count;
         }
-        catch
+        catch when (!cleanup)
         {
             _hasAfter = _hasThrough = false;
             throw;

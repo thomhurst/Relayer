@@ -323,7 +323,10 @@ lease loss stops further admission; already committed batches remain deleted. Th
 rotates between turns so a busy table cannot repeatedly prevent other tables from making progress.
 The same batch limits apply when SQL Server sessions use `SET NOCOUNT ON`.
 
-A failed cleanup waits for `CleanupInterval` before retrying, while recovery sweeps continue.
+Idle cleanup follows `CleanupInterval` independently of `SweepInterval`. A retention cutoff before
+the earliest `datetime2` timestamp leaves that table intact, and cleanup continues with the other
+enabled tables. A failed cleanup waits for `CleanupInterval` before retrying. Recovery continues
+from its current scan position.
 A full final batch schedules another cleanup after the next recovery sweep, rather than waiting
 `CleanupInterval`. Recovery therefore gets a turn even under sustained expiry. Once all tables have
 returned a partial batch, cleanup returns to `CleanupInterval`. These limits bound work admitted per
