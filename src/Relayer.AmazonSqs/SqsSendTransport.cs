@@ -315,6 +315,8 @@ internal sealed partial class SqsSendTransport : ITransport, ITransportSendTraci
         {
             var size = state.Messages[0].Prepare(message, endpoint.Url!, endpoint.Fifo, endpoint.IdentityHeader, _time);
             ValidateSize(endpoint, size);
+            cancellationToken.ThrowIfCancellationRequested();
+
             endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
             var failed = true;
@@ -472,28 +474,31 @@ internal sealed partial class SqsSendTransport : ITransport, ITransportSendTraci
     {
         var activity = CurrentActivity();
         Enrich(activity, state.Batch.QueueUrl, null);
+
+        if (hasPortableTimers && !endpoint.Fifo)
+        {
+            // Earlier byte flushes and intervening preparation can age a prepared entry.
+            var entries = state.Batch.Entries;
+            var outgoing = messages.Span.Slice(offset, entries.Count);
+            var now = _time.GetUtcNow();
+
+            for (var i = 0; i < entries.Count; i++)
+            {
+                if (outgoing[i].DeliverAt is { } deliverAt)
+                {
+                    entries[i].DelaySeconds = SqsSendState.CalculateDelaySeconds(deliverAt - now, fifo: false);
+                }
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
         endpoint.Tracing?.RecordNativeSend(state.Batch.Entries.Count);
         var duration = endpoint.Tracing?.StartNativeSend() ?? default;
         var failed = true;
 
         try
         {
-            if (hasPortableTimers && !endpoint.Fifo)
-            {
-                // Earlier byte flushes and intervening preparation can age a prepared entry.
-                var entries = state.Batch.Entries;
-                var outgoing = messages.Span.Slice(offset, entries.Count);
-                var now = _time.GetUtcNow();
-
-                for (var i = 0; i < entries.Count; i++)
-                {
-                    if (outgoing[i].DeliverAt is { } deliverAt)
-                    {
-                        entries[i].DelaySeconds = SqsSendState.CalculateDelaySeconds(deliverAt - now, fifo: false);
-                    }
-                }
-            }
-
             var response = await _client.SendMessageBatchAsync(state.Batch, cancellationToken).ConfigureAwait(false);
             Enrich(activity, state.Batch.QueueUrl, response.ResponseMetadata?.RequestId);
 

@@ -160,6 +160,8 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         {
             var size = state.Messages[0].Prepare(message, arn, endpoint.Fifo, endpoint.IdentityHeader);
             ValidateSize(endpoint, size, topic.MaximumMessageBytes);
+            cancellationToken.ThrowIfCancellationRequested();
+
             endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
             var failed = true;
@@ -316,6 +318,8 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
     {
         var activity = CurrentActivity();
         Enrich(activity, state.Batch.TopicArn, null);
+        cancellationToken.ThrowIfCancellationRequested();
+
         endpoint.Tracing?.RecordNativeSend(state.Batch.PublishBatchRequestEntries.Count);
         var duration = endpoint.Tracing?.StartNativeSend() ?? default;
         var failed = true;

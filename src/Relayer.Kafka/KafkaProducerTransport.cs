@@ -134,6 +134,8 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         {
             operation.States[0].Prepare(message);
             var state = operation.States[0];
+            cancellationToken.ThrowIfCancellationRequested();
+
             tracing?.RecordNativeSend();
             var duration = tracing?.StartNativeSend() ?? default;
             var failed = true;
@@ -225,6 +227,8 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             else
             {
                 var tracing = Endpoint(messages.Span[0].Destination);
+                cancellationToken.ThrowIfCancellationRequested();
+
                 tracing?.RecordNativeSend(messages.Length);
                 var duration = tracing?.StartNativeSend() ?? default;
                 var failed = true;
@@ -261,6 +265,8 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             {
                 var message = messages.Span[count];
                 var state = operation.States[count];
+                token.ThrowIfCancellationRequested();
+
                 tracing?.RecordNativeSend();
                 operation.Pending[count] = ProduceAsync(message, state, token);
             }
