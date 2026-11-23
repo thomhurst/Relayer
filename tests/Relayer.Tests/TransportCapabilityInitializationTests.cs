@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -99,6 +100,49 @@ public class TransportCapabilityInitializationTests
         await host.StopAsync(timeout.Token);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Host_retry_after_topology_failure_validates_current_options(bool concurrent)
+    {
+        var transport = new InitializingTransport { TopologyReport = new(["orders is missing"]) };
+        transport.Release.TrySetResult();
+        var partitions = 1;
+        using var host = CreateHost(transport, concurrent, native =>
+        {
+            native.TopologyMode = TopologyMode.Validate;
+            native.Send<Sample>("orders");
+            native.Options.Configure(options => options.Partitions = partitions)
+                .Validate(options => options.Partitions > 0, "Partitions must be positive.");
+        });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var optionsCache = host.Services.GetRequiredService<IOptionsMonitorCache<Options>>();
+        await Assert.That(() => host.StartAsync(timeout.Token)).Throws<OptionsValidationException>()
+            .WithMessageContaining("orders is missing");
+        await Assert.That(transport.TopologyCalls).IsEqualTo(1);
+
+        transport.TopologyReport = new([]);
+        partitions = 0;
+        optionsCache.TryRemove(transport.Name);
+        await Assert.That(() => host.StartAsync(timeout.Token)).Throws<OptionsValidationException>()
+            .WithMessageContaining("Transport 'native': Partitions must be positive.");
+        await Assert.That(transport.TopologyCalls).IsEqualTo(1);
+
+        partitions = 2;
+        optionsCache.TryRemove(transport.Name);
+        await host.StartAsync(timeout.Token);
+
+        try
+        {
+            await Assert.That(transport.TopologyCalls).IsEqualTo(2);
+            await Assert.That(transport.Initializations).IsEqualTo(1);
+        }
+        finally
+        {
+            await host.StopAsync(timeout.Token);
+        }
+    }
+
     private static IHost CreateHost(InitializingTransport transport, bool concurrent,
         Action<TransportBuilder<Options, Options>>? configure = null)
     {
@@ -126,7 +170,13 @@ public class TransportCapabilityInitializationTests
         }).Build();
     }
 
-    public sealed class Options;
+    public sealed class Options
+    {
+        public int Partitions
+        {
+            get; set;
+        }
+    }
 
     [Message("capabilities.initialization.sample")]
     public sealed record Sample;
@@ -140,6 +190,8 @@ public class TransportCapabilityInitializationTests
         internal readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int Initializations;
         internal int Lookups;
+        internal int TopologyCalls;
+        internal TopologyReport TopologyReport = new([]);
         internal TopologyMode Mode;
         private bool _initialized;
 
@@ -192,7 +244,8 @@ public class TransportCapabilityInitializationTests
 
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token)
         {
-            return new(new TopologyReport([]));
+            TopologyCalls++;
+            return new(TopologyReport);
         }
 
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
