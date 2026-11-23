@@ -278,7 +278,7 @@ This keeps native collision resistance and depth checks, but unsupported object 
 
 ## Versioning and unknown types
 
-You can mark a legacy message with warning-level `[Obsolete]` and keep its `[Message]` identity for old deliveries. Relayer registers the message and generates JSON metadata without emitting the standard obsolete warnings (`CS0612` and `CS0618`). Direct references in your code still report those warnings.
+You can mark a legacy message with warning-level `[Obsolete]` and keep its `[Message]` identity for old deliveries. Relayer suppresses the obsolete warning in generated registration and JSON metadata. Choose a custom `DiagnosticId` that works in `#pragma warning disable`, such as `ORD001`. Direct references in your code still report the obsolete warning with its original ID.
 
 The version is part of the type name. Register `IUpcaster<TFrom, TTo>` instances explicitly to convert older payloads before the selected handler runs:
 
