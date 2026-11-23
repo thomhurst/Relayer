@@ -7,11 +7,14 @@ internal sealed class InMemoryTestClock : TimeProvider
 {
     private readonly List<TestTimer> _timers = [];
     private readonly Channel<bool> _registered = Channel.CreateUnbounded<bool>();
+    private Action? _beforeNextUtcRead;
+    private Action? _beforeNextTimerArm;
     private int _created;
     private long _ticks = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).Ticks;
 
     public override DateTimeOffset GetUtcNow()
     {
+        Interlocked.Exchange(ref _beforeNextUtcRead, null)?.Invoke();
         return new(Interlocked.Read(ref _ticks), TimeSpan.Zero);
     }
 
@@ -28,6 +31,16 @@ internal sealed class InMemoryTestClock : TimeProvider
     }
 
     internal int TimersCreated => Volatile.Read(ref _created);
+
+    internal void BeforeNextUtcRead(Action action)
+    {
+        Volatile.Write(ref _beforeNextUtcRead, action);
+    }
+
+    internal void BeforeNextTimerArm(Action action)
+    {
+        Volatile.Write(ref _beforeNextTimerArm, action);
+    }
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
@@ -84,6 +97,11 @@ internal sealed class InMemoryTestClock : TimeProvider
             if (period != Timeout.InfiniteTimeSpan)
             {
                 throw new NotSupportedException("Tests use one-shot timers only.");
+            }
+
+            if (dueTime != Timeout.InfiniteTimeSpan)
+            {
+                Interlocked.Exchange(ref clock._beforeNextTimerArm, null)?.Invoke();
             }
 
             Interlocked.Exchange(ref _due, dueTime == Timeout.InfiniteTimeSpan ? long.MaxValue : checked(clock.GetTimestamp() + dueTime.Ticks));

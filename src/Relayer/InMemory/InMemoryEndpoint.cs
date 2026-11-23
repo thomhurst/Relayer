@@ -383,6 +383,9 @@ internal sealed class InMemoryEndpoint
         {
             while (!stop.IsCancellationRequested)
             {
+                // Sample before draining so schedules accepted during the clock read can compete for dispatch.
+                var now = Clock.GetUtcNow();
+
                 // Admission credits bound all retained messages, including the heap and group queues.
                 while (scheduled.Reader.TryRead(out var incoming))
                 {
@@ -403,7 +406,7 @@ internal sealed class InMemoryEndpoint
 
                 if (due.TryPeek(out var message, out var at))
                 {
-                    var delay = at.Due - Clock.GetUtcNow();
+                    var delay = at.Due - now;
 
                     if (delay <= TimeSpan.Zero)
                     {
@@ -414,6 +417,12 @@ internal sealed class InMemoryEndpoint
 
                     timer.Change(delay > TimeSpan.FromDays(1) ? TimeSpan.FromDays(1) : delay, Timeout.InfiniteTimeSpan);
                     timerArmed = true;
+
+                    // The relative timer may start after the absolute deadline has already passed.
+                    if (Clock.GetUtcNow() >= at.Due)
+                    {
+                        continue;
+                    }
                 }
                 else if (timerArmed)
                 {
