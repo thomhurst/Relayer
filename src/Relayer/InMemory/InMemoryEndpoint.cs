@@ -510,49 +510,54 @@ internal sealed class InMemoryEndpoint
 
     internal void Dispose()
     {
+        // Reject waiting sends before releasing the admission credits of discarded messages.
+        _sendSlots.Writer.TryComplete();
+
         foreach (var scheduled in _scheduled)
         {
-            scheduled.Writer.TryComplete();
-
-            while (scheduled.Reader.TryRead(out _))
-            {
-            }
+            Drain(scheduled);
         }
 
         foreach (var due in _due)
         {
+            foreach (var item in due.UnorderedItems)
+            {
+                Release(item.Element);
+            }
+
             due.Clear();
         }
 
         foreach (var partition in _partitions)
         {
-            partition.Writer.TryComplete();
-
-            while (partition.Reader.TryRead(out _))
-            {
-            }
+            Drain(partition);
         }
 
         foreach (var group in _groups.Values)
         {
             foreach (var partition in group)
             {
-                partition.Writer.TryComplete();
-
-                while (partition.Reader.TryRead(out _))
-                {
-                }
+                Drain(partition);
             }
         }
 
         foreach (var receiver in _receivers)
         {
-            receiver.Clear();
+            receiver.Dispose();
         }
 
         foreach (var state in _fanOut)
         {
-            state.Pending = null;
+            if (state.Pending is { } pending)
+            {
+                // The channels and receivers own the references for groups already reached.
+                for (int group = state.NextGroup; group < _groups.Count; group++)
+                {
+                    Release(pending);
+                }
+
+                state.Pending = null;
+            }
         }
 
         while (_pool.TryRent() is not null)
@@ -560,7 +565,19 @@ internal sealed class InMemoryEndpoint
         }
 
         DeadLetters.Writer.TryComplete();
-        _sendSlots.Writer.TryComplete();
+    }
+
+    private void Drain(Channel<InMemoryMessage> channel)
+    {
+        channel.Writer.TryComplete();
+
+        while (channel.Reader.TryRead(out var message))
+        {
+            if (!message.IsWakeup)
+            {
+                Release(message);
+            }
+        }
     }
 
     private sealed class FanOut(InMemoryReadState reader)
@@ -820,10 +837,15 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
         }
     }
 
-    internal void Clear()
+    internal void Dispose()
     {
+        if (_pending is { } pending)
+        {
+            _pending = null;
+            endpoint.Release(pending);
+        }
+
         _redeliveryHeaders = default;
-        _pending = null;
         _loggedSettlementError = null;
     }
 }
