@@ -48,7 +48,7 @@ Kafka has no native scheduled send or dead-letter operation. Scheduled direct se
 
 ## Topic topology
 
-The default `TopologyMode.Validate` checks send, receive and dead-letter topics through Dekaf's native admin metadata without creating missing topics. Missing or inaccessible topics produce actionable startup differences. `TopologyMode.None` skips topology checks and provisioning. Configure admin authentication with `options.ConfigureAdmin`; producer and consumer authentication settings do not configure the admin client.
+The default `TopologyMode.Validate` checks send, receive and dead-letter topics through Dekaf's native admin metadata without creating missing topics. Correct invalid topic names in your routes or declarations. Kafka names use 1 to 249 ASCII letters, digits, periods, underscores or hyphens, and exclude `.` and `..`. For valid topics that are missing or inaccessible, check topic existence and the admin client's metadata access. `TopologyMode.None` skips topology checks and provisioning. Configure admin authentication with `options.ConfigureAdmin`; producer and consumer authentication settings do not configure the admin client.
 
 Use `TopologyMode.Provision` explicitly for development or bootstrap. Relayer creates missing topics through Dekaf's `CreateTopicsAsync`, including consumer dead-letter topics. Topics named only by routes or consumers use Dekaf's `NewTopic` defaults: one partition and replication factor one. Existing topics are never updated or deleted.
 

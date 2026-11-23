@@ -12,6 +12,28 @@ namespace Relayer.Tests;
 public class FailurePipelineTests
 {
     [Test]
+    [Arguments(nameof(FailureOptions.Jitter))]
+    [Arguments(nameof(FailureOptions.CopyTimeout))]
+    [Arguments(nameof(FailureOptions.RetryDelays))]
+    [Arguments(nameof(FailureOptions.RedeliveryDelays))]
+    public async Task Invalid_failure_options_identify_consumer_source_and_transport(string option)
+    {
+        using var provider = Provider(new Transport());
+        var options = option switch
+        {
+            nameof(FailureOptions.Jitter) => new FailureOptions { Jitter = -0.1 },
+            nameof(FailureOptions.CopyTimeout) => new FailureOptions { CopyTimeout = TimeSpan.Zero },
+            nameof(FailureOptions.RetryDelays) => new FailureOptions { RetryDelays = [TimeSpan.FromSeconds(-1)] },
+            nameof(FailureOptions.RedeliveryDelays) => new FailureOptions { RedeliveryDelays = [TimeSpan.FromSeconds(-1)] },
+            _ => throw new ArgumentOutOfRangeException(nameof(option))
+        };
+
+        await Assert.That(() => new FailurePipeline(provider, "test", "source", "consumer", options))
+            .Throws<ArgumentOutOfRangeException>()
+            .WithMessageContaining($"Consumer 'consumer' from 'source' on transport 'test': {option}");
+    }
+
+    [Test]
     public async Task Circuit_rejected_delivery_explicitly_requests_redelivery_without_settlement()
     {
         using var provider = Provider(new Transport());

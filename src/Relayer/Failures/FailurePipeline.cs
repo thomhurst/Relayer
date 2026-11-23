@@ -74,19 +74,19 @@ public sealed class FailurePipeline
 
         if (!double.IsFinite(_jitter) || _jitter < 0 || _jitter > 1)
         {
-            throw new ArgumentOutOfRangeException(nameof(options), "Jitter must be between zero and one.");
+            throw InvalidOption("Jitter must be between zero and one.");
         }
 
         if (_copyTimeout <= TimeSpan.Zero || _copyTimeout.TotalMilliseconds > uint.MaxValue - 1)
         {
-            throw new ArgumentOutOfRangeException(nameof(options), "CopyTimeout must be positive and fit a CancellationTokenSource timer.");
+            throw InvalidOption("CopyTimeout must be positive and fit a CancellationTokenSource timer.");
         }
 
         foreach (var delay in _retries)
         {
             if (delay < TimeSpan.Zero || delay.TotalMilliseconds > uint.MaxValue - 1)
             {
-                throw new ArgumentOutOfRangeException(nameof(options), "RetryDelays must be non-negative and fit a timer.");
+                throw InvalidOption("RetryDelays must be non-negative and fit a timer.");
             }
         }
 
@@ -94,7 +94,7 @@ public sealed class FailurePipeline
         {
             if (delay < TimeSpan.Zero || delay > DateTimeOffset.MaxValue - _time.GetUtcNow())
             {
-                throw new ArgumentOutOfRangeException(nameof(options), "RedeliveryDelays must be non-negative and fit a delivery timestamp.");
+                throw InvalidOption("RedeliveryDelays must be non-negative and fit a delivery timestamp.");
             }
         }
 
@@ -157,6 +157,11 @@ public sealed class FailurePipeline
         }
         // Compose direct-send routes before receives can resolve their scoped sender.
         services.GetRequiredService<SenderPool>().Enable();
+
+        ArgumentOutOfRangeException InvalidOption(string reason)
+        {
+            return new(nameof(options), $"Consumer '{consumer}' from '{source}' on transport '{transportName}': {reason}");
+        }
 
         InvalidOperationException Invalid(string capability, string remedy)
         {

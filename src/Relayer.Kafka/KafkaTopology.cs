@@ -8,6 +8,8 @@ namespace Relayer.Kafka;
 
 internal static class KafkaTopology
 {
+    private const int MaxTopicNameLength = 249;
+
     internal static async ValueTask<TopologyReport> ApplyAsync(string name, KafkaTransportOptions? options,
         IEnumerable<string> endpoints, TopologyMode mode, CancellationToken cancellationToken)
     {
@@ -170,7 +172,9 @@ internal static class KafkaTopology
 
             if (actual is null || actual.ErrorCode != ErrorCode.None)
             {
-                differences.Add($"Topic '{topic}' is missing or not visible to the admin client (metadata: {actual?.ErrorCode.ToString() ?? "missing"}). Create it externally or use Provision and grant topic metadata access (ConfigureAdmin).");
+                differences.Add(IsValidTopicName(topic)
+                    ? $"Topic '{topic}' is missing or not visible to the admin client (metadata: {actual?.ErrorCode.ToString() ?? "missing"}). Create it externally or use Provision and grant topic metadata access (ConfigureAdmin)."
+                    : $"Topic '{topic}' has an invalid name. Correct the declaration. Use 1 to {MaxTopicNameLength} ASCII letters, digits, periods, underscores or hyphens. Avoid the names '.' and '..'.");
                 continue;
             }
 
@@ -198,6 +202,12 @@ internal static class KafkaTopology
         }
 
         return new(differences);
+    }
+
+    private static bool IsValidTopicName(string name)
+    {
+        return name.Length is > 0 and <= MaxTopicNameLength && name is not ("." or "..")
+            && name.All(static character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-');
     }
 
     private static void ComparePartitions(NewTopic expected, TopicInfo actual, List<string> differences)

@@ -105,6 +105,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D92](#d92-dead-letter-snapshots-indicate-when-body-bytes-are-unavailable) | Dead-letter snapshots indicate when body bytes are unavailable | Accepted |
 | [D93](#d93-generated-json-registrations-apply-to-message-roots) | Generated JSON registrations apply to message roots | Accepted |
 | [D94](#d94-named-in-memory-clocks-preserve-binary-compatibility) | Named in-memory clocks preserve binary compatibility | Accepted |
+| [D95](#d95-kafka-validation-reports-invalid-topic-names-without-topic-creation) | Kafka validation reports invalid topic names without topic creation | Accepted |
 
 ---
 
@@ -2202,3 +2203,11 @@ Refines [D8](#d8-systemtextjson-source-generation-by-default).
 **Decision.** Use `UseTimeProvider` inside the named `Configure` callback and retain the shipped init accessor. Both use the same assignment. The hosted transport and failure pipeline read the resulting clock during startup and use their existing `TimeProvider.System` fallback.
 
 **Consequences.** Compiled callers can still use the initializer. Hosted tests can supply a clock per named transport through the existing Options callback. No scheduling, redelivery or retry logic changes.
+
+## D95. Kafka validation reports invalid topic names without topic creation
+
+**Context.** The all-topic metadata read cannot distinguish an invalid topic name from an absent valid name. In Dekaf 1.29.0, the standalone admin client's `DescribeTopicsAsync` by name allows Kafka to auto-create a missing topic. `CreateTopicsAsync` with `ValidateOnly` uses the CreateTopics API, which requires create permission. [Dekaf #4204](https://github.com/thomhurst/Dekaf/issues/4204) requests a read-only named describe option.
+
+**Decision.** Keep `TopologyMode.Validate` on native all-topic metadata and config reads. When a declared topic is missing or invisible, use [Kafka's topic-name rules](https://github.com/apache/kafka/blob/4.0.2/clients/src/main/java/org/apache/kafka/common/internals/Topic.java) to direct the operator to fix malformed names. This narrow D42 exception applies to startup diagnostics. Use native named metadata when the standalone admin client can guarantee a read-only request.
+
+**Consequences.** Validate needs topic metadata access and checks explicit settings with its existing config reads. It cannot create a missing topic. Provision uses native topic creation and Kafka's own validation. There is no per-message work.
