@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
 
@@ -210,11 +211,30 @@ internal sealed class BatchExecution
                     {
                         state.Errors[i] ??= error;
                     }
+
+                    failed = count;
                 }
 
                 if (failed != 0)
                 {
                     pendingFailure = true;
+
+                    // Abort before any item in this attempt can publish a failure copy or schedule redelivery.
+                    for (var i = 0; i < count; i++)
+                    {
+                        var context = state.Active[i];
+
+                        if (state.Errors[i] is { } error && context.ObservedDisposition.Kind == DispositionKind.SettledByHandler)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            context.CancellationToken.ThrowIfCancellationRequested();
+                            context.ClearServices();
+                            context.Settlement.Clear();
+                            owner.LogFailure(context, error);
+                            loggedFailure = error;
+                            ExceptionDispatchInfo.Throw(error);
+                        }
+                    }
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
@@ -245,9 +265,9 @@ internal sealed class BatchExecution
                     }
 
                     context.Settlement.Clear();
-                    pendingFailure = true;
                     owner.LogFailure(context, error);
                     loggedFailure = error;
+
                     var action = _classifier.Classify(error, context);
 
                     if (_failures is not null)

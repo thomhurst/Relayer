@@ -805,6 +805,88 @@ public class BatchPipelineTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Native_batch_settlement_is_final_when_the_handler_fails(bool executable, bool itemFailure)
+    {
+        await using var provider = Provider();
+        var control = provider.GetRequiredService<Control>();
+        var error = new InvalidOperationException("Handler failed after acknowledgement.");
+        control.Invoke = (batch, _) =>
+        {
+            var item = batch.Items[0];
+            item.Context.Features.GetRequired<NativeMessage<Incoming>>().Disposition = Disposition.SettledByHandler;
+
+            if (itemFailure)
+            {
+                return new(Fail(item, error));
+            }
+
+            throw error;
+        };
+        var failures = executable ? new FailurePipeline(provider, "test", "source", "consumer", new()
+        {
+            RetryDelays = new[] { TimeSpan.Zero }
+        }) : null;
+        var failureCalls = 0;
+        var pipeline = Pipeline(provider, (context, _, _) =>
+        {
+            failureCalls++;
+            context.Features.GetRequired<NativeMessage<Incoming>>().Disposition = Disposition.Redeliver(TimeSpan.Zero);
+            return default;
+        }, failures);
+        var output = new[] { Disposition.DeadLettered(new("sentinel")), Disposition.DeadLettered(new("sentinel")) };
+
+        var thrown = await Assert.That(async () => await pipeline.ProcessBatchAsync(Input(2), output)).Throws<InvalidOperationException>();
+
+        await Assert.That(thrown).IsSameReferenceAs(error);
+        await Assert.That(failureCalls).IsEqualTo(0);
+        await Assert.That(control.Scopes.Count).IsEqualTo(1);
+        await Assert.That(control.Disposed).IsEqualTo(1);
+        await Assert.That(output.All(item => item.DeadLetter.Reason == "sentinel")).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Later_native_settlement_failure_prevents_earlier_item_failure_handling(bool executable)
+    {
+        await using var provider = Provider();
+        var transport = provider.GetRequiredService<Transport>();
+        transport.NativeDeadLetter = false;
+        var settledError = new InvalidOperationException("Handler failed after acknowledgement.");
+        provider.GetRequiredService<Control>().Invoke = (batch, _) =>
+        {
+            batch.Items[0].Fail(new InvalidOperationException("Earlier item failed."));
+            var settled = batch.Items[1];
+            settled.Context.Features.GetRequired<NativeMessage<Incoming>>().Disposition = Disposition.SettledByHandler;
+            settled.Fail(settledError);
+            return new(BatchResult.Success);
+        };
+        var failures = executable ? new FailurePipeline(provider, "test", "source", "consumer", new()
+        {
+            DeadLetterEndpoint = "dead",
+            RetryDelays = []
+        }, static _ => new("source", new byte[] { 1 })) : null;
+        var failureCalls = 0;
+        var pipeline = Pipeline(provider, (_, _, _) =>
+        {
+            failureCalls++;
+            return default;
+        }, failures);
+        var output = new[] { Disposition.DeadLettered(new("sentinel")), Disposition.DeadLettered(new("sentinel")) };
+
+        var thrown = await Assert.That(async () => await pipeline.ProcessBatchAsync(Input(2), output)).Throws<InvalidOperationException>();
+
+        await Assert.That(thrown).IsSameReferenceAs(settledError);
+        await Assert.That(failureCalls).IsEqualTo(0);
+        await Assert.That(transport.Sends).IsEqualTo(0);
+        await Assert.That(output.All(item => item.DeadLetter.Reason == "sentinel")).IsTrue();
+    }
+
+    [Test]
     public async Task Batch_manual_retry_clears_request_before_exception_retry()
     {
         await using var provider = Provider();
