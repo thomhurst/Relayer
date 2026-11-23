@@ -62,8 +62,9 @@ See [RabbitMQ health](../transports/rabbitmq.md#health).
 
 For SQS, reference `Relayer.AmazonSqs.HealthChecks` and call
 `services.AddRelayerAmazonSqsHealthProviders("orders-broker")` before host startup.
-Native queue-attribute queries establish connectivity without probe messages. Receiver-owned snapshots
-report idle state or the oldest active worker. See [SQS health](../transports/amazon-sqs.md#health).
+Native queue-attribute queries establish connectivity without probe messages. A transport with no declared queues reports
+`Unhealthy`. Receiver-owned snapshots report idle state or the oldest active worker.
+See [SQS health](../transports/amazon-sqs.md#health).
 
 Without adapters, configured transports, consumers and stores report unhealthy.
 Applications can also supply their own providers, including an outbox store:

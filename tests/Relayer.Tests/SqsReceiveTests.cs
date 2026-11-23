@@ -6,6 +6,7 @@ using Amazon.SQS;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Relayer.AmazonSqs;
 using Relayer.HealthChecks;
@@ -255,6 +256,57 @@ public sealed class SqsReceiveTests
     }
 
     [Test]
+    public async Task Connectivity_is_unhealthy_when_a_named_sqs_transport_has_no_queues()
+    {
+        using var emptyClient = new ReceiveClient();
+        using var ordersClient = new ReceiveClient();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AmazonSqs("empty", sqs =>
+            {
+                sqs.TopologyMode = TopologyMode.None;
+                sqs.Options.Configure(options => options.SqsClient = emptyClient);
+            });
+            relayer.AmazonSqs("orders", sqs =>
+            {
+                sqs.TopologyMode = TopologyMode.None;
+                sqs.Options.Configure(options =>
+                {
+                    options.SqsClient = ordersClient;
+                    options.Queues.Add(new("orders"));
+                });
+            });
+        });
+        builder.Services.AddRelayerAmazonSqsHealthProviders("empty");
+        builder.Services.AddRelayerAmazonSqsHealthProviders("orders");
+        builder.Services.AddRelayerHealthChecks();
+        using var host = builder.Build();
+
+        await host.StartAsync();
+
+        try
+        {
+            var checks = host.Services.GetRequiredService<HealthCheckService>();
+            var report = await checks.CheckHealthAsync(check => check.Name == "relayer.transport");
+            var entry = report.Entries["relayer.transport"];
+            var empty = (HealthCheckResult)entry.Data["empty"];
+            var orders = (HealthCheckResult)entry.Data["orders"];
+
+            await Assert.That(report.Status).IsEqualTo(HealthStatus.Unhealthy);
+            await Assert.That(empty.Status).IsEqualTo(HealthStatus.Unhealthy);
+            await Assert.That(empty.Description!).Contains("Declare at least one queue");
+            await Assert.That(emptyClient.AttributeReads).IsEqualTo(0);
+            await Assert.That(orders.Status).IsEqualTo(HealthStatus.Healthy);
+            await Assert.That(ordersClient.AttributeReads).IsEqualTo(1);
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Test]
     public async Task Redrive_must_leave_room_for_final_failure_metadata_copy()
     {
         using var client = new ReceiveClient();
@@ -386,6 +438,7 @@ public sealed class SqsReceiveTests
         internal int Sends;
         internal Exception? PollFailure;
         internal int Polls;
+        internal int AttributeReads;
         internal Exception? ConnectivityFailure;
         internal string? Redrive;
         internal Exception? SendFailure;
@@ -438,6 +491,8 @@ public sealed class SqsReceiveTests
         public override Task<GetQueueAttributesResponse> GetQueueAttributesAsync(GetQueueAttributesRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            Interlocked.Increment(ref AttributeReads);
 
             if (ConnectivityFailure is { } failure)
             {

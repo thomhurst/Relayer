@@ -71,6 +71,12 @@ public static class AmazonSqsHealthServiceCollectionExtensions
     {
         public async ValueTask<HealthCheckResult> CheckAsync(CancellationToken cancellationToken)
         {
+            if (!transport.HasDeclaredQueues)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return HealthCheckResult.Unhealthy("Native SQS connectivity could not be verified. Declare at least one queue in AmazonSqsTransportOptions.Queues.");
+            }
+
             try
             {
                 await transport.CheckConnectivityAsync(cancellationToken).ConfigureAwait(false);
