@@ -26,7 +26,7 @@ public class HandlerGeneratorTests
             """);
         var driver = Run(compilation.WithOptions(compilation.Options.WithGeneralDiagnosticOption(ReportDiagnostic.Error)),
             out var output);
-        await Assert.That(Generated(driver)).Contains("TryAddScoped<global::LegacyHandler>");
+        await Assert.That(Generated(driver)).Contains("TryAddHandlerService<global::LegacyHandler>");
 
         var usage = CSharpSyntaxTree.ParseText("""
             using Relayer;
@@ -162,7 +162,7 @@ public class HandlerGeneratorTests
 
         if (equivalentRegistration.Length == 0)
         {
-            await Assert.That(generated).Contains("TryAddScoped<global::GenericHandler<string?>>");
+            await Assert.That(generated).Contains("TryAddHandlerService<global::GenericHandler<string?>>");
             await Assert.That(generated).Contains("BatchHandlerDescriptor<global::Envelope<string?>>");
         }
     }
@@ -221,7 +221,7 @@ public class HandlerGeneratorTests
 
         if (useAlias)
         {
-            await Assert.That(Generated(rerun)).Contains("TryAddScoped<@External::Example.Handler>");
+            await Assert.That(Generated(rerun)).Contains("TryAddHandlerService<@External::Example.Handler>");
         }
 
         await Assert.That(Generated(rerun)).IsEqualTo(Generated(driver));
@@ -383,7 +383,7 @@ public class HandlerGeneratorTests
             """.Replace("BUILDER", builderType).Replace("REGISTRATION", registration)).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
         var driver = Run(compilation, out _);
         var generated = Generated(driver);
-        await Assert.That(generated).Contains("TryAddScoped<global::Example.Handler>");
+        await Assert.That(generated).Contains("TryAddHandlerService<global::Example.Handler>");
         await Assert.That(generated).DoesNotContain("AddHandlersFromThisAssembly");
         await Assert.That(generated).DoesNotContain("IRelayerBuilder");
     }
@@ -423,7 +423,7 @@ public class HandlerGeneratorTests
             .AddReferences(MetadataReference.CreateFromImage(stream.ToArray(), new MetadataReferenceProperties(aliases: ["BrokerReference"])));
 
         var driver = Run(compilation, out _);
-        await Assert.That(Generated(driver)).Contains("TryAddScoped<@BrokerReference::Broker.OrderHandler>");
+        await Assert.That(Generated(driver)).Contains("TryAddHandlerService<@BrokerReference::Broker.OrderHandler>");
         await Assert.That(Generated(driver)).Contains("HandlerDescriptor<@BrokerReference::Broker.Order>");
     }
 
@@ -469,11 +469,11 @@ public class HandlerGeneratorTests
 
         var driver = Run(compilation, out _);
         var generated = Generated(driver);
-        await Assert.That(generated).Contains("TryAddScoped<@First::Billing.OrderHandler>");
-        await Assert.That(generated).Contains("TryAddScoped<@Second::Billing.OrderHandler>");
+        await Assert.That(generated).Contains("TryAddHandlerService<@First::Billing.OrderHandler>");
+        await Assert.That(generated).Contains("TryAddHandlerService<@Second::Billing.OrderHandler>");
         await Assert.That(generated).Contains("HandlerDescriptor<@First::Billing.Order>");
         await Assert.That(generated).Contains("HandlerDescriptor<@Second::Billing.Order>");
-        await Assert.That(generated).Contains("TryAddScoped<global::Billing.UniqueHandler>");
+        await Assert.That(generated).Contains("TryAddHandlerService<global::Billing.UniqueHandler>");
 
         static PortableExecutableReference CreateReference(string name, string source)
         {
@@ -557,8 +557,8 @@ public class HandlerGeneratorTests
             }
             """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
         var driver = Run(compilation, out var output);
-        await Assert.That(Generated(driver)).Contains("TryAddScoped<global::Other>");
-        await Assert.That(Generated(driver)).Contains("TryAddScoped<global::Example.Handler>");
+        await Assert.That(Generated(driver)).Contains("TryAddHandlerService<global::Other>");
+        await Assert.That(Generated(driver)).Contains("TryAddHandlerService<global::Example.Handler>");
         var diagnostics = await output.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
         await Assert.That(diagnostics.Where(static d => d.Id == "RLY003")).IsEmpty();
     }

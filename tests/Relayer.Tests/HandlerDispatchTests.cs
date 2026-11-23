@@ -153,6 +153,68 @@ public class HandlerDispatchTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Closed_generic_handler_preserves_open_generic_singleton(bool useGeneratedRegistration)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(typeof(GenericHandler<>));
+        services.AddRelayer(r => r.AddTransport<object, object>("events", transport =>
+        {
+            if (useGeneratedRegistration)
+            {
+                transport.Consume("words", c => c.Handler<GenericHandler<string>>());
+            }
+            else
+            {
+                transport.Consume("words", c => c.Handler<GenericHandler<string>, string>());
+            }
+        }));
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var first = provider.CreateScope();
+        using var second = provider.CreateScope();
+        var descriptor = provider.GetRequiredService<HandlerRegistry>().GetHandler<string, GenericHandler<string>>();
+        var handler = descriptor.Resolve(first.ServiceProvider);
+
+        await Assert.That(descriptor.Resolve(second.ServiceProvider)).IsSameReferenceAs(handler);
+        await Assert.That(first.ServiceProvider.GetServices<GenericHandler<string>>().Single()).IsSameReferenceAs((GenericHandler<string>)handler);
+    }
+
+    [Test]
+    public async Task Keyed_open_generic_registration_does_not_replace_unkeyed_scoped_default()
+    {
+        var services = new ServiceCollection();
+        services.AddKeyedSingleton(serviceType: typeof(GenericHandler<>), serviceKey: "custom");
+        services.AddRelayer(r => r.AddTransport<object, object>("events", b =>
+            b.Consume("words", c => c.Handler<GenericHandler<string>>())));
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var first = provider.CreateScope();
+        using var second = provider.CreateScope();
+        var descriptor = provider.GetRequiredService<HandlerRegistry>().GetHandler<string, GenericHandler<string>>();
+        var handler = descriptor.Resolve(first.ServiceProvider);
+
+        await Assert.That(descriptor.Resolve(first.ServiceProvider)).IsSameReferenceAs(handler);
+        await Assert.That(descriptor.Resolve(second.ServiceProvider)).IsNotSameReferenceAs(handler);
+        await Assert.That(first.ServiceProvider.GetRequiredKeyedService<GenericHandler<string>>("custom")).IsNotSameReferenceAs(handler);
+    }
+
+    [Test]
+    public async Task Closed_generic_registration_takes_precedence_over_open_generic_registration()
+    {
+        var services = new ServiceCollection();
+        var custom = new GenericHandler<string>();
+        services.AddSingleton(custom);
+        services.AddTransient(typeof(GenericHandler<>));
+        services.AddRelayer(r => r.AddTransport<object, object>("events", b =>
+            b.Consume("words", c => c.Handler<GenericHandler<string>, string>())));
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        var descriptor = provider.GetRequiredService<HandlerRegistry>().GetHandler<string, GenericHandler<string>>();
+
+        await Assert.That(descriptor.Resolve(provider)).IsSameReferenceAs(custom);
+        await Assert.That(provider.GetServices<GenericHandler<string>>().Count()).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Generic_helper_registers_typed_dispatch_for_a_handler_type_parameter()
     {
         var services = new ServiceCollection();

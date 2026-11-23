@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using Relayer.Pipeline;
 
 namespace Relayer;
@@ -10,7 +9,7 @@ public static class HandlerRegistrationExtensions
 {
     /// <summary>
     /// Selects <typeparamref name="THandler"/> for this consumer's <typeparamref name="TMessage"/> contract and registers
-    /// it as a scoped service. Use it in generic helpers, where the handler is a type parameter; elsewhere prefer the
+    /// it as a scoped service by default. Use it in generic helpers, where the handler is a type parameter; elsewhere prefer the
     /// generated <c>Handler&lt;THandler&gt;()</c>, which registers every contract the handler implements.
     /// </summary>
     /// <remarks>Dispatch is typed and reflection-free.</remarks>
@@ -36,7 +35,7 @@ public static class HandlerRegistrationExtensions
         }
 
         builder.AddHandler(new TypedHandlerDescriptor<THandler, TMessage>());
-        builder.Services.TryAddScoped<THandler>();
+        builder.Services.TryAddHandlerService<THandler>();
         return builder;
     }
 

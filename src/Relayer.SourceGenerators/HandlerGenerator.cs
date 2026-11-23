@@ -392,7 +392,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
                 }
             }
 
-            builder.Append("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<")
+            builder.Append("            global::Relayer.Pipeline.ConsumerInfrastructureExtensions.TryAddHandlerService<")
                 .Append(handler).AppendLine(">(builder.Services);");
             builder.AppendLine("            return builder;");
             builder.AppendLine("        }");
