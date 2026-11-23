@@ -1,0 +1,62 @@
+# Categories for GitHub's generated release notes, used by the draft release (release-draft.yml).
+# GitHub puts each PR in the first category it matches, in file order. The feature, fix,
+# performance, documentation and other categories exclude `dependencies`, so every non-breaking
+# dependency update lands in the last category; a breaking update still appears first.
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+      - ignore-release
+      - duplicate
+      - invalid
+      - wontfix
+  categories:
+    - title: Breaking Changes
+      labels:
+        - breaking
+        - breaking-change
+    - title: New Features
+      labels:
+        - enhancement
+        - feature
+      exclude:
+        labels:
+          - dependencies
+    - title: Bug Fixes
+      labels:
+        - bug
+        - fix
+      exclude:
+        labels:
+          - dependencies
+    - title: Performance
+      labels:
+        - performance
+      exclude:
+        labels:
+          - dependencies
+    - title: Documentation
+      labels:
+        - documentation
+        - docs
+      exclude:
+        labels:
+          - dependencies
+    - title: Other Changes
+      labels:
+        - '*'
+      exclude:
+        labels:
+          - dependencies
+          - breaking
+          - breaking-change
+          - enhancement
+          - feature
+          - bug
+          - fix
+          - performance
+          - documentation
+          - docs
+    - title: Dependencies
+      labels:
+        - dependencies

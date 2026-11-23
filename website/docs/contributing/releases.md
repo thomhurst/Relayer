@@ -102,11 +102,17 @@ Commit messages do not choose the version. The workflow recognizes its draft by 
 Keep the marker when editing the notes: without it, the next push creates a second draft. The workflow
 also leaves the draft alone when a tag or release already exists for the suggested version.
 
-To release, wait for `CI Passed` on the draft's commit, then edit the draft on GitHub: change its tag to
-choose another version (for example `v0.3.0` or `v1.0.0`, or a prerelease such as `v1.0.0-rc.1`, marked
-as a pre-release), adjust the notes, and publish it. A push to `main` before publishing rewrites the draft
-and discards those edits. Publishing creates the tag on the draft's commit and starts the
-`Release NuGet packages` workflow (`release.yml`).
+To release, wait for `CI Passed` on the draft's commit, then edit the draft on GitHub and publish it.
+Change the draft's tag to override the version (for example `v0.3.0` or `v1.0.0`, or a prerelease such as
+`v1.0.0-rc.1`, marked as a pre-release); later pushes keep a higher version you set. Set it back to the
+suggestion (or lower) to return to the default. A push to `main` before publishing retargets the draft at
+the new commit and regenerates its notes, discarding edits to the notes. Publishing creates the tag on the
+draft's commit and starts the `Release NuGet packages` workflow (`release.yml`).
+
+The notes are grouped by PR label, as configured in `.github/release.yml`: Breaking Changes, New Features,
+Bug Fixes, Performance, Documentation, Other Changes and Dependencies. Label a PR `breaking` for a breaking
+change, so it is listed first, or `ignore-for-release` to leave it out. Dependency PRs carry the
+`dependencies` label from Renovate and are grouped together automatically, last.
 
 That workflow rejects malformed tags, commits outside `main`, and commits without a successful
 `CI Passed` check from GitHub Actions. It packs with full Git history and the tag's version, verifies

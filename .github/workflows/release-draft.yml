@@ -4,15 +4,18 @@ name: Release Draft
 # (see .github/scripts/release_draft.py), its target is the newest commit, and its notes list the
 # changes since the latest release.
 #
-# To release, edit the draft on GitHub: change the tag to choose another version (for example
-# v0.3.0 for a minor or v1.0.0 for a major release, or v1.0.0-rc.1 for a prerelease), adjust the
-# notes, and publish it. Publishing creates the tag on the draft's commit and runs release.yml,
-# which packs that commit with the tag's version and pushes the packages to NuGet.
+# To release, edit the draft on GitHub and publish it. Change the draft's tag to override the
+# version (for example v0.3.0 for a minor or v1.0.0 for a major release, or v1.0.0-rc.1 for a
+# prerelease); later pushes keep a higher version you set. Set it back to the suggestion (or lower)
+# to return to the default. Publishing creates the tag on the draft's commit and runs release.yml,
+# which packs that commit with the tag's version and pushes the packages to NuGet. Notes are
+# categorised by .github/release.yml.
 #
-# Every push to main rewrites the draft, so edits to it are lost if main moves before it is
-# published. The draft this workflow owns carries DRAFT_MARKER, a hidden comment, at the end of its
-# notes: keep it when editing the notes, or the next push creates a second draft. Other drafts and
-# releases (such as performance evidence) are left alone.
+# Every push to main retargets the draft at the newest commit and regenerates its notes, so edits to
+# the notes are lost if main moves before it is published. The draft this workflow owns carries
+# DRAFT_MARKER, a hidden comment, at the end of its notes: keep it when editing the notes, or the
+# next push creates a second draft. Other drafts and releases (such as performance evidence) are
+# left alone.
 
 on:
   push:
@@ -54,20 +57,48 @@ jobs:
         run: |
           set -euo pipefail
           repo="repos/$GITHUB_REPOSITORY"
-          tag="v$VERSION"
+          suggested="v$VERSION"
+
+          # Whether a tag or a published release already has this name. Drafts have no tag yet, so
+          # the draft itself never counts. A failed lookup fails the step.
+          taken() {
+            if git rev-parse -q --verify "refs/tags/$1" > /dev/null; then
+              return 0
+            fi
+            if gh api "$repo/releases/tags/$1" --silent 2> "$RUNNER_TEMP/lookup.err"; then
+              return 0
+            fi
+            if grep -q 'HTTP 404' "$RUNNER_TEMP/lookup.err"; then
+              return 1
+            fi
+            cat "$RUNNER_TEMP/lookup.err" >&2
+            exit 1
+          }
+
+          draft_ids=$(gh api --paginate "$repo/releases?per_page=100" \
+            --jq '.[] | select(.draft and ((.body // "") | contains(env.DRAFT_MARKER))) | .id')
+          draft_id=${draft_ids%%$'\n'*}
+
+          # Keep a higher version the maintainer set on the draft, unless it is already taken.
+          tag="$suggested"
+          kept=""
+          if [ -n "$draft_id" ]; then
+            draft_tag=$(gh api "$repo/releases/$draft_id" --jq .tag_name)
+            kept=$(python3 .github/scripts/release_draft.py keep "$draft_tag" "$VERSION")
+            if [ -n "$kept" ] && taken "$kept"; then
+              echo "::warning::The draft's tag $kept is already taken; using the suggestion $suggested." | tee -a "$GITHUB_STEP_SUMMARY"
+              kept=""
+            fi
+            if [ -n "$kept" ]; then
+              tag="$kept"
+            fi
+          fi
 
           # The suggestion is above every version tag in main's history, but a tag or release for it
           # may exist elsewhere (for example a tag on another branch). Never retarget it.
-          if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
-            echo "::warning::Tag $tag already exists; leaving the draft unchanged." | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -z "$kept" ] && taken "$tag"; then
+            echo "::warning::A tag or release $tag already exists; leaving the draft unchanged." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
-          fi
-          if existing=$(gh api "$repo/releases/tags/$tag" --jq .html_url 2> "$RUNNER_TEMP/lookup.err"); then
-            echo "::warning::Release $tag already exists ($existing); leaving the draft unchanged." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
-          elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/lookup.err"; then
-            cat "$RUNNER_TEMP/lookup.err" >&2
-            exit 1
           fi
 
           notes_args=(-f tag_name="$tag" -f target_commitish="$GITHUB_SHA")
@@ -77,16 +108,12 @@ jobs:
           notes=$(gh api -X POST "$repo/releases/generate-notes" "${notes_args[@]}" --jq .body)
           body="$notes"$'\n\n'"$DRAFT_MARKER"
 
-          draft_ids=$(gh api --paginate "$repo/releases?per_page=100" \
-            --jq '.[] | select(.draft and ((.body // "") | contains(env.DRAFT_MARKER))) | .id')
-          draft_id=${draft_ids%%$'\n'*}
-
           if [ -z "$draft_id" ]; then
             url=$(gh api -X POST "$repo/releases" \
-              -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" -f name="$VERSION" \
+              -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" -f name="${tag#v}" \
               -F draft=true -f body="$body" --jq .html_url)
           else
-            # The maintainer may have published the draft since it was listed. Re-read it, and
+            # The maintainer may have published the draft since it was read. Re-read it, and
             # never send draft=true on an update, so a published release is not turned back into a
             # draft. A publish in the instant between this read and the update can still be
             # retargeted; that window is well under a second.
@@ -95,9 +122,17 @@ jobs:
               echo "Release $draft_id was published meanwhile; leaving it unchanged." | tee -a "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            url=$(gh api -X PATCH "$repo/releases/$draft_id" \
-              -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" -f name="$VERSION" \
-              -f body="$body" --jq .html_url)
+            update_args=(-f target_commitish="$GITHUB_SHA" -f body="$body")
+            if [ -z "$kept" ]; then
+              # A kept tag keeps its name too; only the target and notes are refreshed.
+              update_args+=(-f tag_name="$tag" -f name="${tag#v}")
+            fi
+            url=$(gh api -X PATCH "$repo/releases/$draft_id" "${update_args[@]}" --jq .html_url)
           fi
 
-          echo "Draft release $tag for $GITHUB_SHA (previous release ${PREVIOUS_TAG:-none}): $url" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -n "$kept" ]; then
+            source="kept the draft's tag; suggestion $suggested"
+          else
+            source="suggested"
+          fi
+          echo "Draft release $tag ($source) for $GITHUB_SHA, previous release ${PREVIOUS_TAG:-none}: $url" | tee -a "$GITHUB_STEP_SUMMARY"

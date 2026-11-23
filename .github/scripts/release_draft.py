@@ -7,6 +7,7 @@ not release versions (see verify_release.py) are ignored.
 
 import os
 import subprocess
+import sys
 
 from verify_release import release_version
 
@@ -49,7 +50,29 @@ def suggest(tags):
     return f"{major}.{minor}.{int(patch) + 1}", versions[latest]
 
 
+def is_greater(version, other):
+    """Whether one version accepted by verify_release has higher SemVer precedence than another."""
+    return precedence(version) > precedence(other)
+
+
+def kept_override(draft_tag, suggested):
+    """The draft's tag when the maintainer set it to a valid version above the suggestion, else None.
+
+    Later pushes then keep that version; setting the tag back to the suggestion or lower returns
+    the draft to the default.
+    """
+    try:
+        version = release_version(draft_tag)
+    except ValueError:
+        return None
+    return draft_tag if is_greater(version, suggested) else None
+
+
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "keep":
+        # Prints the draft's tag when it should be kept, or nothing.
+        print(kept_override(sys.argv[2], sys.argv[3]) or "")
+        return
     tags = subprocess.check_output(["git", "tag", "--merged", "HEAD", "--list", "v*"], text=True).split()
     version, previous = suggest(tags)
     print(f"Suggested version {version} (latest release tag: {previous or 'none'})")
