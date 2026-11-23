@@ -5,7 +5,7 @@ namespace Relayer;
 /// <summary>Settings captured when a send route is composed.</summary>
 public sealed class SendRouteOptions
 {
-    /// <summary>The maximum duration of a send, including middleware and outbox enlistment.</summary>
+    /// <summary>The maximum duration of a send, including destination selection, middleware, and outbox enlistment.</summary>
     public TimeSpan Timeout
     {
         get; init;
