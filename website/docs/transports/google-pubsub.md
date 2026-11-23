@@ -60,6 +60,8 @@ Use fully qualified native endpoint names. Each `Subscriptions` entry needs a `N
 
 If the host stop deadline expires during a drain, Relayer stops waiting and the native subscriber cancels handler processing and acknowledgement. Handler cleanup can continue after the stop call returns. Host disposal waits for that subscriber shutdown to finish, so keep caller-owned API clients and channels alive through host disposal.
 
+Relayer builds every receive pipeline before registering the named transport's workers. If pipeline configuration throws, retrying startup on the same host rebuilds the pipelines from the declarations. If native startup fails after composition, the retry reuses the fully configured workers.
+
 If a subscriber cannot start, Relayer shuts down the subscriptions already started by that attempt before returning the startup error. If shutdown also fails, the exception includes both errors.
 
 For concurrency greater than one, declare the same limit in both places:

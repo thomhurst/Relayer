@@ -59,6 +59,7 @@ public sealed class NatsConsumerOptions
 internal sealed class NatsHostedService(IServiceProvider provider, string name) : BackgroundService, IHostedLifecycleService
 {
     private NatsNativeTransport? _transport;
+    private bool _consumersRegistered;
 
     public Task StartingAsync(CancellationToken cancellationToken)
     {
@@ -67,9 +68,25 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        _transport = provider.GetRequiredKeyedService<NatsNativeTransport>(name);
+        _transport ??= provider.GetRequiredKeyedService<NatsNativeTransport>(name);
+
+        if (!_consumersRegistered)
+        {
+            RegisterConsumers(_transport);
+            _consumersRegistered = true;
+        }
+
+        await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void RegisterConsumers(NatsNativeTransport transport)
+    {
         var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
         var registry = provider.GetRequiredService<HandlerRegistry>();
+
+        // Publish the worker set only after every receive pipeline has been built.
+        var workers = new List<NatsConsumerWorker>(definition.Consumers.Count);
 
         foreach (var declaration in definition.Consumers)
         {
@@ -86,7 +103,7 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
                     Destination = consumer.Options.Stream,
                     Subscription = consumer.Source
                 }));
-            var worker = _transport.AddConsumer(consumer.Options.Stream, consumer.Source, consumer.Options.Settings,
+            var worker = transport.CreateConsumer(consumer.Options.Stream, consumer.Source, consumer.Options.Settings,
                 consumer.Concurrency, consumer.Failure.DeadLetterEndpoint);
             pipeline.Settle(worker.SettleContextAsync);
             pipeline.ConfigureConsumer(provider, consumer);
@@ -101,10 +118,10 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
 
             var receive = new ReceivePipeline<NatsDelivery, NatsBinding>(pipeline.Build(consumer.Concurrency), new("ce-"), consumer.Concurrency);
             worker.Receive = receive.ProcessAsync;
+            workers.Add(worker);
         }
 
-        await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
-        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+        transport.Consumers.AddRange(workers);
     }
 
     public Task StartedAsync(CancellationToken cancellationToken)
