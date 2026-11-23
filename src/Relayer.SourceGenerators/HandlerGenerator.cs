@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -19,14 +20,14 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         // [Embedded] keeps the internal generated types out of friend assemblies (InternalsVisibleTo),
         // which would otherwise see two Handler<THandler>() extensions.
         context.RegisterPostInitializationOutput(static output => output.AddEmbeddedAttributeDefinition());
-        var referenceAliases = context.CompilationProvider.Select(static (compilation, ct) =>
-            BindReferenceAliases(compilation, ct));
+        // Alias scopes hold symbols. Keep them out of the incremental model and let their compilation expire.
+        var aliasesByCompilation = new ConditionalWeakTable<Compilation, ReferenceAliases?>();
         var handlers = context.SyntaxProvider.CreateSyntaxProvider(
                 static (node, _) => node is TypeDeclarationSyntax { BaseList: not null }
                     or GenericNameSyntax { Identifier.ValueText: "Handler" or "Consume", TypeArgumentList.Arguments.Count: 1 },
-                static (ctx, _) => ctx)
-            .Combine(referenceAliases)
-            .SelectMany(static (pair, ct) => Discover(pair.Left, pair.Right, ct))
+                (ctx, ct) => Discover(ctx, aliasesByCompilation, ct))
+            .WithComparer(new DispatchModelSequenceComparer())
+            .SelectMany(static (models, _) => models)
             .WithTrackingName("HandlerModels")
             .Collect();
 
@@ -34,7 +35,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
     }
 
     private static ImmutableArray<DispatchModel> Discover(GeneratorSyntaxContext context,
-        ReferenceAliases? referenceAliases, CancellationToken ct)
+        ConditionalWeakTable<Compilation, ReferenceAliases?> aliasesByCompilation, CancellationToken ct)
     {
         INamedTypeSymbol? type;
 
@@ -71,6 +72,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         }
 
         var result = ImmutableArray.CreateBuilder<DispatchModel>();
+        ReferenceAliases? referenceAliases = null;
 
         foreach (var contract in type.AllInterfaces)
         {
@@ -79,6 +81,11 @@ public sealed class HandlerGenerator : IIncrementalGenerator
             if (!isBatch && !SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, single))
             {
                 continue;
+            }
+
+            if (result.Count == 0 && !aliasesByCompilation.TryGetValue(compilation, out referenceAliases))
+            {
+                referenceAliases = aliasesByCompilation.GetValue(compilation, key => BindReferenceAliases(key, ct));
             }
 
             var aliases = new SortedSet<string>(StringComparer.Ordinal);
@@ -169,8 +176,16 @@ public sealed class HandlerGenerator : IIncrementalGenerator
                 && part.Symbol is INamespaceSymbol { IsGlobalNamespace: true, ContainingAssembly: { } assembly }
                 && referenceAliases.ByAssembly.Contains(assembly.Identity))
             {
-                var outerType = parts.Skip(i + 1).FirstOrDefault(static part => part.Symbol is INamedTypeSymbol).Symbol;
-                var alias = outerType is INamedTypeSymbol named ? SelectAlias(named, referenceAliases) : null;
+                string? alias = null;
+
+                for (var j = i + 1; j < parts.Length; j++)
+                {
+                    if (parts[j].Symbol is INamedTypeSymbol named)
+                    {
+                        alias = SelectAlias(named, referenceAliases);
+                        break;
+                    }
+                }
 
                 if (alias is not null)
                 {
@@ -390,6 +405,19 @@ public sealed class HandlerGenerator : IIncrementalGenerator
     private sealed record ReferenceAliases(Compilation Compilation, ILookup<AssemblyIdentity, ReferenceAlias> ByAssembly);
 
     private sealed record ReferenceAlias(string Name, INamespaceSymbol Scope);
+
+    private sealed class DispatchModelSequenceComparer : IEqualityComparer<ImmutableArray<DispatchModel>>
+    {
+        public bool Equals(ImmutableArray<DispatchModel> x, ImmutableArray<DispatchModel> y)
+        {
+            return x.SequenceEqual(y);
+        }
+
+        public int GetHashCode(ImmutableArray<DispatchModel> models)
+        {
+            return models.Aggregate(0, static (hash, model) => unchecked(hash * 31 + model.GetHashCode()));
+        }
+    }
 
     private sealed record TypeName(string Source, string Identity);
 

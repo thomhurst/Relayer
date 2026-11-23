@@ -193,18 +193,40 @@ public class HandlerGeneratorTests
     }
 
     [Test]
-    public async Task Unrelated_edit_caches_models_and_source_output()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Unrelated_edit_caches_models_and_source_output(bool useAlias)
     {
         var unrelated = CSharpSyntaxTree.ParseText("class Unrelated { int Value => 1; }");
         var compilation = CreateCompilation(Handlers).AddSyntaxTrees(unrelated);
+
+        if (useAlias)
+        {
+            var reference = CreateCompilation(Handlers).WithAssemblyName("External").ToMetadataReference(["External"]);
+            var registration = CSharpSyntaxTree.ParseText("""
+                extern alias External;
+                using Relayer;
+                class Registration
+                {
+                    public static void Add(IConsumerBuilder builder) => builder.Handler<External::Example.Handler>();
+                }
+                """);
+            compilation = compilation.AddReferences(reference).AddSyntaxTrees(registration);
+        }
+
         var driver = Run(compilation, out _);
         var updated = compilation.ReplaceSyntaxTree(unrelated, CSharpSyntaxTree.ParseText("class Unrelated { int Value => 2; }"));
         var rerun = Run(updated, out _, driver);
         var result = rerun.GetRunResult().Results.Single();
 
+        if (useAlias)
+        {
+            await Assert.That(Generated(rerun)).Contains("TryAddScoped<@External::Example.Handler>");
+        }
+
         await Assert.That(Generated(rerun)).IsEqualTo(Generated(driver));
         await Assert.That(result.TrackedSteps["HandlerModels"].SelectMany(s => s.Outputs)
-            .All(o => o.Reason is IncrementalStepRunReason.Cached or IncrementalStepRunReason.Unchanged)).IsTrue();
+            .All(o => o.Reason == IncrementalStepRunReason.Cached)).IsTrue();
         await Assert.That(result.TrackedOutputSteps.SelectMany(s => s.Value).SelectMany(s => s.Outputs)
             .All(o => o.Reason == IncrementalStepRunReason.Cached)).IsTrue();
     }
