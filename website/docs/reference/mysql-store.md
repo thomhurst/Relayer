@@ -109,6 +109,10 @@ transaction at a time per scope; overlapping operations are unsupported. Configu
 also bind through `AddRelayerMySqlOutbox(configurationSection)`, with immutable Options
 snapshots per scope, reload for new scopes, and startup validation.
 
+Successive configuration registrations combine their sections. A later section overrides keys it supplies.
+Reloading a contributing section refreshes the options monitor. A new scope reads the combined settings and resolves
+fresh validator dependencies, while an existing scope keeps its resolved snapshot.
+
 Enqueue takes an owned copy of the original UUIDv7 identity, stable message type, payload,
 headers, ordering key and tenant metadata. At commit, Relayer uses MySqlConnector's native
 `MySqlBatch` inside the same transaction. Native batching controls packet construction and

@@ -116,6 +116,10 @@ and positive `Lanes` without runtime reflection, validates at host startup, and 
 Keep the lane count identical across writers. Lanes use the UTF-8 ordering key's FNV-1a hash modulo
 `Lanes`, matching PostgreSQL. One scoped `IOutboxEnlistment` integration is allowed.
 
+Successive configuration registrations combine their sections. A later section overrides keys it supplies.
+Reloading a contributing section refreshes the options monitor. A new scope reads the combined settings and resolves
+fresh validator dependencies, while an existing scope keeps its resolved snapshot.
+
 Use one unit at a time per scope. Ambient `TransactionScope`, nested transactions and savepoints are
 rejected. Do not complete native transactions, close native connections or issue SQL transaction-control
 commands behind the wrapper. Native per-send callbacks cannot be persisted. No custom retry, pool,

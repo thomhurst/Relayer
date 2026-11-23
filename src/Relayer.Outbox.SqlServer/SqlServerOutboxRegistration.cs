@@ -1,9 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Relayer.Outbox;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer;
@@ -56,17 +56,18 @@ public static class SqlServerOutboxRegistration
         ArgumentNullException.ThrowIfNull(configuration);
         services.AddRelayerSqlServerOutbox();
         AddFactory(services, new(), configuration);
-        services.AddSingleton<IOptionsChangeTokenSource<SqlServerOutboxOptions>>(
-            new ConfigurationChangeTokenSource<SqlServerOutboxOptions>(configuration));
         return services;
     }
 
     private static void AddFactory(IServiceCollection services, SqlServerOutboxOptions options, IConfiguration? configuration)
     {
-        services.AddSingleton<IOptionsFactory<SqlServerOutboxOptions>>(provider => new Factory(options, configuration,
-                    provider.GetServices<IConfigureOptions<SqlServerOutboxOptions>>(),
-                    provider.GetServices<IPostConfigureOptions<SqlServerOutboxOptions>>(),
-                    provider.GetServices<IValidateOptions<SqlServerOutboxOptions>>()));
+        var sections = OutboxOptionsConfiguration<SqlServerOutboxOptions>.Register(services, configuration);
+        services.Add(new ServiceDescriptor(typeof(IOptionsFactory<SqlServerOutboxOptions>),
+            provider => new Factory(options, sections,
+                provider.GetServices<IConfigureOptions<SqlServerOutboxOptions>>(),
+                provider.GetServices<IPostConfigureOptions<SqlServerOutboxOptions>>(),
+                provider.GetServices<IValidateOptions<SqlServerOutboxOptions>>()),
+            configuration is null ? ServiceLifetime.Singleton : ServiceLifetime.Transient));
     }
 
     private sealed class Validator : IValidateOptions<SqlServerOutboxOptions>
@@ -86,7 +87,7 @@ public static class SqlServerOutboxRegistration
     }
 
     // Configuration's source generator skips init-only setters. Bind scalars without runtime reflection.
-    private sealed class Factory(SqlServerOutboxOptions defaults, IConfiguration? configuration,
+    private sealed class Factory(SqlServerOutboxOptions defaults, OutboxOptionsConfiguration<SqlServerOutboxOptions>? configuration,
         IEnumerable<IConfigureOptions<SqlServerOutboxOptions>> setups,
         IEnumerable<IPostConfigureOptions<SqlServerOutboxOptions>> postConfigures,
         IEnumerable<IValidateOptions<SqlServerOutboxOptions>> validations)
@@ -99,26 +100,9 @@ public static class SqlServerOutboxRegistration
                 DispatchStoreName = configuration?[nameof(defaults.DispatchStoreName)] ?? defaults.DispatchStoreName,
                 Schema = configuration?[nameof(defaults.Schema)] ?? defaults.Schema,
                 TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
-                MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
-                Lanes = Read(nameof(defaults.Lanes), defaults.Lanes)
+                MaxDispatchAttempts = configuration?.Read<int>(nameof(defaults.MaxDispatchAttempts)) ?? defaults.MaxDispatchAttempts,
+                Lanes = configuration?.Read<int>(nameof(defaults.Lanes)) ?? defaults.Lanes
             };
-        }
-
-        private T Read<T>(string key, T fallback) where T : IParsable<T>
-        {
-            var value = configuration?[key];
-
-            if (value is null)
-            {
-                return fallback;
-            }
-
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
-            {
-                return parsed;
-            }
-
-            throw new OptionsValidationException(Options.DefaultName, typeof(SqlServerOutboxOptions), [$"{key}: '{value}' is invalid."]);
         }
     }
 }
