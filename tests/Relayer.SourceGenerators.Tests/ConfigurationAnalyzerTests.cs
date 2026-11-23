@@ -909,6 +909,111 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("private record Order;", "Order", false)]
+    [Arguments("protected record Order;", "Order", false)]
+    [Arguments("private class Container { public record Order; }", "Container.Order", false)]
+    [Arguments("file record Order;", "Order", false)]
+    [Arguments("file class Container { public record Order; }", "Container.Order", false)]
+    [Arguments("internal record Order;", "Order", true)]
+    [Arguments("protected internal record Order;", "Order", true)]
+    public async Task Code_fix_requires_assembly_accessible_message(string declaration, string messageType, bool offersFix)
+    {
+        // File-local declarations must be top-level. Put the other declarations inside Setup.
+        var fileLocal = declaration.StartsWith("file ", StringComparison.Ordinal);
+        var source = Imports + $$"""
+            {{(fileLocal ? declaration : "")}}
+            public class Setup
+            {
+                {{(fileLocal ? "" : declaration)}}
+                public static void Add(Broker broker) => broker.Send<{{messageType}}>("orders");
+            }
+            """;
+        using var workspace = new AdhocWorkspace();
+        var document = AddCodeFixDocument(workspace, source);
+        var diagnostics = await AnalyzeDocumentAsync(document);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        var actions = new List<CodeAction>();
+        await new MessageAttributeCodeFixProvider().RegisterCodeFixesAsync(new CodeFixContext(document, diagnostics[0],
+            (action, _) => actions.Add(action), CancellationToken.None));
+        await Assert.That(actions.Count).IsEqualTo(offersFix ? 1 : 0);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Code_fix_follows_the_declaration_condition(bool conditionalDeclaration)
+    {
+        var source = conditionalDeclaration
+            ? "#if DEBUG\n[System.Serializable]\npublic record Order;\n#endif\n"
+            : "#if DEBUG\n[System.Serializable]\n#endif\npublic record Order;\n";
+        var route = "static class Setup { public static void Add(Broker broker) => broker.Send<Order>(\"orders\"); }\n";
+        source += conditionalDeclaration ? $"#if DEBUG\n{route}#endif\n" : route;
+        using var workspace = new AdhocWorkspace();
+        var document = AddCodeFixDocument(workspace, Imports + source, new CSharpParseOptions(preprocessorSymbols: ["DEBUG"]));
+        var diagnostics = await AnalyzeDocumentAsync(document);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        var actions = new List<CodeAction>();
+        await new MessageAttributeCodeFixProvider().RegisterCodeFixesAsync(new CodeFixContext(document, diagnostics.Single(),
+            (action, _) => actions.Add(action), CancellationToken.None));
+        var operation = (await actions.Single().GetOperationsAsync(CancellationToken.None)).OfType<ApplyChangesOperation>().Single();
+        var fixedDocument = operation.ChangedSolution.GetDocument(document.Id)!;
+
+        await Assert.That(Ids(await AnalyzeDocumentAsync(fixedDocument))).IsEqualTo("");
+        var releaseDocument = fixedDocument.Project.WithParseOptions(new CSharpParseOptions()).GetDocument(document.Id)!;
+        await Assert.That(Ids(await AnalyzeDocumentAsync(releaseDocument))).IsEqualTo("");
+    }
+
+    [Test]
+    public async Task Fix_all_preserves_both_nested_and_enclosing_edits()
+    {
+        const string Source = """
+            public record Header {
+                public record Line;
+                private string Name{get;init;} = "";
+            }
+
+            static class Setup
+            {
+                public static void Add(Broker broker)
+                {
+                    broker.Send<Header>("headers");
+                    broker.Send<Header.Line>("lines");
+                }
+            }
+            """;
+        var fixedSource = await FixAllMessageAttributesAsync(Source);
+        await Assert.That(fixedSource).Contains("""
+            [global::Relayer.MessageAttribute("Header")]
+            public record Header {
+                [global::Relayer.MessageAttribute("Header.Line")]
+                public record Line;
+                private string Name{get;init;} = "";
+            }
+            """);
+    }
+
+    [Test]
+    public async Task Fix_all_suggests_distinct_identities_for_equal_short_names()
+    {
+        const string Source = """
+            namespace Store { public record Order; }
+            namespace Shipping { public record Order; }
+
+            static class Setup
+            {
+                public static void Add(Broker broker)
+                {
+                    broker.Send<Store.Order>("store-orders");
+                    broker.Send<Shipping.Order>("shipping-orders");
+                }
+            }
+            """;
+        var fixedSource = await FixAllMessageAttributesAsync(Source);
+        await Assert.That(fixedSource).Contains("[global::Relayer.MessageAttribute(\"Store.Order\")]");
+        await Assert.That(fixedSource).Contains("[global::Relayer.MessageAttribute(\"Shipping.Order\")]");
+    }
+
+    [Test]
     public async Task Code_fix_targets_message_file_instead_of_route_file()
     {
         using var workspace = new AdhocWorkspace();
@@ -929,6 +1034,58 @@ public class ConfigurationAnalyzerTests
             .Contains("[global::Relayer.MessageAttribute(\"Order\")]");
         await Assert.That((await operation.ChangedSolution.GetDocument(setup.Id)!.GetTextAsync()).ToString())
             .IsEqualTo((await setup.GetTextAsync()).ToString());
+    }
+
+    private static Document AddCodeFixDocument(AdhocWorkspace workspace, string source, CSharpParseOptions? parseOptions = null)
+    {
+        return workspace.AddProject("Fix", LanguageNames.CSharp).WithMetadataReferences(References())
+            .WithCompilationOptions(new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary))
+            .WithParseOptions(parseOptions ?? new CSharpParseOptions()).AddDocument("Message.cs", source);
+    }
+
+    private static async Task<ImmutableArray<Diagnostic>> AnalyzeDocumentAsync(Document document)
+    {
+        var compilation = (await document.Project.GetCompilationAsync())!;
+        await Assert.That(string.Join("\n", compilation.GetDiagnostics().Where(static d => d.Severity == DiagnosticSeverity.Error)))
+            .IsEqualTo("");
+        return await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+    }
+
+    private static async Task<string> FixAllMessageAttributesAsync(string source)
+    {
+        using var workspace = new AdhocWorkspace();
+        var document = AddCodeFixDocument(workspace, Imports + source);
+        var diagnostics = await AnalyzeDocumentAsync(document);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001,RLY001");
+        var provider = new MessageAttributeCodeFixProvider();
+        var actions = new List<CodeAction>();
+        await provider.RegisterCodeFixesAsync(new CodeFixContext(document, diagnostics[0],
+            (action, _) => actions.Add(action), CancellationToken.None));
+        var context = new FixAllContext(document, provider, FixAllScope.Document, actions.Single().EquivalenceKey!,
+            provider.FixableDiagnosticIds, new DocumentDiagnostics(diagnostics), CancellationToken.None);
+        var fix = await provider.GetFixAllProvider().GetFixAsync(context);
+        var operation = (await fix!.GetOperationsAsync(CancellationToken.None)).OfType<ApplyChangesOperation>().Single();
+        var fixedDocument = operation.ChangedSolution.GetDocument(document.Id)!;
+        await Assert.That(Ids(await AnalyzeDocumentAsync(fixedDocument))).IsEqualTo("");
+        return (await fixedDocument.GetTextAsync()).ToString();
+    }
+
+    private sealed class DocumentDiagnostics(ImmutableArray<Diagnostic> diagnostics) : FixAllContext.DiagnosticProvider
+    {
+        public override Task<IEnumerable<Diagnostic>> GetDocumentDiagnosticsAsync(Document document, CancellationToken cancellationToken)
+        {
+            return Task.FromResult<IEnumerable<Diagnostic>>(diagnostics);
+        }
+
+        public override Task<IEnumerable<Diagnostic>> GetProjectDiagnosticsAsync(Project project, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(Enumerable.Empty<Diagnostic>());
+        }
+
+        public override Task<IEnumerable<Diagnostic>> GetAllDiagnosticsAsync(Project project, CancellationToken cancellationToken)
+        {
+            return Task.FromResult<IEnumerable<Diagnostic>>(diagnostics);
+        }
     }
 
     private static async Task Verify(string source, string expected)
