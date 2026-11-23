@@ -5,6 +5,7 @@ creates its tag, and versions released before drafts were introduced are plain t
 not release versions (see verify_release.py) are ignored.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -68,7 +69,19 @@ def kept_override(draft_tag, suggested):
     return draft_tag if is_greater(version, suggested) else None
 
 
+def owned_drafts(pages, marker):
+    """The ids of the drafts carrying the marker, newest first, from `gh api --paginate --slurp`."""
+    drafts = [release for page in pages for release in page
+              if release.get("draft") and marker in (release.get("body") or "")]
+    drafts.sort(key=lambda release: (release.get("created_at") or "", release["id"]), reverse=True)
+    return [release["id"] for release in drafts]
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "drafts":
+        # Reads the release pages on stdin and prints the owned drafts' ids, newest first.
+        print(" ".join(str(draft) for draft in owned_drafts(json.load(sys.stdin), sys.argv[2])))
+        return
     if len(sys.argv) == 4 and sys.argv[1] == "keep":
         # Prints the draft's tag when it should be kept, or nothing.
         print(kept_override(sys.argv[2], sys.argv[3]) or "")

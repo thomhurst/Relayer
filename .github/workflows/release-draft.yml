@@ -83,9 +83,12 @@ jobs:
             exit 1
           }
 
-          draft_ids=$(gh api --paginate "$repo/releases?per_page=100" \
-            --jq '.[] | select(.draft and ((.body // "") | contains(env.DRAFT_MARKER))) | .id')
-          draft_id=${draft_ids%%$'\n'*}
+          releases=$(gh api --paginate --slurp "$repo/releases?per_page=100")
+          draft_ids=$(printf '%s' "$releases" | python3 .github/scripts/release_draft.py drafts "$DRAFT_MARKER")
+          draft_id=${draft_ids%% *}
+          if [ "$draft_id" != "$draft_ids" ]; then
+            echo "::warning::Several drafts carry the release-draft marker ($draft_ids); updating the newest, $draft_id. Delete the others." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
 
           # Keep a higher version the maintainer set on the draft, unless it is already taken.
           tag="$suggested"

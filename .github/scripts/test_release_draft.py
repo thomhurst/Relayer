@@ -1,6 +1,6 @@
 import unittest
 
-from release_draft import is_greater, kept_override, suggest
+from release_draft import is_greater, kept_override, owned_drafts, suggest
 
 
 class SuggestVersionTests(unittest.TestCase):
@@ -49,6 +49,25 @@ class OverrideTests(unittest.TestCase):
                     "v65535.0.0", "performance-evidence-555", ""):
             with self.subTest(tag=tag):
                 self.assertIsNone(kept_override(tag, "1.10.1"))
+
+
+class OwnedDraftTests(unittest.TestCase):
+    MARKER = "<!-- relayer-release-draft -->"
+
+    def release(self, id, created, draft=True, body="notes\n\n<!-- relayer-release-draft -->"):
+        return {"id": id, "created_at": created, "draft": draft, "body": body}
+
+    def test_only_marked_drafts_newest_first(self):
+        pages = [[self.release(1, "2026-11-01T00:00:00Z"),
+                  self.release(2, "2026-11-20T00:00:00Z", body="Performance evidence"),
+                  self.release(3, "2026-11-22T00:00:00Z", draft=False),
+                  self.release(4, "2026-11-10T00:00:00Z", body=None)],
+                 [self.release(5, "2026-11-15T00:00:00Z")]]
+        self.assertEqual(owned_drafts(pages, self.MARKER), [5, 1])
+
+    def test_none(self):
+        self.assertEqual(owned_drafts([[]], self.MARKER), [])
+        self.assertEqual(owned_drafts([], self.MARKER), [])
 
 
 if __name__ == "__main__":
