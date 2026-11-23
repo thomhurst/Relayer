@@ -37,7 +37,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         var target = MySqlDirectDispatcher.ValidateDataSource(dataSource);
         _options = options;
         var settings = options.Validate();
-        _store = new(dataSource, settings);
+        _store = new(dataSource, settings, options.ClaimDuration);
         _dispatcher = new(dataSource, settings, new()
         {
             BatchSize = options.BatchSize,
@@ -107,14 +107,21 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         var name = cleanup ? "cleanup" : "sweeper";
         var resource = cleanup ? _cleanupResource : _sweeperResource;
-        await using var admission = new MySqlCommand("SELECT GET_LOCK(@resource,0)", connection);
+        await using var admission = new MySqlCommand("SELECT IF(@@SESSION.autocommit = 1, GET_LOCK(@resource,0), -1)", connection);
         admission.Parameters.AddWithValue("resource", resource);
 
         try
         {
             // Cancellation may arrive after MySQL acquired admission but before its reply arrives.
             // Always release, even when acquisition's outcome is unknown.
-            if (Convert.ToInt32(await admission.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1)
+            var admitted = Convert.ToInt32(await admission.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
+
+            if (admitted == -1)
+            {
+                throw new InvalidOperationException(MySqlDispatchMutations.AutocommitRequired);
+            }
+
+            if (admitted != 1)
             {
                 return cleanup ? -1 : 0;
             }
@@ -228,7 +235,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
                 _buffers[valid++].Copy(row, 1);
             }
 
-            _batch.Take(_buffers, valid, DateTimeOffset.UtcNow, recovered: true);
+            _batch.Take(_buffers, valid, default, recovered: true);
             await _dispatcher.DispatchRecoveredAsync(_batch, cancellationToken).ConfigureAwait(false);
             return count;
         }

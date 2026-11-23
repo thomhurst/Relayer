@@ -40,6 +40,11 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
 
     /// <summary>Uses an application-owned data source and snapshots the table prefix.</summary>
     public MySqlOutboxStore(MySqlDataSource dataSource, MySqlOutboxOptions? options = null)
+        : this(dataSource, options, recoveryClaimDuration: null)
+    {
+    }
+
+    internal MySqlOutboxStore(MySqlDataSource dataSource, MySqlOutboxOptions? options, TimeSpan? recoveryClaimDuration)
     {
         ArgumentNullException.ThrowIfNull(dataSource);
         ValidateDataSource(dataSource);
@@ -48,14 +53,31 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         var dead = MySqlOutboxSchema.DeadTable(options ?? new());
         _failureLimit = (options ?? new()).MaxDispatchAttempts;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_failureLimit);
-        const string Eligible = "status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
-        const string Fenced = "id = @id AND claim_token = @token AND claim_expires_at > @now";
-        _read = new($"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {Eligible} AND lane <=> CAST(@lane AS SIGNED) AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit");
-        _claim = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {Eligible}");
-        _renew = new($"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {Fenced}");
-        _complete = new($"DELETE FROM {table} WHERE {Fenced}");
-        _retry = new(MySqlRetrySql.Update(table, Fenced, "@now") + MySqlDispatchMutations.AutocommitFence);
-        _fail = new($"UPDATE {table} SET attempts=attempts+1,last_error=@error WHERE {Fenced}");
+
+        static string EligibleAt(string now)
+        {
+            return $"status = 'pending' AND (deliver_at IS NULL OR deliver_at <= {now}) AND (claim_expires_at IS NULL OR claim_expires_at <= {now})";
+        }
+
+        static string FencedAt(string now)
+        {
+            return $"id = @id AND claim_token = @token AND claim_expires_at > {now}";
+        }
+
+        var eligible = EligibleAt("@now");
+        var fenced = FencedAt("@now");
+        // Maintenance uses the same clock for selection, claims and fenced mutations.
+        var dispatchNow = recoveryClaimDuration.HasValue ? "UTC_TIMESTAMP(6)" : "@now";
+        var dispatchExpires = recoveryClaimDuration is { } duration
+            ? FormattableString.Invariant($"TIMESTAMPADD(MICROSECOND, {(long)Math.Ceiling(duration.TotalMicroseconds)}, {dispatchNow})")
+            : "@expires";
+        var dispatchFence = FencedAt(dispatchNow);
+        _read = new($"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {eligible} AND lane <=> CAST(@lane AS SIGNED) AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit");
+        _claim = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible}");
+        _renew = new($"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced}");
+        _complete = new($"DELETE FROM {table} WHERE {fenced}");
+        _retry = new(MySqlRetrySql.Update(table, dispatchFence, dispatchNow) + MySqlDispatchMutations.AutocommitFence);
+        _fail = new($"UPDATE {table} SET attempts=attempts+1,last_error=@error WHERE {dispatchFence}");
         _failureSql = $"""
             REPLACE INTO {dead} (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,failed_at)
             SELECT id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,UTC_TIMESTAMP(6)
@@ -64,10 +86,10 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
             UPDATE {table} SET status=IF(attempts>=@limit,'parked',status),claim_token=NULL,claim_expires_at=NULL WHERE id=@id;
             SELECT NOT EXISTS (SELECT 1 FROM {table} WHERE id=@id);
             """;
-        _claimBatch = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND lane IS NULL AND {Eligible}");
-        _completeBatch = new($"DELETE FROM {table} WHERE {Fenced}");
-        _count = new($"SELECT COUNT(*) FROM {table} WHERE {Eligible}");
-        _boundedCount = new($"SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE {Eligible} LIMIT @countLimit) AS pending");
+        _claimBatch = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = {dispatchExpires} WHERE id = @id AND lane IS NULL AND {EligibleAt(dispatchNow)}");
+        _completeBatch = new($"DELETE FROM {table} WHERE {dispatchFence}");
+        _count = new($"SELECT COUNT(*) FROM {table} WHERE {eligible}");
+        _boundedCount = new($"SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE {eligible} LIMIT @countLimit) AS pending");
         _boundedCount.Command.Parameters.Add("countLimit", MySqlDbType.Int64);
     }
 

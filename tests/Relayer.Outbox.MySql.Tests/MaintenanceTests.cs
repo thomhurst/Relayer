@@ -14,6 +14,85 @@ namespace Relayer.Outbox.MySql.Tests;
 public sealed class MaintenanceTests
 {
     [Test]
+    public async Task Recovery_uses_mysql_time_for_due_rows_and_claims()
+    {
+        await using var data = new MySqlFixture();
+        await data.StartAsync();
+        var databaseNow = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds());
+        await using var source = WithDatabaseTime(data, databaseNow);
+
+        var createdAt = databaseNow.AddMinutes(-10);
+        await data.Insert(Guid.CreateVersion7(), createdAt, deliverAt: databaseNow.AddSeconds(-1));
+        await data.Execute("UPDATE relayer_outbox SET headers=X'FF'");
+        await data.Insert(Guid.CreateVersion7(), createdAt, deliverAt: databaseNow.AddSeconds(-1));
+        await data.Insert(Guid.CreateVersion7(), createdAt, expires: databaseNow.AddSeconds(-1));
+        await data.Insert(Guid.CreateVersion7(), createdAt, deliverAt: databaseNow.AddSeconds(1));
+        await data.Insert(Guid.CreateVersion7(), createdAt, expires: databaseNow.AddSeconds(1));
+        var transport = new Transport();
+        using var worker = new MySqlMaintenanceWorker(source, new()
+        {
+            RecoveryDelay = TimeSpan.Zero
+        }, [transport], NullLogger<MySqlMaintenanceWorker>.Instance);
+
+        await Assert.That(await worker.SweepAsync()).IsEqualTo(3);
+        await Assert.That(transport.Sent).IsEqualTo(2);
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox")).IsEqualTo(2L);
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_dead WHERE headers=X'FF'")).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Recovery_sets_durable_retry_deadline_from_mysql_time()
+    {
+        await using var data = new MySqlFixture();
+        await data.StartAsync();
+        var databaseNow = DateTimeOffset.FromUnixTimeSeconds(DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds());
+        await using var source = WithDatabaseTime(data, databaseNow);
+        await data.Insert(Guid.CreateVersion7(), databaseNow.AddMinutes(-10));
+        var transport = new Transport(static _ => ValueTask.FromException(new InvalidOperationException("offline")));
+        using var worker = new MySqlMaintenanceWorker(source, new()
+        {
+            RecoveryDelay = TimeSpan.Zero
+        }, [transport], NullLogger<MySqlMaintenanceWorker>.Instance);
+
+        await Assert.That(await worker.SweepAsync()).IsEqualTo(1);
+        await using var connection = await data.Source.OpenConnectionAsync();
+        await using var command = new MySqlCommand(
+            "SELECT COUNT(*) FROM relayer_outbox WHERE attempts=1 AND deliver_at=@retry AND claim_token IS NULL AND claim_expires_at IS NULL",
+            connection);
+        command.Parameters.AddWithValue("retry", databaseNow.AddSeconds(1));
+        await Assert.That(Convert.ToInt64(await command.ExecuteScalarAsync())).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Retention_rejects_non_autocommit_sessions_before_deleting()
+    {
+        await using var data = new MySqlFixture();
+        await data.StartAsync();
+        await data.Execute("INSERT INTO relayer_inbox (consumer, message_id, processed_at) VALUES ('orders', UUID_TO_BIN(UUID()), UTC_TIMESTAMP(6)-INTERVAL 8 DAY)");
+        var autocommit = false;
+        await using var source = new MySqlDataSourceBuilder(data.Source.ConnectionString + ";Pooling=false")
+            .UseConnectionOpenedCallback(async (context, token) =>
+            {
+                await using var command = new MySqlCommand("SET SESSION autocommit = @enabled", context.Connection);
+                command.Parameters.AddWithValue("enabled", autocommit);
+                await command.ExecuteNonQueryAsync(token);
+            }).Build();
+        using var worker = new MySqlMaintenanceWorker(source, new()
+        {
+            DeadRetention = null
+        }, [], NullLogger<MySqlMaintenanceWorker>.Instance);
+
+        var error = await Assert.That(async () => await worker.CleanupAsync()).Throws<InvalidOperationException>();
+        await Assert.That(error!.Message).Contains("autocommit=1");
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_inbox")).IsEqualTo(1L);
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_leases")).IsEqualTo(0L);
+
+        autocommit = true;
+        await Assert.That(await worker.CleanupAsync()).IsEqualTo(1);
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_inbox")).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task Overlapping_sweeps_dispatch_with_two_shared_pool_connections()
     {
         await using var data = new MySqlFixture();
@@ -400,6 +479,17 @@ public sealed class MaintenanceTests
         await Assert.That(poisonCount).IsEqualTo(1L);
         await Assert.That(transport.Sent).IsEqualTo(1);
         await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox WHERE status='parked' AND headers=X'FF' AND last_error LIKE '%Malformed%'")).IsEqualTo(1L);
+    }
+
+    private static MySqlDataSource WithDatabaseTime(MySqlFixture data, DateTimeOffset databaseNow)
+    {
+        return new MySqlDataSourceBuilder(data.Source.ConnectionString)
+            .UseConnectionOpenedCallback(async (context, token) =>
+            {
+                await using var command = new MySqlCommand("SET SESSION timestamp = @timestamp", context.Connection);
+                command.Parameters.AddWithValue("timestamp", databaseNow.ToUnixTimeSeconds());
+                await command.ExecuteNonQueryAsync(token);
+            }).Build();
     }
 
     private static MySqlMaintenanceWorker Worker(MySqlFixture data, Transport transport)
