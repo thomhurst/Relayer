@@ -937,6 +937,7 @@ registry discovery, and Dekaf's synchronous deserializer fetches unknown or evic
 
 **Decision.** Refine D8 with explicit `transport.UseSerializer(factory)` selection. Send routes and consumers
 capture the same keyed singleton at startup; transports without an override use the application serializer.
+Named overrides use private registrations so application keyed serializer services stay independent of transport selection.
 Startup validates source-generated JSON metadata for routes and consumed wire contracts on transports
 using the built-in serializer. Contracts exclusive to custom serializers can omit runtime JSON metadata.
 Do not resolve unused default JSON metadata when every transport has an override. Await optional

@@ -156,6 +156,8 @@ Register your own `IMessageSerializer` in the service collection, before, inside
 
 Use `transport.UseSerializer(provider => ...)` inside a named transport declaration to override serialization for that transport. Send routes and consumers use the same DI-owned singleton. Other transports keep the application serializer. Names are case-sensitive. Selecting twice on one declaration fails. The factory must return a thread-safe serializer and transfers its disposal to the host. The host disposes a shared instance once, even when several named factories return it. To reuse the application's DI-owned serializer in a named factory, return `provider.GetRequiredService<IMessageSerializer>()`. The host disposes that shared instance once as well. Contracts used only by custom serializers can omit JSON metadata at runtime. [AsyncAPI export](topology.md#asyncapi-export) still requires JSON metadata for every registered contract.
 
+Application keyed `IMessageSerializer` registrations remain independent of transport selection, even when a key matches a transport name.
+
 Custom serializers can implement `IMessageSerializerInitializer`. The host awaits `InitializeAsync(CancellationToken)` during its startup lifecycle, before any hosted receiver starts, including concurrent service startup. Each instance prepares once successfully, even when several transports share it. Preparation failures stop startup. Retrying startup on the same host skips instances that already prepared. Preparation does not add work to the per-message path. See [Kafka schema registries](../transports/kafka.md#independent-schema-registries) for a concrete registration.
 
 ## Protobuf
