@@ -7,8 +7,10 @@ from pathlib import Path
 parser = argparse.ArgumentParser()
 parser.add_argument("root", type=Path)
 parser.add_argument("--caller-only", action="store_true")
+parser.add_argument("--pairs", type=int, default=1_000)
 args = parser.parse_args()
 root = args.root
+checkpoint_count = args.pairs * 3
 windows = {}
 types = {}
 with (root / "objects.jsonl").open() as source:
@@ -17,8 +19,8 @@ with (root / "objects.jsonl").open() as source:
             windows[row["index"]] = row["measured"], row["callerThread"]
         elif row["kind"] == "window-type":
             types[row["index"], row["classId"]] = row["type"]
-assert set(windows) == set(range(3000)), "Expected 1,000 native, pipeline and gap checkpoints"
-for start in range(0, 3000, 3):
+assert set(windows) == set(range(checkpoint_count)), f"Expected {args.pairs:,} native, pipeline and gap checkpoint groups"
+for start in range(0, checkpoint_count, 3):
     assert windows[start][1] == windows[start + 1][1] == windows[start + 2][1]
 
 caller_bytes = Counter()
@@ -56,19 +58,19 @@ print("Failed stack snapshots (caller / other / unknown):",
       tuple(snapshot_failures[owner] for owner in ("caller", "other", "unknown")))
 with (root / "boundaries.csv").open(encoding="utf-8", newline="") as source:
     phases = list(csv.DictReader(source))
-assert [int(row["batch"]) for row in phases] == list(range(1, 1001))
+assert [int(row["batch"]) for row in phases] == list(range(1, args.pairs + 1))
 for index, row in enumerate(phases):
     native = int(row["nativeEnd"]) - int(row["nativeStart"])
     pipeline = int(row["pipelineEnd"]) - int(row["pipelineStart"])
     assert (native, pipeline) == (windows[index * 3][0], windows[index * 3 + 1][0]), index + 1
 print("Phase counters agree with caller checkpoints for every batch.")
 print("Counter pairs (native / pipeline):", dict(Counter(
-    (windows[i][0], windows[i + 1][0]) for i in range(0, 3000, 3)
+    (windows[i][0], windows[i + 1][0]) for i in range(0, checkpoint_count, 3)
 )))
 print("Caller callback bytes (native / pipeline / gap):", dict(Counter(
-    tuple(caller_bytes[index] for index in range(i, i + 3)) for i in range(0, 3000, 3)
+    tuple(caller_bytes[index] for index in range(i, i + 3)) for i in range(0, checkpoint_count, 3)
 )))
-for i in range(0, 3000, 3):
+for i in range(0, checkpoint_count, 3):
     if windows[i][0] != windows[i + 1][0]:
         print(f"Batch {i // 3 + 1}, caller {windows[i][1]}")
         for index, name in ((i, "native"), (i + 1, "pipeline")):

@@ -19,6 +19,7 @@ jobs:
     env:
       ORIGINAL_CHECKOUT: 5e064a687be1cc2ccd52518702dca7ee6a569fb3
       FRAMEWORK: net10.0
+      CAPTURE_PAIRS: '65536'
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
       DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
       DOTNET_NOLOGO: 'true'
@@ -92,16 +93,30 @@ jobs:
       - name: Validate same-execution caller and stack coverage
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
-          python3 .github/scripts/summarize-issue-1154.py results --caller-only | tee results/caller-summary.txt
-          python3 .artifacts/history/.github/scripts/read_native_allocations.py results/objects.jsonl \
-            | jq 'map_values(.coverage)' > results/validated-native.json
-          python3 .artifacts/history/.github/scripts/read_allocation_stacks.py results/stacks.jsonl results/objects.jsonl \
-            | jq '{coverage, unresolved_frames}' > results/validated-stacks.json
+          python3 .github/scripts/summarize-issue-1154.py results --caller-only --pairs "$CAPTURE_PAIRS" \
+            | tee results/caller-summary.txt
+          PYTHONPATH=.artifacts/history/.github/scripts python3 - <<'PY' > results/validated-coverage.json
+          import json
+          from pathlib import Path
+
+          from read_allocation_stacks import validate
+          from read_native_allocations import read
+
+          report = read("results/objects.jsonl")
+          with Path("results/stacks.jsonl").open(encoding="utf-8") as stream:
+              stacks = validate([json.loads(line) for line in stream], report)
+          print(json.dumps({
+              "native": report["coverage"],
+              "stacks": stacks["coverage"],
+              "unresolved_frames": stacks["unresolved_frames"],
+          }, indent=2))
+          PY
       - name: Validate counter boundaries and effective GC settings
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           cat results/boundaries.csv.gc.txt
-          python3 .github/scripts/summarize-issue-1154-boundaries.py results/boundaries.csv \
+          grep -iq '^ConcurrentGC=false$' results/boundaries.csv.gc.txt
+          python3 .github/scripts/summarize-issue-1154-boundaries.py results/boundaries.csv --pairs "$CAPTURE_PAIRS" \
             | tee results/boundary-summary.txt
       - name: Inventory the retained diagnostics
         if: always()

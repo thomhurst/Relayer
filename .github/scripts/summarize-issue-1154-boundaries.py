@@ -1,10 +1,15 @@
 """Summarize contiguous thread-local allocation counter reads."""
+import argparse
 import csv
-import sys
 from collections import Counter
 from itertools import pairwise
 from pathlib import Path
 
+
+parser = argparse.ArgumentParser()
+parser.add_argument("capture", type=Path)
+parser.add_argument("--pairs", type=int, default=1_000)
+args = parser.parse_args()
 
 fields = ("nativeStart", "nativeEnd", "pipelineStart", "rented", "processed", "pipelineEnd")
 phases = ("gap before native", "native DI", "gap before pipeline", "rent", "process", "dispose")
@@ -13,11 +18,11 @@ mismatches = 0
 regressions = 0
 previous_end = None
 
-with Path(sys.argv[1]).open(encoding="utf-8", newline="") as source:
+with args.capture.open(encoding="utf-8", newline="") as source:
     samples = list(csv.DictReader(source))
 
-if [int(sample["batch"]) for sample in samples] != list(range(1, 1001)):
-    raise SystemExit("Expected exactly 1,000 consecutive batch samples")
+if [int(sample["batch"]) for sample in samples] != list(range(1, args.pairs + 1)):
+    raise SystemExit(f"Expected exactly {args.pairs:,} consecutive batch samples")
 
 for sample in samples:
     values = [int(sample[field]) for field in fields]

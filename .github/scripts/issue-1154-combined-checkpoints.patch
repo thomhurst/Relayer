@@ -1,5 +1,5 @@
 diff --git a/tests/Relayer.Tests/BatchPipelineTests.cs b/tests/Relayer.Tests/BatchPipelineTests.cs
-index ca872152..5252d711 100644
+index ca872152..073e4c99 100644
 --- a/tests/Relayer.Tests/BatchPipelineTests.cs
 +++ b/tests/Relayer.Tests/BatchPipelineTests.cs
 @@ -959,0 +960,30 @@ public class BatchPipelineTests
@@ -33,33 +33,39 @@ index ca872152..5252d711 100644
 +        }
 +    }
 +
-@@ -1000,0 +1031,3 @@ public class BatchPipelineTests
+@@ -965,0 +996 @@ public class BatchPipelineTests
++        const int CaptureIterations = 65_536;
+@@ -1000,0 +1032,4 @@ public class BatchPipelineTests
 +        var region = bufferedSends ? NativeAllocationRegion.Load() : null;
 +        var capturePath = bufferedSends ? Environment.GetEnvironmentVariable("RELAYER_ALLOCATION_BOUNDARIES") : null;
-+        var boundaries = capturePath is null ? null : new AllocationBoundaries[Iterations];
-@@ -1003,0 +1037 @@ public class BatchPipelineTests
++        var sampleCount = capturePath is null ? Iterations : CaptureIterations;
++        var boundaries = capturePath is null ? null : new AllocationBoundaries[sampleCount];
+@@ -1003,0 +1039 @@ public class BatchPipelineTests
 +        region?.Begin();
-@@ -1007 +1041,2 @@ public class BatchPipelineTests
+@@ -1005 +1041 @@ public class BatchPipelineTests
+-        for (var iteration = 0; iteration < Iterations; iteration++)
++        for (var iteration = 0; iteration < sampleCount; iteration++)
+@@ -1007 +1043,2 @@ public class BatchPipelineTests
 -            var start = GC.GetAllocatedBytesForCurrentThread();
 +            var collectionsBefore = boundaries is null ? 0 : GC.CollectionCount(0);
 +            var nativeStart = GC.GetAllocatedBytesForCurrentThread();
-@@ -1014,2 +1049,3 @@ public class BatchPipelineTests
+@@ -1014,2 +1051,3 @@ public class BatchPipelineTests
 -            var native = GC.GetAllocatedBytesForCurrentThread() - start;
 -            start = GC.GetAllocatedBytesForCurrentThread();
 +            var nativeEnd = GC.GetAllocatedBytesForCurrentThread();
 +            region?.Checkpoint(iteration * 3, nativeEnd - nativeStart);
 +            var pipelineStart = GC.GetAllocatedBytesForCurrentThread();
-@@ -1021,0 +1058 @@ public class BatchPipelineTests
+@@ -1021,0 +1060 @@ public class BatchPipelineTests
 +            var rented = boundaries is null ? 0 : GC.GetAllocatedBytesForCurrentThread();
-@@ -1024,0 +1062 @@ public class BatchPipelineTests
+@@ -1024,0 +1064 @@ public class BatchPipelineTests
 +            var processed = boundaries is null ? 0 : GC.GetAllocatedBytesForCurrentThread();
-@@ -1036 +1074,12 @@ public class BatchPipelineTests
+@@ -1036 +1076,12 @@ public class BatchPipelineTests
 -            var pipeline = GC.GetAllocatedBytesForCurrentThread() - start;
 +            var pipelineEnd = GC.GetAllocatedBytesForCurrentThread();
 +            var native = nativeEnd - nativeStart;
 +            var pipeline = pipelineEnd - pipelineStart;
 +            region?.Checkpoint(iteration * 3 + 1, pipeline);
-+            region?.Checkpoint(iteration * 3 + 2, 0, final: iteration == Iterations - 1);
++            region?.Checkpoint(iteration * 3 + 2, 0, final: iteration == sampleCount - 1);
 +
 +            if (boundaries is not null)
 +            {
@@ -67,10 +73,10 @@ index ca872152..5252d711 100644
 +                    collectionsBefore, GC.CollectionCount(0));
 +            }
 +
-@@ -1045,0 +1095,2 @@ public class BatchPipelineTests
+@@ -1045,0 +1097,2 @@ public class BatchPipelineTests
 +        region?.End();
 +
-@@ -1050,0 +1102,5 @@ public class BatchPipelineTests
+@@ -1050,0 +1104,5 @@ public class BatchPipelineTests
 +        if (capturePath is not null && boundaries is not null)
 +        {
 +            WriteAllocationBoundaries(capturePath, boundaries);
