@@ -97,6 +97,8 @@ The original native message exposes its connection. Delivery objects are borrowe
 
 `Provision` calls native create-only APIs with the supplied `StreamConfig`/`ConsumerConfig`. The server checks existing entities for equivalence. Relayer never updates, deletes or purges entities; reconcile conflicts externally. Names and optional `DurableName` must match the declaration.
 
+If a standalone JetStream server rejects a stream configured with more than one replica, `Provision` reports the named stream and the broker's reason, then continues with later declarations. To resolve a missing stream or consumer in `Validate`, create it externally or use `Provision` with native `Configuration`. For stream limits that JetStream stores as unlimited, such as a negative `MaxMsgs`, `Validate` compares the effective value of `-1`.
+
 ## Performance and validation
 
 [D52](https://github.com/thomhurst/Relayer/blob/main/docs/decisions.md#d52-allocations-a-native-api-requires-count-as-native-client-cost) classifies strings required by `NatsHeaders` for changing CloudEvents attributes as native-client cost. The native receive API also boxes JetStream deliveries and materializes raw payload memory. Relayer retains at most 64 reusable send operations per subject, each owning its native header dictionary and publication continuation. Completion state returns to that endpoint after the caller consumes the send, including when initiation and completion run on different threads. Overflow allocates additional operations and header dictionaries; retention stays bounded. Settlement state uses the runtime async pool. These mechanisms do not establish whole-path allocation parity or waive the performance budget.
