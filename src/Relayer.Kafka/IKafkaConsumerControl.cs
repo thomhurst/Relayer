@@ -7,7 +7,10 @@ namespace Relayer.Kafka;
 /// <remarks>Call from outside consumer handlers. Seeks drain the current batch first.</remarks>
 public interface IKafkaConsumerControl
 {
-    /// <summary>Moves an assigned partition to a native offset without committing that offset.</summary>
+    /// <summary>
+    /// Moves an assigned partition to an absolute offset. A backward seek can commit that offset
+    /// for the consumer group, so a restart can resume from the seek position.
+    /// </summary>
     ValueTask SeekAsync(string group, TopicPartitionOffset offset, CancellationToken cancellationToken = default);
 
     /// <summary>Looks up a native timestamp offset and seeks to it. Fails when Kafka returns no matching offset.</summary>
