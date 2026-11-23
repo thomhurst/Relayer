@@ -5,6 +5,7 @@ using Amazon.SQS.Model;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.AmazonSqs;
+using Relayer.HealthChecks;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -32,6 +33,45 @@ public sealed class SqsConsumerControlTests
         await Assert.That(client.Polls).IsEqualTo(2);
         await ServiceBusReceiveTests.Stop(provider);
         await Assert.That(async () => await control.StartAsync(default)).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Liveness_is_unavailable_until_all_receive_workers_start()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var token = deadline.Token;
+        using var client = new SqsReceiveTests.ReceiveClient();
+        using var release = new ManualResetEventSlim();
+        var configuring = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var provider = Provider(client, autoStart: false, concurrency: 2, configureReceive: _ =>
+        {
+            configuring.TrySetResult();
+            release.Wait(token);
+        });
+        await ServiceBusReceiveTests.Start(provider, token);
+        var control = provider.GetRequiredKeyedService<IConsumerControl>("sqs");
+        var health = provider.GetRequiredKeyedService<IConsumerHealthProvider>("sqs");
+        var declaration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single().Consumers.Single();
+        await Assert.That(await health.GetStateAsync(declaration, token)).IsNull();
+
+        var start = Task.Run(() => control.StartAsync(token));
+
+        try
+        {
+            await configuring.Task.WaitAsync(token);
+            await Assert.That(await health.GetStateAsync(declaration, token)).IsNull();
+        }
+        finally
+        {
+            release.Set();
+            await start;
+        }
+
+        await Assert.That(client.Polls).IsEqualTo(2);
+        await Assert.That((await health.GetStateAsync(declaration, token))!.Value.IsIdle).IsTrue();
+        await control.StopAsync(token);
+        await Assert.That(await health.GetStateAsync(declaration, token)).IsNull();
+        await ServiceBusReceiveTests.Stop(provider);
     }
 
     [Test]
@@ -125,10 +165,12 @@ public sealed class SqsConsumerControlTests
         }
     }
 
-    private static ServiceProvider Provider(SqsReceiveTests.ReceiveClient client, bool autoStart = true)
+    private static ServiceProvider Provider(SqsReceiveTests.ReceiveClient client, bool autoStart = true,
+        int concurrency = 1, Action<ReceiveMessageRequest>? configureReceive = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddRelayerAmazonSqsHealthProviders("sqs");
         services.AddSingleton(new SqsReceiveFlociTests.Control());
         services.AddRelayer(relayer =>
         {
@@ -146,6 +188,8 @@ public sealed class SqsConsumerControlTests
                 sqs.Consume("orders", consumer =>
                 {
                     consumer.Handler<SqsReceiveFlociTests.Handler>();
+                    consumer.Concurrency(concurrency);
+                    consumer.Options.ConfigureReceive = configureReceive;
                     consumer.Failures(new()
                     {
                         DeadLetterEndpoint = "dead"
