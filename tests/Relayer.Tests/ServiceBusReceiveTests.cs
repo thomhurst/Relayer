@@ -693,6 +693,11 @@ public sealed class ServiceBusReceiveTests
 
         public override string FullyQualifiedNamespace => "test.servicebus.windows.net";
 
+        public override ServiceBusSender CreateSender(string queueOrTopicName)
+        {
+            return new ServiceBusSendTests.NativeSender(queueOrTopicName);
+        }
+
         public override ServiceBusProcessor CreateProcessor(string queueName, ServiceBusProcessorOptions options)
         {
             return Add(queueName, null, options);
@@ -705,7 +710,7 @@ public sealed class ServiceBusReceiveTests
 
         public override ServiceBusReceiver CreateReceiver(string queueName)
         {
-            return new NativeReceiver();
+            return new ServiceBusSendTests.NativeReceiver();
         }
 
         public override ServiceBusReceiver CreateReceiver(string queueName, ServiceBusReceiverOptions options)

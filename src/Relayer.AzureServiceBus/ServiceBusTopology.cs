@@ -31,7 +31,8 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
 
             if (mode == TopologyMode.Validate)
             {
-                bool hasConsumer = consumers?.Any(consumer => consumer.Source == queue.Name) == true;
+                bool hasConsumer = consumers?.Any(consumer =>
+                    string.Equals(consumer.Source, queue.Name, StringComparison.OrdinalIgnoreCase)) == true;
 
                 if (!hasConsumer || destinations?.Contains(queue.Name, StringComparer.OrdinalIgnoreCase) == true)
                 {

@@ -84,7 +84,7 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
         }
 
         var subscription = options.Subscription;
-        var queue = subscription is null ? transport.Queues.SingleOrDefault(queue => queue.Name == consumer.Source) : null;
+        var queue = subscription is null ? transport.FindQueue(consumer.Source) : null;
         var topic = subscription is null ? null : transport.Subscriptions.SingleOrDefault(item => item.TopicName == consumer.Source && item.SubscriptionName == subscription);
 
         if (queue is null && topic is null)

@@ -16,7 +16,7 @@ public sealed class ServiceBusReceiveTopologyTests
         options.Queues.Add(new("orders"));
         options.Topics.Add(new("events"));
         options.Subscriptions.Add(new("events", "audit"));
-        var queue = new ConsumerDefinition<ServiceBusConsumerOptions>("orders", new(), [], 1, 1, TimeSpan.FromMilliseconds(100));
+        var queue = new ConsumerDefinition<ServiceBusConsumerOptions>("ORDERS", new(), [], 1, 1, TimeSpan.FromMilliseconds(100));
         var subscription = new ConsumerDefinition<ServiceBusConsumerOptions>("events", new()
         {
             Subscription = "audit"
@@ -26,7 +26,7 @@ public sealed class ServiceBusReceiveTopologyTests
         var report = await transport.ApplyTopologyAsync(TopologyMode.Validate, default);
         await Assert.That(report.Differences.Count).IsEqualTo(0);
         await Assert.That(client.Receiver.Peeks).IsEqualTo(2);
-        await Assert.That(transport.GetCapabilities("orders").DeadLetter).IsTrue();
+        await Assert.That(transport.GetCapabilities("ORDERS").DeadLetter).IsTrue();
         await Assert.That(transport.GetCapabilities("events").MaxRedeliveryDelay).IsEqualTo(TimeSpan.Zero);
     }
 
@@ -206,7 +206,7 @@ public sealed class ServiceBusReceiveTopologyTests
                         options.Client = client;
                         options.Queues.Add(declaration);
                     });
-                    bus.Consume(queue, consumer => consumer.Handler<ServiceBusReceiveTests.Handler>().Failures(new()
+                    bus.Consume(queue.ToUpperInvariant(), consumer => consumer.Handler<ServiceBusReceiveTests.Handler>().Failures(new()
                     {
                         RetryDelays = [],
                         RedeliveryDelays = [TimeSpan.Zero]

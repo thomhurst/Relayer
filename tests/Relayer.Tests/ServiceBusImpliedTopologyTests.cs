@@ -12,6 +12,39 @@ namespace Relayer.Tests;
 public sealed class ServiceBusImpliedTopologyTests
 {
     [Test]
+    [Arguments(TopologyMode.None)]
+    [Arguments(TopologyMode.Validate)]
+    public async Task Queue_consumer_reuses_explicit_declaration_with_different_casing(TopologyMode mode)
+    {
+        var client = new NativeClient();
+        var services = new ServiceCollection();
+        services.AddSingleton<Control>();
+        services.AddRelayer(builder =>
+        {
+            builder.Infrastructure().MessageTypes.Add<Payload>("servicebus.receive-test");
+            builder.UseJsonSerializer(ServiceBusReceiveTestJson.Default);
+            builder.ServiceBus("bus", bus =>
+            {
+                bus.TopologyMode = mode;
+                bus.Options.Configure(options =>
+                {
+                    options.Client = client;
+                    options.Queues.Add(new("orders"));
+                });
+                bus.Consume("ORDERS", consumer => consumer.Handler<Handler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        await Start(provider);
+        await Assert.That(client.Processors.Single().Source).IsEqualTo("ORDERS");
+
+        using var output = new MemoryStream();
+        provider.GetRequiredService<ServiceBusTopologyExporter>().Export("bus", output, ServiceBusTopologyFormat.Bicep);
+        await Assert.That(System.Text.Encoding.UTF8.GetString(output.ToArray())).Contains("name: 'orders'");
+        await Stop(provider);
+    }
+
+    [Test]
     public async Task None_consumers_imply_their_queue_subscription_and_session_requirement()
     {
         var client = new NativeClient();
