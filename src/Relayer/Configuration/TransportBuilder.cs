@@ -83,10 +83,7 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
     {
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(destination);
-        var route = new RouteBuilder<TMessage>(destination);
-        route.SendOptions = _sendDefaults;
-        configure?.Invoke(route);
-        _routes.Add(route.Build());
+        _routes.Add(BuildSendRoute(destination, configure));
         return this;
     }
 
@@ -144,18 +141,16 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         var options = request.Options;
         options.Validate();
 
-        if (_services.Any(static service => service.ServiceType == typeof(IRequestClient<TRequest, TResponse>) && !service.IsKeyedService))
+        var route = BuildSendRoute(destination, request.ConfigureSend);
+        var consumer = BuildConsumer(replyAddress, replies =>
         {
-            throw new InvalidOperationException("This request/response pair already has a registration. Declare it once.");
-        }
+            request.ConfigureReplies?.Invoke(replies);
+            ((IConsumerBuilder)replies).AddHandler(new ReplyDescriptor<TRequest, TResponse>());
+        });
 
         RegisterRequestServices<TRequest, TResponse>(replyAddress, replyDestination, options);
-        Send(destination, request.ConfigureSend);
-        Consume(replyAddress, consumer =>
-        {
-            request.ConfigureReplies?.Invoke(consumer);
-            ((IConsumerBuilder)consumer).AddHandler(new ReplyDescriptor<TRequest, TResponse>());
-        });
+        _routes.Add(route);
+        _consumers.Add(consumer);
         return this;
     }
 
@@ -166,9 +161,7 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(configure);
-        var consumer = new ConsumerBuilder<TConsumerOptions>(_services, _handlers, source);
-        configure(consumer);
-        _consumers.Add(consumer.Build());
+        _consumers.Add(BuildConsumer(source, configure));
         return this;
     }
 
@@ -177,8 +170,28 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         Consume(source, configure);
     }
 
+    private IRouteDefinition BuildSendRoute<TMessage>(string destination, Action<RouteBuilder<TMessage>>? configure)
+    {
+        var route = new RouteBuilder<TMessage>(destination);
+        route.SendOptions = _sendDefaults;
+        configure?.Invoke(route);
+        return route.Build();
+    }
+
+    private IConsumerDefinition BuildConsumer(string source, Action<ConsumerBuilder<TConsumerOptions>> configure)
+    {
+        var consumer = new ConsumerBuilder<TConsumerOptions>(_services, _handlers, source);
+        configure(consumer);
+        return consumer.Build();
+    }
+
     private void RegisterRequestServices<TRequest, TResponse>(string replySource, string replyDestination, RequestOptions options)
     {
+        if (_services.Any(static service => service.ServiceType == typeof(IRequestClient<TRequest, TResponse>) && !service.IsKeyedService))
+        {
+            throw new InvalidOperationException("This request/response pair already has a registration. Declare it once.");
+        }
+
         string transportName = Name;
         _services.AddSingleton<RequestReplies<TRequest, TResponse>>(_ => new(transportName, replySource, replyDestination, options));
         _services.AddScoped<IRequestClient<TRequest, TResponse>, RequestClient<TRequest, TResponse>>();
@@ -193,17 +206,17 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         }
     }
 
-    internal void RegisterSerializer(Func<IServiceProvider, IMessageSerializer> factory)
+    internal void RegisterSerializer(Func<IServiceProvider, IMessageSerializer> factory, bool ownsSerializer)
     {
         EnsureMutable();
 
         if (_hasSerializer)
         {
-            throw new InvalidOperationException($"Transport '{Name}' already has a serializer. Call UseSerializer once.");
+            throw new InvalidOperationException($"Transport '{Name}' already has a serializer. Select one serializer per transport.");
         }
 
         _hasSerializer = true;
-        NamedMessageSerializer.Register(_services, Name, factory);
+        NamedMessageSerializer.Register(_services, Name, factory, ownsSerializer);
     }
 
     internal void SetRouteDestinationNormalizer(Func<string, string> normalize)

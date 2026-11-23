@@ -69,6 +69,35 @@ public class RequestResponseTests
     }
 
     [Test]
+    public async Task Failed_reply_configuration_allows_registration_retry()
+    {
+        var services = new ServiceCollection();
+
+        void Register(string replyConcurrency)
+        {
+            services.AddRelayer(builder =>
+            {
+                builder.AddMessageTypesFromThisAssembly();
+                builder.InMemory("local", transport =>
+                    transport.Request<RpcRequest, RpcResponse>("requests", "replies", request =>
+                        request.Replies(consumer => consumer.Concurrency(int.Parse(replyConcurrency)))));
+            });
+        }
+
+        await Assert.That(() => Register("invalid")).Throws<FormatException>();
+        await Assert.That(services.Any(service => service.ServiceType == typeof(IRequestClient<RpcRequest, RpcResponse>))).IsFalse();
+
+        Register("1");
+
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        await Assert.That(scope.ServiceProvider.GetServices<IRequestClient<RpcRequest, RpcResponse>>().Count()).IsEqualTo(1);
+        var transport = provider.GetRequiredService<RelayerConfiguration>().Transports[0];
+        await Assert.That(transport.Routes.Count).IsEqualTo(1);
+        await Assert.That(transport.Consumers.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Pending_request_capacity_belongs_to_each_service_provider()
     {
         var services = new ServiceCollection();

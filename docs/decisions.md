@@ -953,8 +953,11 @@ shared factory results by reference ([dotnet/runtime#128768](https://github.com/
 instance gives the container the original instance. Further named registrations use non-disposable aliases.
 When a named factory resolves and returns the application serializer through its service provider, the
 named registration uses a non-disposable alias so the application registration retains ownership.
-`GetMessageSerializer` resolves the original instance before pipeline composition, and the container
-still controls disposal order and synchronous or asynchronous disposal.
+`UseSerializerFromServices` selects an existing singleton without changing its disposal ownership. The keyed
+transport registration stores a non-disposable alias on both frameworks. The application registration retains
+its native lifetime and disposal behavior, whether the resolver selects an interface, a concrete type or a key.
+The resolver must return an existing singleton. `GetMessageSerializer` unwraps the alias before pipeline
+composition so preparation, identity and per-message calls use the original instance.
 
 The optional `Relayer.Kafka.SchemaRegistry` package prepares explicit JSON writer contracts with Dekaf's
 AOT-safe serializer and native configuration. Accept only the prepared writer schema ID for each message
