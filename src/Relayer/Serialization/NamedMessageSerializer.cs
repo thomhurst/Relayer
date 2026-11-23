@@ -15,7 +15,11 @@ internal static class NamedMessageSerializer
 #if NET10_0
         services.TryAddSingleton<Ownership>();
 #endif
-        services.AddKeyedSingleton<IMessageSerializer>(name, (provider, _) =>
+        // Use a private service type for lookup and an opaque key for the DI-owned factory result.
+        // This also keeps overrides out of GetKeyedServices<IMessageSerializer>(KeyedService.AnyKey).
+        var registration = new Registration();
+        services.AddKeyedSingleton(name, registration);
+        services.AddKeyedSingleton<object>(registration, (provider, _) =>
         {
 #if NET10_0
             var ownership = provider.GetRequiredService<Ownership>();
@@ -26,7 +30,7 @@ internal static class NamedMessageSerializer
             var serializer = factory(factoryServices)
                 ?? throw new InvalidOperationException($"Transport '{name}': the serializer factory returned null.");
 #if NET10_0
-            return ownership.Capture(provider, name, serializer, factoryServices.ApplicationSerializer);
+            return ownership.Capture(provider, registration, serializer, factoryServices.ApplicationSerializer);
 #else
             return serializer;
 #endif
@@ -35,7 +39,14 @@ internal static class NamedMessageSerializer
 
     internal static IMessageSerializer? Resolve(IServiceProvider services, string name)
     {
-        var serializer = services.GetKeyedService<IMessageSerializer>(name);
+        var registration = services.GetKeyedService<Registration>(name);
+
+        if (registration is null)
+        {
+            return null;
+        }
+
+        var serializer = (IMessageSerializer)services.GetRequiredKeyedService<object>(registration);
 #if NET10_0
         return serializer is Alias alias ? alias.Serializer : serializer;
 #else
@@ -43,14 +54,16 @@ internal static class NamedMessageSerializer
 #endif
     }
 
+    private sealed class Registration;
+
 #if NET10_0
     // .NET 10 captures every disposable factory result. .NET 11 deduplicates captures by reference.
     private sealed class Ownership
     {
-        private readonly ConcurrentDictionary<IMessageSerializer, string> _owners = new(ReferenceEqualityComparer.Instance);
+        private readonly ConcurrentDictionary<IMessageSerializer, Registration> _owners = new(ReferenceEqualityComparer.Instance);
 
         internal IMessageSerializer Capture(
-            IServiceProvider provider, string name, IMessageSerializer serializer, object? applicationSerializer)
+            IServiceProvider provider, Registration registration, IMessageSerializer serializer, object? applicationSerializer)
         {
             if (serializer is not (IDisposable or IAsyncDisposable))
             {
@@ -62,15 +75,15 @@ internal static class NamedMessageSerializer
                 return new Alias(serializer);
             }
 
-            var owner = _owners.GetOrAdd(serializer, name);
+            var owner = _owners.GetOrAdd(serializer, registration);
 
-            if (owner == name)
+            if (ReferenceEquals(owner, registration))
             {
                 return serializer;
             }
 
             // A concurrent first resolution must be captured before services depending on this alias.
-            _ = provider.GetRequiredKeyedService<IMessageSerializer>(owner);
+            _ = provider.GetRequiredKeyedService<object>(owner);
             return new Alias(serializer);
         }
     }

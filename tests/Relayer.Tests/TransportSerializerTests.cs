@@ -12,6 +12,35 @@ namespace Relayer.Tests;
 public class TransportSerializerTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Application_keyed_serializers_are_independent_of_transport_overrides(bool useWildcard)
+    {
+        var application = new PreparedSerializer();
+        var keyed = new PreparedSerializer();
+        var custom = new PreparedSerializer();
+        var services = new ServiceCollection();
+        services.AddSingleton<IMessageSerializer>(application);
+        services.AddKeyedSingleton<IMessageSerializer>(useWildcard ? KeyedService.AnyKey : "events", keyed);
+        services.AddRelayer(relayer =>
+        {
+            relayer.InMemory("events", _ =>
+            {
+            });
+            relayer.InMemory("custom", transport => transport.UseSerializer(_ => custom));
+        });
+        services.AddKeyedSingleton<IMessageSerializer>("custom", keyed);
+
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(provider.GetMessageSerializer("events")).IsSameReferenceAs(application);
+        await Assert.That(provider.GetMessageSerializer("custom")).IsSameReferenceAs(custom);
+        await Assert.That(provider.GetRequiredKeyedService<IMessageSerializer>("events")).IsSameReferenceAs(keyed);
+        await Assert.That(provider.GetRequiredKeyedService<IMessageSerializer>("custom")).IsSameReferenceAs(keyed);
+        await Assert.That(provider.GetKeyedServices<IMessageSerializer>(KeyedService.AnyKey).All(serializer => ReferenceEquals(serializer, keyed)))
+            .IsTrue();
+    }
+
+    [Test]
     public async Task Named_serializer_isolated_from_fallback_and_duplicate_selection_rejected()
     {
         var custom = new PreparedSerializer();
