@@ -58,15 +58,23 @@ Scope identities are captured in a read-only snapshot only when a generated fail
 `AddRelayer` automatically registers one `MessageTracing` source owner per service provider. Subscribe with your OpenTelemetry provider's `AddSource(RelayerTelemetry.ActivitySourceName)`. Repeated registration shares the source within that provider; separate providers own separate sources named `Relayer`:
 
 ```csharp
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Relayer;
 
 services.AddRelayer(relayer => { /* Declare transports and handlers here. */ });
-services.AddOptions<TracingOptions>().Bind(configuration.GetSection("Relayer:Tracing"));
+var tracing = configuration.GetSection("Relayer:Tracing");
+services.AddSingleton(Options.Create(new TracingOptions
+{
+    CreationContextAsParent = tracing.GetValue("CreationContextAsParent", true),
+    CreateSpansForBatches = tracing.GetValue("CreateSpansForBatches", true),
+    IncludeBodySize = tracing.GetValue("IncludeBodySize", false)
+}));
 services.AddSingleton<IActivityEnricher, ApplicationEnricher>();
 ```
 
-`ApplicationEnricher` is your implementation of `IActivityEnricher`. `TracingOptions` uses init-only properties. `CreationContextAsParent` and `CreateSpansForBatches` default to true; `IncludeBodySize` defaults to false. The source is named `Relayer` and carries schema URL `https://opentelemetry.io/schemas/1.44.0`. Tracing and metrics share the single `RelayerTelemetry.SemanticConventionsVersion` pin. The source follows [semantic conventions 1.44.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/messaging/messaging-spans.md).
+`ApplicationEnricher` is your implementation of `IActivityEnricher`. The configuration binding generator can read individual values with `GetValue`. Assign them when constructing `TracingOptions` so its init-only properties receive the configured values. This registration reads the section once and uses the defaults shown above for missing keys. The source is named `Relayer` and carries schema URL `https://opentelemetry.io/schemas/1.44.0`. Tracing and metrics share the single `RelayerTelemetry.SemanticConventionsVersion` pin. The source follows [semantic conventions 1.44.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/messaging/messaging-spans.md).
 
 Changes to the shared conventions pin require a release note and a mapping review.
 
