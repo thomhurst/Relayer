@@ -86,7 +86,7 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
                     failures.Add($"{location}: destination must not be blank.");
                 }
 
-                if (!routes.Add((route.MessageType, transport.Name, route.Destination)))
+                if (!routes.Add(transport.GetRouteKey(route)))
                 {
                     failures.Add($"{location}: a message type can have only one route to each destination; '{route.Destination}' is declared more than once.");
                 }

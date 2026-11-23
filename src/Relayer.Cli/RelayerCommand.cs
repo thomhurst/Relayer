@@ -163,12 +163,14 @@ internal static class RelayerCommand
 
         for (var i = 2; i < args.Length; i += 2)
         {
-            if (i + 1 == args.Length || args[i] is not ("--provider" or "--schema" or "--prefix") || !seen.Add(args[i]))
+            string option = args[i];
+
+            if (i + 1 == args.Length || !IsScriptOption(option) || IsScriptOption(args[i + 1]) || !seen.Add(option))
             {
-                return Fail(error, $"Unknown, repeated or incomplete option: {args[i]}");
+                return Fail(error, $"Unknown, repeated or incomplete option: {option}");
             }
 
-            switch (args[i])
+            switch (option)
             {
                 case "--provider":
                     provider = args[i + 1];
@@ -196,6 +198,11 @@ internal static class RelayerCommand
         {
             return Fail(error, exception.Message);
         }
+    }
+
+    private static bool IsScriptOption(string argument)
+    {
+        return argument is "--provider" or "--schema" or "--prefix";
     }
 
     private static int Fail(TextWriter error, string message)

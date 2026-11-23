@@ -33,8 +33,9 @@ Replace `VERSION_FROM_PACK` with the exact version in the `Relayer.Cli.<version>
 `dotnet pack`, including any prerelease suffix.
 
 Run `.artifacts/tools/dotnet-relayer db script --provider postgres` to print SQL. The installed tool on `PATH`
-also supports `dotnet relayer db script --provider postgres`. SQL goes to stdout; invalid options and unsupported
-providers produce stderr and a nonzero exit code without emitting SQL. Apply the output with your normal
+also supports `dotnet relayer db script --provider postgres`. SQL goes to stdout. Each option requires a
+value, and another script option flag cannot serve as that value. Invalid options and unsupported providers
+produce stderr and a nonzero exit code without emitting SQL. Apply the output with your normal
 PostgreSQL deployment tooling. Use a transaction if the deployment must be atomic.
 
 For code that manages database deployment directly:

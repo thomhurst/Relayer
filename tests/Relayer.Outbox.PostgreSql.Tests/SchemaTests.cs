@@ -72,6 +72,20 @@ public class SchemaTests
     }
 
     [Test]
+    [Arguments("--schema", "--prefix")]
+    [Arguments("--prefix", "--schema")]
+    public async Task Script_option_followed_by_a_flag_is_incomplete(string option, string nextOption)
+    {
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        await Assert.That(RelayerCommand.Run(["db", "script", "--provider", "postgres", option, nextOption], output, error))
+            .IsEqualTo(1);
+        await Assert.That(output.ToString()).IsEqualTo("");
+        await Assert.That(error.ToString()).Contains($"Unknown, repeated or incomplete option: {option}");
+    }
+
+    [Test]
     public async Task Invalid_cli_arguments_emit_no_SQL()
     {
         string[][] cases = [[], ["db"], ["db", "script"], ["db", "script", "--provider"],

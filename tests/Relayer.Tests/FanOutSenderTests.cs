@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Relayer.RabbitMQ;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -127,6 +128,84 @@ public class FanOutSenderTests
 
         await Assert.That(() => scope.ServiceProvider.GetRequiredService<ISender>())
             .Throws<InvalidOperationException>().WithMessageContaining("'orders' is declared more than once");
+    }
+
+    [Test]
+    public async Task RabbitMQ_startup_rejects_default_exchange_aliases()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddScoped<IOutboxEnlistment>(_ => new RecordingOutbox { IsActive = true });
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.RabbitMQ("rabbit", rabbit =>
+            {
+                rabbit.TopologyMode = TopologyMode.Provision;
+                rabbit.Options.Configure(options =>
+                {
+                    options.ConnectionFactory = broker.Factory();
+                    options.Queues.Add(new("orders"));
+                });
+                rabbit.Send<OrderPlaced>("orders");
+                rabbit.Send<OrderPlaced>(":orders");
+            });
+        });
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+
+        await Assert.That(async () => await host.StartAsync(token)).Throws<OptionsValidationException>()
+            .WithMessageContaining("':orders' is declared more than once");
+    }
+
+    [Test]
+    [Arguments("orders", ":orders")]
+    [Arguments(":orders", "orders")]
+    public async Task RabbitMQ_sender_rejects_default_exchange_aliases_without_a_host(string first, string second)
+    {
+        var services = new ServiceCollection();
+        services.AddScoped<IOutboxEnlistment>(_ => new RecordingOutbox { IsActive = true });
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.RabbitMQ("rabbit", rabbit =>
+            {
+                rabbit.Send<OrderPlaced>(first);
+                rabbit.Send<OrderPlaced>(second);
+            });
+        });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+
+        await Assert.That(() => scope.ServiceProvider.GetRequiredService<ISender>()).Throws<InvalidOperationException>()
+            .WithMessageContaining($"'{second}' is declared more than once");
+    }
+
+    [Test]
+    public async Task RabbitMQ_fan_out_keeps_distinct_exchanges_and_routing_key_case()
+    {
+        var outbox = new RecordingOutbox { IsActive = true };
+        var services = new ServiceCollection();
+        services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.RabbitMQ("rabbit", rabbit =>
+            {
+                rabbit.Send<OrderPlaced>("orders");
+                rabbit.Send<OrderPlaced>(":Orders");
+                rabbit.Send<OrderPlaced>("events:orders");
+            });
+        });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(Guid.NewGuid()));
+
+        await Assert.That(outbox.Rows.Select(row => row.Destination).SequenceEqual(["orders", ":Orders", "events:orders"]))
+            .IsTrue();
     }
 
     private static void AddSelectorRoute(IRelayerBuilder relayer)
