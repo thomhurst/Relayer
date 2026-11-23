@@ -10,20 +10,15 @@ namespace Relayer.AmazonSqs;
 // FIFO polls stay single-message so SQS itself serializes groups across processes.
 internal sealed partial class SqsConsumer : IAsyncDisposable
 {
-    private static readonly Task[] s_starting = [];
-
     private readonly IAmazonSQS _client;
     private readonly string _url;
     private readonly Func<SqsDelivery, CancellationToken, ValueTask> _receive;
     private readonly ILogger? _logger;
     private readonly TimeProvider _time;
     private readonly long[] _active;
-    private CancellationTokenSource? _poll;
-    private CancellationTokenSource? _abort;
-    private Task[] _workers = [];
-    // Null while stopped, empty during startup, and a complete array while running or draining.
-    private Task[]? _runningWorkers;
-    private int _disposed;
+    private readonly object _lifecycle = new();
+    private WorkerRun? _run;
+    private bool _disposed;
 
     internal ConsumerDefinition<AmazonSqsConsumerOptions> Declaration
     {
@@ -85,46 +80,73 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
 
     internal Task StartAsync(CancellationToken token)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        token.ThrowIfCancellationRequested();
+        WorkerRun run;
 
-        if (_abort?.IsCancellationRequested == true || _workers.Any(worker => !worker.IsCompleted || worker.IsFaulted))
+        lock (_lifecycle)
         {
-            throw new InvalidOperationException("Recreate the host after an aborted SQS drain or stopped worker.");
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            token.ThrowIfCancellationRequested();
+
+            if (_run is { } previous)
+            {
+                if (previous.Abort.IsCancellationRequested || !previous.Started.Task.IsCompleted || !previous.Drain.IsCompletedSuccessfully)
+                {
+                    throw new InvalidOperationException("Recreate the host after an aborted SQS drain or stopped worker.");
+                }
+
+                if (!Volatile.Read(ref previous.Stopped))
+                {
+                    throw new InvalidOperationException("SQS consumer is already running.");
+                }
+
+                previous.Release();
+            }
+
+            run = new();
+            Volatile.Write(ref _run, run);
         }
 
-        if (Interlocked.CompareExchange(ref _runningWorkers, s_starting, null) is not null)
-        {
-            throw new InvalidOperationException("SQS consumer is already running.");
-        }
-
-        _poll?.Dispose();
-        _abort?.Dispose();
-        _poll = new();
-        _abort = new();
-        _workers = new Task[Declaration.Concurrency];
-        var requests = new ReceiveMessageRequest[_workers.Length];
+        Task[] workers = [];
+        var launched = 0;
 
         try
         {
+            var poll = run.Poll.Token;
+            var abort = run.Abort.Token;
+            var requests = new ReceiveMessageRequest[Declaration.Concurrency];
+
             for (var i = 0; i < requests.Length; i++)
             {
+                token.ThrowIfCancellationRequested();
+                poll.ThrowIfCancellationRequested();
                 requests[i] = CreateRequest();
             }
+
+            workers = new Task[requests.Length];
+
+            for (; launched < workers.Length; launched++)
+            {
+                token.ThrowIfCancellationRequested();
+                poll.ThrowIfCancellationRequested();
+                workers[launched] = RunAsync(launched, requests[launched], poll, abort);
+            }
+
+            token.ThrowIfCancellationRequested();
+            poll.ThrowIfCancellationRequested();
+            Volatile.Write(ref run.Workers, workers);
         }
-        catch
+        finally
         {
-            _workers = [];
-            Volatile.Write(ref _runningWorkers, null);
-            throw;
+            run.Drain = Task.WhenAll(workers.AsSpan(0, launched));
+
+            if (launched == 0)
+            {
+                Volatile.Write(ref run.Stopped, true);
+            }
+
+            run.Started.SetResult();
         }
 
-        for (var i = 0; i < _workers.Length; i++)
-        {
-            _workers[i] = RunAsync(i, requests[i], _poll.Token, _abort.Token);
-        }
-
-        Interlocked.CompareExchange(ref _runningWorkers, _workers, s_starting);
         return Task.CompletedTask;
     }
 
@@ -398,30 +420,61 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
 
     internal async Task StopAsync(CancellationToken token)
     {
-        if (_poll is null)
+        WorkerRun? run;
+
+        lock (_lifecycle)
+        {
+            run = _run;
+            run?.Retain();
+        }
+
+        if (run is null)
         {
             return;
         }
 
         try
         {
-            _poll.Cancel();
-            await Task.WhenAll(_workers).WaitAsync(token).ConfigureAwait(false);
+            await StopAsync(run, token).ConfigureAwait(false);
+        }
+        finally
+        {
+            run.Release();
+        }
+    }
+
+    private static async Task StopAsync(WorkerRun run, CancellationToken token)
+    {
+        try
+        {
+            if (!run.Poll.IsCancellationRequested)
+            {
+                run.Poll.Cancel();
+            }
+
+            // A host deadline can bypass the control gate while a worker is still starting.
+            await run.Started.Task.WaitAsync(token).ConfigureAwait(false);
+            await run.Drain.WaitAsync(token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            _abort!.Cancel();
+            if (!run.Abort.IsCancellationRequested)
+            {
+                run.Abort.Cancel();
+            }
+
             throw;
         }
         finally
         {
-            Volatile.Write(ref _runningWorkers, null);
+            Volatile.Write(ref run.Stopped, true);
         }
     }
 
     internal (bool IsIdle, DateTimeOffset LastProgressAt)? GetHealthState()
     {
-        if (!TrackHealth || Volatile.Read(ref _runningWorkers) is not { Length: > 0 } workers)
+        if (!TrackHealth || Volatile.Read(ref _run) is not { } run || Volatile.Read(ref run.Stopped) ||
+            Volatile.Read(ref run.Workers) is not { Length: > 0 } workers)
         {
             return null;
         }
@@ -457,21 +510,61 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        WorkerRun? run;
+
+        lock (_lifecycle)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            run = _run;
+            Volatile.Write(ref _run, null);
+        }
+
+        if (run is null)
         {
             return;
         }
 
-        _abort?.Cancel();
+        run.Abort.Cancel();
 
         try
         {
-            await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            await StopAsync(run, CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
-            _poll?.Dispose();
-            _abort?.Dispose();
+            run.Release();
+        }
+    }
+
+    private sealed class WorkerRun
+    {
+        // The consumer owns one reference. Each stop keeps the sources alive through cancellation and drain.
+        private int _references = 1;
+
+        internal readonly CancellationTokenSource Poll = new();
+        internal readonly CancellationTokenSource Abort = new();
+        internal readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal Task Drain = Task.CompletedTask;
+        internal Task[]? Workers;
+        internal bool Stopped;
+
+        internal void Retain()
+        {
+            Interlocked.Increment(ref _references);
+        }
+
+        internal void Release()
+        {
+            if (Interlocked.Decrement(ref _references) == 0)
+            {
+                Poll.Dispose();
+                Abort.Dispose();
+            }
         }
     }
 }

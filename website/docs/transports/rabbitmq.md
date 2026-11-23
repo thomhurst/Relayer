@@ -66,6 +66,8 @@ Null declaration properties mean no property expectation in `Validate`; they sel
 
 Validation does not publish probe messages, consume messages, bind queues or create missing entities. Missing entities close their individual native channels; checks continue on other channels so one missing entity does not hide another. `None` skips topology operations; hosted startup still opens the native connection.
 
+A passive declaration can renew an unused classic queue's expiration timer (`x-expires`). When RabbitMQ reads the queue's statistics for the declaration response, it renews the queue's lease. Use `None` if startup must leave queue expiration timers untouched and you manage topology outside Relayer. [RabbitMQ's passive declaration handler](https://github.com/rabbitmq/rabbitmq-server/blob/v4.1.4/deps/rabbit/src/rabbit_amqqueue_process.erl#L1425-L1428)
+
 ## Connection ownership and native configuration
 
 Each named registration owns one connection, created lazily during topology application or hosted startup. Resolving options, the adapter or `ITopology` does not connect. Host shutdown closes the connection. Other connections remain independent. Each topology operation disposes its channel; RabbitMQ.Client retains its own connection-level topology recovery records.
