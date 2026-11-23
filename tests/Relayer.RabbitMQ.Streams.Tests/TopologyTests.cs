@@ -144,6 +144,43 @@ public class TopologyTests
     }
 
     [Test]
+    public async Task Host_stop_closes_only_its_locator_after_shutdown_timeout_expires()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var broker = await RabbitMqStreamsTestBroker.Current.WaitAsync(token);
+        var isolation = TestContext.Current!.Isolation;
+        var ownedName = isolation.GetIsolatedName("owned-locator");
+        var independentName = isolation.GetIsolatedName("independent-locator");
+        var ownedConfiguration = broker.Configuration();
+        ownedConfiguration.ClientProvidedName = ownedName;
+        var independentConfiguration = broker.Configuration();
+        independentConfiguration.ClientProvidedName = independentName;
+        await using var independent = await StreamSystem.Create(independentConfiguration);
+        var host = new HostBuilder().ConfigureServices(services =>
+        {
+            services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromMilliseconds(250));
+            services.AddRelayer(builder => builder.RabbitMQStreams("streams", streams =>
+                streams.Options.Configure(options => options.Configuration = ownedConfiguration)));
+            // The host stops services in reverse registration order.
+            services.AddHostedService<WaitForShutdownTimeout>();
+        }).Build();
+        await using var hostLifetime = (IAsyncDisposable)host;
+        await host.StartAsync(token);
+
+        string[] listConnections = ["rabbitmq-streams", "list_stream_connections", "client_properties", "--formatter=json"];
+        var beforeStop = await broker.CommandAsync(listConnections, token);
+        await Assert.That(beforeStop).Contains(ownedName);
+        await Assert.That(beforeStop).Contains(independentName);
+
+        await host.StopAsync(token);
+
+        var afterStop = await broker.CommandAsync(listConnections, token);
+        await Assert.That(afterStop).DoesNotContain(ownedName);
+        await Assert.That(afterStop).Contains(independentName);
+    }
+
+    [Test]
     public async Task Locator_recovers_natively_after_connection_is_closed()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
@@ -181,6 +218,26 @@ public class TopologyTests
         await transport.StartAsync(token);
         await Assert.That(native.IsClosed).IsFalse();
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
+    }
+
+    private sealed class WaitForShutdownTimeout : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public async Task StopAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Leave the next hosted service to handle the expired shutdown token.
+            }
+        }
     }
 
     internal sealed class Broker(IContainer container) : IAsyncDisposable

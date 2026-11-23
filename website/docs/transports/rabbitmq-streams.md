@@ -46,7 +46,9 @@ services.AddRelayer(relayer => relayer.RabbitMQStreams("events", streams =>
 
 With application logging configured, the native client logs failed connection attempts, including the endpoint and exception, under the `RabbitMQ.Stream.Client.StreamSystem` category.
 
-Native operations do not accept a `CancellationToken`. Cancellation is checked before and after each operation; an in-flight operation finishes according to native connection/RPC timeouts before Relayer returns or disposes its connection. Set native timeouts for the deployment. Relayer never abandons a pending connection task.
+Native operations do not accept a `CancellationToken`. Startup and topology check cancellation around native calls and let in-flight calls finish according to native connection and RPC timeouts. Set native timeouts for the deployment. Relayer never abandons a pending connection task.
+
+Shutdown closes the owned system when no lifecycle or topology operation holds it, even if the host shutdown token has already expired. If another operation holds the system, shutdown honors cancellation while waiting for access. Once shutdown starts the native close, it awaits completion. Disposal waits for access and closes the system if it is still open.
 
 ## Topology modes
 

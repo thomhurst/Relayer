@@ -250,7 +250,11 @@ internal sealed class RabbitMqStreamsTransport : ITransport
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // Close an idle system even if an earlier hosted service used the shutdown budget.
+        if (!_lifecycle.Wait(0))
+        {
+            await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         try
         {
