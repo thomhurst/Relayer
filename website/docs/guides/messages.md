@@ -182,6 +182,8 @@ The serializer captures an immutable parser registry during construction and is 
 
 Empty Protobuf bodies represent default messages. Unknown fields follow the supplied parser's settings; for example, pass `OrderPlaced.Parser.WithDiscardUnknownFields(true)` to discard them. Malformed input throws the native `InvalidProtocolBufferException` and enters Relayer's normal deserialization failure policy.
 
+A Google.Protobuf `ExtensionRegistry` supplied through `WithExtensionRegistry(...)` remains application-owned. Finish configuring it before registering the parser and treat it as read-only afterward. If you plan to reuse and modify the registry, pass `registry.Clone()` to the parser.
+
 Only generated contracts implementing `IMessage<T>` and `IBufferMessage` are supported. There is no reflection fallback, runtime model generation, JSON conversion, or descriptor-based dispatch. Native AOT and trimming smoke coverage verifies generated buffer serialization and parsing; applications must also validate their own generated contracts and any custom parser factories. Protobuf JSON and reflection-based descriptor operations are outside this integration.
 
 ## Avro

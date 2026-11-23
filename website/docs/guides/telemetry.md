@@ -206,13 +206,17 @@ and `SendBatchAsync` compose spans without counting sends. Custom adapters call
 actually passed to that call. Do not also call `EndpointTelemetry.RecordSent` for
 the same messages.
 
-Kafka and Service Bus also record `messaging.client.operation.duration` in seconds
+Kafka, Service Bus and Pub/Sub also record `messaging.client.operation.duration` in seconds
 for each actual native send call, from invocation through acknowledgement or failure.
 This includes native retries and works without an activity listener. A homogeneous Kafka
 batch records one duration for `ProduceAllAsync`; a Kafka batch containing tombstones
 uses individual native sends and records each completion. Mixed destinations are measured
 at their native send boundaries. Service Bus records each `SendMessageAsync` or
 `SendMessagesAsync` call, including each batch split by size, session or partition.
+Pub/Sub records each publish call the native topic publisher makes after forming a
+request. One Relayer batch can produce several requests, and overlapping individual
+sends can share a request. Publishes through `IGooglePubSubClients.PublisherFor(topic)`
+also use this timing. Calls made directly on the caller-owned `PublisherApi` bypass it.
 The logical batch span can cover several native calls, so its duration can differ.
 
 Durations carry `messaging.system`, `messaging.operation.name = "send"` and

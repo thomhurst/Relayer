@@ -5,6 +5,7 @@
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../tests/Shared/SendDurationCapture.cs" Link="Fixtures/SendDurationCapture.cs" />
     <PackageReference Include="TUnit" />
     <PackageReference Include="Testcontainers" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
