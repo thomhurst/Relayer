@@ -140,5 +140,10 @@ internal sealed class RabbitMqTopology
             differences.Add($"{entity}: {error.ShutdownReason.ReplyText}. Reconcile the declaration through infrastructure configuration; Relayer never deletes or modifies existing entities.");
             return false;
         }
+        catch (WireFormattingException error)
+        {
+            differences.Add($"{entity}: RabbitMQ.Client could not encode the declaration arguments. {error.Message}");
+            return false;
+        }
     }
 }

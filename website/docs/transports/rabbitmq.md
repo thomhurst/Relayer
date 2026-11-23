@@ -44,6 +44,8 @@ Run the application host to apply topology during startup. Relayer declares exch
 
 Unspecified exchange properties provision a durable, non-auto-delete direct exchange. Unspecified queue properties provision a durable, non-exclusive, non-auto-delete queue. Specify native arguments directly, including DLX and queue-type arguments. RabbitMQ owns routing and dead-lettering. Native DLX settlement cannot retain Relayer error metadata; the default policy uses a confirmed dead-letter copy before acknowledging the source.
 
+If RabbitMQ.Client cannot encode an argument value, the startup report identifies the affected exchange, queue, or binding and includes the client's error. Relayer keeps any differences it already found and continues with the remaining declarations. For example, set `x-message-ttl` to an integer number of milliseconds such as `5000`.
+
 Queues need explicit names. Server-generated queue names and binding the default exchange are not supported by these declarations. Routing keys may be empty. Exchange and queue names occupy separate namespaces.
 
 ## Validate existing entities

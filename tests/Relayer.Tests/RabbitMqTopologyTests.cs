@@ -233,6 +233,65 @@ public class RabbitMqTopologyTests
         }
     }
 
+    [Test]
+    public async Task Provision_reports_native_argument_encoding_errors_and_continues()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        await using var broker = await Broker.StartAsync(token);
+        await using var connection = await broker.Factory().CreateConnectionAsync(token);
+        await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
+        await channel.ExchangeDeclareAsync("events", ExchangeType.Direct, true, false, cancellationToken: token);
+        var invalidArguments = new Dictionary<string, object?>
+        {
+            ["x-message-ttl"] = TimeSpan.FromSeconds(5),
+        };
+
+        var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder =>
+            builder.RabbitMQ("rabbit", rabbit =>
+            {
+                rabbit.TopologyMode = TopologyMode.Provision;
+                rabbit.Options.Configure(options =>
+                {
+                    options.ConnectionFactory = broker.Factory();
+                    options.Exchanges.Add(new("events")
+                    {
+                        Type = ExchangeType.Fanout,
+                    });
+                    options.Exchanges.Add(new("invalid-exchange")
+                    {
+                        Arguments = invalidArguments,
+                    });
+                    options.Queues.Add(new("timed")
+                    {
+                        Arguments = invalidArguments,
+                    });
+                    options.Queues.Add(new("later"));
+                    options.Bindings.Add(new("later", "events", "placed")
+                    {
+                        Arguments = invalidArguments,
+                    });
+                });
+            }))).Build();
+        await using var hostLifetime = (IAsyncDisposable)host;
+        var failure = await Assert.That(async () => await host.StartAsync(token)).Throws<OptionsValidationException>();
+        var differences = failure!.Failures.ToArray();
+
+        await Assert.That(differences.Length).IsEqualTo(4);
+        await Assert.That(differences[0]).Contains("Exchange 'events'");
+        await Assert.That(differences[0]).Contains("inequivalent arg 'type'");
+        await Assert.That(differences[1]).Contains("Exchange 'invalid-exchange'");
+        await Assert.That(differences[2]).Contains("Queue 'timed'");
+        await Assert.That(differences[3]).Contains("Binding 'events' -> 'later' (placed)");
+
+        foreach (var difference in differences.Skip(1))
+        {
+            await Assert.That(difference).Contains("Value of type 'TimeSpan' cannot appear as table value");
+        }
+
+        await channel.QueueDeclarePassiveAsync("later", token);
+    }
+
     private static async Task<ushort> QueueErrorAsync(IConnection connection, string queue, CancellationToken token)
     {
         await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
