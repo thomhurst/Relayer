@@ -19,20 +19,19 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
     private readonly List<BufferedOutboxMessage> _sharedRows = [];
     private static readonly Comparison<BufferedOutboxMessage> s_sendOrder = static (left, right) => left.EnqueueOrder.CompareTo(right.EnqueueOrder);
 
-    private OutboxConfiguration? _activeConfiguration;
+    private OutboxContext? _activeContext;
 
-    public bool SupportsScheduling => _activeConfiguration?.SupportsScheduling ?? supportsScheduling;
+    public bool SupportsScheduling => _activeContext?.SupportsScheduling ?? supportsScheduling;
 
-    public bool SupportsOrderedScheduling => _activeConfiguration?.SupportsOrderedScheduling ?? supportsOrderedScheduling;
+    public bool SupportsOrderedScheduling => _activeContext?.SupportsOrderedScheduling ?? supportsOrderedScheduling;
 
     public bool IsActive
     {
         get
         {
-            // Sender already resolves the active target. Cache its immutable dispatch settings without another context scan.
-            var target = Target();
-            _activeConfiguration = target?.Configuration;
-            return target is not null;
+            // Sender already resolves the active target. Keep it for scheduling checks without another context scan.
+            _activeContext = Target();
+            return _activeContext is not null;
         }
     }
 
@@ -218,6 +217,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
             if (state.Count != 0)
             {
                 state.Configuration.ValidateTransaction(transaction);
+                state.ValidateScheduledCommit(transaction);
                 participants++;
             }
         }
@@ -333,9 +333,9 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
 
         bool IOutboxEnlistment.IsActive => !_disposed;
 
-        bool IOutboxEnlistment.SupportsScheduling => State.Configuration.SupportsScheduling;
+        bool IOutboxEnlistment.SupportsScheduling => State.SupportsScheduling;
 
-        bool IOutboxEnlistment.SupportsOrderedScheduling => State.Configuration.SupportsOrderedScheduling;
+        bool IOutboxEnlistment.SupportsOrderedScheduling => State.SupportsOrderedScheduling;
 
         ValueTask IOutboxEnlistment.EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
@@ -381,6 +381,10 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
 
 internal sealed class OutboxContext(DbContext context, OutboxConfiguration configuration)
 {
+    private const string SchedulingError = "Scheduled EF Core outbox sends require a matching due-row dispatch worker for the selected DbContext database, schema, table prefix and ordered lane count. Register matching maintenance or ordered dispatch for that store.";
+    private (bool Unordered, bool Ordered) _scheduled;
+    private (bool Unordered, bool Ordered) _savedScheduled;
+
     internal DbContext Context
     {
         get;
@@ -390,6 +394,10 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
     {
         get;
     } = configuration;
+
+    internal bool SupportsScheduling => GetScheduling().Unordered;
+
+    internal bool SupportsOrderedScheduling => GetScheduling().Ordered;
 
     internal DbTransaction? Transaction
     {
@@ -484,6 +492,7 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
     internal void Saved()
     {
         _savedCount = Count;
+        _savedScheduled = _scheduled;
         Saving = false;
         CreatingSavepoint = false;
         SavepointCreated = false;
@@ -523,6 +532,7 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         }
 
         Count = _savedCount;
+        _scheduled = _savedScheduled;
     }
 
     internal bool FinishFailedSave()
@@ -586,6 +596,27 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         }
     }
 
+    private (bool Unordered, bool Ordered) GetScheduling()
+    {
+        return Configuration.GetScheduling(Transaction?.Connection ?? Context.Database.GetDbConnection());
+    }
+
+    internal void ValidateScheduledCommit(DbTransaction transaction)
+    {
+        if (_scheduled == default)
+        {
+            return;
+        }
+
+        // A pending selection can buffer sends before EF opens the committing connection.
+        var (unordered, ordered) = Configuration.GetScheduling(transaction.Connection!);
+
+        if ((_scheduled.Unordered && !unordered) || (_scheduled.Ordered && !ordered))
+        {
+            throw new InvalidOperationException(SchedulingError);
+        }
+    }
+
     internal void Add(OutboxRecord record, long enqueueOrder)
     {
         if (Failed)
@@ -593,10 +624,11 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
             throw new InvalidOperationException("Roll back the failed outbox transaction before sending again.");
         }
 
-        if (record.Message.DeliverAt is not null && !(record.Message.OrderingKey is not null
-                ? Configuration.SupportsOrderedScheduling : Configuration.SupportsScheduling))
+        var scheduled = record.Message.DeliverAt is not null;
+
+        if (scheduled && !(record.Message.OrderingKey is not null ? SupportsOrderedScheduling : SupportsScheduling))
         {
-            throw new InvalidOperationException("Scheduled EF Core outbox sends require a matching due-row dispatch worker for the selected DbContext schema, table prefix and ordered lane count. Register matching maintenance or ordered dispatch for that store.");
+            throw new InvalidOperationException(SchedulingError);
         }
 
         if (Configuration.TenantBinding is { } tenant)
@@ -622,6 +654,18 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         Rows[Count].Copy(record, Configuration.Lanes);
         Rows[Count].EnqueueOrder = enqueueOrder;
         Count++;
+
+        if (scheduled)
+        {
+            if (record.Message.OrderingKey is null)
+            {
+                _scheduled.Unordered = true;
+            }
+            else
+            {
+                _scheduled.Ordered = true;
+            }
+        }
     }
 
     internal void Clear()
@@ -633,6 +677,8 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
 
         Count = 0;
         _savedCount = 0;
+        _scheduled = default;
+        _savedScheduled = default;
         Saving = false;
         CreatingSavepoint = false;
         SavepointCreated = false;

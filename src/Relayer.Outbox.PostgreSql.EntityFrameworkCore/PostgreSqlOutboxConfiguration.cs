@@ -28,6 +28,10 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
     private readonly string? _schema;
     private readonly string _tablePrefix;
     private readonly PostgreSqlLocalStore[] _localStores;
+    private readonly IEnumerable<PostgreSqlSchedulingRegistration> _workers;
+    private readonly bool _hasSchedulingWorkers;
+    private (string? ConnectionString, string? Database) _schedulingTarget;
+    private (bool Unordered, bool Ordered) _writerScheduling;
     private string? _validatedWriterConnectionString;
 
     internal PostgreSqlOutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null,
@@ -62,11 +66,9 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
         dispatcher?.ValidateStore(options.Schema, options.TablePrefix);
         Dispatcher = dispatcher;
 
-        if (workers is not null)
-        {
-            (SupportsScheduling, SupportsOrderedScheduling) =
-                PostgreSqlSchedulingRegistration.GetCapabilities(workers, options.Schema, options.TablePrefix, options.Lanes);
-        }
+        _workers = workers ?? [];
+        _hasSchedulingWorkers = PostgreSqlSchedulingRegistration.GetCapabilities(
+            _workers, _schema, _tablePrefix, Lanes) != default;
 
         var inbox = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "inbox");
@@ -128,6 +130,26 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
     internal override OutboxConfiguration? FindConfiguration(IDbContextOptions options)
     {
         return options.FindExtension<PostgreSqlOutboxConfiguration>();
+    }
+
+    internal override (bool Unordered, bool Ordered) GetScheduling(DbConnection writer)
+    {
+        if (!_hasSchedulingWorkers)
+        {
+            return default;
+        }
+
+        var connection = (NpgsqlConnection)writer;
+        var target = (connection.ConnectionString, connection.Database);
+
+        if (target != _schedulingTarget)
+        {
+            _writerScheduling = PostgreSqlSchedulingRegistration.GetCapabilities(
+                _workers, _schema, _tablePrefix, Lanes, connection);
+            _schedulingTarget = target;
+        }
+
+        return _writerScheduling;
     }
 
     internal override void ValidateTransaction(DbTransaction transaction)

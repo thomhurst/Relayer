@@ -70,15 +70,7 @@ internal abstract class OutboxConfiguration : IDbContextOptionsExtension
         get; init;
     }
 
-    internal bool SupportsScheduling
-    {
-        get; init;
-    }
-
-    internal bool SupportsOrderedScheduling
-    {
-        get; init;
-    }
+    internal abstract (bool Unordered, bool Ordered) GetScheduling(DbConnection writer);
 
     internal abstract void ValidateProvider(string? providerName);
 
