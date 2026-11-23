@@ -211,6 +211,7 @@ internal sealed partial class SqsSendTransport : ITransport, ITransportSendTraci
         }
 
         var differences = new List<string>();
+        var capabilitiesRefreshed = false;
 
         foreach (var endpoint in _endpoints.Values)
         {
@@ -267,10 +268,14 @@ internal sealed partial class SqsSendTransport : ITransport, ITransportSendTraci
                 {
                     MaxMessageBytes = long.Parse(maximum, CultureInfo.InvariantCulture)
                 };
+                capabilitiesRefreshed = true;
             }
         }
 
-        return new(differences);
+        return new(differences)
+        {
+            CapabilitiesRefreshed = capabilitiesRefreshed
+        };
     }
 
     private static bool AttributeEquals(string name, string expected, string actual)
@@ -645,14 +650,6 @@ internal sealed partial class SqsSendTransport : ITransport, ITransportSendTraci
                 MaxRedeliveryDelay = TimeSpan.FromSeconds(SqsSettlement.MaxVisibilitySeconds - 1),
                 MaxDeliveryDelay = Fifo ? null : TimeSpan.FromMinutes(15)
             };
-
-            if (declaration.Attributes?.TryGetValue("MaximumMessageSize", out var maximum) == true)
-            {
-                Capabilities = Capabilities with
-                {
-                    MaxMessageBytes = long.Parse(maximum, CultureInfo.InvariantCulture)
-                };
-            }
         }
 
         internal CreateQueueRequest Declaration

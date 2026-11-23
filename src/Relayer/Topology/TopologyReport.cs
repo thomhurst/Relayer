@@ -17,6 +17,11 @@ public sealed class TopologyReport
         Differences = Array.AsReadOnly(snapshot);
     }
 
+    internal bool CapabilitiesRefreshed
+    {
+        get; init;
+    }
+
     /// <summary>Actionable, native entity differences; provisioning must report anything it could not reconcile.</summary>
     public IReadOnlyList<string> Differences
     {

@@ -6,7 +6,7 @@ using Relayer.Transports;
 namespace Relayer;
 
 internal sealed class TopologyStartupService(RelayerConfiguration configuration, IServiceProvider services,
-    RelayerConfigurationValidator validator) : IHostedLifecycleService
+    RelayerConfigurationValidator validator, EndpointCapabilityCache capabilities) : IHostedLifecycleService
 {
     public async Task StartingAsync(CancellationToken cancellationToken)
     {
@@ -30,6 +30,11 @@ internal sealed class TopologyStartupService(RelayerConfiguration configuration,
             {
                 var report = await adapter.ApplyTopologyAsync(mode, cancellationToken).ConfigureAwait(false)
                     ?? throw new InvalidOperationException("ApplyTopologyAsync must return a TopologyReport.");
+
+                if (report.CapabilitiesRefreshed)
+                {
+                    capabilities.Invalidate(adapter);
+                }
 
                 foreach (var difference in report.Differences)
                 {
