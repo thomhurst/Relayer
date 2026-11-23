@@ -119,6 +119,34 @@ public class AvroSerializerTests
     }
 
     [Test]
+    [Arguments(SubjectNameStrategy.AssociatedName, false)]
+    [Arguments(SubjectNameStrategy.TopicName, true)]
+    public async Task Synchronous_custom_subject_strategy_overrides_asynchronous_configuration(
+        SubjectNameStrategy subjectStrategy, bool setAsyncStrategy)
+    {
+        using var responses = new AvroRegistryResponses();
+        using var client = new SchemaRegistryClient(new()
+        {
+            Url = "http://registry"
+        }, responses);
+        var asyncStrategy = setAsyncStrategy ? new AssociatedNameStrategy(client) : null;
+        await Assert.That(() => Create(client, new()
+        {
+            SubjectNameStrategy = subjectStrategy,
+            AsyncSubjectNameStrategy = asyncStrategy
+        })).Throws<NotSupportedException>();
+
+        await using var serializer = Create(client, new()
+        {
+            SubjectNameStrategy = subjectStrategy,
+            AsyncSubjectNameStrategy = asyncStrategy,
+            CustomSubjectNameStrategy = SubjectNameStrategies.Record
+        });
+        await serializer.InitializeAsync(default);
+        await Assert.That(responses.SubjectPath).IsEqualTo("/subjects/relayer.tests.Order");
+    }
+
+    [Test]
     public async Task Fixed_schema_ID_looks_up_native_schema_at_startup()
     {
         using var responses = new AvroRegistryResponses();
