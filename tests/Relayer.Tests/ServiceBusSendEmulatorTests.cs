@@ -421,7 +421,8 @@ public class ServiceBusSendEmulatorTests
                 {
                     RequiresSession = true
                 });
-                trustedOptions.TrustedSessionEntities.Add("send-sessions");
+                trustedOptions.TrustedSessionEntities.Add("SEND-SESSIONS");
+                ServiceBusSendTransport.ValidateDeclarations("trusted", trustedOptions, ["send-sessions"]);
                 await using var trusted = new ServiceBusSendTransport("trusted", client, false, trustedOptions,
                     ["send-sessions"], mode);
                 await Assert.That((await trusted.ApplyTopologyAsync(mode, token)).Differences.Count).IsEqualTo(0);

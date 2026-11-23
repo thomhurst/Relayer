@@ -572,9 +572,11 @@ public class ServiceBusSendTests
     }
 
     [Test]
-    [Arguments(TopologyMode.Validate)]
-    [Arguments(TopologyMode.None)]
-    public async Task Trusted_session_queue_supports_typed_ordered_sends_and_outbox_lanes(TopologyMode mode)
+    [Arguments(TopologyMode.Validate, "orders")]
+    [Arguments(TopologyMode.Validate, "ORDERS")]
+    [Arguments(TopologyMode.None, "orders")]
+    [Arguments(TopologyMode.None, "ORDERS")]
+    public async Task Trusted_session_queue_supports_typed_ordered_sends_and_outbox_lanes(TopologyMode mode, string trustedQueue)
     {
         var client = new NativeClient();
         var admin = new NativeAdministration();
@@ -595,7 +597,7 @@ public class ServiceBusSendTests
                     {
                         RequiresSession = true
                     });
-                    options.TrustedSessionEntities.Add("orders");
+                    options.TrustedSessionEntities.Add(trustedQueue);
                 });
                 bus.Send<First>("ORDERS", route => route.OrderingKey(static _ => "customer"));
             });
@@ -622,7 +624,7 @@ public class ServiceBusSendTests
     {
         var client = new NativeClient();
         var options = Options(client);
-        options.Subscriptions.Add(new("events", "audit")
+        options.Subscriptions.Add(new("Events", "audit")
         {
             RequiresSession = true
         });
@@ -630,7 +632,7 @@ public class ServiceBusSendTests
         {
             RequiresSession = true
         });
-        options.TrustedSessionEntities.Add("events/Subscriptions/audit");
+        options.TrustedSessionEntities.Add("EVENTS/SUBSCRIPTIONS/AUDIT");
 
         await using (var partial = new ServiceBusSendTransport("bus", client, false, options, ["EVENTS"], mode))
         {
@@ -638,6 +640,7 @@ public class ServiceBusSendTests
         }
 
         options.TrustedSessionEntities.Add("events/Subscriptions/billing");
+        ServiceBusSendTransport.ValidateDeclarations("bus", options, ["EVENTS"]);
         await using var trusted = new ServiceBusSendTransport("bus", client, false, options, ["EVENTS"], mode);
         await Assert.That(trusted.GetCapabilities("EVENTS").OrderedByKey).IsTrue();
         var report = await trusted.ApplyTopologyAsync(mode, default);

@@ -45,6 +45,49 @@ public sealed class ServiceBusImpliedTopologyTests
     }
 
     [Test]
+    [Arguments("events", "billing")]
+    [Arguments("EVENTS", "billing")]
+    [Arguments("events", "BILLING")]
+    [Arguments("EVENTS", "BILLING")]
+    public async Task None_reuses_the_explicit_subscription_and_checks_its_delivery_limit(string topic, string subscription)
+    {
+        var client = new NativeClient();
+        var services = new ServiceCollection();
+        services.AddSingleton<Control>();
+        services.AddRelayer(builder =>
+        {
+            builder.Infrastructure().MessageTypes.Add<Payload>("servicebus.receive-test");
+            builder.UseJsonSerializer(ServiceBusReceiveTestJson.Default);
+            builder.ServiceBus("bus", bus =>
+            {
+                bus.TopologyMode = TopologyMode.None;
+                bus.Options.Configure(options =>
+                {
+                    options.Client = client;
+                    options.Topics.Add(new("events"));
+                    options.Subscriptions.Add(new("events", "billing")
+                    {
+                        MaxDeliveryCount = 1
+                    });
+                });
+                bus.Consume(topic, consumer =>
+                {
+                    consumer.Handler<Handler>().Failures(new()
+                    {
+                        RedeliveryDelays = [TimeSpan.Zero]
+                    });
+                    consumer.Options.Subscription = subscription;
+                });
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+
+        await Assert.That(async () => await Start(provider)).Throws<InvalidOperationException>()
+            .WithMessageContaining("declared MaxDeliveryCount is 1");
+        await Assert.That(client.Processors.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task None_consumers_imply_their_queue_subscription_and_session_requirement()
     {
         var client = new NativeClient();

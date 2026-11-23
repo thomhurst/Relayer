@@ -86,7 +86,11 @@ public sealed class ServiceBusReceiveTopologyTests
     }
 
     [Test]
-    public async Task Trusted_session_subscription_still_validates_a_declared_consumers_Listen_link()
+    [Arguments("events", "audit")]
+    [Arguments("EVENTS", "audit")]
+    [Arguments("events", "AUDIT")]
+    [Arguments("EVENTS", "AUDIT")]
+    public async Task Trusted_session_subscription_still_validates_a_declared_consumers_Listen_link(string topic, string name)
     {
         var client = new ListenClient();
         var options = new ServiceBusTransportOptions { Client = client };
@@ -96,11 +100,17 @@ public sealed class ServiceBusReceiveTopologyTests
             RequiresSession = true
         });
         options.TrustedSessionEntities.Add("events/Subscriptions/audit");
-        var subscription = new ConsumerDefinition<ServiceBusConsumerOptions>("events", new()
+        var subscription = new ConsumerDefinition<ServiceBusConsumerOptions>(topic, new()
         {
-            Subscription = "audit"
+            Subscription = name,
+            SessionProcessorOptions = new()
+            {
+                AutoCompleteMessages = false,
+                MaxConcurrentSessions = 1
+            }
         },
             [], 1, 1, TimeSpan.FromMilliseconds(100));
+        ServiceBusConsumer.ValidateDeclaration("listen", options, subscription);
         await using var transport = new ServiceBusSendTransport("listen", client, false, options, [], TopologyMode.Validate,
             consumers: [subscription]);
         var report = await transport.ApplyTopologyAsync(TopologyMode.Validate, default);

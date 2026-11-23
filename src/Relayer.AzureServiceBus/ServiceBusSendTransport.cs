@@ -64,9 +64,10 @@ internal sealed partial class ServiceBusSendTransport : ITransport, ITransportSe
 
         foreach (var entity in options.TrustedSessionEntities)
         {
-            if (options.Topics.Any(topic => topic.Name == entity))
+            if (options.Topics.Any(topic => string.Equals(topic.Name, entity, StringComparison.OrdinalIgnoreCase)))
             {
-                if (options.Subscriptions.FirstOrDefault(subscription => subscription.TopicName == entity && !subscription.RequiresSession) is { } plain)
+                if (options.Subscriptions.FirstOrDefault(subscription =>
+                    string.Equals(subscription.TopicName, entity, StringComparison.OrdinalIgnoreCase) && !subscription.RequiresSession) is { } plain)
                 {
                     throw new InvalidOperationException($"Service Bus transport '{name}': TrustedSessionEntities entry '{entity}' asserts that every subscription requires sessions, but subscription '{entity}/Subscriptions/{plain.SubscriptionName}' is declared with RequiresSession=false.");
                 }
@@ -74,25 +75,28 @@ internal sealed partial class ServiceBusSendTransport : ITransport, ITransportSe
                 continue;
             }
 
-            if (!options.Queues.Any(queue => queue.Name == entity && queue.RequiresSession) &&
-                !options.Subscriptions.Any(subscription => subscription.TopicName + "/Subscriptions/" + subscription.SubscriptionName == entity && subscription.RequiresSession))
+            if (!options.Queues.Any(queue => string.Equals(queue.Name, entity, StringComparison.OrdinalIgnoreCase) && queue.RequiresSession) &&
+                !options.Subscriptions.Any(subscription => subscription.RequiresSession &&
+                    string.Equals(subscription.TopicName + "/Subscriptions/" + subscription.SubscriptionName, entity, StringComparison.OrdinalIgnoreCase)))
             {
                 throw new InvalidOperationException($"Service Bus transport '{name}': TrustedSessionEntities entry '{entity}' needs a native topic declaration, or a native queue or subscription declaration with RequiresSession=true.");
             }
         }
 
-        var subscriptions = new HashSet<(string, string)>();
+        var subscriptions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var subscription in options.Subscriptions)
         {
-            if (!options.Topics.Any(topic => topic.Name == subscription.TopicName))
+            if (!options.Topics.Any(topic => string.Equals(topic.Name, subscription.TopicName, StringComparison.OrdinalIgnoreCase)))
             {
                 throw new InvalidOperationException($"Service Bus transport '{name}': declare topic '{subscription.TopicName}' for subscription '{subscription.SubscriptionName}'.");
             }
 
-            if (!subscriptions.Add((subscription.TopicName, subscription.SubscriptionName)))
+            var entity = subscription.TopicName + "/Subscriptions/" + subscription.SubscriptionName;
+
+            if (!subscriptions.Add(entity))
             {
-                throw new InvalidOperationException($"Service Bus transport '{name}': duplicate subscription '{subscription.TopicName}/Subscriptions/{subscription.SubscriptionName}'.");
+                throw new InvalidOperationException($"Service Bus transport '{name}': duplicate subscription '{entity}'. Topic and subscription names are case-insensitive.");
             }
         }
     }
@@ -132,8 +136,8 @@ internal sealed partial class ServiceBusSendTransport : ITransport, ITransportSe
             var ordered = queue is not null
                 ? queue.RequiresSession && (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(entityName))
                 : options.TrustedSessionEntities.Contains(entityName) ||
-                  options.Subscriptions.Any(item => item.TopicName == entityName) &&
-                  options.Subscriptions.Where(item => item.TopicName == entityName).All(item => item.RequiresSession &&
+                  options.Subscriptions.Any(item => string.Equals(item.TopicName, entityName, StringComparison.OrdinalIgnoreCase)) &&
+                  options.Subscriptions.Where(item => string.Equals(item.TopicName, entityName, StringComparison.OrdinalIgnoreCase)).All(item => item.RequiresSession &&
                       (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(item.TopicName + "/Subscriptions/" + item.SubscriptionName)));
             var endpoint = new Endpoint(client.CreateSender(destination), SubjectHeaders(options, destination, routes), IdHeaders(destination, routes),
                 RouteCallbacks(name, destination, routes, types), new()
@@ -166,7 +170,7 @@ internal sealed partial class ServiceBusSendTransport : ITransport, ITransportSe
         // An implied declaration has SDK defaults, which say nothing about the broker's actual limit.
         int? limit = subscription is null
             ? _declaredOptions.FindQueue(source)?.MaxDeliveryCount
-            : _declaredOptions.Subscriptions.SingleOrDefault(item => item.TopicName == source && item.SubscriptionName == subscription)?.MaxDeliveryCount;
+            : _declaredOptions.FindSubscription(source, subscription)?.MaxDeliveryCount;
 
         if (limit <= nativeRedeliveries)
         {

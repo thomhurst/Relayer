@@ -61,7 +61,8 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
 
             if (mode == TopologyMode.Validate)
             {
-                if (consumers?.Any(consumer => consumer.Source == topic.Name) != true || destinations?.Contains(topic.Name, StringComparer.OrdinalIgnoreCase) == true)
+                if (consumers?.Any(consumer => string.Equals(consumer.Source, topic.Name, StringComparison.OrdinalIgnoreCase)) != true ||
+                    destinations?.Contains(topic.Name, StringComparer.OrdinalIgnoreCase) == true)
                 {
                     await ValidateSendAsync(topic.Name, differences, cancellationToken).ConfigureAwait(false);
                 }
@@ -82,8 +83,10 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
                 var trusted = subscription.RequiresSession &&
                     (options.TrustedSessionEntities.Contains(entity) || options.TrustedSessionEntities.Contains(subscription.TopicName));
                 // A send-only identity cannot inspect subscriptions. Trusted send declarations belong to external topology.
-                if (!trusted || consumers?.Any(consumer => consumer.Source == subscription.TopicName &&
-                    consumer is ConsumerDefinition<ServiceBusConsumerOptions> receive && receive.Options.Subscription == subscription.SubscriptionName) == true)
+                if (!trusted || consumers?.Any(consumer =>
+                    string.Equals(consumer.Source, subscription.TopicName, StringComparison.OrdinalIgnoreCase) &&
+                    consumer is ConsumerDefinition<ServiceBusConsumerOptions> receive &&
+                    string.Equals(receive.Options.Subscription, subscription.SubscriptionName, StringComparison.OrdinalIgnoreCase)) == true)
                 {
                     await ValidateReceiveAsync(subscription.TopicName, subscription.SubscriptionName, differences, cancellationToken).ConfigureAwait(false);
                 }
@@ -119,7 +122,7 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
         await foreach (var subscription in Administration.GetSubscriptionsAsync(topic, cancellationToken).ConfigureAwait(false))
         {
             // Declared subscriptions are already compared against their own declaration.
-            if (subscription.RequiresSession || options.Subscriptions.Any(item => item.TopicName == topic && item.SubscriptionName == subscription.SubscriptionName))
+            if (subscription.RequiresSession || options.FindSubscription(topic, subscription.SubscriptionName) is not null)
             {
                 continue;
             }

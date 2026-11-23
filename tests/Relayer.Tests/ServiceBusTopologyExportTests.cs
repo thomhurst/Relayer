@@ -273,7 +273,7 @@ public sealed class ServiceBusTopologyExportTests
                     options.Topics.Add(new("QUEUE"));
                     break;
                 case "case-subscriptions":
-                    options.Subscriptions.Add(new("topic", "SUBSCRIPTION"));
+                    options.Subscriptions.Add(new("TOPIC", "SUBSCRIPTION"));
                     break;
                 case "duplicate-subscription":
                     options.Subscriptions.Add(new("topic", "subscription"));
@@ -341,20 +341,26 @@ public sealed class ServiceBusTopologyExportTests
     }
 
     [Test]
-    public async Task Consumer_subscription_and_queue_entities_export_without_runtime_processors()
+    [Arguments(ServiceBusTopologyFormat.Bicep, "topic", "topic", "sub")]
+    [Arguments(ServiceBusTopologyFormat.Bicep, "topic", "TOPIC", "SUB")]
+    [Arguments(ServiceBusTopologyFormat.Terraform, "Topic", "TOPIC", "SUB")]
+    public async Task Consumer_subscription_and_queue_entities_export_without_runtime_processors(
+        ServiceBusTopologyFormat format, string declaredParent, string topic, string subscription)
     {
         var options = new ServiceBusTransportOptions();
         options.Queues.Add(new("queue"));
         options.Topics.Add(new("topic"));
-        options.Subscriptions.Add(new("topic", "sub"));
+        options.Subscriptions.Add(new(declaredParent, "sub"));
         var topology = new DeclarationTopology(new("bus", typeof(ServiceBusTransportOptions), [],
             [new ConsumerDefinition<ServiceBusConsumerOptions>("queue", new(), [], 1, 1, TimeSpan.FromMilliseconds(100)),
-             new ConsumerDefinition<ServiceBusConsumerOptions>("topic", new() { Subscription = "sub" }, [], 1, 1, TimeSpan.FromMilliseconds(100))],
+             new ConsumerDefinition<ServiceBusConsumerOptions>(topic, new() { Subscription = subscription }, [], 1, 1, TimeSpan.FromMilliseconds(100))],
             null, (_, _) =>
             {
             }));
-        var output = Export(new(topology, new OptionsMonitor(options)), ServiceBusTopologyFormat.Bicep);
-        await Assert.That(output).Contains("name: 'sub'");
+        var output = Export(new(topology, new OptionsMonitor(options)), format);
+        var resource = ResourceBody(output, "subscription2", format);
+        await Assert.That(resource).Contains(format == ServiceBusTopologyFormat.Bicep ? "name: 'sub'" : "name      = \"sub\"");
+        await Assert.That(resource).Contains(format == ServiceBusTopologyFormat.Bicep ? "parent: topic1" : "parent_id = azapi_resource.topic1.id");
     }
 
     private static ServiceProvider Provider(Action<ServiceBusTransportOptions> configure)

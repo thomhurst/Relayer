@@ -41,12 +41,12 @@ public sealed class ServiceBusTransportOptions
     /// Entity names whose native RequiresSession=true declarations are trusted in Validate and None modes.
     /// Use a queue name, "topic/Subscriptions/subscription", or a declared topic name to assert that every subscription
     /// on that topic, including ones other applications own, requires sessions. Provision still verifies native settings.
-    /// This assertion does not enable sessions at the broker.
+    /// Names match case-insensitively. This assertion does not enable sessions at the broker.
     /// </summary>
     public ISet<string> TrustedSessionEntities
     {
         get;
-    } = new HashSet<string>(StringComparer.Ordinal);
+    } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Native topic declarations. Names match send destinations case-insensitively.</summary>
     public IList<CreateTopicOptions> Topics
@@ -74,7 +74,7 @@ public sealed class ServiceBusTransportOptions
         get; set;
     } = true;
 
-    /// <summary>Native subscriptions to provision independently of receive composition.</summary>
+    /// <summary>Native subscriptions to provision independently of receive composition. Topic and subscription names match case-insensitively.</summary>
     public IList<CreateSubscriptionOptions> Subscriptions
     {
         get;
@@ -137,12 +137,12 @@ public sealed class ServiceBusTransportOptions
                 continue;
             }
 
-            if (!implied.Declares(consumer.Source, StringComparison.Ordinal))
+            if (!implied.Declares(consumer.Source, StringComparison.OrdinalIgnoreCase))
             {
                 implied.Topics.Add(new(consumer.Source));
             }
 
-            if (!implied.Subscriptions.Any(item => item.TopicName == consumer.Source && item.SubscriptionName == subscription))
+            if (implied.FindSubscription(consumer.Source, subscription) is null)
             {
                 implied.Subscriptions.Add(new(consumer.Source, subscription)
                 {
@@ -172,6 +172,13 @@ public sealed class ServiceBusTransportOptions
     internal CreateQueueOptions? FindQueue(string entity)
     {
         return Queues.SingleOrDefault(queue => string.Equals(queue.Name, entity, StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal CreateSubscriptionOptions? FindSubscription(string topic, string subscription)
+    {
+        return Subscriptions.FirstOrDefault(item =>
+            string.Equals(item.TopicName, topic, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(item.SubscriptionName, subscription, StringComparison.OrdinalIgnoreCase));
     }
 
     private bool Declares(string entity, StringComparison comparison)
