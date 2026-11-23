@@ -86,9 +86,9 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
                     continue;
                 }
 
-                if (route.Destination == replies.Destination)
+                if (route.Destination == replies.Source || route.Destination == replies.Destination)
                 {
-                    failures.Add($"Request route to '{route.Destination}': use a dedicated reply endpoint distinct from the request destination.");
+                    failures.Add($"Request route to '{route.Destination}': use a reply consumer source and advertised reply destination distinct from the request destination.");
                 }
 
                 if (send.SendOptions.EnvelopeMode != MessageEnvelopeMode.CloudEvents || send.SendOptions.TransactionRequirement == SendTransactionRequirement.Outbox)

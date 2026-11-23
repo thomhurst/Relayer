@@ -139,9 +139,10 @@ beyond `OutboxUnhealthyThreshold`. Defaults are five minutes, 1,000 rows and 10,
 All thresholds must be positive; the unhealthy threshold must exceed the degraded threshold. Outbox names must
 be nonblank and unique. Invalid options fail host startup through Options validation.
 
-All adapters must observe the supplied cancellation token. Caller cancellation propagates; an unrelated native
-timeout or exception becomes unhealthy with the original exception and useful failure text. Health polling does
-not swallow cancellation or turn unavailable probes into successful results.
+All adapters must observe the supplied cancellation token. Caller cancellation propagates even if the probe
+completes with an I/O error after cancellation. While the caller token is active, a native timeout or exception
+becomes unhealthy with the original exception and useful failure text. Unavailable probes also report a health
+failure.
 
 ## Configuration and Options
 
@@ -164,7 +165,10 @@ builder.Services.AddRelayerHealthChecks(builder.Configuration.GetSection("Relaye
 }
 ```
 
-Use `"OutboxNames": []` or omit the setting when the application has no outbox stores to check.
+For an application with no outbox stores to check, omit `OutboxNames` from every configuration source or use
+`"OutboxNames": []` as its only declaration. With layered JSON, .NET combines entries from all providers.
+An empty array in a higher-priority file leaves store names from lower-priority files active. Use an
+environment-specific file to declare store names only in environments that check those stores.
 
 Options use `IOptions<RelayerHealthCheckOptions>`, `IOptionsSnapshot<RelayerHealthCheckOptions>` and
 `IOptionsMonitor<RelayerHealthCheckOptions>` as usual, including registered validators. The checks read current

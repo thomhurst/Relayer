@@ -348,6 +348,23 @@ public class RequestResponseTests
     }
 
     [Test]
+    [Arguments("requests", null)]
+    [Arguments("requests", "replies")]
+    [Arguments("reply-source", "requests")]
+    public async Task Startup_rejects_request_routes_that_share_a_reply_address(string replySource, string? replyDestination)
+    {
+        using var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("local", transport =>
+                transport.Request<RpcRequest, RpcResponse>("requests", replySource,
+                    request => request.ReplyDestination = replyDestination));
+        })).Build();
+        await Assert.That(async () => await host.StartAsync()).Throws<Microsoft.Extensions.Options.OptionsValidationException>()
+            .WithMessageContaining("distinct from the request destination");
+    }
+
+    [Test]
     public async Task Startup_rejects_a_request_with_several_routes()
     {
         using var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder =>
