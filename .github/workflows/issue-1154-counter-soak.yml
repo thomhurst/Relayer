@@ -1,8 +1,8 @@
-name: Buffered allocation counter soak (#1154)
+name: Buffered allocation context capture (#1154)
 
 on:
   push:
-    branches: [diagnostics/issue-1154-counter-soak]
+    branches: [diagnostics/issue-1154-allocation-context]
 
 permissions:
   contents: read
@@ -54,6 +54,7 @@ jobs:
           runtime=$(dotnet --list-runtimes | awk '$1 == "Microsoft.NETCore.App" && $2 ~ /^10[.]0[.]/ {print $2}' | sort -V | tail -n 1)
           test "$runtime" = 10.0.15
           git -C .artifacts/ci-source apply --unidiff-zero "$PWD/.github/scripts/issue-1154-counter-soak.patch"
+          cp .github/scripts/BatchAllocationContext.cs .artifacts/ci-source/tests/Relayer.Tests/
           cd .artifacts/ci-source
           dotnet restore
           dotnet build --no-restore -c Release
@@ -78,14 +79,14 @@ jobs:
         if: ${{ !cancelled() && (steps.capture.outcome == 'success' || steps.capture.outcome == 'failure') }}
         run: |
           cat results/windows.csv.gc.txt
-          rg -iq '^ConcurrentGC=false$' results/windows.csv.gc.txt
+          grep -iq '^ConcurrentGC=false$' results/windows.csv.gc.txt
           python3 .github/scripts/summarize-issue-1154-soak.py results/windows.csv | tee results/summary.txt
       - name: Inventory the retained inputs and results
         if: always()
         run: |
           mkdir -p results
           sha256sum .github/scripts/issue-1154-counter-soak.patch > results/patch.sha256
-          paths=(results .github/scripts/issue-1154-counter-soak.patch)
+          paths=(results .github/scripts/issue-1154-counter-soak.patch .github/scripts/BatchAllocationContext.cs)
           binaries=".artifacts/ci-source/tests/Relayer.Tests/bin/Release/$FRAMEWORK"
           if [[ -d "$binaries" ]]; then
             paths+=("$binaries")
@@ -99,6 +100,7 @@ jobs:
             results/
             results-sha256.txt
             .github/scripts/issue-1154-counter-soak.patch
+            .github/scripts/BatchAllocationContext.cs
             .artifacts/ci-source/tests/Relayer.Tests/bin/Release/${{ env.FRAMEWORK }}/
           include-hidden-files: true
           if-no-files-found: error

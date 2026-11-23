@@ -1,29 +1,50 @@
 diff --git a/tests/Relayer.Tests/BatchPipelineTests.cs b/tests/Relayer.Tests/BatchPipelineTests.cs
-index ca872152..5773acb9 100644
+index ca872152..48d6759a 100644
 --- a/tests/Relayer.Tests/BatchPipelineTests.cs
 +++ b/tests/Relayer.Tests/BatchPipelineTests.cs
-@@ -1000,0 +1001,4 @@ public class BatchPipelineTests
+@@ -1000,0 +1001,23 @@ public class BatchPipelineTests
 +        const int CaptureIterations = 65_536;
 +        var capturePath = bufferedSends ? Environment.GetEnvironmentVariable("RELAYER_ALLOCATION_BOUNDARIES") : null;
 +        var sampleCount = capturePath is null ? Iterations : CaptureIterations;
 +        var samples = capturePath is null ? null : new BatchAllocationSample[sampleCount];
-@@ -1005 +1009 @@ public class BatchPipelineTests
++        var allocationContext = samples is null ? 0 : BatchAllocationContext.Find();
++
++        if (allocationContext != 0)
++        {
++            // Warm the diagnostic reads and verify the selected TLS slot against the managed counter.
++            _ = BatchAllocationContext.Read(allocationContext);
++            var counter = GC.GetAllocatedBytesForCurrentThread();
++
++            var control = new byte[64];
++            var after = GC.GetAllocatedBytesForCurrentThread();
++            var snapshot = BatchAllocationContext.Read(allocationContext);
++            GC.KeepAlive(control);
++
++            if (after - counter != 88 || snapshot.Counter != after)
++            {
++                throw new InvalidOperationException("The TLS snapshot does not match the managed allocation counter.");
++            }
++        }
++
+@@ -1005 +1028 @@ public class BatchPipelineTests
 -        for (var iteration = 0; iteration < Iterations; iteration++)
 +        for (var iteration = 0; iteration < sampleCount; iteration++)
-@@ -1007 +1011,2 @@ public class BatchPipelineTests
+@@ -1007 +1030,2 @@ public class BatchPipelineTests
 -            var start = GC.GetAllocatedBytesForCurrentThread();
 +            var before = samples is null ? default : CountCollections();
 +            var nativeStart = GC.GetAllocatedBytesForCurrentThread();
-@@ -1014,2 +1019,2 @@ public class BatchPipelineTests
+@@ -1014,2 +1038,2 @@ public class BatchPipelineTests
 -            var native = GC.GetAllocatedBytesForCurrentThread() - start;
 -            start = GC.GetAllocatedBytesForCurrentThread();
 +            var nativeEnd = GC.GetAllocatedBytesForCurrentThread();
 +            var pipelineStart = GC.GetAllocatedBytesForCurrentThread();
-@@ -1021,0 +1027 @@ public class BatchPipelineTests
+@@ -1021,0 +1046,2 @@ public class BatchPipelineTests
++            var contextBefore = samples is null ? default : BatchAllocationContext.Read(allocationContext);
 +            var rented = samples is null ? 0 : GC.GetAllocatedBytesForCurrentThread();
-@@ -1024,0 +1031 @@ public class BatchPipelineTests
+@@ -1024,0 +1051,2 @@ public class BatchPipelineTests
 +            var processed = samples is null ? 0 : GC.GetAllocatedBytesForCurrentThread();
-@@ -1036 +1043,11 @@ public class BatchPipelineTests
++            var contextAfter = samples is null || !completedSynchronously ? default : BatchAllocationContext.Read(allocationContext);
+@@ -1036 +1064,12 @@ public class BatchPipelineTests
 -            var pipeline = GC.GetAllocatedBytesForCurrentThread() - start;
 +            var pipelineEnd = GC.GetAllocatedBytesForCurrentThread();
 +            var native = nativeEnd - nativeStart;
@@ -33,17 +54,19 @@ index ca872152..5773acb9 100644
 +            {
 +                var after = CountCollections();
 +                samples[iteration] = new(native, rented - pipelineStart, processed - rented, pipelineEnd - processed,
-+                    after.Gen0 - before.Gen0, after.Gen1 - before.Gen1, after.Gen2 - before.Gen2);
++                    after.Gen0 - before.Gen0, after.Gen1 - before.Gen1, after.Gen2 - before.Gen2,
++                    contextBefore, contextAfter, rented - contextBefore.Counter, contextAfter.Counter - processed);
 +            }
 +
-@@ -1050,0 +1068,5 @@ public class BatchPipelineTests
+@@ -1050,0 +1090,5 @@ public class BatchPipelineTests
 +        if (capturePath is not null && samples is not null)
 +        {
 +            WriteBatchAllocationSamples(capturePath, samples);
 +        }
 +
-@@ -1058,0 +1081,27 @@ public class BatchPipelineTests
-+    private readonly record struct BatchAllocationSample(long Native, long Rent, long Process, long Dispose, int Gen0, int Gen1, int Gen2);
+@@ -1058,0 +1103,28 @@ public class BatchPipelineTests
++    private readonly record struct BatchAllocationSample(long Native, long Rent, long Process, long Dispose, int Gen0, int Gen1, int Gen2,
++        BatchAllocationContext.Snapshot Before, BatchAllocationContext.Snapshot After, long BeforeDrift, long AfterDrift);
 +
 +    private static (int Gen0, int Gen1, int Gen2) CountCollections()
 +    {
@@ -53,13 +76,13 @@ index ca872152..5773acb9 100644
 +    private static void WriteBatchAllocationSamples(string path, BatchAllocationSample[] samples)
 +    {
 +        using var output = new StreamWriter(path);
-+        output.WriteLine("batch,native,rent,process,dispose,gen0,gen1,gen2");
++        output.WriteLine("batch,native,rent,process,dispose,gen0,gen1,gen2,limit_changed,pointer_delta,remaining_before,remaining_after,soh,uoh,before_drift,after_drift");
 +
 +        for (var i = 0; i < samples.Length; i++)
 +        {
 +            var sample = samples[i];
 +            output.WriteLine(FormattableString.Invariant(
-+                $"{i + 1},{sample.Native},{sample.Rent},{sample.Process},{sample.Dispose},{sample.Gen0},{sample.Gen1},{sample.Gen2}"));
++                $"{i + 1},{sample.Native},{sample.Rent},{sample.Process},{sample.Dispose},{sample.Gen0},{sample.Gen1},{sample.Gen2},{(sample.Before.Limit == sample.After.Limit ? 0 : 1)},{sample.After.Pointer - sample.Before.Pointer},{sample.Before.Remaining},{sample.After.Remaining},{sample.After.SmallObjectBytes - sample.Before.SmallObjectBytes},{sample.After.OtherBytes - sample.Before.OtherBytes},{sample.BeforeDrift},{sample.AfterDrift}"));
 +        }
 +
 +        using var configuration = new StreamWriter(path + ".gc.txt");
