@@ -56,4 +56,6 @@ Open the `.mmd` file in a Mermaid renderer, or place its contents in a Markdown 
 
 `Build()` validates the whole declaration and returns an immutable snapshot. Later builder changes cannot change an existing diagram. `States` and `Transitions` expose read-only metadata for inspection.
 
-Export sorts states and transitions by ordinal names and uses LF line endings. Equivalent declarations produce identical output regardless of insertion order or current culture. Generated identifiers (`s0`, `s1`, …) keep labels separate from syntax; punctuation, whitespace and Unicode are written as Mermaid numeric entities. Renderers display the labels. Export is startup/tooling work and adds no per-message work.
+Export sorts states and transitions by ordinal names and uses LF line endings. Equivalent declarations produce identical output regardless of insertion order or current culture. Generated identifiers (`s0`, `s1`, …) keep labels separate from syntax; punctuation, whitespace and Unicode are written as Mermaid numeric entities. Export is startup/tooling work and adds no per-message work.
+
+Enable `htmlLabels: true` in Mermaid to display the original label text. In affected versions, including Mermaid 12.3.0, disabling HTML labels can display entity codes in state and transition labels. See [Mermaid issue #7015](https://github.com/mermaid-js/mermaid/issues/7015).

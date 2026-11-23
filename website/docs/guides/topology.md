@@ -195,11 +195,15 @@ using Relayer.AmazonSqs;
 var services = new ServiceCollection();
 services.AddRelayer(relayer => relayer.AmazonSqs("aws", transport =>
 {
-    transport.Options.Configure(options => options.Queues.Add(new CreateQueueRequest("q")
+    transport.Options.Configure(options =>
     {
-        Attributes = new() { ["VisibilityTimeout"] = "45" },
-        Tags = new() { ["environment"] = "development" }
-    }));
+        options.Sqs.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
+        options.Queues.Add(new CreateQueueRequest("q")
+        {
+            Attributes = new() { ["VisibilityTimeout"] = "45" },
+            Tags = new() { ["environment"] = "development" }
+        });
+    });
 }));
 using var provider = services.BuildServiceProvider();
 using var output = File.Create("topology.tf.json");
@@ -216,6 +220,7 @@ The generated file uses [Terraform JSON syntax](https://developer.hashicorp.com/
       "r_71": {
         "name": "q",
         "visibility_timeout_seconds": 45,
+        "max_message_size": 1048576,
         "tags": { "environment": "development" }
       }
     }
@@ -223,12 +228,12 @@ The generated file uses [Terraform JSON syntax](https://developer.hashicorp.com/
 }
 ```
 
-Configure the HashiCorp AWS provider separately for the **same account, region and partition** as the export. Put this beside the generated file in `provider.tf`, then run `terraform init`, `terraform validate` and `terraform plan` with your normal AWS credentials:
+Configure the HashiCorp AWS provider separately for the **same account, region and partition** as the export. Provider 6.8.0 and later accept the exported SQS default of 1 MiB. Put this beside the generated file in `provider.tf`, then run `terraform init`, `terraform validate` and `terraform plan` with your normal AWS credentials:
 
 ```hcl
 terraform {
   required_providers {
-    aws = { source = "hashicorp/aws", version = ">= 6.0" }
+    aws = { source = "hashicorp/aws", version = ">= 6.8.0" }
   }
 }
 provider "aws" {
@@ -237,7 +242,7 @@ provider "aws" {
 }
 ```
 
-The exporter reads named options from the supplied service provider. Use the provider that owns the topology. Every registered transport must be SQS or SNS; use a separate declaration-only service collection for an AWS-only export from a mixed application. Native client credentials, endpoints, retry settings and other connection configuration are not infrastructure declarations and are not exported. An explicitly configured native region must match the export region. Caller-owned clients are never inspected or called.
+The exporter reads named options from the supplied service provider. Use the provider that owns the topology. Every registered transport must be SQS or SNS; use a separate declaration-only service collection for an AWS-only export from a mixed application. Native client credentials, endpoints, retry settings and other connection configuration are not infrastructure declarations and are not exported. If the AWS SDK resolves a native region, it must match the export region. When `RegionEndpoint` is unset, the SDK can resolve a region from the environment, such as `AWS_REGION`. Set the native region explicitly as shown above to keep the export independent of ambient region settings. Caller-owned clients are never inspected or called.
 
 ### Supported native declarations
 
@@ -336,7 +341,7 @@ JSON is byte-for-byte the existing `ITopology.ExportJson` document for the compl
 }
 ```
 
-Bicep and Service Bus Terraform select one named Service Bus transport via `--transport`; they generate the native resources and deployment parameters [shown above](#service-bus-infrastructure-export). AWS Terraform exports the complete SQS/SNS-only declaration through the existing [AWS exporter](#aws-terraform-export). For an AWS declaration assembly, replace the factory's Service Bus registration with the `AmazonSns` registration in that section (return its service provider instead of invoking the exporter directly), then run:
+Bicep and Service Bus Terraform select one named Service Bus transport via `--transport`; they generate the native resources and deployment parameters [shown above](#service-bus-infrastructure-export). AWS Terraform exports the complete SQS/SNS-only declaration through the existing [AWS exporter](#aws-terraform-export). For an AWS declaration assembly, replace the factory's Service Bus registration with the `AmazonSqs` registration in that section (return its service provider instead of invoking the exporter directly), then run:
 
 ```bash
 dotnet relayer topology export --assembly bin/Release/net10.0/TopologyDeclarations.dll --type Example.Declarations --format terraform --account-id 123456789012 --region eu-west-1 > topology.tf.json
