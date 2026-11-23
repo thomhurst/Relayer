@@ -625,6 +625,12 @@ save. Relayer extends EF Core 10.0.15's native
 to run the outbox save callbacks last and observe the final result. EF's service replacement requires
 the EF-managed internal service provider.
 
+EF Core also calls the transaction completion hook after a suppressed commit. Relayer extends EF's
+[transaction interceptor aggregator](https://github.com/dotnet/efcore/blob/v10.0.15/src/EFCore.Relational/Diagnostics/Internal/DbTransactionInterceptorAggregator.cs)
+to run its transaction callbacks last. When the final commit result is suppressed and the transaction
+has buffered outbox messages, Relayer rejects the commit before flushing the batch and requires
+rollback or disposal before retrying the complete unit.
+
 Successful native savepoint release drops the active checkpoint. Failed/canceled-save callbacks
 preserve recovery only after confirmed rollback or native automatic savepoint creation failure.
 EF creates the savepoint before any save command

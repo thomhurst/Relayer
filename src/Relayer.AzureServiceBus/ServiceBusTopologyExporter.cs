@@ -158,7 +158,7 @@ public sealed class ServiceBusTopologyExporter
         {
             foreach (var forward in resource.Forwards)
             {
-                if (endpoints.TryGetValue(forward, out var target))
+                if (endpoints.TryGetValue(forward, out var target) && !resource.Dependencies.Contains(target.Symbol))
                 {
                     resource.Dependencies.Add(target.Symbol);
                 }

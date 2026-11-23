@@ -48,7 +48,7 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
     {
         try
         {
-            outbox.Prepare(transaction)?.Execute();
+            outbox.Prepare(transaction, result.IsSuppressed)?.Execute();
             outbox.ObserveCommit(transaction);
         }
         catch
@@ -67,7 +67,7 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
     {
         try
         {
-            if (outbox.Prepare(transaction) is { } batch)
+            if (outbox.Prepare(transaction, result.IsSuppressed) is { } batch)
             {
                 await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
                 outbox.ObserveCommit(transaction);
