@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Relayer.Transports;
 
 namespace Relayer.Kafka.Tests;
@@ -77,6 +78,58 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
         {
             await admin.DeleteTopicsAsync([send, receive, deadLetter], cancellationToken: token);
         }
+    }
+
+    [Test]
+    public async Task Validate_guides_startup_when_names_are_invalid_and_valid_topics_are_missing()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await broker.Started.WaitAsync(token);
+        var prefix = TopicName();
+        var invalidRoute = prefix + ":archive";
+        var missing = (prefix + ".Archive_").PadRight(249, 'a');
+        var invalidDeclarations = new[] { missing + "a", "..", prefix + "-café" };
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.Kafka("events", kafka =>
+            {
+                kafka.TopologyMode = TopologyMode.Validate;
+                kafka.Options.Configure(options =>
+                {
+                    options.BootstrapServers.Add(broker.Bootstrap);
+
+                    foreach (var invalid in invalidDeclarations)
+                    {
+                        options.Topics.Add(new()
+                        {
+                            Name = invalid
+                        });
+                    }
+                });
+                kafka.Send<Order>(invalidRoute);
+                kafka.Send<OtherOrder>(missing);
+            });
+        });
+        using var host = builder.Build();
+
+        var error = await Assert.ThrowsAsync<OptionsValidationException>(() => host.StartAsync(token));
+        var failures = error!.Failures.ToArray();
+        await Assert.That(failures.Length).IsEqualTo(5);
+
+        foreach (var invalid in invalidDeclarations.Append(invalidRoute))
+        {
+            var failure = failures.Single(item => item.Contains($"Topic '{invalid}'", StringComparison.Ordinal));
+            await Assert.That(failure).Contains("has an invalid name");
+            await Assert.That(failure).DoesNotContain("Create it externally");
+        }
+
+        await Assert.That(failures.Single(item => item.Contains($"Topic '{missing}'", StringComparison.Ordinal)))
+            .Contains("Create it externally or use Provision");
+        await using var admin = Admin();
+        await Assert.That((await admin.ListTopicsAsync(cancellationToken: token)).Any(topic => topic.Name == missing)).IsFalse();
     }
 
     [Test]
