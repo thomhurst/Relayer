@@ -61,18 +61,19 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
                 throw new InvalidOperationException($"Pub/Sub transport '{name}': duplicate topic '{destination}'.");
             }
 
-            topics.Add(destination, new(new PublisherClientImpl(topic, [options.Publisher], options.PublisherSettings.Clone(), static () => Task.CompletedTask),
+            var sendTracing = new SendTracing(tracing, new()
+            {
+                System = "gcp_pubsub",
+                Destination = destination
+            }, SendCoreAsync, SendBatchCoreAsync, headerNames: new("ce-"));
+            var publisherApi = new GooglePubSubPublishTelemetry(options.Publisher, sendTracing);
+            topics.Add(destination, new(new PublisherClientImpl(topic, [publisherApi], options.PublisherSettings.Clone(), static () => Task.CompletedTask),
                 new()
                 {
                     OrderedByKey = _publisherOrderingEnabled && !topicsWithUnorderedSubscriptions.Contains(destination),
                     MaxBatchSize = 1000,
                     MaxMessageBytes = 10_000_000
-                },
-                new(tracing, new()
-                {
-                    System = "gcp_pubsub",
-                    Destination = destination
-                }, SendCoreAsync, SendBatchCoreAsync, headerNames: new("ce-"))));
+                }, sendTracing));
         }
 
         _topics = topics.ToFrozenDictionary(StringComparer.Ordinal);
@@ -203,20 +204,9 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
             state.Prepare(message);
             cancellationToken.ThrowIfCancellationRequested();
             endpoint.Tracing.RecordNativeSend();
-            var duration = endpoint.Tracing.StartNativeSend();
-            var failed = true;
-
-            try
-            {
-                // PublishAsync has no cancellation parameter and borrows the message until completion.
-                // Never abandon that task with WaitAsync: it would release borrowed serializer storage too soon.
-                await endpoint.Publisher.PublishAsync(state.Message).ConfigureAwait(false);
-                failed = false;
-            }
-            finally
-            {
-                duration.Complete(failed);
-            }
+            // PublishAsync has no cancellation parameter and borrows the message until completion.
+            // Never abandon that task with WaitAsync: it would release borrowed serializer storage too soon.
+            await endpoint.Publisher.PublishAsync(state.Message).ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
         }
@@ -287,8 +277,6 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
         var pending = System.Buffers.ArrayPool<SendState>.Shared.Rent(messages.Length);
         var count = 0;
         Exception? failure = null;
-        var duration = endpoint.Tracing.StartNativeSend();
-        var failed = true;
 
         try
         {
@@ -341,13 +329,10 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
                 ExceptionDispatchInfo.Capture(failure).Throw();
             }
 
-            failed = false;
             cancellationToken.ThrowIfCancellationRequested();
         }
         finally
         {
-            duration.Complete(failed);
-
             for (var i = 0; i < count; i++)
             {
                 endpoint.Return(pending[i]);

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics.Metrics;
 using System.Text.Json.Serialization;
 using BenchmarkDotNet.Attributes;
 using Google.Cloud.PubSub.V1;
@@ -24,10 +25,17 @@ public class GooglePubSubSendBenchmarks
     private IServiceScope _scope = null!;
     private ISender _sender = null!;
     private IMessageSerializer _serializer = null!;
+    private MeterListener? _durationListener;
     private string _topic = null!;
     private readonly ArrayBufferWriter<byte> _buffer = new();
     private readonly PubSubBenchmarkOrder _order = new(42);
     private readonly MessageEnvelope _envelope = new(new("benchmarks.pubsub.order", 1), "/", new("ce-"));
+
+    [ParamsAllValues]
+    public bool RecordPublishDuration
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -62,6 +70,26 @@ public class GooglePubSubSendBenchmarks
         _scope = _host.Services.CreateScope();
         _sender = _scope.ServiceProvider.GetRequiredService<ISender>();
         _serializer = _host.Services.GetMessageSerializer("benchmark");
+
+        if (RecordPublishDuration)
+        {
+            var instrumentation = _host.Services.GetRequiredService<RelayerInstrumentation>();
+            _durationListener = new()
+            {
+                InstrumentPublished = (instrument, listener) =>
+                {
+                    if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.operation.duration")
+                    {
+                        listener.EnableMeasurementEvents(instrument);
+                    }
+                }
+            };
+            _durationListener.SetMeasurementEventCallback<double>(static (_, _, _, _) =>
+            {
+            });
+            _durationListener.Start();
+        }
+
         await NativeJsonSend();
         await RelayerJsonSend();
     }
@@ -86,6 +114,7 @@ public class GooglePubSubSendBenchmarks
     [GlobalCleanup]
     public async Task Cleanup()
     {
+        _durationListener?.Dispose();
         _scope?.Dispose();
 
         if (_host is not null)
