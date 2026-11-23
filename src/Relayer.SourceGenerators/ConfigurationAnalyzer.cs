@@ -52,6 +52,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var transportInterface = compilation.GetTypeByMetadataName("Relayer.ITransportConsumerBuilder");
             var consumer = compilation.GetTypeByMetadataName("Relayer.ConsumerBuilder`1");
             var consumerInterface = compilation.GetTypeByMetadataName("Relayer.IConsumerBuilder");
+            var consumerExtensions = compilation.GetTypeByMetadataName("Relayer.ConsumeBuilderExtensions");
             var registration = compilation.GetTypeByMetadataName("Relayer.RelayerGeneratedHandlers");
             var marker = compilation.GetTypeByMetadataName("Relayer.IHandlerMarker");
             var messageRegistry = compilation.GetTypeByMetadataName("Relayer.Pipeline.MessageTypeRegistry");
@@ -164,7 +165,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 if (method.Name == "Consume"
                     && (isTransportBuilder || SymbolEqualityComparer.Default.Equals(declaringType, transportInterface)))
                 {
-                    CheckConsumer(operationContext, invocation, consumer, consumerInterface);
+                    CheckConsumer(operationContext, invocation, consumer, consumerInterface, consumerExtensions);
                 }
 
                 if (method.TypeArguments.Length > 0)
@@ -445,7 +446,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
     }
 
     private static void CheckConsumer(OperationAnalysisContext context, IInvocationOperation invocation,
-        INamedTypeSymbol? consumer, INamedTypeSymbol? consumerInterface)
+        INamedTypeSymbol? consumer, INamedTypeSymbol? consumerInterface, INamedTypeSymbol? consumerExtensions)
     {
         var configure = invocation.Arguments.FirstOrDefault(static a => a.Parameter?.Name == "configure")?.Value;
 
@@ -474,9 +475,11 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             {
                 var method = call.TargetMethod;
 
-                if (method.Name is not ("Concurrency" or "Batch" or "Failures" or "Classify")
-                    || !SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, consumer)
-                        && !SymbolEqualityComparer.Default.Equals(method.ContainingType, consumerInterface))
+                var isBuilderSetting = method.Name is "Concurrency" or "Batch" or "Failures" or "Classify"
+                    && (SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, consumer)
+                        || SymbolEqualityComparer.Default.Equals(method.ContainingType, consumerInterface));
+
+                if (!isBuilderSetting && !IsConsumerSettingsExtension(method, consumerExtensions))
                 {
                     return;
                 }
@@ -485,12 +488,33 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             if (operation is IParameterReferenceOperation reference
                 && SymbolEqualityComparer.Default.Equals(reference.Parameter, parameter)
                 && reference.Parent is not IPropertyReferenceOperation { Property.Name: "Options" }
-                && reference.Parent is not IInvocationOperation)
+                && reference.Parent is not IInvocationOperation
+                && !IsConsumerSettingsReceiver(reference, consumerExtensions))
             {
                 return;
             }
         }
 
         context.ReportDiagnostic(Diagnostic.Create(s_emptyConsumer, callback.Syntax.GetLocation()));
+    }
+
+    private static bool IsConsumerSettingsReceiver(IParameterReferenceOperation reference, INamedTypeSymbol? consumerExtensions)
+    {
+        // Extension receivers are represented as arguments, with an implicit conversion for concrete builders.
+        var parent = reference.Parent;
+
+        if (parent is IConversionOperation { IsImplicit: true, Conversion.IsReference: true } conversion)
+        {
+            parent = conversion.Parent;
+        }
+
+        return parent is IArgumentOperation { Parameter.Ordinal: 0, Parent: IInvocationOperation call }
+            && IsConsumerSettingsExtension(call.TargetMethod, consumerExtensions);
+    }
+
+    private static bool IsConsumerSettingsExtension(IMethodSymbol method, INamedTypeSymbol? consumerExtensions)
+    {
+        return method.Name is "Use" or "Accepts"
+            && SymbolEqualityComparer.Default.Equals(method.ContainingType, consumerExtensions);
     }
 }
