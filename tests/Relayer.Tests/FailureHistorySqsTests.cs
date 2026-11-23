@@ -46,6 +46,8 @@ public sealed class FailureHistorySqsTests
                         }
                     });
                 });
+                // A send route makes startup validation cache the dead-letter endpoint.
+                sqs.Send<Payload>(dead);
                 sqs.Consume(source, consumer =>
                 {
                     consumer.Handler<Handler>();

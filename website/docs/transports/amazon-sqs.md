@@ -41,7 +41,7 @@ Declare queues with native `CreateQueueRequest` objects in `Queues`, including n
 
 `Provision` creates missing queues with the original request and reports drift on existing queues. It never modifies or deletes existing queues. Declare native `RedrivePolicy` and related queue settings in `Attributes`; receivers validate that `maxReceiveCount` exceeds the longest run of consecutive native visibility retries by at least one, leaving a receive to schedule a replacement or copy failure metadata. A durably scheduled replacement starts with a fresh SQS receive count. For example, `[1 second, 13 hours, 1 second]` needs a durable scheduler and a `maxReceiveCount` of at least 2. Policy JSON is compared structurally rather than by whitespace or property order. Additional undeclared attributes/tags are allowed.
 
-`None` skips topology validation and provisioning. Startup still calls `GetQueueUrl` because native sending needs queue URLs. `Validate` and `Provision` read the live `MaximumMessageSize` to determine the endpoint's size limit. With `None`, Relayer ignores the declaration's `MaximumMessageSize` for sending, applies the SQS-wide 1 MiB maximum, and lets SQS enforce any smaller queue limit.
+`None` skips topology validation and provisioning. Startup still calls `GetQueueUrl` because native sending needs queue URLs. `Validate` and `Provision` read the live `MaximumMessageSize` for both send checks and the failure history budget on retry and dead-letter copies. With `None`, Relayer ignores the declaration's `MaximumMessageSize` for sending, applies the SQS-wide 1 MiB maximum, and lets SQS enforce any smaller queue limit.
 
 ## Receiving and durable settlement
 

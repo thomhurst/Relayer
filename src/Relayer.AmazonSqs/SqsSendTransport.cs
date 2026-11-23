@@ -211,6 +211,7 @@ internal sealed partial class SqsSendTransport : ITransport, ITransportSendTraci
         }
 
         var differences = new List<string>();
+        var capabilitiesRefreshed = false;
 
         foreach (var endpoint in _endpoints.Values)
         {
@@ -267,10 +268,14 @@ internal sealed partial class SqsSendTransport : ITransport, ITransportSendTraci
                 {
                     MaxMessageBytes = long.Parse(maximum, CultureInfo.InvariantCulture)
                 };
+                capabilitiesRefreshed = true;
             }
         }
 
-        return new(differences);
+        return new(differences)
+        {
+            CapabilitiesRefreshed = capabilitiesRefreshed
+        };
     }
 
     private static bool AttributeEquals(string name, string expected, string actual)
