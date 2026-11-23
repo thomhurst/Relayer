@@ -230,6 +230,99 @@ public class ServiceBusSendEmulatorTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Provision_respects_native_ttl_defaults_and_duplicate_detection(bool duplicateDetection)
+    {
+        var stack = await SharedBrokers.ServiceBus.Value;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString());
+        var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
+        var isolation = TestContext.Current!.Isolation;
+        var window = duplicateDetection ? TimeSpan.FromSeconds(20) : TimeSpan.FromMinutes(1);
+        var ttl = duplicateDetection ? TimeSpan.FromMinutes(30) : TimeSpan.MaxValue;
+        var queue = new CreateQueueOptions(isolation.GetIsolatedName("provision-queue"))
+        {
+            MaxSizeInMegabytes = 100,
+            RequiresDuplicateDetection = duplicateDetection,
+            DuplicateDetectionHistoryTimeWindow = window,
+            DefaultMessageTimeToLive = ttl
+        };
+        var topic = new CreateTopicOptions(isolation.GetIsolatedName("provision-topic"))
+        {
+            MaxSizeInMegabytes = 100,
+            SupportOrdering = true,
+            RequiresDuplicateDetection = duplicateDetection,
+            DuplicateDetectionHistoryTimeWindow = window,
+            DefaultMessageTimeToLive = ttl
+        };
+        var subscription = new CreateSubscriptionOptions(topic.Name, "billing")
+        {
+            AutoDeleteOnIdle = TimeSpan.FromHours(1),
+            DefaultMessageTimeToLive = ttl
+        };
+
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.ServiceBus("provision", bus =>
+        {
+            bus.TopologyMode = TopologyMode.Provision;
+            bus.Options.Configure(options =>
+            {
+                options.Client = client;
+                options.AdministrationClient = admin;
+                options.Queues.Add(queue);
+                options.Topics.Add(topic);
+                options.Subscriptions.Add(subscription);
+            });
+        }));
+        await using var provider = services.BuildServiceProvider();
+        var transport = provider.GetServices<ITransport>().Single();
+
+        try
+        {
+            var created = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+            await Assert.That(string.Join(Environment.NewLine, created.Differences)).IsEqualTo(string.Empty);
+            var existing = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+            await Assert.That(string.Join(Environment.NewLine, existing.Differences)).IsEqualTo(string.Empty);
+
+            var differentTtl = TimeSpan.FromMinutes(45);
+            queue.DefaultMessageTimeToLive = differentTtl;
+            topic.DefaultMessageTimeToLive = differentTtl;
+            subscription.DefaultMessageTimeToLive = differentTtl;
+            queue.DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(1);
+            topic.DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(1);
+
+            var drift = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+            await Assert.That(drift.Differences.Count).IsEqualTo(duplicateDetection ? 5 : 3);
+
+            var actualTtl = duplicateDetection ? "00:30:00" : "01:00:00";
+
+            foreach (string entity in new[] { queue.Name, topic.Name, topic.Name + "/Subscriptions/" + subscription.SubscriptionName })
+            {
+                await Assert.That(drift.Differences.Single(difference =>
+                    difference.Contains($"'{entity}': DefaultMessageTimeToLive", StringComparison.Ordinal)))
+                    .Contains($"DefaultMessageTimeToLive expected '00:45:00', actual '{actualTtl}'");
+            }
+
+            if (duplicateDetection)
+            {
+                foreach (string entity in new[] { queue.Name, topic.Name })
+                {
+                    await Assert.That(drift.Differences.Single(difference =>
+                        difference.Contains($"'{entity}': DuplicateDetectionHistoryTimeWindow", StringComparison.Ordinal)))
+                        .Contains("DuplicateDetectionHistoryTimeWindow expected '00:01:00', actual '00:00:20'");
+                }
+            }
+        }
+        finally
+        {
+            await admin.DeleteQueueAsync(queue.Name, CancellationToken.None);
+            await admin.DeleteTopicAsync(topic.Name, CancellationToken.None);
+        }
+    }
+
+    [Test]
     public async Task Broker_duplicate_detection_drops_a_resend_with_the_same_envelope_id()
     {
         var stack = await SharedBrokers.ServiceBus.Value;

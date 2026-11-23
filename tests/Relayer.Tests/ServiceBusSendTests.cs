@@ -810,6 +810,57 @@ public class ServiceBusSendTests
     }
 
     [Test]
+    [Arguments(false, false, 0)]
+    [Arguments(false, true, 4)]
+    [Arguments(true, false, 4)]
+    [Arguments(true, true, 2)]
+    public async Task Provision_compares_duplicate_detection_flags_and_only_active_windows(
+        bool expectedDetection, bool actualDetection, int differenceCount)
+    {
+        var client = new NativeClient();
+        var admin = new NativeAdministration();
+        var options = Options(client);
+        var queue = options.Queues[0];
+        var topic = options.Topics[0];
+        queue.RequiresDuplicateDetection = expectedDetection;
+        topic.RequiresDuplicateDetection = expectedDetection;
+        queue.DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(1);
+        topic.DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(1);
+
+        await admin.CreateQueueAsync(new CreateQueueOptions("orders")
+        {
+            RequiresDuplicateDetection = actualDetection,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
+        });
+        await admin.CreateTopicAsync(new CreateTopicOptions("events")
+        {
+            RequiresDuplicateDetection = actualDetection,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
+        });
+
+        var topology = new ServiceBusTopology("bus", client, options, admin);
+        var report = await topology.ApplyAsync(TopologyMode.Provision, default);
+        await Assert.That(report.Differences.Count).IsEqualTo(differenceCount);
+
+        foreach (string entity in new[] { queue.Name, topic.Name })
+        {
+            if (expectedDetection != actualDetection)
+            {
+                await Assert.That(report.Differences.Single(difference =>
+                    difference.Contains($"'{entity}': RequiresDuplicateDetection", StringComparison.Ordinal)))
+                    .Contains($"RequiresDuplicateDetection expected '{expectedDetection}', actual '{actualDetection}'");
+            }
+
+            if (expectedDetection || actualDetection)
+            {
+                await Assert.That(report.Differences.Single(difference =>
+                    difference.Contains($"'{entity}': DuplicateDetectionHistoryTimeWindow", StringComparison.Ordinal)))
+                    .Contains("DuplicateDetectionHistoryTimeWindow expected '00:01:00', actual '00:10:00'");
+            }
+        }
+    }
+
+    [Test]
     public async Task Provision_reports_a_false_trusted_session_assertion()
     {
         var client = new NativeClient();
