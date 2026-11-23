@@ -1751,9 +1751,11 @@ explicitly release it before returning the pooled connection. Connected passes c
 after idle leadership expiry. The database-time row preserves idle leadership between passes;
 the session lock is authoritative while a pass is connected. Release uses the native command timeout
 and logs cleanup failures without replacing a pass error; the native client discards broken sessions.
-Recovery uses the admission session for scans and dispatch mutations. Row claims remain
-independently fenced autocommit mutations. Leadership does not replace row ownership. Session loss
-and broker uncertainty retain the existing at-least-once boundary. Support one writable primary, not independent multi-primary servers.
+Recovery uses the admission session and MySQL UTC time for scans, row claims, fenced dispatch
+mutations and durable retry deadlines. Each maintenance pass checks session autocommit as part of
+admission so retention only counts durable deletes. Leadership and row claims are separate.
+Session loss and broker uncertainty retain the existing at-least-once boundary. Support one
+writable primary.
 
 Recover due unordered rows through D55's dispatcher and a fixed upper UUID boundary, revisiting
 retries despite continuous inserts. Preserve ordered lanes and parked barriers. Quarantine malformed

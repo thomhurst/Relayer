@@ -356,7 +356,9 @@ Options pattern. Use `infinite` for either retention setting to retain records i
 Invalid settings and duplicate names fail before connecting. Workers do not create tables.
 Keep the data source alive until workers stop. Each pass uses one connection for admission, scans,
 and dispatch mutations. Multiple workers can share a pool. Size it for the number of passes
-and other database operations you want to run concurrently.
+and other database operations you want to run concurrently. Each maintenance pass requires
+`autocommit=1`. If a session disables it, the pass fails before taking admission or modifying rows.
+Check the server default and any connection-opened callbacks on the data source.
 
 Separate database-time `sweeper` and `cleanup` leases elect leaders across instances. Native
 `GET_LOCK(..., 0)` admission avoids waiting behind a connected pass even after its idle lease
@@ -377,6 +379,8 @@ Hosted maintenance waits for the application to finish starting before claiming 
 By then, hosted transports have finished starting, regardless of registration order.
 
 Each bounded recovery pass selects due, old-enough **unordered** pending rows without live claims.
+MySQL UTC time controls due checks, claim expiry, fenced mutations and durable retry deadlines
+during recovery.
 A fixed upper UUID boundary ensures failed, scheduled and previously claimed rows are revisited
 while new rows keep arriving. Ordered lanes and parked barriers stay untouched. The existing
 direct dispatcher performs native sends and fenced completion; there is no second sender.
