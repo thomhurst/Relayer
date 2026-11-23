@@ -30,6 +30,8 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 
 Declare a stable wire identity on each message used by `Send<TMessage>`, `IHandler<TMessage>` or `IBatchHandler<TMessage>`. For `Request<TRequest, TResponse>`, declare identities for both the request and the response.
 
+When all visible registrations of a handler use Relayer's typed `Handler<THandler, TMessage>()` overload, RLY001 checks the message selected by each registration. A generated `Handler<THandler>()` or `Consume<THandler>()` registration checks every implemented contract. Other uses of a message, such as a send route, still require its identity.
+
 ```csharp
 [Message("orders.placed", Version = 1)]
 public sealed record OrderPlaced(string OrderId);
@@ -108,7 +110,7 @@ kafka.Consume("orders", consumer =>
 });
 ```
 
-This call registers the generated descriptors and DI service as well as binding the consumer. Builder-level `Handler<T>()` and `AddHandlersFromThisAssembly()` are no longer generated; move each registration into the consumer that handles its messages. Both static and extension forms of generated consumer registration calls are recognized throughout the compilation. Batch handlers, inherited contracts and explicit interface implementations are supported. Abstract, open generic, inaccessible and file-local handlers are excluded. Closed generic and referenced handlers can be registered explicitly. A handler passed as a type argument to a generic method whose type parameter is constrained to `IHandler<T>`, `IBatchHandler<T>` or `IHandlerMarker` also counts. The analyzer recognizes these constraints through inherited interfaces, including on helpers in referenced assemblies. See [Registering from a generic helper](../guides/handlers.md#registering-from-a-generic-helper).
+This call registers the generated descriptors and DI service as well as binding the consumer. Builder-level `Handler<T>()` and `AddHandlersFromThisAssembly()` are no longer generated; move each registration into the consumer that handles its messages. RLY003 recognizes both static and extension forms of generated registrations, including method groups such as `Action<string> addOrders = broker.Consume<OrderPlacedHandler>;`. Batch handlers, inherited contracts and explicit interface implementations are supported. Abstract, open generic, inaccessible and file-local handlers are excluded. Closed generic and referenced handlers can be registered explicitly. A handler passed as a type argument to a generic method whose type parameter is constrained to `IHandler<T>`, `IBatchHandler<T>` or `IHandlerMarker` also counts. The analyzer recognizes these constraints through inherited interfaces, including on helpers in referenced assemblies. See [Registering from a generic helper](../guides/handlers.md#registering-from-a-generic-helper).
 
 Public handlers are not reported: a handler that is public, and nested only in public types, can be registered by any assembly that references it, so a module library can leave registration to its host. The warning covers handlers that only their own compilation can register, such as `internal` handlers and public handlers nested in an `internal` type.
 
