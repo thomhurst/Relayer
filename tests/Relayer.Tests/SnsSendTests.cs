@@ -304,6 +304,104 @@ public class SnsSendTests
     }
 
     [Test]
+    [Arguments("""{"category":["books","games"],"priority":["normal"]}""", """{"priority":["normal"],"category":["games","books"]}""", false)]
+    [Arguments("""{"category":["books","games"]}""", """{"category":["games","music"]}""", true)]
+    [Arguments("""{"category":["books","books","games"]}""", """{"category":["books","games","games"]}""", true)]
+    [Arguments("""{"detail":{"price":[{"numeric":[">",0,"<=",150]},100]}}""", """{"detail":{"price":[100,{"numeric":[">",0,"<=",150]}]}}""", false)]
+    [Arguments("""{"price":[{"numeric":[">",0,"<=",150]}]}""", """{"price":[{"numeric":[">",150,"<=",0]}]}""", true)]
+    [Arguments("""{"$or":[{"category":["books","games"]},{"priority":["high"]}]}""", """{"$or":[{"priority":["high"]},{"category":["games","books"]}]}""", false)]
+    [Arguments("""{"$or":[{"numeric":[">",0]},{"prefix":"order"}]}""", """{"$or":[{"prefix":"order"},{"numeric":[0,">"]}]}""", true)]
+    public async Task Topology_compares_filter_alternatives_without_reordering_operator_operands(
+        string declared, string observed, bool differs)
+    {
+        using var client = new SnsTestClient();
+        var options = Options(client);
+        var subscription = Subscription();
+        subscription.Attributes["FilterPolicy"] = declared;
+        options.Subscriptions.Add(subscription);
+        client.Subscribes.Add(subscription);
+        client.SubscriptionAttributes["FilterPolicy"] = observed;
+        await using var transport = new SnsSendTransport("sns", client, false, options);
+
+        foreach (var mode in new[] { TopologyMode.Validate, TopologyMode.Provision })
+        {
+            var report = await transport.ApplyTopologyAsync(mode, default);
+            await Assert.That(report.Differences.Count).IsEqualTo(differs ? 1 : 0);
+
+            if (differs)
+            {
+                await Assert.That(report.Differences.Single()).Contains("FilterPolicy differs");
+            }
+        }
+
+        await Assert.That(client.Creates).IsEmpty();
+        await Assert.That(client.Subscribes.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments("orders", "ordered.fifo")]
+    [Arguments("ordered.fifo", "orders")]
+    public async Task Subscription_drift_identifies_the_topic_and_shared_queue(string changedTopic, string unchangedTopic)
+    {
+        using var client = new SnsTestClient();
+        var options = Options(client);
+        var changed = Subscription(changedTopic, "fulfillment");
+        changed.Attributes["FilterPolicy"] = """{"category":["games"]}""";
+        var unchanged = Subscription(unchangedTopic, "fulfillment");
+        unchanged.Attributes["FilterPolicy"] = """{"category":["books"]}""";
+        options.Subscriptions.Add(changed);
+        options.Subscriptions.Add(unchanged);
+        client.Subscribes.AddRange(options.Subscriptions);
+        client.SubscriptionAttributes["FilterPolicy"] = unchanged.Attributes["FilterPolicy"];
+        await using var transport = new SnsSendTransport("sns", client, false, options);
+
+        var difference = (await transport.ApplyTopologyAsync(TopologyMode.Validate, default)).Differences.Single();
+        await Assert.That(difference).Contains(changed.TopicArn);
+        await Assert.That(difference).Contains(changed.Endpoint);
+        await Assert.That(difference).Contains("FilterPolicy differs");
+    }
+
+    [Test]
+    [Arguments("""{"category":["games","books"]}""", false)]
+    [Arguments("""{"category":["games","music"]}""", true)]
+    public async Task Registration_rejects_conflicting_subscriptions_before_provisioning(string secondFilter, bool conflicts)
+    {
+        using var client = new SnsTestClient { Missing = true };
+        var first = Subscription();
+        first.Attributes["FilterPolicy"] = """{"category":["books","games"]}""";
+        var second = Subscription();
+        second.Attributes["FilterPolicy"] = secondFilter;
+        var app = Host.CreateApplicationBuilder();
+        app.Services.AddRelayer(builder => builder.AmazonSns("sns", sns =>
+        {
+            sns.TopologyMode = TopologyMode.Provision;
+            sns.Options.Configure(options =>
+            {
+                options.SnsClient = client;
+                options.Topics.Add(new("orders"));
+                options.Subscriptions.Add(first);
+                options.Subscriptions.Add(second);
+            });
+        }));
+
+        using var host = app.Build();
+
+        if (conflicts)
+        {
+            await Assert.That(() => host.Services.GetServices<ITransport>().Single()).Throws<InvalidOperationException>()
+                .WithMessageContaining($"'{first.TopicArn}' to '{first.Endpoint}'");
+        }
+        else
+        {
+            await Assert.That(host.Services.GetServices<ITransport>().Single().Name).IsEqualTo("sns");
+        }
+
+        await Assert.That(client.Lookups).IsEqualTo(0);
+        await Assert.That(client.Creates).IsEmpty();
+        await Assert.That(client.Subscribes).IsEmpty();
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Cancelled_topology_validation_preserves_single_and_batch_publishing(bool cancelDuringAttributeLookup)
@@ -796,7 +894,7 @@ internal sealed class SnsTestClient() : AmazonSimpleNotificationServiceClient(ne
         return Task.FromResult(new ListSubscriptionsByTopicResponse
         {
             NextToken = Paginate && request.NextToken is null ? "next" : null,
-            Subscriptions = (Paginate && request.NextToken is null ? Enumerable.Empty<SubscribeRequest>() : Subscribes).Select(subscription => new Subscription
+            Subscriptions = (Paginate && request.NextToken is null ? Enumerable.Empty<SubscribeRequest>() : Subscribes).Where(subscription => subscription.TopicArn == request.TopicArn).Select(subscription => new Subscription
             {
                 TopicArn = subscription.TopicArn,
                 Endpoint = subscription.Endpoint,

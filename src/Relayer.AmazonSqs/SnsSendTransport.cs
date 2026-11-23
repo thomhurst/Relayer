@@ -58,12 +58,30 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
             }
         }
 
+        var subscriptionAttributes = new Dictionary<(string TopicArn, string QueueArn), Dictionary<string, string>>();
+
         foreach (var subscription in options.Subscriptions)
         {
             if (subscription.Protocol != "sqs" || string.IsNullOrWhiteSpace(subscription.TopicArn) ||
-                string.IsNullOrWhiteSpace(subscription.Endpoint) || subscription.Attributes?.GetValueOrDefault("RawMessageDelivery") != "true")
+                string.IsNullOrWhiteSpace(subscription.Endpoint) || subscription.Attributes is not { } attributes ||
+                attributes.GetValueOrDefault("RawMessageDelivery") != "true")
             {
                 throw new InvalidOperationException("SNS subscriptions require explicit topic/queue ARNs, Protocol=sqs and RawMessageDelivery=true to preserve CloudEvents attributes.");
+            }
+
+            var identity = (subscription.TopicArn, subscription.Endpoint);
+
+            if (subscriptionAttributes.TryGetValue(identity, out var existing))
+            {
+                if (existing.Count != attributes.Count || existing.Any(attribute =>
+                    !attributes.TryGetValue(attribute.Key, out var value) || !AttributeEquals(attribute.Key, attribute.Value, value)))
+                {
+                    throw new InvalidOperationException($"SNS subscription '{identity.TopicArn}' to '{identity.Endpoint}' has conflicting attribute declarations. Declare one set of attributes for this subscription.");
+                }
+            }
+            else
+            {
+                subscriptionAttributes.Add(identity, attributes);
             }
         }
 
@@ -478,8 +496,10 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
             }
 
             var actual = await _client.GetTopicAttributesAsync(arn, cancellationToken).ConfigureAwait(false);
-            CompareAttributes(endpoint.Declaration.Attributes, actual.Attributes, $"SNS topic '{endpoint.Declaration.Name}'", differences);
-            topics.Add(endpoint, endpoint.Resolve(arn, actual.Attributes));
+            var resolved = endpoint.Resolve(arn, actual.Attributes);
+            CompareAttributes(endpoint.Declaration.Attributes, actual.Attributes,
+                $"SNS topic '{endpoint.Declaration.Name}'", differences, resolved.MaximumMessageBytes);
+            topics.Add(endpoint, resolved);
 
             if (endpoint.Declaration.Tags is { Count: > 0 } tags)
             {
@@ -536,7 +556,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
             }
 
             var attributes = await _client.GetSubscriptionAttributesAsync(new GetSubscriptionAttributesRequest { SubscriptionArn = arn }, cancellationToken).ConfigureAwait(false);
-            CompareAttributes(declaration.Attributes, attributes.Attributes, $"SNS subscription '{declaration.Endpoint}'", differences);
+            CompareAttributes(declaration.Attributes, attributes.Attributes, $"SNS subscription '{declaration.TopicArn}' to '{declaration.Endpoint}'", differences);
         }
 
         var report = new TopologyReport(differences);
@@ -557,7 +577,8 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         }
     }
 
-    private static void CompareAttributes(Dictionary<string, string>? expected, Dictionary<string, string>? actual, string description, List<string> differences)
+    private static void CompareAttributes(Dictionary<string, string>? expected, Dictionary<string, string>? actual,
+        string description, List<string> differences, int? actualMaximumMessageBytes = null)
     {
         if (expected is null)
         {
@@ -566,20 +587,43 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
 
         foreach (var attribute in expected)
         {
-            var equal = actual?.TryGetValue(attribute.Key, out var value) == true && value == attribute.Value;
+            string? detail = null;
 
-            if (!equal && actual?.TryGetValue(attribute.Key, out value) == true && attribute.Key is "Policy" or "DeliveryPolicy" or "FilterPolicy" or "RedrivePolicy" or "DataProtectionPolicy")
+            if (attribute.Key == MaximumMessageSizeAttribute && actualMaximumMessageBytes is { } maximum)
             {
-                using var left = JsonDocument.Parse(attribute.Value);
-                using var right = JsonDocument.Parse(value!);
-                equal = JsonElement.DeepEquals(left.RootElement, right.RootElement);
+                if (int.TryParse(attribute.Value, NumberStyles.None, CultureInfo.InvariantCulture, out int declared) && declared == maximum)
+                {
+                    continue;
+                }
+
+                detail = $" (expected '{attribute.Value}', observed '{maximum.ToString(CultureInfo.InvariantCulture)}')";
+            }
+            else if (actual?.TryGetValue(attribute.Key, out var value) == true && AttributeEquals(attribute.Key, attribute.Value, value))
+            {
+                continue;
             }
 
-            if (!equal)
-            {
-                differences.Add($"{description}: {attribute.Key} differs. Relayer never modifies or deletes existing topology; reconcile through infrastructure configuration.");
-            }
+            differences.Add($"{description}: {attribute.Key} differs{detail}. Relayer never modifies or deletes existing topology; reconcile through infrastructure configuration.");
         }
+    }
+
+    private static bool AttributeEquals(string name, string expected, string actual)
+    {
+        if (expected == actual)
+        {
+            return true;
+        }
+
+        if (name is not ("Policy" or "DeliveryPolicy" or "FilterPolicy" or "RedrivePolicy" or "DataProtectionPolicy"))
+        {
+            return false;
+        }
+
+        using var left = JsonDocument.Parse(expected);
+        using var right = JsonDocument.Parse(actual);
+        return name == "FilterPolicy"
+            ? SnsFilterPolicy.AreEquivalent(left.RootElement, right.RootElement)
+            : JsonElement.DeepEquals(left.RootElement, right.RootElement);
     }
 
     private static int ReadMaximumMessageBytes(string topicName, Dictionary<string, string>? attributes)
