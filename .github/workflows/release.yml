@@ -1,8 +1,12 @@
 name: Release NuGet packages
 
+# Publishing the draft release that release-draft.yml keeps for main creates the release's tag on
+# the draft's commit and runs this workflow on it. The packages are stamped with the tag's version.
+# The workflow file name and the `release` environment are part of the nuget.org trusted
+# publishing policy: keep both.
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -22,6 +26,8 @@ jobs:
       contents: read
       checks: read
       id-token: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,7 +36,7 @@ jobs:
       - name: Verify tag and required CI
         id: release
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/verify_release.py
 
@@ -38,8 +44,12 @@ jobs:
         with:
           global-json-file: global.json
 
+      # MinVer would also read the tag on this commit, but a commit can carry several version tags:
+      # the release's own tag decides.
       - name: Pack
-        run: dotnet pack -c Release -o .artifacts/packages
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: dotnet pack -c Release -o .artifacts/packages "-p:MinVerVersionOverride=$RELEASE_VERSION"
 
       - name: Verify package metadata, versions and symbols
         env:
@@ -67,3 +77,26 @@ jobs:
           dotnet nuget push '.artifacts/packages/*.nupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
           # Explicit symbol push repairs a partial release when the package already exists.
           dotnet nuget push '.artifacts/packages/*.snupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+
+  # The draft was named, and its compare link written, for the suggested version. Follow the tag
+  # if it was edited before publishing. Cosmetic, so it never fails a release.
+  name-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Name release after its tag
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          endpoint="repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"
+          body=$(gh api "$endpoint" --jq '.body // ""')
+          body=$(printf '%s' "$body" | sed -E "s#(/compare/[^ )]+)\.\.\.[^ )]+#\1...$RELEASE_TAG#")
+          gh api -X PATCH "$endpoint" -f name="$VERSION" -f body="$body" > /dev/null

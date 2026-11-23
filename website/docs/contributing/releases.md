@@ -3,7 +3,7 @@ title: Packages and releases
 description: "Build, inspect and publish Relayer packages from version tags."
 ---
 
-Relayer publishes pre-1.0 packages to [NuGet](https://www.nuget.org/packages/Relayer) from version tags. Some transport
+Relayer publishes pre-1.0 packages to [NuGet](https://www.nuget.org/packages/Relayer) from published GitHub releases. Some transport
 packages still contain scaffolding. Check the [roadmap](../roadmap.md) before choosing a transport.
 
 ## Dependency updates
@@ -48,11 +48,12 @@ its source and tests remain in the repository.
 
 ## Versions and local verification
 
-MinVer derives all package and assembly versions from Git tags. Tags have the form `v1.2.3` or
-`v1.2.3-preview.1`. Untagged commits get a preview version with a commit height, starting at `0.1.0`
-before the first release. Use a full checkout with tags; shallow history can produce a different version.
-Do not edit a project version to make a release. Build metadata (`+...`) and leading zeros in numeric
-version identifiers are not accepted by the release workflow.
+MinVer derives package and assembly versions from Git tags for every build except a release, which
+takes its version from the release's tag. Tags have the form `v1.2.3` or `v1.2.3-preview.1`. Untagged
+commits get a preview version with a commit height, starting at `0.1.0` before the first release. Use a
+full checkout with tags; shallow history can produce a different version. Do not edit a project version
+to make a release. Build metadata (`+...`), a missing `v` prefix and leading zeros in numeric version
+identifiers are not accepted by the release workflow.
 
 Before the first publish, pack and verify locally with the SDK selected by `global.json`:
 
@@ -90,18 +91,29 @@ for account and policy requirements. Confirm the policy is configured before tri
 
 ## Release behavior
 
-After publishing setup is confirmed, a maintainer selects a commit on `main` whose `CI Passed` check
-has succeeded, creates a version tag on that commit and pushes that tag. Annotated and lightweight
-tags both work. No release tags are created automatically.
+The `Release Draft` workflow (`release-draft.yml`) keeps one draft GitHub release for `main`, rewritten
+on every push. Its tag is one patch above the latest release (`v0.2.0` suggests `v0.2.1`), however many
+commits were merged; after a prerelease such as `v1.0.0-rc.1` it suggests `v1.0.0`. The latest release
+is the highest version tag in `main`'s history, so tags pushed before drafts were introduced count. Its
+target is the newest commit on `main`, and its notes are GitHub's generated notes since that release.
+Commit messages do not choose the version. The workflow recognizes its draft by a hidden marker in the
+notes and never changes other drafts or releases.
 
-The `Release NuGet packages` workflow rejects malformed tags, commits outside `main`, and commits
-without a successful `CI Passed` check from GitHub Actions. It packs with full Git history, verifies
+To release, wait for `CI Passed` on the draft's commit, then edit the draft on GitHub: change its tag to
+choose another version (for example `v0.3.0` or `v1.0.0`, or a prerelease such as `v1.0.0-rc.1`, marked
+as a pre-release), adjust the notes, and publish it. A push to `main` before publishing rewrites the draft
+and discards those edits. Publishing creates the tag on the draft's commit and starts the
+`Release NuGet packages` workflow (`release.yml`).
+
+That workflow rejects malformed tags, commits outside `main`, and commits without a successful
+`CI Passed` check from GitHub Actions. It packs with full Git history and the tag's version, verifies
 that every artifact version matches the tag and uploads the `.nupkg` and `.snupkg` artifacts before
-requesting publishing credentials. It then pushes packages and symbols to nuget.org.
+requesting publishing credentials. It then pushes packages and symbols to nuget.org, and finally renames
+the release after its tag and points its compare link at that tag if the tag was edited.
 
-The workflow uses `--skip-duplicate` and explicitly pushes symbols as well as packages. A rerun can
-finish a partially published version without overwriting existing packages. Never move a release
-tag to change an existing NuGet version: use a new version instead.
+The workflow uses `--skip-duplicate` and explicitly pushes symbols as well as packages. To finish a
+failed or partial release, re-run that workflow run: packages already on nuget.org are skipped and
+nothing is overwritten. Never move a release tag to change an existing NuGet version: use a new version instead.
 
-Releases run one at a time. New tag pushes leave the active release running and can queue up to
+Releases run one at a time. New releases leave the active release running and can queue up to
 100 pending releases. GitHub Actions cancels additional runs if the queue is full.
