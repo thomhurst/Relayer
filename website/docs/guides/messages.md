@@ -112,6 +112,22 @@ services.AddRelayer(relayer =>
 
 The last applicable registration supplies the metadata for a standalone message. Generated registrations apply to their declared message roots. An explicit `UseJsonSerializer` registration applies to any message type its context covers, including explicitly registered message types from a contracts assembly. Call it after generated registration to override that metadata. At host startup, each transport using the default JSON serializer requires metadata for its send routes and the wire contracts its consumers deserialize, including older versions accepted through upcasters. This also applies to handlers added through `ConfigurePipeline`. With no transport declarations, resolving the default serializer requires metadata for every registered contract.
 
+On .NET 11, Relayer's pinned .NET 10 generator ignores newer source-generation features such as [`[JsonNamingPolicy]`](https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/customize-properties#apply-a-naming-policy-to-a-type-or-member). For a contract that uses this attribute, generate a context with the .NET 11 SDK:
+
+```csharp
+using System.Text.Json.Serialization;
+using Relayer;
+
+[Message("orders.placed")]
+[JsonNamingPolicy(JsonKnownNamingPolicy.SnakeCaseLower)]
+public sealed record Order(int OrderId);
+
+[JsonSerializable(typeof(Order))]
+internal partial class OrderJson : JsonSerializerContext;
+```
+
+Call `relayer.UseJsonSerializer(OrderJson.Default)` after `relayer.AddMessageTypesFromThisAssembly()` in `AddRelayer`. Relayer then writes and reads `order_id` using the SDK-generated metadata.
+
 For every contract a consumer reads, including an upcaster's input type, use `JsonSourceGenerationMode.Metadata` or the default generation mode. A context generated with `JsonSourceGenerationMode.Serialization` alone lacks the metadata needed to deserialize the contract. See [System.Text.Json source generation modes](https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/source-generation-modes).
 
 Single-message consumers cache their typed JSON reader when the pipeline is composed, using the selected source-generated metadata and reader options. Custom serializers continue to receive calls through `IMessageSerializer`.

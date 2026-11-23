@@ -3,6 +3,8 @@ using Amazon.Runtime;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using DotNet.Testcontainers.Builders;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Relayer.AmazonSqs;
 using Relayer.Transports;
 
@@ -116,6 +118,72 @@ public class SqsSendFlociTests
             {
                 await client.DeleteQueueAsync(url, CancellationToken.None);
             }
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task None_uses_the_live_queue_limit_for_sends(bool batch)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        var externalUrl = Environment.GetEnvironmentVariable("RELAYER_SQS_SERVICE_URL");
+        using var client = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig
+        {
+            ServiceURL = externalUrl ?? await SharedBrokers.FlociUrlAsync(token),
+            AuthenticationRegion = "us-east-1",
+        });
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("message-size");
+        var url = (await client.CreateQueueAsync(new CreateQueueRequest(queue)
+        {
+            Attributes = new()
+            {
+                ["MaximumMessageSize"] = "8192"
+            }
+        }, token)).QueueUrl;
+
+        try
+        {
+            var builder = Host.CreateApplicationBuilder();
+            builder.Services.AddRelayer(relayer => relayer.AmazonSqs("floci", sqs =>
+            {
+                sqs.TopologyMode = TopologyMode.None;
+                sqs.Options.Configure(options =>
+                {
+                    options.SqsClient = client;
+                    options.Queues.Add(new(queue)
+                    {
+                        Attributes = new()
+                        {
+                            ["MaximumMessageSize"] = "4096"
+                        }
+                    });
+                });
+            }));
+            using var host = builder.Build();
+            await host.StartAsync(token);
+            var transport = host.Services.GetServices<ITransport>().Single(item => item.Name == "floci");
+            var body = new string('a', 5_000);
+            var message = new OutgoingMessage(queue, Encoding.UTF8.GetBytes(body));
+
+            if (batch)
+            {
+                await transport.SendBatchAsync(new[] { message }, token);
+            }
+            else
+            {
+                await transport.SendAsync(message, token);
+            }
+
+            var received = await ReceiveAsync(client, url, token);
+            await Assert.That(received.Body).IsEqualTo(body);
+            await Assert.That(transport.GetCapabilities(queue).MaxMessageBytes).IsNull();
+            await host.StopAsync(token);
+        }
+        finally
+        {
+            await client.DeleteQueueAsync(url, CancellationToken.None);
         }
     }
 

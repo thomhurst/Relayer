@@ -645,14 +645,6 @@ internal sealed partial class SqsSendTransport : ITransport, ITransportSendTraci
                 MaxRedeliveryDelay = TimeSpan.FromSeconds(SqsSettlement.MaxVisibilitySeconds - 1),
                 MaxDeliveryDelay = Fifo ? null : TimeSpan.FromMinutes(15)
             };
-
-            if (declaration.Attributes?.TryGetValue("MaximumMessageSize", out var maximum) == true)
-            {
-                Capabilities = Capabilities with
-                {
-                    MaxMessageBytes = long.Parse(maximum, CultureInfo.InvariantCulture)
-                };
-            }
         }
 
         internal CreateQueueRequest Declaration
