@@ -107,6 +107,11 @@ no entity mapping, `DbSet`, `EnsureCreated` call or transaction interceptor is r
 in explicit SQL migration operations. There is no automatic destructive `Down`: choose a retention policy
 before writing a rollback that drops durable messages. Back up durable data before a schema change.
 
+The extension generates the creation SQL from the installed Relayer version each time EF runs or scripts the
+migration. To freeze that SQL for a new migration, generate it with the CLI and commit the reviewed SQL as
+an application-owned `migrationBuilder.Sql(...)` operation. After a Relayer upgrade, verify the migration
+history both on an empty database and on a database provisioned by the previous version.
+
 ## Upgrade existing tables to insert-sequence ordering
 
 Schema creation does not add `seq` to an older table. Stop all application writers and dispatchers before
@@ -117,25 +122,15 @@ migrationBuilder.Sql(PostgreSqlOutboxSchema.CreateInsertSequenceMigrationScript(
     new PostgreSqlOutboxOptions { Schema = "messaging", TablePrefix = "orders_" }));
 ```
 
-`CreateInsertSequenceMigrationScript` returns explicit SQL; it never runs a migration automatically.
-Use the same schema and prefix as the existing store. Run it once, in one transaction. It locks the outbox,
-adds and backfills `seq`, enables a native identity sequence above the backfilled range, and replaces the
-pending and parked indexes with `(lane, seq)` and `(lane, ordering_key, seq)`. For example, its default-table
-SQL begins with:
+Use the same schema and prefix as the existing store. Run the script in one transaction. It takes an exclusive
+lock on the outbox and checks for `seq bigint GENERATED ALWAYS AS IDENTITY`. If the column already has that
+definition, the script returns without changing rows, the sequence or indexes. This lets a fresh EF migration
+history replay an initial `CreateRelayerPostgreSqlSchema` call followed by the sequence upgrade.
 
-```sql
-LOCK TABLE "public"."relayer_outbox" IN ACCESS EXCLUSIVE MODE;
-ALTER TABLE "public"."relayer_outbox" ADD COLUMN seq bigint;
-WITH numbered AS (
-    SELECT id, row_number() OVER (ORDER BY id) AS position FROM "public"."relayer_outbox"
-)
-UPDATE "public"."relayer_outbox" AS target
-SET seq = numbered.position FROM numbered WHERE target.id = numbered.id;
-```
-
-The complete generated script also sets `NOT NULL`, adds `GENERATED ALWAYS AS IDENTITY`, advances the
-sequence, rebuilds both ordered indexes and preserves unordered recovery with a partial UUID index. Existing rows keep their previous UUID order; the database cannot
-recover their historical insertion order. New rows follow insertion order independently of host clocks.
+For a pre-sequence table, the script adds and backfills `seq`, sets `NOT NULL`, and starts the identity sequence
+above the backfilled range. It rebuilds both ordered indexes on `(lane, seq)` and `(lane, ordering_key, seq)`
+and preserves unordered recovery with a partial UUID index. Existing rows keep their previous UUID order.
+New rows follow insertion order independently of host clocks.
 Restart only upgraded workers after the migration commits. Keep the identity sequence's default cache
 of one and do not reset it. Unordered direct dispatch and maintenance retain their existing UUID cursors.
 

@@ -1,3 +1,5 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,6 +13,12 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 
 public class DatabaseSchemaTests
 {
+    private static PostgreSqlOutboxOptions ReplayOptions => new()
+    {
+        Schema = "messaging_'\"$relayer$",
+        TablePrefix = "orders_'\\_"
+    };
+
     [Test]
     public async Task Scripts_are_idempotent_and_shared_with_EF_and_health_queries()
     {
@@ -46,6 +54,46 @@ public class DatabaseSchemaTests
     }
 
     [Test]
+    [Arguments(MigrationsSqlGenerationOptions.Default)]
+    [Arguments(MigrationsSqlGenerationOptions.Idempotent)]
+    public async Task EF_migration_script_replays_creation_and_sequence_upgrade_on_a_fresh_database(
+        MigrationsSqlGenerationOptions generationOptions)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        var contextOptions = new DbContextOptionsBuilder<ReplayContext>().UseNpgsql(connection).Options;
+        await using var context = new ReplayContext(contextOptions);
+        var script = context.GetService<IMigrator>().GenerateScript(options: generationOptions);
+
+        await Execute(connection, script);
+
+        await Assert.That(await Scalar<long>(connection, "SELECT count(*) FROM \"__EFMigrationsHistory\""))
+            .IsEqualTo(2L);
+        var options = ReplayOptions;
+        await VerifyCatalog(connection, options);
+
+        var table = Table(options, "outbox");
+        var insert = $"""
+            INSERT INTO {table} (id, transport, destination, message_type, headers, body, created_at)
+            VALUES (gen_random_uuid(), 'events', 'orders', 'probe', ''::bytea, ''::bytea, clock_timestamp())
+            RETURNING seq
+            """;
+        await Assert.That(await Scalar<long>(connection, insert)).IsEqualTo(1L);
+        await Execute(connection, $"DELETE FROM {table}");
+
+        // Running the upgrade on a current schema must preserve the identity sequence's position.
+        await using (var transaction = await connection.BeginTransactionAsync())
+        {
+            await Execute(connection, PostgreSqlOutboxSchema.CreateInsertSequenceMigrationScript(options));
+            await transaction.CommitAsync();
+        }
+
+        await Assert.That(await Scalar<long>(connection, insert)).IsEqualTo(2L);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Insert_sequence_migration_preserves_old_UUID_order_and_continues_after_existing_rows(bool populated)
@@ -56,7 +104,7 @@ public class DatabaseSchemaTests
         await connection.OpenAsync();
         var options = new PostgreSqlOutboxOptions { Schema = "quote'\";--{{schema}}", TablePrefix = "{{outbox}}_'" };
         var oldSchema = PostgreSqlOutboxSchema.CreateScript(options)
-            .Replace("    seq bigint GENERATED ALWAYS AS IDENTITY,\n", "", StringComparison.Ordinal)
+            .Replace("    seq bigint GENERATED ALWAYS AS IDENTITY,", "", StringComparison.Ordinal)
             .Replace("(lane, seq)", "(lane, id)", StringComparison.Ordinal)
             .Replace(" AND lane IS NOT NULL", "", StringComparison.Ordinal)
             .Replace("(lane, ordering_key, seq)", "(lane, ordering_key, id)", StringComparison.Ordinal);
@@ -248,5 +296,27 @@ public class DatabaseSchemaTests
     {
         await using var command = new NpgsqlCommand(sql, connection);
         return (T)(await command.ExecuteScalarAsync())!;
+    }
+
+    private sealed class ReplayContext(DbContextOptions<ReplayContext> options) : DbContext(options);
+
+    [DbContext(typeof(ReplayContext))]
+    [Migration("20260101000000_CreateOutbox")]
+    public sealed class CreateOutbox : Migration
+    {
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.CreateRelayerPostgreSqlSchema(ReplayOptions);
+        }
+    }
+
+    [DbContext(typeof(ReplayContext))]
+    [Migration("20260102000000_AddInsertSequence")]
+    public sealed class AddInsertSequence : Migration
+    {
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.Sql(PostgreSqlOutboxSchema.CreateInsertSequenceMigrationScript(ReplayOptions));
+        }
     }
 }

@@ -14,10 +14,20 @@ public static class PostgreSqlOutboxSchema
 
     /// <summary>Returns SQL to upgrade a pre-sequence outbox table. Stop writers and dispatchers first.</summary>
     /// <remarks>Existing rows retain their former UUID order; historical insertion order cannot be recovered.
-    /// Run once in an application-owned migration transaction before starting upgraded workers.</remarks>
+    /// The script skips tables that already have the insert-sequence identity column.
+    /// Run in an application-owned migration transaction before starting upgraded workers.</remarks>
     public static string CreateInsertSequenceMigrationScript(PostgreSqlOutboxOptions? options = null)
     {
-        return Render("InsertSequenceMigration.sql", options);
+        var body = Render("InsertSequenceMigration.sql", options);
+        var delimiter = "$relayer$";
+
+        // Quoted identifiers can contain the delimiter, so choose it after rendering the body.
+        while (body.Contains(delimiter, StringComparison.Ordinal))
+        {
+            delimiter = delimiter.Insert(delimiter.Length - 1, "_");
+        }
+
+        return $"DO {delimiter}\n{body}{delimiter};\n";
     }
 
     private static string Render(string resource, PostgreSqlOutboxOptions? options)
@@ -49,7 +59,9 @@ public static class PostgreSqlOutboxSchema
             result.Append(token switch
             {
                 "schema" => schema,
-                "outbox_literal" => "'" + (schema + "." + QuoteIdentifier(options.TablePrefix + "outbox")).Replace("'", "''", StringComparison.Ordinal) + "'",
+                "outbox_literal" => "E'" + (schema + "." + QuoteIdentifier(options.TablePrefix + "outbox"))
+                    .Replace("\\", "\\\\", StringComparison.Ordinal)
+                    .Replace("'", "''", StringComparison.Ordinal) + "'",
                 _ => QuoteIdentifier(options.TablePrefix + token)
             });
             position = end + 2;

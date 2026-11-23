@@ -585,6 +585,9 @@ upgrades existing definitions. Rollback is application-owned because dropping an
 Lane columns use PostgreSQL integer, matching the durable contract's nonnegative Int32 lane range.
 
 **Consequences.** The CLI, direct deployment and EF migrations create the same columns, constraints and indexes.
+The EF helper renders creation SQL from the installed Relayer version. Explicit upgrade scripts must also work
+when migration replay has already created the target schema on a fresh database. Applications can freeze
+reviewed SQL in their own migrations when they need a fixed historical definition.
 The EF integration currently carries the PostgreSQL dependency; future database providers need their own explicit
 migration operations. This establishes schema deployment without claiming that database stores, durable sending,
 dispatch workers or inbox behavior are implemented.
