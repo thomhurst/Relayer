@@ -136,7 +136,7 @@ Serialization writes to pooled `IBufferWriter<byte>` storage and deserialization
 
 ### Payload types that need distinct metadata names
 
-System.Text.Json derives metadata property names from payload type names. Two DTOs with the same short name can produce `SYSLIB1031`. A type named after a C# keyword, such as `@event`, can produce a compiler error in the generated context.
+System.Text.Json derives metadata property names from payload type names. Two DTOs with the same short name can produce `SYSLIB1031`. A type named after a C# keyword, such as `@event`, can produce a compiler error in the generated context. A DTO named `Options` can also cause compiler errors because its generated property hides `JsonSerializerContext.Options`. Give the DTO a distinct metadata name with `[assembly: GenerateMessageJsonType(typeof(Options))]`.
 
 Add a `GenerateMessageJsonType` assembly attribute in the project that owns the `[Message]` contracts. For example, if `Shopping.Line` and `Logistics.Line` both appear in the same context, give `Logistics.Line` its own generated name.
 
