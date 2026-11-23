@@ -11,6 +11,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Relayer.Benchmarks" />
     <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql.EntityFrameworkCore" />
+    <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql.Tests" />
     <InternalsVisibleTo Include="Relayer.Sagas.EntityFrameworkCore" />
   </ItemGroup>
 

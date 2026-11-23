@@ -365,6 +365,8 @@ run under the JIT and do not establish end-to-end EF Native AOT support.
 
 For `SendRouteOptions.RequiredDeliveryDelay` fallback, register matching [maintenance](postgres-maintenance.md) or [ordered dispatch](ordered-dispatch.md) workers. Keep the global `EntityFrameworkCoreOutboxOptions` used by startup validation consistent with the participating DbContext's schema, prefix and lane count. A scheduled send requires a worker for the selected DbContext's PostgreSQL host, port, database, schema and table prefix. An ordered send also requires a worker with the same lane count. Relayer checks the writer when you enqueue the send and checks the committing connection before writing the buffered rows. Direct commit dispatch alone cannot deliver future schedules. See [send requirements](../guides/sending.md) for native limits and transaction guarantees.
 
+If an EF Core connection interceptor supplies the writer connection for scheduled sends, return an `NpgsqlConnection` so Relayer can identify the PostgreSQL database.
+
 Default scheduling capabilities are cached per options version. Resolving a sender without a DbContext
 does not generate database SQL. Configuration reload updates defaults for newly resolved scopes;
 an existing enlistment keeps its defaults. A selected DbContext always uses its own validated store settings.

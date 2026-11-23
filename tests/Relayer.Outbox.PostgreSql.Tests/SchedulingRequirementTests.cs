@@ -332,6 +332,43 @@ public class SchedulingRequirementTests
     }
 
     [Test]
+    public async Task Ef_contexts_sharing_options_cache_their_writer_capabilities_independently()
+    {
+        await using var unorderedSource = NpgsqlDataSource.Create("Host=unused;Database=unordered");
+        await using var orderedSource = NpgsqlDataSource.Create("Host=unused;Database=ordered");
+        var options = new DbContextOptionsBuilder().UseNpgsql(unorderedSource).Options;
+        await using var unorderedContext = new DbContext(options);
+        await using var orderedContext = new DbContext(options);
+        orderedContext.Database.SetDbConnection(orderedSource.CreateConnection(), contextOwnsConnection: true);
+
+        var workerLookups = 0;
+        var configuration = new PostgreSqlOutboxConfiguration(new(), workers: Workers());
+        var unordered = new OutboxContext(unorderedContext, configuration);
+        var ordered = new OutboxContext(orderedContext, configuration);
+        await Assert.That(unordered.SupportsScheduling).IsTrue();
+        await Assert.That(ordered.SupportsOrderedScheduling).IsTrue();
+
+        // Each context is accessed by one caller at a time. Only the options extension is shared.
+        (bool Unordered, bool Ordered) unorderedResult = default;
+        (bool Unordered, bool Ordered) orderedResult = default;
+        Parallel.Invoke(
+            () => unorderedResult = (unordered.SupportsScheduling, unordered.SupportsOrderedScheduling),
+            () => orderedResult = (ordered.SupportsScheduling, ordered.SupportsOrderedScheduling));
+
+        await Assert.That(unorderedResult).IsEqualTo((true, false));
+        await Assert.That(orderedResult).IsEqualTo((false, true));
+        // One lookup at construction and one cold lookup per context.
+        await Assert.That(workerLookups).IsEqualTo(3);
+
+        IEnumerable<PostgreSqlSchedulingRegistration> Workers()
+        {
+            Interlocked.Increment(ref workerLookups);
+            yield return new(unorderedSource, null, "relayer_");
+            yield return new(orderedSource, null, "relayer_", OrderedLanes: 32);
+        }
+    }
+
+    [Test]
     public async Task Ef_implicit_save_rejects_a_database_change_after_scheduled_enqueue()
     {
         await using var workerDatabase = new PostgreSqlFixture();

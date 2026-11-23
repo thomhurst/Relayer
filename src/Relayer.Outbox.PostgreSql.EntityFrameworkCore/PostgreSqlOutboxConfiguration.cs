@@ -23,15 +23,17 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
         get;
     }
 
+    internal (bool Unordered, bool Ordered) RegisteredScheduling
+    {
+        get;
+    }
+
     private readonly string _inboxInsertWithTransactionIdSql;
     private readonly string _verifyInboxCommitSql;
     private readonly string? _schema;
     private readonly string _tablePrefix;
     private readonly PostgreSqlLocalStore[] _localStores;
     private readonly IEnumerable<PostgreSqlSchedulingRegistration> _workers;
-    private readonly bool _hasSchedulingWorkers;
-    private (string? ConnectionString, string? Database) _schedulingTarget;
-    private (bool Unordered, bool Ordered) _writerScheduling;
     private string? _validatedWriterConnectionString;
 
     internal PostgreSqlOutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null,
@@ -67,8 +69,7 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
         Dispatcher = dispatcher;
 
         _workers = workers ?? [];
-        _hasSchedulingWorkers = PostgreSqlSchedulingRegistration.GetCapabilities(
-            _workers, _schema, _tablePrefix, Lanes) != default;
+        RegisteredScheduling = PostgreSqlSchedulingRegistration.GetCapabilities(_workers, _schema, _tablePrefix, Lanes);
 
         var inbox = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "inbox");
@@ -134,22 +135,17 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
 
     internal override (bool Unordered, bool Ordered) GetScheduling(DbConnection writer)
     {
-        if (!_hasSchedulingWorkers)
+        if (RegisteredScheduling == default)
         {
             return default;
         }
 
-        var connection = (NpgsqlConnection)writer;
-        var target = (connection.ConnectionString, connection.Database);
-
-        if (target != _schedulingTarget)
+        if (writer is not NpgsqlConnection connection)
         {
-            _writerScheduling = PostgreSqlSchedulingRegistration.GetCapabilities(
-                _workers, _schema, _tablePrefix, Lanes, connection);
-            _schedulingTarget = target;
+            throw new InvalidOperationException("Scheduled sends through the PostgreSQL EF Core outbox require an NpgsqlConnection. Configure UseNpgsql with an Npgsql connection string, data source or connection.");
         }
 
-        return _writerScheduling;
+        return PostgreSqlSchedulingRegistration.GetCapabilities(_workers, _schema, _tablePrefix, Lanes, connection);
     }
 
     internal override void ValidateTransaction(DbTransaction transaction)

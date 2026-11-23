@@ -382,6 +382,9 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
 internal sealed class OutboxContext(DbContext context, OutboxConfiguration configuration)
 {
     private const string SchedulingError = "Scheduled EF Core outbox sends require a matching due-row dispatch worker for the selected DbContext database, schema, table prefix and ordered lane count. Register matching maintenance or ordered dispatch for that store.";
+    // Scheduling is scoped to this DbContext even when several contexts share options.
+    private (DbConnection? Connection, string? ConnectionString, string? Database) _schedulingTarget;
+    private (bool Unordered, bool Ordered) _writerScheduling;
     private (bool Unordered, bool Ordered) _scheduled;
     private (bool Unordered, bool Ordered) _savedScheduled;
 
@@ -598,7 +601,20 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
 
     private (bool Unordered, bool Ordered) GetScheduling()
     {
-        return Configuration.GetScheduling(Transaction?.Connection ?? Context.Database.GetDbConnection());
+        return GetScheduling(Transaction?.Connection ?? Context.Database.GetDbConnection());
+    }
+
+    private (bool Unordered, bool Ordered) GetScheduling(DbConnection writer)
+    {
+        var target = (writer, writer.ConnectionString, writer.Database);
+
+        if (target != _schedulingTarget)
+        {
+            _writerScheduling = Configuration.GetScheduling(writer);
+            _schedulingTarget = target;
+        }
+
+        return _writerScheduling;
     }
 
     internal void ValidateScheduledCommit(DbTransaction transaction)
@@ -609,7 +625,7 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         }
 
         // A pending selection can buffer sends before EF opens the committing connection.
-        var (unordered, ordered) = Configuration.GetScheduling(transaction.Connection!);
+        var (unordered, ordered) = GetScheduling(transaction.Connection!);
 
         if ((_scheduled.Unordered && !unordered) || (_scheduled.Ordered && !ordered))
         {
