@@ -214,7 +214,7 @@ internal sealed class SendPipeline
 
             foreach (var definition in transport.Routes)
             {
-                if (!destinations.Add((definition.MessageType, transport.Name, definition.Destination)))
+                if (!destinations.Add(transport.GetRouteKey(definition)))
                 {
                     throw new InvalidOperationException($"Route for '{definition.MessageType}' on transport '{transport.Name}': a message type can have only one route to each destination; '{definition.Destination}' is declared more than once.");
                 }

@@ -26,6 +26,7 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
     private TopologyMode? _topologyMode;
     private SendRouteOptions _sendDefaults = new();
     private bool _hasSerializer;
+    private Func<string, string>? _normalizeRouteDestination;
 
     internal TransportBuilder(IServiceCollection services, HandlerRegistry handlers, string name)
     {
@@ -205,6 +206,12 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         NamedMessageSerializer.Register(_services, Name, factory);
     }
 
+    internal void SetRouteDestinationNormalizer(Func<string, string> normalize)
+    {
+        EnsureMutable();
+        _normalizeRouteDestination = normalize;
+    }
+
     internal TransportDefinition Build()
     {
         _built = true;
@@ -227,6 +234,6 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
                     // Configuration binding uses InvalidOperationException for malformed values.
                     failures.Add($"Transport '{Name}': {error.Message}");
                 }
-            });
+            }, _normalizeRouteDestination);
     }
 }

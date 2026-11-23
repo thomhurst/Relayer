@@ -27,14 +27,18 @@ public sealed class RelayerConfiguration
 /// <summary>A named transport and its typed route and consumer declarations.</summary>
 public sealed class TransportDefinition
 {
+    private readonly Func<string, string>? _normalizeRouteDestination;
+
     internal TransportDefinition(string name, Type optionsType, IRouteDefinition[] routes,
-        IConsumerDefinition[] consumers, TopologyMode? topologyMode, Action<IServiceProvider, List<string>> validateOptions)
+        IConsumerDefinition[] consumers, TopologyMode? topologyMode,
+        Action<IServiceProvider, List<string>> validateOptions, Func<string, string>? normalizeRouteDestination = null)
     {
         Name = name;
         OptionsType = optionsType;
         Routes = Array.AsReadOnly(routes);
         Consumers = Array.AsReadOnly(consumers);
         TopologyMode = topologyMode;
+        _normalizeRouteDestination = normalizeRouteDestination;
         ValidateOptions = validateOptions;
     }
 
@@ -71,6 +75,12 @@ public sealed class TransportDefinition
     internal Action<IServiceProvider, List<string>> ValidateOptions
     {
         get;
+    }
+
+    internal (Type MessageType, string Transport, string Destination) GetRouteKey(IRouteDefinition route)
+    {
+        var destination = route.Destination;
+        return (route.MessageType, Name, _normalizeRouteDestination?.Invoke(destination) ?? destination);
     }
 }
 

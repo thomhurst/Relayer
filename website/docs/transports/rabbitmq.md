@@ -78,6 +78,8 @@ Consumers use their native queue name as the source. The consumer source and fai
 
 Declare a route to a queue by name, or use `exchange:routing-key` to publish through an exchange. The first colon separates the exchange from the routing key; use an empty exchange (`:queue`) for the default exchange. An exchange name in this notation cannot contain a colon. Empty routing keys are supported.
 
+For one message type on a named RabbitMQ transport, declare each exchange and routing key pair once. For example, `orders` and `:orders` both address the same default-exchange destination. Startup rejects a configuration that declares both, as does resolving a sender without a host.
+
 ```csharp
 services.AddRelayer(relayer =>
 {

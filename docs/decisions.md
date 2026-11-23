@@ -2072,7 +2072,7 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 **Context.** D27 limited each message type to one route, so an application could not send one logical message to a broker topic and to another transport's queue without extra message types (#802). A native topic or exchange already fans out within one broker; across brokers, or to several queues, there is no native operation that covers every destination.
 
 **Decision.**
-- A message type can declare `Send<T>` for several destinations, on one transport or several. A repeated transport and destination fails startup validation. There is no separate publish API (§3.4).
+- A message type can declare `Send<T>` for several destinations, on one transport or several. A repeated transport and destination fails startup validation, including RabbitMQ destinations that parse to the same exchange and routing key. There is no separate publish API (§3.4).
 - A send to several routes enlists one outbox row per route, in declaration order, in the caller's transaction. All rows share the envelope message ID, time and parent context, so consumers deduplicate by message ID. Each route records its own send span, so its creation context is that route's span.
 - Outbox rows need distinct keys. The first row's ID is the message ID, which keeps single-route rows and lookups unchanged; each later row gets its own UUIDv7 ID, which dead-letter and failure tooling reports for that row.
 - A direct send to several routes cannot be atomic, so it fails before any send, including through a handler's send buffer. Use an outbox transaction.

@@ -24,6 +24,11 @@ public static class RabbitMqBuilderExtensions
         ArgumentNullException.ThrowIfNull(configure);
         builder.AddTransport<RabbitMqTransportOptions, RabbitMqConsumerOptions>(name, transport =>
         {
+            transport.SetRouteDestinationNormalizer(static destination =>
+            {
+                var (exchange, routingKey) = RabbitMqSendEndpoint.ParseDestination(destination);
+                return exchange + ":" + routingKey;
+            });
             transport.SendDefaults = new()
             {
                 HeaderNames = new("cloudEvents:")
