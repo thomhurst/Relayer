@@ -1,0 +1,128 @@
+name: Buffered allocation .NET 10 capture (#1154)
+
+on:
+  push:
+    branches: [diagnostics/issue-1154-net10-capture]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  capture:
+    name: .NET 10 allocation capture (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [unmodified, profiled]
+    env:
+      ORIGINAL_CHECKOUT: 4a1dcd18af29a68702f5111d7e11ded212914926
+      FRAMEWORK: net10.0
+      CAPTURE_MODE: ${{ matrix.mode }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: matrix.mode == 'profiled'
+        with:
+          repository: dotnet/samples
+          ref: 3810558800760fc39282cc939bac645735514209
+          path: profiler-sdk
+          sparse-checkout: core/profiling
+          persist-credentials: false
+      - name: Separate Docker publications from outbound ports
+        run: sudo bash scripts/Prepare-ContainerTests.sh
+      - uses: docker/setup-docker-action@3f1ab1ab0e29231562e4db4ca600c1a49653bac6
+        with:
+          version: v29.10.0
+          set-host: true
+      - name: Verify mixed-address port allocation and forwarding
+        run: bash scripts/Test-ContainerPortAllocation.sh
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/issue1154-dotnet
+        with:
+          global-json-file: global.json
+          dotnet-version: '10.0.404'
+      - name: Build the CI solution checkout
+        id: build
+        run: |
+          mkdir -p results .artifacts
+          git fetch --no-tags origin "$ORIGINAL_CHECKOUT"
+          git worktree add --detach .artifacts/ci-source "$ORIGINAL_CHECKOUT"
+          git -C .artifacts/ci-source rev-parse HEAD > results/checkout.txt
+          git rev-parse HEAD > results/diagnostic-commit.txt
+          dotnet --info > results/runtime.txt
+          selected_patch=$(dotnet --list-runtimes | awk '$1 == "Microsoft.NETCore.App" && $2 ~ /^10[.]0[.]/ {print $2}' | sort -V | tail -n 1)
+          test "$selected_patch" = 10.0.15
+          uname -a > results/host.txt
+          cat /etc/os-release >> results/host.txt
+          nproc >> results/host.txt
+
+          if [[ "$CAPTURE_MODE" == profiled ]]; then
+            mkdir -p .artifacts/history
+            git archive 489ce7079df1f92788b76dd8c8e191f46707b827 \
+              tools/FrozenAllocationProfiler .github/scripts/read_native_allocations.py \
+              .github/scripts/read_allocation_stacks.py | tar -x -C .artifacts/history
+            patch -d .artifacts/history -p1 < .github/scripts/issue-1154-profiler-target.patch
+            CXX=clang++ cmake -S .artifacts/history/tools/FrozenAllocationProfiler \
+              -B .artifacts/profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release
+            cmake --build .artifacts/profiler
+            git -C .artifacts/ci-source apply "$PWD/.github/scripts/issue-1154-caller-checkpoints.patch"
+            cp .github/scripts/Issue1154AllocationRegion.cs .artifacts/ci-source/tests/Relayer.Tests/
+          fi
+
+          cd .artifacts/ci-source
+          dotnet restore
+          dotnet build --no-restore -c Release
+          cp "tests/Relayer.Tests/bin/Release/$FRAMEWORK/Relayer.Tests.runtimeconfig.json" ../../results/
+      - name: Prefetch CI broker images
+        run: |
+          docker pull apache/kafka:4.0.2
+          docker pull postgres:18-alpine
+          docker pull mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04
+          docker pull mysql:8.4
+          docker pull gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935
+          docker pull ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa
+      - name: Run the parallel solution tests through MTP
+        timeout-minutes: 10
+        run: bash .github/scripts/run-issue-1154-solution.sh
+      - name: Validate same-execution caller and stack coverage
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.mode == 'profiled' }}
+        run: |
+          python3 .github/scripts/summarize-issue-1154.py results --caller-only | tee results/caller-summary.txt
+          python3 .artifacts/history/.github/scripts/read_native_allocations.py results/objects.jsonl \
+            | jq 'map_values(.coverage)' > results/validated-native.json
+          python3 .artifacts/history/.github/scripts/read_allocation_stacks.py results/stacks.jsonl results/objects.jsonl \
+            | jq '{coverage, unresolved_frames}' > results/validated-stacks.json
+      - name: Inventory the retained diagnostics
+        if: always()
+        run: |
+          paths=(results)
+          for path in ".artifacts/ci-source/tests/Relayer.Tests/bin/Release/$FRAMEWORK" \
+            .artifacts/profiler/libFrozenAllocationProfiler.so; do
+            if [[ -e "$path" ]]; then
+              paths+=("$path")
+            fi
+          done
+          find "${paths[@]}" -type f -exec sha256sum {} + > results-sha256.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: allocation-net10-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            results-sha256.txt
+            .artifacts/ci-source/tests/Relayer.Tests/bin/Release/${{ env.FRAMEWORK }}/
+            .artifacts/profiler/libFrozenAllocationProfiler.so
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

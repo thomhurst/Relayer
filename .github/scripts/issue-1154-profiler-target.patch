@@ -1,0 +1,35 @@
+--- a/tools/FrozenAllocationProfiler/Profiler.cpp
++++ b/tools/FrozenAllocationProfiler/Profiler.cpp
+@@ -15,0 +16,14 @@
++// MTP passes the profiling environment to every test host in the solution.
++bool isSelectedProcess() {
++    const char* target = std::getenv("RELAYER_ALLOCATION_TARGET");
++    if (!target) return true;
++
++    std::ifstream arguments("/proc/self/cmdline", std::ios::binary);
++    std::string argument;
++    while (std::getline(arguments, argument, '\0')) {
++        const auto fileName = argument.substr(argument.find_last_of('/') + 1);
++        if (fileName == target || fileName == std::string(target) + ".dll") return true;
++    }
++    return false;
++}
++
+@@ -19,0 +34,2 @@
++bool callerOnly = false;
++thread_local bool captureThread = false;
+@@ -193,0 +210,2 @@
++        if (!isSelectedProcess()) return S_OK;
++        callerOnly = std::getenv("RELAYER_ALLOCATION_CALLER_ONLY") != nullptr;
+@@ -244,0 +263,2 @@
++        // Leave unrelated allocations off the profiler's lock and stack walker.
++        if (callerOnly && !captureThread) return S_OK;
+@@ -356,0 +377 @@
++    captureThread = callerOnly;
+@@ -434 +455,3 @@
+-    if (!initialized || nativeTail || (!active && !windowsCompleted) || !selectedMethod.empty()) return 0;
++    if (!initialized || nativeTail || (!active && !windowsCompleted) || !selectedMethod.empty()
++        || (callerOnly && !captureThread)) return 0;
++    captureThread = false;
+@@ -456,0 +480 @@
++        || (callerOnly && !captureThread)
