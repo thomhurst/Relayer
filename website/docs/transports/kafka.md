@@ -40,6 +40,8 @@ If Dekaf rejects the producer settings while building the client at startup, cor
 
 The application's `ILoggerFactory` is passed to Dekaf. Native security, compression, batching, partitioning, acknowledgment and retry settings remain native settings. A native configuration override changes native behavior, including its delivery guarantees.
 
+If startup is canceled during producer initialization, host shutdown flushes only producers that finished initializing. Provider disposal still releases every producer.
+
 ## Keys, batches and failures
 
 Route `OrderingKey` selectors accept strings or `IUtf8SpanFormattable` values. Relayer passes the resolved key to Dekaf's partitioner. No key remains a null Kafka key; an empty string remains a non-null empty key.

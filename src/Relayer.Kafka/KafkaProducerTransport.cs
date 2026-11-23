@@ -17,6 +17,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     private readonly KafkaTransportOptions? _options;
     private readonly MessageTracing? _tracing;
     private readonly ILoggerFactory? _loggerFactory;
+    private volatile bool _producerInitialized;
     private bool _disposed;
 
     internal List<KafkaConsumer> Consumers
@@ -370,6 +371,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         await _producer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _producerInitialized = true;
 
         if (FailureCopyTransport is { } copies)
         {
@@ -415,7 +417,9 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
 
     internal Task FlushAsync(CancellationToken cancellationToken)
     {
-        var flush = _producer.FlushAsync(cancellationToken).AsTask();
+        // Dekaf requires initialization before flushing. The failure-copy producer can still be initializing
+        // when the main producer is ready, so each transport checks its own producer.
+        var flush = _producerInitialized ? _producer.FlushAsync(cancellationToken).AsTask() : Task.CompletedTask;
         return FailureCopyTransport is { } copies ? Task.WhenAll(flush, copies.FlushAsync(cancellationToken)) : flush;
     }
 
