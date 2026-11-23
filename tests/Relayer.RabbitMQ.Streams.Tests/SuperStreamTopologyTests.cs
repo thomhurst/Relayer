@@ -49,6 +49,66 @@ public class SuperStreamTopologyTests
     }
 
     [Test]
+    public async Task Provision_validates_name_only_partition_after_creating_super_stream()
+    {
+        var broker = await RabbitMqStreamsTestBroker.Current;
+        var name = TestContext.Current!.Isolation.GetIsolatedName("events");
+        string partition = $"{name}-0";
+        await using var provider = ConfigurationTests.Provider(options =>
+        {
+            options.Configuration = broker.Configuration();
+            options.Streams.Add(new(partition));
+            options.SuperStreams.Add(new(name)
+            {
+                Configuration = new PartitionsSuperStreamSpec(name, 2),
+            });
+        });
+        await using var native = await StreamSystem.Create(broker.Configuration());
+        var transport = provider.GetRequiredService<ITransport>();
+
+        await Assert.That(await native.StreamExists(partition)).IsFalse();
+
+        var first = await transport.ApplyTopologyAsync(TopologyMode.Provision, default);
+
+        await Assert.That(await native.QueryPartition(name)).IsEquivalentTo(new[] { partition, $"{name}-1" });
+        await Assert.That(first.Differences.Count).IsEqualTo(0);
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, default)).Differences.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Provision_reports_invalid_partition_count_and_continues()
+    {
+        var broker = await RabbitMqStreamsTestBroker.Current;
+        var isolation = TestContext.Current!.Isolation;
+        var missing = isolation.GetIsolatedName("missing");
+        var invalid = isolation.GetIsolatedName("invalid");
+        var valid = isolation.GetIsolatedName("valid");
+        await using var provider = ConfigurationTests.Provider(options =>
+        {
+            options.Configuration = broker.Configuration();
+            options.Streams.Add(new(missing));
+            options.SuperStreams.Add(new(invalid)
+            {
+                Configuration = new PartitionsSuperStreamSpec(invalid, 0),
+            });
+            options.SuperStreams.Add(new(valid)
+            {
+                Configuration = new PartitionsSuperStreamSpec(valid, 2),
+            });
+        });
+        await using var native = await StreamSystem.Create(broker.Configuration());
+        var transport = provider.GetRequiredService<ITransport>();
+
+        var report = await transport.ApplyTopologyAsync(TopologyMode.Provision, default);
+
+        await Assert.That(report.Differences.Count).IsEqualTo(2);
+        await Assert.That(report.Differences.Any(difference => difference.StartsWith($"Stream '{missing}' does not exist", StringComparison.Ordinal))).IsTrue();
+        await Assert.That(report.Differences.Any(difference => difference.StartsWith($"Super stream '{invalid}': Partitions must be at least 1", StringComparison.Ordinal))).IsTrue();
+        await Assert.That(await native.SuperStreamExists(invalid)).IsFalse();
+        await Assert.That(await native.QueryPartition(valid)).IsEquivalentTo(new[] { $"{valid}-0", $"{valid}-1" });
+    }
+
+    [Test]
     public async Task Name_only_topology_checks_native_partitions_without_creating_any()
     {
         var broker = await RabbitMqStreamsTestBroker.Current;

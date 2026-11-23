@@ -74,6 +74,8 @@ options.SuperStreams.Add(new("events")
 
 `Provision` forwards the specification unchanged to native `CreateSuperStream`. If the name already exists, RabbitMQ can return success without comparing the requested partition count, binding keys or settings. Relayer verifies that native partition lookup returns at least one stream. Manage changes and verify existing settings externally.
 
+In `Provision`, name-only stream checks run after super-stream provisioning. You can declare a partition as a name-only stream and provision its super stream in the same startup. If the native client rejects a super-stream specification, the topology report names the declaration and includes the native validation error. Provisioning continues with the other declarations.
+
 A name-only declaration (`options.SuperStreams.Add(new("events"))`) checks for native partitions in either `Validate` or `Provision`. In `Validate`, a declaration with `Configuration` fails because the native API cannot verify configuration equivalence. An ordinary exchange without stream partitions fails both modes.
 
 Stream and super-stream declarations manage topology only. Relayer receivers remain planned.
