@@ -100,6 +100,10 @@ internal sealed class SqsSendState
         {
             Request.DelaySeconds = CalculateDelaySeconds(deliverAt - (time ?? TimeProvider.System).GetUtcNow(), fifo);
         }
+        else if (outgoing.OutboxDelayElapsed && !fifo)
+        {
+            Request.DelaySeconds = 0;
+        }
 
         if (fifo && (string.IsNullOrWhiteSpace(Request.MessageGroupId) || Request.DelaySeconds is not null))
         {

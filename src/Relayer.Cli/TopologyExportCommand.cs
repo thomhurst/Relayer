@@ -58,7 +58,8 @@ internal static class TopologyExportCommand
             using var declarations = new DeclarationContext(Path.GetFullPath(path));
             var assembly = declarations.LoadFromAssemblyPath(Path.GetFullPath(path));
             var type = assembly.GetType(typeName, throwOnError: true)!;
-            var factory = type.GetMethod("CreateTopologyServices", BindingFlags.Public | BindingFlags.Static, Type.EmptyTypes);
+            var factory = type.GetMethod("CreateTopologyServices", genericParameterCount: 0,
+                BindingFlags.Public | BindingFlags.Static, binder: null, types: Type.EmptyTypes, modifiers: null);
 
             if (factory is null || factory.ReturnType != typeof(IServiceProvider) || factory.ContainsGenericParameters)
             {
@@ -97,13 +98,13 @@ internal static class TopologyExportCommand
             }
             finally
             {
-                if (services is IDisposable disposable)
-                {
-                    disposable.Dispose();
-                }
-                else if (services is IAsyncDisposable asyncDisposable)
+                if (services is IAsyncDisposable asyncDisposable)
                 {
                     await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+                }
+                else if (services is IDisposable disposable)
+                {
+                    disposable.Dispose();
                 }
             }
 

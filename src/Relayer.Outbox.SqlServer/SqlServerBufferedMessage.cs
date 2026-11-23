@@ -116,7 +116,7 @@ internal sealed class SqlServerBufferedMessage
         var body = (MemoryStream)Values[7];
         return new OutgoingMessage(Destination, body.GetBuffer().AsMemory(0, checked((int)body.Length)),
             DurableOutboxHeaderCodec.Read(headers.GetBuffer().AsMemory(0, checked((int)headers.Length)), ref _decodedHeaders))
-            .ForOutboxDispatch();
+            .ForOutboxDispatch(_hasDelivery);
     }
 
     internal object GetValue(int ordinal)

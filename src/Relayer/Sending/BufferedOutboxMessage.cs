@@ -152,7 +152,7 @@ internal sealed class BufferedOutboxMessage
     {
         return new OutgoingMessage(Destination, Body,
                 DurableOutboxHeaderCodec.Read(Headers, ref _decodedHeaders),
-                OrderingKey is { } key ? new WireString(key) : null).ForOutboxDispatch();
+                OrderingKey is { } key ? new WireString(key) : null).ForOutboxDispatch(DeliverAt.HasValue);
     }
 
     internal void Clear()
