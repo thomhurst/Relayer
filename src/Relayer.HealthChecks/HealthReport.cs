@@ -46,6 +46,7 @@ internal sealed class HealthReport
         }
         catch (Exception error)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             return HealthCheckResult.Unhealthy($"Probe failed: {error.Message}", error);
         }
     }

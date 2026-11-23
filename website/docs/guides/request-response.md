@@ -76,6 +76,8 @@ The default capacity is 256; supported capacities are 1 through 65,536. Exhausti
 
 Use `request.Replies` to configure the reply consumer with the transport's usual options and failure settings. The consumer follows the transport's normal ordering, delivery and settlement rules. `Request` uses its second argument as the reply consumer source and advertises that address by default. When the responder publishes to a different address, set `request.ReplyDestination` to match the responder's fixed `Send<TResponse>` destination.
 
+On the same transport, the request destination must differ from both the reply consumer source and the advertised reply destination. Startup rejects either collision.
+
 | Transport | Reply endpoint setup |
 | --- | --- |
 | [In-memory](../transports/in-memory.md) | Use a dedicated endpoint name. The transport creates declared endpoints in the requesting process. |

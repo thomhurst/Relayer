@@ -226,6 +226,21 @@ public class HealthCheckTests
     }
 
     [Test]
+    public async Task Caller_cancellation_propagates_when_the_probe_faults()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await using var provider = Create(configure: services =>
+            services.AddKeyedSingleton<ITransportHealthProbe>("events", new TransportProbe(_ =>
+            {
+                cancellation.Cancel();
+                return ValueTask.FromException<HealthCheckResult>(new IOException("Connection ended."));
+            })));
+        var checks = provider.GetRequiredService<HealthCheckService>();
+        await Assert.That(async () => await checks.CheckHealthAsync(
+            registration => registration.Name == "relayer.transport", cancellation.Token)).Throws<OperationCanceledException>();
+    }
+
+    [Test]
     public async Task Already_canceled_check_does_not_call_adapter()
     {
         var calls = 0;
