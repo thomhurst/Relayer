@@ -104,6 +104,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D91](#d91-jetstream-consumers-reject-dead-letter-subjects-they-receive) | JetStream consumers reject dead-letter subjects they receive | Accepted |
 | [D92](#d92-dead-letter-snapshots-indicate-when-body-bytes-are-unavailable) | Dead-letter snapshots indicate when body bytes are unavailable | Accepted |
 | [D93](#d93-generated-json-registrations-apply-to-message-roots) | Generated JSON registrations apply to message roots | Accepted |
+| [D94](#d94-named-in-memory-clocks-preserve-binary-compatibility) | Named in-memory clocks preserve binary compatibility | Accepted |
 
 ---
 
@@ -2192,3 +2193,11 @@ Refines [D8](#d8-systemtextjson-source-generation-by-default).
 **Decision.** Generated registration lists its declared message roots. Serialization, deserialization, and AsyncAPI choose the last applicable context for a standalone message. Generated contexts apply to their listed roots. Explicit `UseJsonSerializer` contexts apply to every registered message type they cover. System.Text.Json still resolves nested payload metadata within the enclosing message's context.
 
 **Consequences.** Adding a dependent contracts library preserves the standalone message's wire format. Earlier binaries still load through the original registration overload. Rebuild those libraries to apply root scoping. Context selection runs during setup and schema export.
+
+## D94. Named in-memory clocks preserve binary compatibility
+
+**Context.** A named Options callback configures an existing instance, so it cannot assign the init-only `InMemoryTransportOptions.TimeProvider` (#1436). Relayer 0.2.0 shipped the accessor with the `IsExternalInit` modifier. [Replacing `init` with `set`](https://github.com/dotnet/csharplang/blob/main/proposals/csharp-9.0/init.md#breaking-changes) would change its binary signature and require recompilation of callers that use object initializers.
+
+**Decision.** Use `UseTimeProvider` inside the named `Configure` callback and retain the shipped init accessor. Both use the same assignment. The hosted transport and failure pipeline read the resulting clock during startup and use their existing `TimeProvider.System` fallback.
+
+**Consequences.** Compiled callers can still use the initializer. Hosted tests can supply a clock per named transport through the existing Options callback. No scheduling, redelivery or retry logic changes.

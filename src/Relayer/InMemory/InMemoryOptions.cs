@@ -59,14 +59,13 @@ public sealed class InMemoryTransportOptions
         }
         init
         {
-            _timeProvider = value;
+            UseTimeProvider(value);
         }
     }
 
     /// <summary>Sets the clock from a named Options configuration callback before the transport is constructed.</summary>
     public void UseTimeProvider(TimeProvider timeProvider)
     {
-        ArgumentNullException.ThrowIfNull(timeProvider);
         _timeProvider = timeProvider;
     }
 }
