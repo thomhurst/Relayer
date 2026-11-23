@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RabbitMQ.Stream.Client;
 using Relayer.Transports;
 
 namespace Relayer.RabbitMQ.Streams;
@@ -25,7 +27,8 @@ public static class RabbitMqStreamsBuilderExtensions
                 throw new NotSupportedException("RabbitMQ Streams registration supports native connections and stream topology only. Remove send routes and consumers from this registration. Message execution (#316) awaits graceful shutdown in the native reliable consumer (rabbitmq/rabbitmq-stream-dotnet-client#498).");
             }
 
-            return new RabbitMqStreamsTransport(name, provider.GetRequiredService<IOptionsMonitor<RabbitMqStreamsOptions>>().Get(name));
+            var options = provider.GetRequiredService<IOptionsMonitor<RabbitMqStreamsOptions>>().Get(name);
+            return new RabbitMqStreamsTransport(name, options, provider.GetService<ILogger<StreamSystem>>());
         });
         builder.Services.AddSingleton<IHostedService>(provider => new RabbitMqStreamsHostedService(provider, name));
         return builder;

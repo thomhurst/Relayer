@@ -1,3 +1,4 @@
+using System.Text;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Exceptions;
 
@@ -77,6 +78,15 @@ internal sealed class RabbitMqTopology
         foreach (var queue in _queues)
         {
             var entity = $"Queue '{queue.Name}'";
+            var nameBytes = Encoding.UTF8.GetByteCount(queue.Name);
+
+            if (nameBytes > byte.MaxValue)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                differences.Add($"{entity}: the name is {nameBytes} bytes in UTF-8. Use at most {byte.MaxValue} bytes.");
+                continue;
+            }
+
             var exists = await ApplyEntityAsync(connection, entity, differences, cancellationToken,
                 (channel, token) => mode == TopologyMode.Validate
                     ? channel.QueueDeclarePassiveAsync(queue.Name, token)

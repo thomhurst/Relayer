@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using RabbitMQ.Stream.Client;
 using Relayer.Transports;
 
@@ -6,6 +7,7 @@ namespace Relayer.RabbitMQ.Streams;
 internal sealed class RabbitMqStreamsTransport : ITransport
 {
     private readonly StreamSystemConfig _configuration;
+    private readonly ILogger<StreamSystem>? _logger;
     private readonly RabbitMqStream[] _streams;
     private readonly RabbitMqSuperStream[] _superStreams;
     // Serializes lifecycle and topology only. No message path is implemented.
@@ -14,9 +16,10 @@ internal sealed class RabbitMqStreamsTransport : ITransport
     private bool _disposed;
     private static readonly TransportCapabilities s_capabilities = new() { ConsumptionModel = ConsumptionModel.Log };
 
-    internal RabbitMqStreamsTransport(string name, RabbitMqStreamsOptions options)
+    internal RabbitMqStreamsTransport(string name, RabbitMqStreamsOptions options, ILogger<StreamSystem>? logger)
     {
         Name = name;
+        _logger = logger;
         ArgumentNullException.ThrowIfNull(options.Configuration);
         _configuration = options.Configuration;
         _streams = options.Streams.ToArray();
@@ -235,7 +238,7 @@ internal sealed class RabbitMqStreamsTransport : ITransport
     private async Task ConnectAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        _system ??= await StreamSystem.Create(_configuration).ConfigureAwait(false);
+        _system ??= await StreamSystem.Create(_configuration, _logger).ConfigureAwait(false);
         // Native operations have no CancellationToken. Drain them before releasing ownership;
         // never abandon a pending connect that could later leak an owned connection.
         if (token.IsCancellationRequested)

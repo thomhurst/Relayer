@@ -186,6 +186,53 @@ public class RabbitMqTopologyTests
         await Assert.That(failure.Message).Contains("absent-queue");
     }
 
+    [Test]
+    [Arguments(TopologyMode.Validate)]
+    [Arguments(TopologyMode.Provision)]
+    public async Task Oversized_utf8_queue_name_does_not_hide_later_declarations(TopologyMode mode)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        await using var broker = await Broker.StartAsync(token);
+        await using var connection = await broker.Factory().CreateConnectionAsync(token);
+        await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
+        var oversized = new string('\u00e9', 128);
+        var boundary = new string('\u00e9', 127) + "x";
+        const string LaterQueue = "later-queue";
+        await channel.QueueDeclareAsync(boundary, true, false, false, cancellationToken: token);
+
+        var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder =>
+            builder.RabbitMQ("rabbit", rabbit =>
+            {
+                rabbit.TopologyMode = mode;
+                rabbit.Options.Configure(options =>
+                {
+                    options.ConnectionFactory = broker.Factory();
+                    options.Queues.Add(new(oversized));
+                    options.Queues.Add(new(boundary));
+                    options.Queues.Add(new(LaterQueue));
+                });
+            }))).Build();
+        await using var hostLifetime = (IAsyncDisposable)host;
+        var failure = await Assert.That(async () => await host.StartAsync(token)).Throws<OptionsValidationException>();
+        var differences = failure!.Failures.ToArray();
+        await Assert.That(differences[0]).Contains($"Queue '{oversized}'");
+        await Assert.That(differences[0]).Contains("256 bytes in UTF-8");
+        await Assert.That(differences[0]).Contains("255 bytes");
+
+        if (mode == TopologyMode.Validate)
+        {
+            await Assert.That(differences.Length).IsEqualTo(2);
+            await Assert.That(differences[1]).Contains($"Queue '{LaterQueue}'");
+            await Assert.That(await QueueErrorAsync(connection, LaterQueue, token)).IsEqualTo((ushort)404);
+        }
+        else
+        {
+            await Assert.That(differences.Length).IsEqualTo(1);
+            await channel.QueueDeclarePassiveAsync(LaterQueue, token);
+        }
+    }
+
     private static async Task<ushort> QueueErrorAsync(IConnection connection, string queue, CancellationToken token)
     {
         await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
