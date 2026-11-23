@@ -101,60 +101,64 @@ internal sealed class EndpointCapabilityValidator
             return cached;
         }
 
-        var location = $"Endpoint '{endpoint}' on transport '{transport.Name}'";
-        TransportCapabilities? capabilities = null;
-
-        try
-        {
-            capabilities = _cache.GetCapabilities(transport, endpoint);
-
-            if (capabilities is null)
-            {
-                _failures.Add($"{location}: GetCapabilities must return a TransportCapabilities declaration.");
-            }
-            else if (!ValidateValues(capabilities, location))
-            {
-                capabilities = null;
-            }
-        }
-        catch (Exception error) when (error is ArgumentException or InvalidOperationException or NotSupportedException)
-        {
-            _failures.Add($"{location}: cannot resolve TransportCapabilities. {error.Message}");
-        }
-
+        var capabilities = ResolveCapabilities(transport, endpoint, _cache, _failures);
         _endpoints.Add(key, capabilities);
         return capabilities;
     }
 
-    private bool ValidateValues(TransportCapabilities capabilities, string location)
+    internal static TransportCapabilities? ResolveCapabilities(ITransport transport, string endpoint,
+        EndpointCapabilityCache cache, List<string> failures)
     {
-        var previousCount = _failures.Count;
+        var location = $"Endpoint '{endpoint}' on transport '{transport.Name}'";
+
+        try
+        {
+            var capabilities = cache.GetCapabilities(transport, endpoint);
+
+            if (capabilities is null)
+            {
+                failures.Add($"{location}: GetCapabilities must return a TransportCapabilities declaration.");
+                return null;
+            }
+
+            return ValidateValues(capabilities, location, failures) ? capabilities : null;
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or NotSupportedException)
+        {
+            failures.Add($"{location}: cannot resolve TransportCapabilities. {error.Message}");
+            return null;
+        }
+    }
+
+    private static bool ValidateValues(TransportCapabilities capabilities, string location, List<string> failures)
+    {
+        var previousCount = failures.Count;
 
         if (capabilities.MaxDeliveryDelay < TimeSpan.Zero)
         {
-            _failures.Add($"{location}: MaxDeliveryDelay must be null or non-negative.");
+            failures.Add($"{location}: MaxDeliveryDelay must be null or non-negative.");
         }
 
         if (capabilities.MaxRedeliveryDelay < TimeSpan.Zero)
         {
-            _failures.Add($"{location}: MaxRedeliveryDelay must be null or non-negative (zero permits immediate redelivery only).");
+            failures.Add($"{location}: MaxRedeliveryDelay must be null or non-negative (zero permits immediate redelivery only).");
         }
 
         if (capabilities.MaxBatchSize < 1)
         {
-            _failures.Add($"{location}: MaxBatchSize must be at least 1.");
+            failures.Add($"{location}: MaxBatchSize must be at least 1.");
         }
 
         if (capabilities.MaxMessageBytes <= 0)
         {
-            _failures.Add($"{location}: MaxMessageBytes must be null or positive.");
+            failures.Add($"{location}: MaxMessageBytes must be null or positive.");
         }
 
         if (!Enum.IsDefined(capabilities.ConsumptionModel))
         {
-            _failures.Add($"{location}: ConsumptionModel must be a defined value.");
+            failures.Add($"{location}: ConsumptionModel must be a defined value.");
         }
 
-        return _failures.Count == previousCount;
+        return failures.Count == previousCount;
     }
 }

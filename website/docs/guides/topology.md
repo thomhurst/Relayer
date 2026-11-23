@@ -43,7 +43,7 @@ Configuration validation runs first, followed by topology operations, in the hos
 
 ## Transport adapters
 
-Adapters implement `ITransport.ApplyTopologyAsync(mode, cancellationToken)`. They resolve their named declaration through `ITopology`, retain native route and consumer options, and return a `TopologyReport` containing remaining differences. Include entity names and expected/actual native settings in each difference. An empty report means the declaration matches. Broker exceptions become startup failures with transport and mode context; requested cancellation propagates unchanged. Provisioning is not transactional across transports.
+Adapters implement `ITransport.ApplyTopologyAsync(mode, cancellationToken)`. They resolve their named declaration through `ITopology`, retain native route and consumer options, and return a `TopologyReport` containing remaining differences. Include entity names and expected/actual native settings in each difference. An empty report means the declaration matches. Broker exceptions become startup failures with transport and mode context. Startup honors cancellation before reporting topology differences or starting receivers, including when the final adapter returns a report. Provisioning is not transactional across transports.
 
 ## JSON export
 

@@ -63,9 +63,9 @@ internal sealed class MessageSerializerStartupValidator(IServiceProvider service
             }
         }
         // Declaration-only hosts remain usable without adapters. A runtime adapter composes all send routes at startup.
-        if (services.GetServices<Transports.ITransport>().Any())
+        if (services.GetServices<ITransport>().Any())
         {
-            _ = services.GetRequiredService<SendPipeline>();
+            services.GetRequiredService<SendPipeline>().ComposeAfterCapabilityInitialization();
         }
 
         _initialized = true;

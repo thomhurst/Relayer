@@ -51,6 +51,8 @@ internal sealed class TopologyStartupService(RelayerConfiguration configuration,
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (failures.Count != 0)
         {
             throw new OptionsValidationException(Options.DefaultName, typeof(RelayerConfiguration), failures);

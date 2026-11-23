@@ -138,13 +138,19 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
         for (var i = 0; i < destinations.Length; i++)
         {
             var destination = destinations[i];
-            var capability = capabilitiesCache.GetCapabilities(transport, destination);
+            var capability = EndpointCapabilityValidator.ResolveCapabilities(transport, destination, capabilitiesCache, failures);
+
+            if (capability is null)
+            {
+                continue;
+            }
+
             capabilities[i] = capability;
             var executor = SendCapabilityValidator.NeedsOutbox(options, capability) ? outbox.Get() : null;
             SendCapabilityValidator.Validate(options, capability, orderingKey is not null, executor,
                 $"Send route '{messageType}' on transport '{transportName}' to endpoint '{destination}'", failures);
 
-            if (orderingKey is not null && !capabilities[i].OrderedByKey)
+            if (orderingKey is not null && !capability.OrderedByKey)
             {
                 failures.Add($"Send route '{messageType}' on transport '{transportName}' to endpoint '{destination}' declares an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey declaration.");
             }
@@ -173,11 +179,15 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
 
 internal sealed class SendPipeline
 {
-    private readonly FrozenDictionary<object, object> _routes;
+    private readonly Lock _compositionLock = new();
+    private readonly EndpointCapabilityCache _capabilitiesCache;
+    private volatile FrozenDictionary<object, object>? _routes;
+    private Func<EndpointCapabilityCache, FrozenDictionary<object, object>>? _deferredComposition;
 
     public SendPipeline(MessageTypeRegistry types, RelayerConfiguration configuration,
         IEnumerable<ITransport> transports, IEnumerable<ISendMiddleware> middleware, IServiceProvider services, EndpointCapabilityCache capabilitiesCache, OutboxCapabilities outbox)
     {
+        _capabilitiesCache = capabilitiesCache;
         var namedTransports = new Dictionary<string, ITransport>(StringComparer.Ordinal);
 
         foreach (var transport in transports)
@@ -198,20 +208,48 @@ internal sealed class SendPipeline
             pipeline = context => step.InvokeAsync(context, next);
         }
 
-        // Several Send<T> declarations fan one message out. Reject a repeated destination here too, because a
-        // sender resolved without the hosted startup validator would otherwise enlist duplicate rows.
-        var declared = new Dictionary<object, (SendRouteRegistration Registration, List<object> Routes)>(ReferenceEqualityComparer.Instance);
+        ValidateRouteDeclarations(configuration);
+
+        if (configuration.Transports.Any(declaration => declaration.Routes.Count != 0 &&
+                namedTransports.TryGetValue(declaration.Name, out var transport) &&
+                ITransportWrapper.Unwrap(transport) is ITransportCapabilityInitializer))
+        {
+            _deferredComposition = cache => BuildRoutes(types, configuration, namedTransports, pipeline, services, cache, outbox);
+        }
+        else
+        {
+            _routes = BuildRoutes(types, configuration, namedTransports, pipeline, services, capabilitiesCache, outbox);
+        }
+    }
+
+    internal void ComposeAfterCapabilityInitialization()
+    {
+        lock (_compositionLock)
+        {
+            if (_deferredComposition is { } compose)
+            {
+                _routes = compose(_capabilitiesCache);
+                _deferredComposition = null;
+            }
+        }
+    }
+
+    private FrozenDictionary<object, object> ComposeBeforeStartup()
+    {
+        lock (_compositionLock)
+        {
+            // A standalone send can use current capabilities without sharing them with hosted validation.
+            return _routes ??= _deferredComposition!(new EndpointCapabilityCache());
+        }
+    }
+
+    private static void ValidateRouteDeclarations(RelayerConfiguration configuration)
+    {
+        // Standalone senders must reject repeated destinations before they can enlist duplicate rows.
         var destinations = new HashSet<(Type, string, string)>();
 
         foreach (var transport in configuration.Transports)
         {
-            if (transport.Routes.Count == 0)
-            {
-                continue;
-            }
-
-            var serializer = services.GetMessageSerializer(transport.Name);
-
             foreach (var definition in transport.Routes)
             {
                 if (!destinations.Add(transport.GetRouteKey(definition)))
@@ -226,6 +264,28 @@ internal sealed class SendPipeline
                     throw new OptionsValidationException(Options.DefaultName, typeof(SendRouteOptions),
                         [$"Route for '{definition.MessageType}' on transport '{transport.Name}': {callbackError}"]);
                 }
+            }
+        }
+    }
+
+    private static FrozenDictionary<object, object> BuildRoutes(MessageTypeRegistry types, RelayerConfiguration configuration,
+        Dictionary<string, ITransport> namedTransports, SendDelegate pipeline, IServiceProvider services,
+        EndpointCapabilityCache capabilitiesCache, OutboxCapabilities outbox)
+    {
+        var declared = new Dictionary<object, (SendRouteRegistration Registration, List<object> Routes)>(ReferenceEqualityComparer.Instance);
+
+        foreach (var transport in configuration.Transports)
+        {
+            if (transport.Routes.Count == 0)
+            {
+                continue;
+            }
+
+            var serializer = services.GetMessageSerializer(transport.Name);
+
+            foreach (var definition in transport.Routes)
+            {
+                var send = (ISendRouteDefinition)definition;
 
                 if (send.CreateSendRegistration(transport.Name) is not { } registration)
                 {
@@ -265,12 +325,13 @@ internal sealed class SendPipeline
             }
         }
 
-        _routes = routes.ToFrozenDictionary(ReferenceEqualityComparer.Instance);
+        return routes.ToFrozenDictionary(ReferenceEqualityComparer.Instance);
     }
 
     internal SendTarget<TMessage> GetTarget<TMessage>()
     {
-        return _routes.TryGetValue(SendRouteKey<TMessage>.Value, out var route)
+        var routes = _routes ?? ComposeBeforeStartup();
+        return routes.TryGetValue(SendRouteKey<TMessage>.Value, out var route)
                     ? (SendTarget<TMessage>)route
                     : throw new InvalidOperationException("No send route is configured for this message. Declare a Send<TMessage> route on its named transport inside AddRelayer.");
     }
