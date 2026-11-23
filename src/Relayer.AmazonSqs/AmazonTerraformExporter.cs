@@ -34,7 +34,8 @@ public static class AmazonTerraformExporter
     /// <summary>
     /// Exports all transports in this topology as Terraform JSON (.tf.json), resolving named native options
     /// from services without resolving transport clients. Unsupported transports, attributes and duplicate
-    /// entities fail before writing. Leaves destination open. Provider configuration is application-owned.
+    /// entities fail before writing. SNS subscription topics must be in the export region.
+    /// Leaves destination open. Provider configuration is application-owned.
     /// </summary>
     public static void ExportAmazonTerraform(this ITopology topology, IServiceProvider services, Stream destination,
         AmazonTerraformOptions options)
@@ -81,8 +82,15 @@ public static class AmazonTerraformExporter
                         throw Error("Only SNS subscriptions with Protocol=sqs are supported.");
                     }
 
-                    ValidateArn(subscription.TopicArn, "sns");
+                    string topicRegion = ValidateArn(subscription.TopicArn, "sns");
                     ValidateArn(subscription.Endpoint, "sqs");
+
+                    if (topicRegion != options.Region)
+                    {
+                        throw Error($"SNS topic '{subscription.TopicArn}' is in region '{topicRegion}', which differs from export region '{options.Region}'. "
+                            + "Manage this subscription separately with a Terraform provider configured for the topic region.");
+                    }
+
                     Add(subscriptions, subscription.TopicArn + "|" + subscription.Endpoint, subscription, "subscription");
                 }
             }
@@ -305,7 +313,7 @@ public static class AmazonTerraformExporter
         }
     }
 
-    private static void ValidateArn(string arn, string service)
+    private static string ValidateArn(string arn, string service)
     {
         var parts = arn?.Split(':');
 
@@ -313,6 +321,8 @@ public static class AmazonTerraformExporter
         {
             throw Error($"Expected an explicit {service} ARN, received '{arn}'.");
         }
+
+        return parts[3];
     }
 
     private static void Tags(JsonObject body, IDictionary<string, string>? tags)

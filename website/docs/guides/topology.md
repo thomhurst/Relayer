@@ -259,7 +259,9 @@ FIFO names and flags are preserved; the exporter does not infer them. When `Maxi
 
 ### SNS relationships and access policies
 
-Use native SNS `Topics`, `Subscriptions` and `QueueTopology` as described in the [SNS transport guide](../transports/amazon-sqs.md), with the same export call. An ARN exactly matching a declared entity in the export account/region/partition becomes a Terraform reference; other ARNs remain explicit external dependencies. For example, topic `t` and queue `q` produce subscription fields equivalent to:
+Use native SNS `Topics`, `Subscriptions` and `QueueTopology` as described in the [SNS transport guide](../transports/amazon-sqs.md), with the same export call. An ARN exactly matching a declared entity in the export account, region and partition becomes a Terraform reference. Other supported ARNs remain explicit external dependencies. The SNS topic ARN must use the export region because Terraform creates the subscription in the topic's region. An external SQS queue may be in a different region when AWS supports delivery to it. If the topic is in another region, remove the subscription from the export declarations and manage it separately with a Terraform provider configured for the topic region. See [AWS cross-region delivery](https://docs.aws.amazon.com/sns/latest/dg/sns-cross-region-delivery.html).
+
+For example, topic `t` and queue `q` produce subscription fields equivalent to:
 
 ```json
 {
