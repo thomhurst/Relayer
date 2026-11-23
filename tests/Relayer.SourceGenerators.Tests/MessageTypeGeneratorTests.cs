@@ -12,6 +12,8 @@ public class MessageTypeGeneratorTests
     [Test]
     [Arguments("System.Obsolete", "CS0612")]
     [Arguments("System.Obsolete(\"Use OrderV2.\")", "CS0618")]
+    [Arguments("System.Obsolete(\"Use OrderV2.\", DiagnosticId = \"ORD001\")", "ORD001")]
+    [Arguments("System.Obsolete(\"Use OrderV2.\", DiagnosticId = \"class\")", "class")]
     public async Task Obsolete_messages_keep_registration_and_json_metadata(string attribute, string diagnosticId)
     {
         var compilation = CreateCompilation("LegacyOrderConsumer", $$"""
@@ -27,12 +29,50 @@ public class MessageTypeGeneratorTests
         var generated = string.Join("\n", output.SyntaxTrees.Skip(1).Select(tree => tree.ToString()));
         await Assert.That(generated).Contains("Add<global::OrderV1>(\"order\", 1)");
         await Assert.That(generated).Contains("JsonSerializable(typeof(global::OrderV1)");
+        using var image = new MemoryStream();
+        await Assert.That(output.Emit(image).Success).IsTrue();
 
         var usage = CSharpSyntaxTree.ParseText("public class Usage { public static System.Type LegacyOrder => typeof(OrderV1); }",
             path: "Usage.cs");
         var diagnostic = output.AddSyntaxTrees(usage).GetDiagnostics().Single(d => d.Severity == DiagnosticSeverity.Error);
         await Assert.That(diagnostic.Id).IsEqualTo(diagnosticId);
         await Assert.That(diagnostic.Location.SourceTree).IsEqualTo(usage);
+    }
+
+    [Test]
+    [Arguments("System.Obsolete(\"Use OrderV2.\", true, DiagnosticId = \"ORD002\")", "ORD002", false)]
+    [Arguments("System.Obsolete(\"Use OrderV2.\", DiagnosticId = \"ORD003, CS0618\")", "ORD003, CS0618", true)]
+    public async Task Obsolete_messages_with_error_level_or_non_identifier_ids_keep_diagnostics(
+        string attribute, string diagnosticId, bool warningAsError)
+    {
+        var compilation = CreateCompilation("LegacyOrderDiagnostics", $$"""
+            [{{attribute}}]
+            [Relayer.Message("order", Version = 1)] public sealed record OrderV1(int Id);
+            """);
+        var output = Generate(compilation.WithOptions(compilation.Options.WithGeneralDiagnosticOption(ReportDiagnostic.Error)));
+
+        var errors = output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
+        await Assert.That(errors.Length).IsGreaterThan(0);
+        await Assert.That(errors.All(d => d.Id == diagnosticId && d.IsWarningAsError == warningAsError)).IsTrue();
+    }
+
+    [Test]
+    public async Task Obsolete_containing_types_keep_nested_message_registration_and_json_metadata()
+    {
+        var compilation = CreateCompilation("LegacyNestedOrderConsumer", """
+            [System.Obsolete("Use OrderV2.", DiagnosticId = "ORD004")]
+            public static class Legacy
+            {
+                [System.Obsolete("Use OrderV2.", DiagnosticId = "ORD005")]
+                [Relayer.Message("order", Version = 1)] public sealed record OrderV1(int Id);
+            }
+
+            [Relayer.Message("order", Version = 2)] public sealed record OrderV2(int Id);
+            """);
+        var output = Generate(compilation.WithOptions(compilation.Options.WithGeneralDiagnosticOption(ReportDiagnostic.Error)));
+
+        await Assert.That(string.Join("\n", output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)))
+            .IsEqualTo("");
     }
 
     [Test]
