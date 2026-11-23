@@ -17,6 +17,10 @@ internal static class RabbitMqStreamsSmoke
             {
                 Configuration = new("orders")
             });
+            options.SuperStreams.Add(new("events")
+            {
+                Configuration = new PartitionsSuperStreamSpec("events"),
+            });
         })));
         await using var provider = services.BuildServiceProvider();
         var transport = provider.GetRequiredService<ITransport>();

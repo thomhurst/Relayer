@@ -36,7 +36,11 @@ public class ConfigurationTests
     [Test]
     public async Task None_cancellation_and_disposal_do_not_connect()
     {
-        await using var provider = Provider(options => options.Streams.Add(new("orders")));
+        await using var provider = Provider(options =>
+        {
+            options.Streams.Add(new("orders"));
+            options.SuperStreams.Add(new("events"));
+        });
         var transport = provider.GetRequiredService<ITransport>();
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.None, default)).Differences.Count).IsEqualTo(0);
         using var cancelled = new CancellationTokenSource();
@@ -103,6 +107,33 @@ public class ConfigurationTests
                     });
                     break;
             }
+        });
+        await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
+    }
+
+    [Test]
+    [Arguments("", null)]
+    [Arguments(" ", null)]
+    [Arguments("events", "different")]
+    public async Task Invalid_super_stream_declarations_fail_before_connecting(string name, string? specName)
+    {
+        await using var provider = Provider(options =>
+        {
+            options.SuperStreams.Add(new(name)
+            {
+                Configuration = specName is null ? null : new PartitionsSuperStreamSpec(specName),
+            });
+        });
+        await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Duplicate_super_stream_declarations_fail_before_connecting()
+    {
+        await using var provider = Provider(options =>
+        {
+            options.SuperStreams.Add(new("events"));
+            options.SuperStreams.Add(new("events"));
         });
         await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
     }

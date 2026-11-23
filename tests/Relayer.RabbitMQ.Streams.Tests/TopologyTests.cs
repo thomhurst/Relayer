@@ -1,6 +1,7 @@
 using System.Net;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,10 +19,14 @@ public class TopologyTests
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
-        await using var broker = await Broker.StartAsync(token);
+        var broker = await RabbitMqStreamsTestBroker.Current.WaitAsync(token);
+        var isolation = TestContext.Current!.Isolation;
+        var existing = isolation.GetIsolatedName("existing");
+        var created = isolation.GetIsolatedName("created");
+        var afterError = isolation.GetIsolatedName("after-error");
         var configuration = broker.Configuration();
         await using var independent = await StreamSystem.Create(broker.Configuration());
-        var spec = new StreamSpec("existing") { MaxLengthBytes = 123456789 };
+        var spec = new StreamSpec(existing) { MaxLengthBytes = 123456789 };
         await independent.CreateStream(spec);
         var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder => builder.RabbitMQStreams("streams", streams =>
         {
@@ -29,13 +34,13 @@ public class TopologyTests
             streams.Options.Configure(options =>
             {
                 options.Configuration = configuration;
-                options.Streams.Add(new("existing")
+                options.Streams.Add(new(existing)
                 {
                     Configuration = spec
                 });
-                options.Streams.Add(new("created")
+                options.Streams.Add(new(created)
                 {
-                    Configuration = new("created")
+                    Configuration = new(created)
                 });
             });
         }))).Build();
@@ -44,35 +49,35 @@ public class TopologyTests
         await Assert.That(host.Services.GetRequiredService<IOptionsMonitor<RabbitMqStreamsOptions>>().Get("streams").Configuration).IsSameReferenceAs(configuration);
         var transport = host.Services.GetRequiredService<ITransport>();
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
-        await Assert.That(await independent.StreamExists("created")).IsTrue();
+        await Assert.That(await independent.StreamExists(created)).IsTrue();
         var arguments = await broker.CommandAsync(["rabbitmqctl", "list_queues", "name", "arguments", "--formatter=json"], token);
         await Assert.That(arguments).Contains("123456789");
         await using var drift = ConfigurationTests.Provider(options =>
         {
             options.Configuration = broker.Configuration();
-            options.Streams.Add(new("existing")
+            options.Streams.Add(new(existing)
             {
-                Configuration = new("existing")
+                Configuration = new(existing)
                 {
                     MaxLengthBytes = 999
                 }
             });
-            options.Streams.Add(new("after-error")
+            options.Streams.Add(new(afterError)
             {
-                Configuration = new("after-error")
+                Configuration = new(afterError)
             });
         });
         var report = await drift.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Provision, token);
         await Assert.That(report.Differences.Count).IsEqualTo(1);
         await Assert.That(report.Differences[0]).Contains("PreconditionFailed");
-        await Assert.That(await independent.StreamExists("after-error")).IsTrue();
+        await Assert.That(await independent.StreamExists(afterError)).IsTrue();
         await Assert.That(await broker.CommandAsync(["rabbitmqctl", "list_queues", "name", "arguments", "--formatter=json"], token)).Contains("123456789");
         await host.StopAsync(token);
         await transport.StopAsync(token);
         await transport.StartAsync(token);
         await transport.StopAsync(token);
-        await Assert.That(await independent.StreamExists("existing")).IsTrue();
-        await Assert.That(await independent.StreamExists("created")).IsTrue();
+        await Assert.That(await independent.StreamExists(existing)).IsTrue();
+        await Assert.That(await independent.StreamExists(created)).IsTrue();
     }
 
     [Test]
@@ -80,42 +85,48 @@ public class TopologyTests
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
-        await using var broker = await Broker.StartAsync(token);
+        var broker = await RabbitMqStreamsTestBroker.Current.WaitAsync(token);
+        var isolation = TestContext.Current!.Isolation;
+        var existing = isolation.GetIsolatedName("existing");
+        var missingName = isolation.GetIsolatedName("missing");
+        var existingSettings = isolation.GetIsolatedName("existing-settings");
+        var readerName = isolation.GetIsolatedName("reader");
+        var forbidden = isolation.GetIsolatedName("forbidden");
         await using var independent = await StreamSystem.Create(broker.Configuration());
-        await independent.CreateStream(new StreamSpec("existing"));
-        await broker.CommandAsync(["rabbitmqctl", "add_user", "reader", "reader"], token);
-        await broker.CommandAsync(["rabbitmqctl", "set_permissions", "-p", "/", "reader", "^$", "^$", "^existing$"], token);
+        await independent.CreateStream(new StreamSpec(existing));
+        await broker.CommandAsync(["rabbitmqctl", "add_user", readerName, readerName], token);
+        await broker.CommandAsync(["rabbitmqctl", "set_permissions", "-p", "/", readerName, "^$", "^$", $"^{Regex.Escape(existing)}$"], token);
         await using var reader = ConfigurationTests.Provider(options =>
         {
-            options.Configuration = broker.Configuration("reader");
-            options.Streams.Add(new("existing"));
+            options.Configuration = broker.Configuration(readerName);
+            options.Streams.Add(new(existing));
         });
         await Assert.That((await reader.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(0);
-        await using var nativeReader = await StreamSystem.Create(broker.Configuration("reader"));
-        await Assert.That(async () => await nativeReader.CreateStream(new StreamSpec("forbidden"))).Throws<CreateStreamException>();
+        await using var nativeReader = await StreamSystem.Create(broker.Configuration(readerName));
+        await Assert.That(async () => await nativeReader.CreateStream(new StreamSpec(forbidden))).Throws<CreateStreamException>();
         await using var missing = ConfigurationTests.Provider(options =>
         {
             options.Configuration = broker.Configuration();
-            options.Streams.Add(new("existing"));
-            options.Streams.Add(new("missing"));
-            options.Streams.Add(new("existing-settings")
+            options.Streams.Add(new(existing));
+            options.Streams.Add(new(missingName));
+            options.Streams.Add(new(existingSettings)
             {
-                Configuration = new("existing-settings")
+                Configuration = new(existingSettings)
             });
         });
         var differences = (await missing.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Validate, token)).Differences;
         await Assert.That(differences.Count).IsEqualTo(2);
-        await Assert.That(differences[0]).Contains("missing");
-        await Assert.That(await independent.StreamExists("missing")).IsFalse();
+        await Assert.That(differences[0]).Contains(missingName);
+        await Assert.That(await independent.StreamExists(missingName)).IsFalse();
         await Assert.That((await missing.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(1);
-        await Assert.That(await independent.StreamExists("missing")).IsFalse();
-        await Assert.That(await independent.StreamExists("existing-settings")).IsTrue();
+        await Assert.That(await independent.StreamExists(missingName)).IsFalse();
+        await Assert.That(await independent.StreamExists(existingSettings)).IsTrue();
         await using var settings = ConfigurationTests.Provider(options =>
         {
             options.Configuration = broker.Configuration();
-            options.Streams.Add(new("existing")
+            options.Streams.Add(new(existing)
             {
-                Configuration = new("existing")
+                Configuration = new(existing)
             });
         });
         var unverified = (await settings.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Validate, token)).Differences;
@@ -125,11 +136,11 @@ public class TopologyTests
             streams.Options.Configure(options =>
             {
                 options.Configuration = broker.Configuration();
-                options.Streams.Add(new("missing"));
+                options.Streams.Add(new(missingName));
             })))).Build();
         await using var hostLifetime = (IAsyncDisposable)host;
         await Assert.That(async () => await host.StartAsync(token)).Throws<OptionsValidationException>();
-        await Assert.That(await independent.StreamExists("missing")).IsFalse();
+        await Assert.That(await independent.StreamExists(missingName)).IsFalse();
     }
 
     [Test]
@@ -172,7 +183,7 @@ public class TopologyTests
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
     }
 
-    private sealed class Broker(IContainer container) : IAsyncDisposable
+    internal sealed class Broker(IContainer container) : IAsyncDisposable
     {
         internal static async Task<Broker> StartAsync(CancellationToken token)
         {

@@ -7,6 +7,7 @@ internal sealed class RabbitMqStreamsTransport : ITransport
 {
     private readonly StreamSystemConfig _configuration;
     private readonly RabbitMqStream[] _streams;
+    private readonly RabbitMqSuperStream[] _superStreams;
     // Serializes lifecycle and topology only. No message path is implemented.
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private StreamSystem? _system;
@@ -19,6 +20,7 @@ internal sealed class RabbitMqStreamsTransport : ITransport
         ArgumentNullException.ThrowIfNull(options.Configuration);
         _configuration = options.Configuration;
         _streams = options.Streams.ToArray();
+        _superStreams = options.SuperStreams.ToArray();
         var names = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var stream in _streams)
@@ -34,6 +36,24 @@ internal sealed class RabbitMqStreamsTransport : ITransport
             if (stream.Configuration is { } config && config.Name != stream.Name)
             {
                 throw new ArgumentException($"RabbitMQ stream '{stream.Name}': native StreamSpec.Name must match the declaration.");
+            }
+        }
+
+        names.Clear();
+
+        foreach (var superStream in _superStreams)
+        {
+            ArgumentNullException.ThrowIfNull(superStream);
+            ArgumentException.ThrowIfNullOrWhiteSpace(superStream.Name);
+
+            if (!names.Add(superStream.Name))
+            {
+                throw new ArgumentException($"Duplicate RabbitMQ Streams topology declaration '{superStream.Name}'.");
+            }
+
+            if (superStream.Configuration is { } config && config.Name != superStream.Name)
+            {
+                throw new ArgumentException($"RabbitMQ super stream '{superStream.Name}': native SuperStreamSpec.Name must match the declaration.");
             }
         }
     }
@@ -62,7 +82,7 @@ internal sealed class RabbitMqStreamsTransport : ITransport
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            if (mode == TopologyMode.None || _streams.Length == 0)
+            if (mode == TopologyMode.None || (_streams.Length == 0 && _superStreams.Length == 0))
             {
                 return new([]);
             }
@@ -97,11 +117,52 @@ internal sealed class RabbitMqStreamsTransport : ITransport
                 cancellationToken.ThrowIfCancellationRequested();
             }
 
+            foreach (var superStream in _superStreams)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await ApplySuperStreamTopologyAsync(_system!, superStream, mode, differences, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             return new(differences);
         }
         finally
         {
             _lifecycle.Release();
+        }
+    }
+
+    private static async Task ApplySuperStreamTopologyAsync(StreamSystem system, RabbitMqSuperStream declaration,
+        TopologyMode mode, List<string> differences, CancellationToken cancellationToken)
+    {
+        var name = declaration.Name;
+
+        if (mode == TopologyMode.Provision && declaration.Configuration is { } config)
+        {
+            try
+            {
+                await system.CreateSuperStream(config).ConfigureAwait(false);
+            }
+            catch (CreateStreamException error)
+            {
+                differences.Add($"Super stream '{name}': {error.Message}. Reconcile native settings externally; Relayer never updates or deletes super streams.");
+                return;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        // The native existence check also accepts an exchange with zero stream partitions.
+        var exists = await system.SuperStreamExists(name).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!exists || (await system.QueryPartition(name).ConfigureAwait(false)).Length == 0)
+        {
+            differences.Add($"Super stream '{name}' has no native partitions. Supply native Configuration and select TopologyMode.Provision, or provision the partitions and bindings externally.");
+        }
+        else if (mode == TopologyMode.Validate && declaration.Configuration is not null)
+        {
+            differences.Add($"Super stream '{name}' exists, but read-only configuration equivalence checks are unavailable. Use a name-only declaration and verify native settings externally.");
         }
     }
 
