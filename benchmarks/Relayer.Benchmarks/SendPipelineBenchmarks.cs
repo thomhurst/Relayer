@@ -17,6 +17,7 @@ public class SendPipelineBenchmarks
     private IServiceScope _scope = null!;
     private ISender _sender = null!;
     private IMessageSerializer _serializer = null!;
+    private Action<SendOrder, IBufferWriter<byte>> _serialize = null!;
     private readonly SinkTransport _transport = new();
     private readonly ArrayBufferWriter<byte> _buffer = new();
     private readonly SendOrder _message = new(42);
@@ -34,7 +35,7 @@ public class SendPipelineBenchmarks
         get; set;
     }
 
-    [GlobalSetup(Targets = [nameof(SerializeAndCallNative), nameof(TombstoneSend), nameof(DirectSend), nameof(SelectedDestinationSend)])]
+    [GlobalSetup(Targets = [nameof(SerializeAndCallNative), nameof(BoundSerializeAndCallNative), nameof(TombstoneSend), nameof(DirectSend), nameof(SelectedDestinationSend)])]
     public void Setup()
     {
         Setup(useSelector: true);
@@ -90,6 +91,7 @@ public class SendPipelineBenchmarks
 
         _sender = _scope.ServiceProvider.GetRequiredService<ISender>();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();
+        _serialize = _serializer.Serialize<SendOrder>;
     }
 
     [Benchmark(Baseline = true)]
@@ -97,6 +99,14 @@ public class SendPipelineBenchmarks
     {
         _buffer.Clear();
         _serializer.Serialize(_message, _buffer);
+        return _transport.SendAsync(new OutgoingMessage("orders", _buffer.WrittenMemory), default);
+    }
+
+    [Benchmark]
+    public ValueTask BoundSerializeAndCallNative()
+    {
+        _buffer.Clear();
+        _serialize(_message, _buffer);
         return _transport.SendAsync(new OutgoingMessage("orders", _buffer.WrittenMemory), default);
     }
 

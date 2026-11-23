@@ -86,6 +86,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
     private readonly SendRouteOptions _options;
     private readonly IOrderingKeySelector<TMessage>? _orderingKey;
     private readonly IMessageSerializer _serializer;
+    private readonly Action<TMessage, IBufferWriter<byte>>? _serialize;
     private readonly SendDelegate _pipeline;
     private readonly TransportCapabilities _capabilities;
     private readonly TimeProvider _deliveryClock;
@@ -143,6 +144,8 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
         _options = options;
         _orderingKey = orderingKey;
         _serializer = serializer;
+        // Bind once so calling the serializer does not depend on the runtime's shared generic dispatch cache.
+        _serialize = isTombstone ? null : serializer.Serialize<TMessage>;
         _pipeline = pipeline;
         _capabilities = capabilities;
         _deliveryClock = (ITransportWrapper.Unwrap(transport) as InMemoryTransport)?.Clock ?? TimeProvider.System;
@@ -458,7 +461,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
 
             if (!_route._isTombstone)
             {
-                _route._serializer.Serialize(_message, _body);
+                _route._serialize!(_message, _body);
             }
 
             _route._envelope.Write<SendHeaders, SendHeaders>(_headers, _metadata);
