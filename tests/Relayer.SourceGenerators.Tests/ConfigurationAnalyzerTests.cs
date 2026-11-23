@@ -447,18 +447,24 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
-    public async Task Handler_passed_to_a_referenced_generic_helper_is_registered()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Handler_passed_to_a_referenced_generic_helper_is_registered(bool inheritedConstraint)
     {
-        var external = Compile(Imports + """
+        var handlerInterface = inheritedConstraint ? "IOrderHandler" : "IHandler";
+        var external = Compile(Imports + $$"""
+            public interface IOrderHandler<TMessage> : IHandler<TMessage>;
             public static class Messaging
             {
                 public static void LocalQueue<TMessage, THandler>(this IConsumerBuilder consumer)
-                    where THandler : class, IHandler<TMessage> => consumer.Handler<THandler, TMessage>();
+                    where THandler : class, {{handlerInterface}}<TMessage> => consumer.Handler<THandler, TMessage>();
             }
             """).WithAssemblyName("External");
         using var stream = new MemoryStream();
         await Assert.That(external.Emit(stream).Success).IsTrue();
-        var compilation = Compile(Imports + Handler + """
+        var handler = s_internalHandler.Replace("IHandler<Order>", $"{handlerInterface}<Order>");
+        var compilation = Compile(Imports + handler + """
+
             static class Setup { public static void Add(IConsumerBuilder consumer) => consumer.LocalQueue<Order, H>(); }
             """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
         var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
@@ -989,6 +995,50 @@ public class ConfigurationAnalyzerTests
         await Assert.That(Ids(await AnalyzeDocumentAsync(fixedDocument))).IsEqualTo("");
         var releaseDocument = fixedDocument.Project.WithParseOptions(new CSharpParseOptions()).GetDocument(document.Id)!;
         await Assert.That(Ids(await AnalyzeDocumentAsync(releaseDocument))).IsEqualTo("");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Code_fix_prefers_an_unconditional_partial_message_declaration(bool separateDocuments)
+    {
+        const string DebugPart = """
+            #if DEBUG
+            public record DebugOnly;
+            public partial record Order
+            {
+                public string DebugLabel => "debug";
+            }
+            #endif
+
+            """;
+        const string SharedPart = """
+            public partial record Order(int Id);
+            static class Setup { public static void Add(Broker broker) => broker.Send<Order>("orders"); }
+            """;
+        var debugOptions = new CSharpParseOptions(preprocessorSymbols: ["DEBUG"]);
+        using var workspace = new AdhocWorkspace();
+        var firstDocument = AddCodeFixDocument(workspace, Imports + DebugPart + (separateDocuments ? "" : SharedPart), debugOptions);
+        var sharedDocument = separateDocuments ? firstDocument.Project.AddDocument("Shared.cs", Imports + SharedPart) : firstDocument;
+
+        var diagnostics = await AnalyzeDocumentAsync(sharedDocument);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        var actions = new List<CodeAction>();
+        await new MessageAttributeCodeFixProvider().RegisterCodeFixesAsync(new CodeFixContext(sharedDocument, diagnostics.Single(),
+            (action, _) => actions.Add(action), CancellationToken.None));
+        var operation = (await actions.Single().GetOperationsAsync(CancellationToken.None)).OfType<ApplyChangesOperation>().Single();
+        var fixedDocument = operation.ChangedSolution.GetDocument(sharedDocument.Id)!;
+
+        foreach (var parseOptions in new[] { debugOptions, new CSharpParseOptions() })
+        {
+            var configuredDocument = fixedDocument.Project.WithParseOptions(parseOptions).GetDocument(sharedDocument.Id)!;
+            await Assert.That(Ids(await AnalyzeDocumentAsync(configuredDocument))).IsEqualTo("");
+            var compilation = (await configuredDocument.Project.GetCompilationAsync())!;
+            var driver = CSharpGeneratorDriver.Create([new MessageTypeGenerator().AsSourceGenerator()], parseOptions: parseOptions)
+                .RunGenerators(compilation);
+            var generated = string.Join("\n", driver.GetRunResult().GeneratedTrees.Select(tree => tree.ToString()));
+            await Assert.That(generated).Contains("Add<global::Order>(\"Order\", 1)");
+        }
     }
 
     [Test]

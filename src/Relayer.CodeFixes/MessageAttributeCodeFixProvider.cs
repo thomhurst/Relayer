@@ -55,14 +55,17 @@ public sealed class MessageAttributeCodeFixProvider : CodeFixProvider
                 continue;
             }
 
-            if (FindInsertionPosition(root, declaration) is not { } position)
+            var target = await FindAttributeTargetAsync(document.Project.Solution, type, context.CancellationToken)
+                .ConfigureAwait(false);
+
+            if (target is not { } insertion)
             {
                 continue;
             }
 
             var suggestedName = type.ToDisplayString(s_identitySuggestionFormat);
             context.RegisterCodeFix(CodeAction.Create("Add [Message] attribute (choose a stable wire name)",
-                ct => AddAttributeAsync(document, position, suggestedName, ct), "Relayer.AddMessageAttribute"), diagnostic);
+                ct => AddAttributeAsync(insertion.Document, insertion.Position, suggestedName, ct), "Relayer.AddMessageAttribute"), diagnostic);
         }
     }
 
@@ -83,6 +86,61 @@ public sealed class MessageAttributeCodeFixProvider : CodeFixProvider
         }
 
         return true;
+    }
+
+    private static async Task<(Document Document, int Position)?> FindAttributeTargetAsync(Solution solution, INamedTypeSymbol type,
+        CancellationToken cancellationToken)
+    {
+        var declarations = type.DeclaringSyntaxReferences;
+        (Document Document, int Position)? conditionalTarget = null;
+        var hasUnconditionalPart = false;
+
+        foreach (var reference in declarations)
+        {
+            var document = solution.GetDocument(reference.SyntaxTree);
+
+            if (document is null
+                || await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false) is not CSharpSyntaxNode root
+                || root.FindNode(reference.Span) is not TypeDeclarationSyntax declaration)
+            {
+                continue;
+            }
+
+            var conditional = declarations.Length > 1 && IsInConditionalGroup(root, declaration.Identifier.SpanStart);
+            hasUnconditionalPart |= !conditional;
+
+            if (FindInsertionPosition(root, declaration) is not { } position)
+            {
+                continue;
+            }
+
+            if (!conditional)
+            {
+                return (document, position);
+            }
+
+            conditionalTarget ??= (document, position);
+        }
+
+        // A conditional edit would leave some builds without an identity when a shared part exists.
+        return hasUnconditionalPart ? null : conditionalTarget;
+    }
+
+    private static bool IsInConditionalGroup(CSharpSyntaxNode root, int position)
+    {
+        var directive = root.GetFirstDirective(static d => d is IfDirectiveTriviaSyntax);
+
+        while (directive is not null && directive.SpanStart < position)
+        {
+            if (directive.GetRelatedDirectives().Last() is not EndIfDirectiveTriviaSyntax endIf || endIf.SpanStart > position)
+            {
+                return true;
+            }
+
+            directive = endIf.GetNextDirective(static d => d is IfDirectiveTriviaSyntax);
+        }
+
+        return false;
     }
 
     private static int? FindInsertionPosition(SyntaxNode root, TypeDeclarationSyntax declaration)

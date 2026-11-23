@@ -313,7 +313,10 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 var contract = SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, single)
                     || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, batch);
 
-                if (!contract && !SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker))
+                var handlerConstraint = contract || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker)
+                    || (marker is not null && constraint.AllInterfaces.Contains(marker, SymbolEqualityComparer.Default));
+
+                if (!handlerConstraint)
                 {
                     continue;
                 }
