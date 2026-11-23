@@ -330,7 +330,7 @@ public sealed class SqsReceiveTests
         }
     }
 
-    internal sealed class ReceiveClient() : AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = "http://localhost", AuthenticationRegion = "us-east-1" })
+    internal sealed class ReceiveClient(Action<CancellationToken>? onPoll = null) : AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = "http://localhost", AuthenticationRegion = "us-east-1" })
     {
         internal readonly Channel<Message> Deliveries = Channel.CreateUnbounded<Message>();
         internal readonly ConcurrentQueue<int> Visibility = new();
@@ -355,6 +355,8 @@ public sealed class SqsReceiveTests
             {
                 NextPoll.TrySetResult();
             }
+
+            onPoll?.Invoke(cancellationToken);
 
             if (Interlocked.Exchange(ref PollFailure, null) is { } failure)
             {

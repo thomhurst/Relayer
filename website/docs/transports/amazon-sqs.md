@@ -111,6 +111,8 @@ The host still resolves queue URLs, validates redrive policies and composes ever
 
 If automatic or deferred consumer startup fails after polling begins, Relayer stops polling and drains active deliveries. Cancelling startup during rollback also cancels active handlers and returns the original startup error. Recreate the host after an aborted drain.
 
+If the host shutdown deadline expires during deferred startup, Relayer cancels startup, stops any polls already in progress, and cancels active handlers. The deadline still applies while `ConfigureReceive` runs. When the callback returns, startup checks for cancellation before launching further workers.
+
 ## Health
 
 Reference `Relayer.AmazonSqs.HealthChecks` and register before host startup:

@@ -2,6 +2,7 @@ using Amazon.Runtime;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Relayer.AmazonSqs;
 using Relayer.Transports;
 
@@ -9,6 +10,86 @@ namespace Relayer.Tests;
 
 public sealed class SqsStartupRollbackTests
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Expired_host_shutdown_cancels_deferred_worker_startup(bool gateFirstPoll)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var release = new ManualResetEventSlim();
+        var starting = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var client = new SqsReceiveTests.ReceiveClient(gateFirstPoll ? PauseStartup : null);
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.AmazonSqs("sqs", sqs =>
+            {
+                sqs.TopologyMode = TopologyMode.None;
+                sqs.Options.Configure(options =>
+                {
+                    options.SqsClient = client;
+                    options.AutoStartConsumers = false;
+                    options.Queues.Add(new("orders"));
+                    options.Queues.Add(new("dead"));
+                });
+                sqs.Consume("orders", consumer =>
+                {
+                    consumer.Handler<SqsReceiveFlociTests.Handler>();
+                    consumer.Concurrency(2);
+
+                    if (!gateFirstPoll)
+                    {
+                        consumer.Options.ConfigureReceive = _ => PauseStartup(default);
+                    }
+
+                    consumer.Failures(new()
+                    {
+                        DeadLetterEndpoint = "dead"
+                    });
+                });
+            });
+        });
+        using var host = builder.Build();
+        await host.StartAsync(deadline.Token);
+        var control = host.Services.GetRequiredKeyedService<IConsumerControl>("sqs");
+        var start = Task.Run(() => control.StartAsync(default));
+
+        try
+        {
+            var poll = await starting.Task.WaitAsync(deadline.Token);
+            await Assert.That(() => host.StopAsync(new CancellationToken(canceled: true)).WaitAsync(TimeSpan.FromSeconds(10)))
+                .Throws<OperationCanceledException>();
+
+            if (gateFirstPoll)
+            {
+                await Assert.That(poll.IsCancellationRequested).IsTrue();
+            }
+        }
+        finally
+        {
+            release.Set();
+
+            try
+            {
+                await start;
+            }
+            catch (OperationCanceledException)
+            {
+                // Observe cancellation before disposing the host.
+            }
+        }
+
+        await Assert.That(start.IsCanceled).IsTrue();
+        await Assert.That(client.Polls).IsEqualTo(gateFirstPoll ? 1 : 0);
+
+        void PauseStartup(CancellationToken poll)
+        {
+            starting.TrySetResult(poll);
+            release.Wait(deadline.Token);
+        }
+    }
+
     [Test]
     [Arguments(true)]
     [Arguments(false)]
