@@ -27,7 +27,8 @@ public class OutboxScopeResolutionBenchmarks
             var configuration = new PostgreSqlOutboxConfiguration(
                 provider.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>().Value,
                 workers: provider.GetServices<PostgreSqlSchedulingRegistration>());
-            return new(configuration.SupportsScheduling, configuration.SupportsOrderedScheduling);
+            var (unordered, ordered) = configuration.RegisteredScheduling;
+            return new(unordered, ordered);
         });
         _legacy = legacy.BuildServiceProvider();
         _cached = Services(_dataSource).BuildServiceProvider();

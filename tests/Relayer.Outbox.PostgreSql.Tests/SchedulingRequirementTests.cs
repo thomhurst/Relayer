@@ -206,16 +206,7 @@ public class SchedulingRequirementTests
         var services = new ServiceCollection().AddLogging();
         services.AddRelayerPostgreSqlOutbox();
 
-        if (ordered)
-        {
-            services.AddRelayerPostgreSqlOrderedDispatch("due", workerSource);
-            services.AddRelayerPostgreSqlMaintenance("other", otherSource);
-        }
-        else
-        {
-            services.AddRelayerPostgreSqlMaintenance("due", workerSource);
-            services.AddRelayerPostgreSqlOrderedDispatch("other", otherSource);
-        }
+        RegisterWorkers(services, ordered, workerSource, otherSource);
 
         services.AddSingleton<ITransport>(new Transport());
         services.AddSingleton<IMessageSerializer, Serializer>();
@@ -262,9 +253,160 @@ public class SchedulingRequirementTests
     }
 
     [Test]
-    [Arguments(-1)]
-    [Arguments(1)]
-    public async Task Declared_fallback_persists_future_schedule_then_actual_worker_dispatches_when_due(int creationOffsetDays)
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Ef_scheduling_requires_a_worker_for_the_selected_writer_database(bool ordered, bool explicitTransaction)
+    {
+        await using var workerDatabase = new PostgreSqlFixture();
+        await using var otherDatabase = new PostgreSqlFixture();
+        await workerDatabase.StartAsync();
+        await otherDatabase.StartAsync();
+        await using var workerSource = NpgsqlDataSource.Create(workerDatabase.ConnectionString);
+        await using var otherSource = NpgsqlDataSource.Create(otherDatabase.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(workerSource);
+        await PostgreSqlOutboxStoreTests.CreateSchema(otherSource);
+        var services = new ServiceCollection().AddLogging();
+        services.AddRelayerEntityFrameworkCoreOutbox();
+        RegisterWorkers(services, ordered, workerSource, otherSource);
+
+        services.AddSingleton<ITransport>(new Transport());
+        services.AddSingleton<IMessageSerializer, Serializer>();
+        Configure(services, ordered);
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        foreach (var lifecycle in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+        {
+            await lifecycle.StartingAsync(default);
+        }
+
+        await using var scope = provider.CreateAsyncScope();
+        var writerConnectionString = new NpgsqlConnectionStringBuilder(workerDatabase.ConnectionString)
+        {
+            ApplicationName = "ef-outbox-writer"
+        }.ConnectionString;
+        var options = new DbContextOptionsBuilder().UseNpgsql(writerConnectionString)
+            .AddRelayerOutbox(scope.ServiceProvider);
+        await using var context = new DbContext(options.Options);
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var deliverAt = DateTimeOffset.UtcNow.AddDays(1);
+
+        for (var i = 0; i < 2; i++)
+        {
+            var matches = i == 0;
+            context.Database.SetConnectionString(matches ? writerConnectionString : otherDatabase.ConnectionString);
+            await using var transaction = explicitTransaction ? await context.Database.BeginTransactionAsync() : null;
+            using var selection = explicitTransaction ? null : context.EnlistRelayerOutbox();
+            Func<ValueTask> send = selection is null
+                ? () => sender.SendAsync(new Probe(42), options => options.DeliverAt = deliverAt)
+                : () => selection.EnqueueAsync(new Probe(42), options => options.DeliverAt = deliverAt);
+
+            if (matches)
+            {
+                await send();
+            }
+            else
+            {
+                await Assert.That(async () => await send())
+                    .Throws<InvalidOperationException>().WithMessageContaining("matching due-row dispatch worker");
+                await sender.SendAsync(new Probe(44));
+            }
+
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync();
+            }
+            else
+            {
+                await context.SaveChangesAsync();
+            }
+        }
+
+        await using var scheduledRows = workerSource.CreateCommand("SELECT count(*) FROM relayer_outbox WHERE deliver_at IS NOT NULL");
+        await Assert.That(await scheduledRows.ExecuteScalarAsync()).IsEqualTo((object)1L);
+        await using var immediateRows = otherSource.CreateCommand("SELECT count(*) FROM relayer_outbox WHERE deliver_at IS NULL");
+        await Assert.That(await immediateRows.ExecuteScalarAsync()).IsEqualTo((object)1L);
+        await using var otherScheduledRows = otherSource.CreateCommand("SELECT count(*) FROM relayer_outbox WHERE deliver_at IS NOT NULL");
+        await Assert.That(await otherScheduledRows.ExecuteScalarAsync()).IsEqualTo((object)0L);
+    }
+
+    [Test]
+    public async Task Ef_contexts_sharing_options_cache_their_writer_capabilities_independently()
+    {
+        await using var unorderedSource = NpgsqlDataSource.Create("Host=unused;Database=unordered");
+        await using var orderedSource = NpgsqlDataSource.Create("Host=unused;Database=ordered");
+        var options = new DbContextOptionsBuilder().UseNpgsql(unorderedSource).Options;
+        await using var unorderedContext = new DbContext(options);
+        await using var orderedContext = new DbContext(options);
+        orderedContext.Database.SetDbConnection(orderedSource.CreateConnection(), contextOwnsConnection: true);
+
+        var workerLookups = 0;
+        var configuration = new PostgreSqlOutboxConfiguration(new(), workers: Workers());
+        var unordered = new OutboxContext(unorderedContext, configuration);
+        var ordered = new OutboxContext(orderedContext, configuration);
+        await Assert.That(unordered.SupportsScheduling).IsTrue();
+        await Assert.That(ordered.SupportsOrderedScheduling).IsTrue();
+
+        // Each context is accessed by one caller at a time. Only the options extension is shared.
+        (bool Unordered, bool Ordered) unorderedResult = default;
+        (bool Unordered, bool Ordered) orderedResult = default;
+        Parallel.Invoke(
+            () => unorderedResult = (unordered.SupportsScheduling, unordered.SupportsOrderedScheduling),
+            () => orderedResult = (ordered.SupportsScheduling, ordered.SupportsOrderedScheduling));
+
+        await Assert.That(unorderedResult).IsEqualTo((true, false));
+        await Assert.That(orderedResult).IsEqualTo((false, true));
+        // One lookup at construction and one cold lookup per context.
+        await Assert.That(workerLookups).IsEqualTo(3);
+
+        IEnumerable<PostgreSqlSchedulingRegistration> Workers()
+        {
+            Interlocked.Increment(ref workerLookups);
+            yield return new(unorderedSource, null, "relayer_");
+            yield return new(orderedSource, null, "relayer_", OrderedLanes: 32);
+        }
+    }
+
+    [Test]
+    public async Task Ef_implicit_save_rejects_a_database_change_after_scheduled_enqueue()
+    {
+        await using var workerDatabase = new PostgreSqlFixture();
+        await using var otherDatabase = new PostgreSqlFixture();
+        await workerDatabase.StartAsync();
+        await otherDatabase.StartAsync();
+        await using var workerSource = NpgsqlDataSource.Create(workerDatabase.ConnectionString);
+        await using var otherSource = NpgsqlDataSource.Create(otherDatabase.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(workerSource);
+        await PostgreSqlOutboxStoreTests.CreateSchema(otherSource);
+        var services = new ServiceCollection().AddLogging();
+        services.AddRelayerEntityFrameworkCoreOutbox();
+        services.AddRelayerPostgreSqlMaintenance("due", workerSource);
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        await using var scope = provider.CreateAsyncScope();
+        var options = new DbContextOptionsBuilder().UseNpgsql(workerDatabase.ConnectionString)
+            .AddRelayerOutbox(scope.ServiceProvider);
+        await using var context = new DbContext(options.Options);
+        using var selection = context.EnlistRelayerOutbox();
+        var enlistment = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+
+        var record = new OutboxRecord(Guid.CreateVersion7(), "events", "schedule.probe;v=1",
+            new("orders", default, deliverAt: DateTimeOffset.UtcNow.AddDays(1)), DateTimeOffset.UtcNow);
+        await enlistment.EnlistAsync(record, default);
+
+        context.Database.SetConnectionString(otherDatabase.ConnectionString);
+        await Assert.That(async () => await context.SaveChangesAsync())
+            .Throws<InvalidOperationException>().WithMessageContaining("matching due-row dispatch worker");
+
+        await using var count = otherSource.CreateCommand("SELECT count(*) FROM relayer_outbox");
+        await Assert.That(await count.ExecuteScalarAsync()).IsEqualTo((object)0L);
+    }
+
+    [Test]
+    [Arguments(-1, false)]
+    [Arguments(1, false)]
+    [Arguments(1, true)]
+    public async Task Declared_fallback_persists_future_schedule_then_actual_worker_dispatches_when_due(int creationOffsetDays, bool ef)
     {
         await using var fixture = new PostgreSqlFixture();
         await fixture.StartAsync();
@@ -272,7 +414,16 @@ public class SchedulingRequirementTests
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         var transport = new Transport();
         var services = new ServiceCollection().AddLogging();
-        services.AddRelayerPostgreSqlOutbox();
+
+        if (ef)
+        {
+            services.AddRelayerEntityFrameworkCoreOutbox();
+        }
+        else
+        {
+            services.AddRelayerPostgreSqlOutbox();
+        }
+
         services.AddRelayerPostgreSqlMaintenance("due", source, new PostgreSqlMaintenanceOptions { RecoveryDelay = TimeSpan.Zero });
         services.AddSingleton<ITransport>(transport);
         services.AddSingleton<IMessageSerializer, Serializer>();
@@ -286,11 +437,23 @@ public class SchedulingRequirementTests
 
         await using (var scope = provider.CreateAsyncScope())
         {
-            var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
-            await using var transaction = await outbox.BeginTransactionAsync(source);
-            await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(42),
-                options => options.DeliverAt = DateTimeOffset.UtcNow.AddDays(1));
-            await transaction.CommitAsync();
+            var deliverAt = DateTimeOffset.UtcNow.AddDays(1);
+
+            if (ef)
+            {
+                var options = new DbContextOptionsBuilder().UseNpgsql(source).AddRelayerOutbox(scope.ServiceProvider);
+                await using var context = new DbContext(options.Options);
+                using var selection = context.EnlistRelayerOutbox();
+                await selection.EnqueueAsync(new Probe(42), options => options.DeliverAt = deliverAt);
+                await context.SaveChangesAsync();
+            }
+            else
+            {
+                var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+                await using var transaction = await outbox.BeginTransactionAsync(source);
+                await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(42), options => options.DeliverAt = deliverAt);
+                await transaction.CommitAsync();
+            }
         }
         // Simulate an enqueue clock behind or ahead of PostgreSQL without changing either clock.
         await using (var skew = source.CreateCommand("UPDATE relayer_outbox SET created_at = clock_timestamp() + @offset"))
@@ -314,6 +477,21 @@ public class SchedulingRequirementTests
         await Assert.That(transport.LastBody).IsEqualTo((byte)42);
         await Assert.That(transport.LastDeliverAt).IsNull();
         await worker.ReleaseAsync(default);
+    }
+
+    private static void RegisterWorkers(IServiceCollection services, bool ordered, NpgsqlDataSource workerSource,
+        NpgsqlDataSource otherSource)
+    {
+        if (ordered)
+        {
+            services.AddRelayerPostgreSqlOrderedDispatch("due", workerSource);
+            services.AddRelayerPostgreSqlMaintenance("other", otherSource);
+        }
+        else
+        {
+            services.AddRelayerPostgreSqlMaintenance("due", workerSource);
+            services.AddRelayerPostgreSqlOrderedDispatch("other", otherSource);
+        }
     }
 
     private static void Configure(IServiceCollection services, bool ordered = false)
