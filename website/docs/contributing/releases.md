@@ -64,6 +64,8 @@ python .github/scripts/verify_packages.py .artifacts/packages --commit (git rev-
 ```
 
 Use an empty output directory so an earlier version cannot be mistaken for the current build.
+To centralize build outputs, pass `--artifacts-path <directory>` to `dotnet pack`. The `Relayer`
+package takes the source generator, code fixes and JSON generator notices from that build's outputs.
 `ContinuousIntegrationBuild=true` normalizes source paths for reproducible builds; GitHub Actions
 sets this automatically. Deterministic compilation is enabled for all builds.
 
