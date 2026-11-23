@@ -75,7 +75,9 @@ public static class HarnessServiceCollectionExtensions
         services.AddSingleton<IRelayerObserver>(static provider => provider.GetRequiredService<RelayerHarness>());
         services.Insert(0, ServiceDescriptor.Singleton<ISendMiddleware>(static provider => provider.GetRequiredService<RelayerHarness>()));
 
-        for (var i = 0; i < services.Count; i++)
+        int registrationCount = services.Count;
+
+        for (var i = 0; i < registrationCount; i++)
         {
             var original = services[i];
 
@@ -84,12 +86,20 @@ public static class HarnessServiceCollectionExtensions
                 continue;
             }
 
+            // Let DI track the original instance for disposal. Use a separate service type
+            // so keyed transport enumeration does not expose the undecorated transport.
+            var transportKey = new object();
+            var innerRegistration = original.ImplementationInstance is ITransport instance
+                ? ServiceDescriptor.KeyedSingleton<IAsyncDisposable>(transportKey, instance)
+                : ServiceDescriptor.KeyedSingleton<IAsyncDisposable>(transportKey, (provider, _) =>
+                    (ITransport)(original.ImplementationFactory?.Invoke(provider)
+                        ?? ActivatorUtilities.CreateInstance(provider, original.ImplementationType!)));
+            services.Add(innerRegistration);
             services[i] = ServiceDescriptor.Singleton<ITransport>(provider =>
             {
-                var transport = (ITransport)(original.ImplementationInstance ?? original.ImplementationFactory?.Invoke(provider)
-                    ?? ActivatorUtilities.CreateInstance(provider, original.ImplementationType!));
+                var transport = (ITransport)provider.GetRequiredKeyedService<IAsyncDisposable>(transportKey);
                 return new HarnessTransport(transport, provider.GetRequiredService<RelayerHarness>(),
-                    provider.GetRequiredService<RelayerConfiguration>(), original.ImplementationInstance is null);
+                    provider.GetRequiredService<RelayerConfiguration>());
             });
         }
 
@@ -153,15 +163,13 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
 {
     private readonly ITransport _inner;
     private readonly RelayerHarness _harness;
-    private readonly bool _ownsTransport;
     private readonly Dictionary<string, List<HeaderNames>> _names;
     private readonly List<HeaderNames> _defaultNames;
 
-    internal HarnessTransport(ITransport inner, RelayerHarness harness, RelayerConfiguration configuration, bool ownsTransport)
+    internal HarnessTransport(ITransport inner, RelayerHarness harness, RelayerConfiguration configuration)
     {
         _inner = inner;
         _harness = harness;
-        _ownsTransport = ownsTransport;
         _names = new(StringComparer.Ordinal);
         _defaultNames = [new()];
 
@@ -191,7 +199,6 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
     {
         _inner = target;
         _harness = original._harness;
-        _ownsTransport = false;
         _names = original._names;
         _defaultNames = original._defaultNames;
     }
@@ -232,7 +239,7 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
 
     public ValueTask DisposeAsync()
     {
-        return _ownsTransport ? _inner.DisposeAsync() : default;
+        return default;
     }
 
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)

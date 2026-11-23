@@ -40,7 +40,7 @@ public sealed class ConsumerOptions { public string Group { get; set; } = ""; }
 
 `broker.SendDefaults` supplies portable `SendRouteOptions` for routes declared afterward. A route's explicit `route.SendOptions` replaces those defaults. Transport packages use this to supply their native CloudEvents header binding; Service Bus defaults to `cloudEvents:`, while generic core routes retain `ce_`. Assign defaults before declaring routes, and preserve the binding when replacing the full options object. Defaults are captured at registration and cannot be changed through a retained builder afterward.
 
-Transport names are case-sensitive and unique across all transport kinds. Several transports can use the same option type with independent named configuration; read them through `IOptionsMonitor<BrokerOptions>.Get("events")`. Call `AddRelayer` once per service collection; a second call throws.
+Transport names are case-sensitive and unique across all transport kinds. Several transports can use the same option type with independent named configuration; read them through `IOptionsMonitor<BrokerOptions>.Get("events")`. Call `AddRelayer` once per service collection. A second call throws, including a call made inside the configuration callback on the same collection.
 
 ## Concurrency and batching
 

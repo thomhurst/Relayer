@@ -50,6 +50,22 @@ public class ConfigurationTests
     }
 
     [Test]
+    public async Task Nested_AddRelayer_on_the_same_collection_throws_and_allows_retry()
+    {
+        var services = new ServiceCollection();
+        await Assert.That(() => services.AddRelayer(outer => outer.Services.AddRelayer(_ =>
+        {
+        }))).Throws<InvalidOperationException>().WithMessageContaining("AddRelayer has already been called");
+
+        services.AddRelayer(_ =>
+        {
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(provider.GetServices<RelayerConfiguration>().Count()).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Native_configuration_for_the_wrong_transport_type_throws()
     {
         var options = new SendOptions().ConfigureNative<StringBuilderStandIn>(_ =>

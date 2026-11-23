@@ -48,6 +48,8 @@ The wait matches a successfully handled delivery, even if it completed before th
 The same test works with a real broker. The deadline bounds the wait if the handler never processes the order.
 With the harness enabled, RabbitMQ verifies delayed-exchange capabilities during hosted startup in `TopologyMode.Provision`.
 
+The harness leaves transport disposal to dependency injection. A transport registered as a singleton instance remains caller-owned. When a factory returns a transport already owned by the built-in container, .NET 11 deduplicates disposal by reference. On .NET 10, the container can call disposal more than once for that alias.
+
 ## Inspect a whole message flow
 
 For an in-memory test that asserts on every message in a flow, wait for idle before reading the snapshots:
