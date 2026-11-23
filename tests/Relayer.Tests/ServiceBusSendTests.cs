@@ -5,6 +5,7 @@ using Azure.Core.Amqp;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Relayer.AzureServiceBus;
 using Relayer.InMemory;
@@ -73,6 +74,47 @@ public class ServiceBusSendTests
 
         await Assert.That(() => ServiceBusSendTransport.ValidateDeclarations("bus", options, ["orders"]))
             .Throws<InvalidOperationException>().WithMessageContaining("duplicate entity 'ORDERS'");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Startup_rejects_selector_and_fixed_routes_to_the_same_entity_with_different_casing(bool topic)
+    {
+        await using var client = new NativeClient();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddScoped<IOutboxEnlistment, LaneEnlistment>();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.ServiceBus("bus", bus =>
+            {
+                bus.TopologyMode = TopologyMode.None;
+                bus.Options.Configure(options =>
+                {
+                    options.Client = client;
+
+                    if (topic)
+                    {
+                        options.Topics.Add(new("orders"));
+                        options.Topics.Add(new("billing"));
+                    }
+                    else
+                    {
+                        options.Queues.Add(new("orders"));
+                        options.Queues.Add(new("billing"));
+                    }
+                });
+                bus.Send<First>(["orders", "billing"], static _ => "orders");
+                bus.Send<First>("ORDERS");
+            });
+        });
+
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+
+        await Assert.That(async () => await host.StartAsync()).Throws<OptionsValidationException>()
+            .WithMessageContaining("'ORDERS' is declared more than once");
     }
 
     [Test]
