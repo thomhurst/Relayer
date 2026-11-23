@@ -181,7 +181,7 @@ public class NatsTopologyTests
                 }
             ]
         };
-        await using var provider = Provider(ordinary, mirror, sourced);
+        await using var provider = StreamProvider(broker.Options(), ordinary, mirror, sourced);
         var transport = provider.GetRequiredService<ITransport>();
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences).IsEmpty();
 
@@ -195,35 +195,130 @@ public class NatsTopologyTests
         await Assert.That(actualSourced.Info.Config.Subjects ?? []).IsEmpty();
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
 
-        await using var explicitProvider = Provider(ordinary with
+        await using var explicitProvider = StreamProvider(broker.Options(), ordinary with
         {
             Subjects = [ordinaryName]
         });
         var explicitTransport = explicitProvider.GetRequiredService<ITransport>();
         await Assert.That((await explicitTransport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
 
-        await using var driftProvider = Provider(ordinary with
+        await using var driftProvider = StreamProvider(broker.Options(), ordinary with
         {
             Subjects = [isolation.GetIsolatedName("different")]
         });
         var drift = driftProvider.GetRequiredService<ITransport>();
         await Assert.That((await drift.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Single()).Contains("subjects");
+    }
 
-        ServiceProvider Provider(params StreamConfig[] streams)
+    [Test]
+    public async Task Validate_accepts_default_persistence_and_reports_async_drift()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var isolation = TestContext.Current!.Isolation;
+        var defaultName = isolation.GetIsolatedName("persist_default");
+        var asyncName = isolation.GetIsolatedName("persist_async");
+        var defaultStream = new StreamConfig(defaultName, [defaultName])
         {
-            return NatsConfigurationTests.Provider(options =>
-            {
-                options.ConnectionOptions = broker.Options();
+            PersistMode = StreamConfigPersistMode.Default
+        };
+        var asyncStream = new StreamConfig(asyncName, [asyncName])
+        {
+            PersistMode = StreamConfigPersistMode.Async
+        };
 
-                foreach (var stream in streams)
-                {
-                    options.Streams.Add(new(stream.Name!)
-                    {
-                        Configuration = stream
-                    });
-                }
-            });
-        }
+        var nativeOptions = broker.Options();
+        await using var provisionProvider = StreamProvider(nativeOptions, defaultStream, asyncStream);
+        var provision = provisionProvider.GetRequiredService<ITransport>();
+        await Assert.That((await provision.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences).IsEmpty();
+        await Assert.That((await provision.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences).IsEmpty();
+
+        await using var connection = new NatsConnection(nativeOptions);
+        var js = new NatsJSContext(connection);
+        (await js.PublishAsync(defaultName, "value", cancellationToken: token)).EnsureSuccess();
+        var stored = await js.GetStreamAsync(defaultName, cancellationToken: token);
+        await Assert.That(stored.Info.State.Messages).IsEqualTo(1L);
+        await Assert.That(stored.Info.Config.PersistMode).IsNull();
+
+        await using var validateProvider = StreamProvider(nativeOptions, defaultStream, asyncStream);
+        var validation = validateProvider.GetRequiredService<ITransport>();
+        await Assert.That((await validation.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+        await using var omittedProvider = StreamProvider(nativeOptions, defaultStream with
+        {
+            PersistMode = null
+        });
+        var omitted = omittedProvider.GetRequiredService<ITransport>();
+        await Assert.That((await omitted.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+        await using var driftProvider = StreamProvider(nativeOptions, asyncStream with
+        {
+            PersistMode = StreamConfigPersistMode.Default
+        });
+        var drift = driftProvider.GetRequiredService<ITransport>();
+        var report = await drift.ApplyTopologyAsync(TopologyMode.Validate, token);
+        await Assert.That(report.Differences.Single()).Contains("setting 'persist_mode' expected \"default\", actual \"async\"");
+    }
+
+    [Test]
+    public async Task Validate_applies_the_duplicate_window_default_only_to_ordinary_streams()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var isolation = TestContext.Current!.Isolation;
+        var ordinaryName = isolation.GetIsolatedName("duplicates_ordinary");
+        var mirrorName = isolation.GetIsolatedName("duplicates_mirror");
+        var sourcedName = isolation.GetIsolatedName("duplicates_sourced");
+        var ordinary = new StreamConfig(ordinaryName, [ordinaryName])
+        {
+            Storage = StreamConfigStorage.Memory
+        };
+        var mirror = new StreamConfig(mirrorName, [])
+        {
+            Storage = StreamConfigStorage.Memory,
+            Mirror = new()
+            {
+                Name = ordinaryName
+            }
+        };
+        var sourced = new StreamConfig(sourcedName, [])
+        {
+            Storage = StreamConfigStorage.Memory,
+            Sources = [new() { Name = ordinaryName }]
+        };
+
+        var nativeOptions = broker.Options();
+        await using var connection = new NatsConnection(nativeOptions);
+        var js = new NatsJSContext(connection);
+        var actualOrdinary = await js.CreateStreamAsync(ordinary, token);
+        var actualMirror = await js.CreateStreamAsync(mirror, token);
+        var actualSourced = await js.CreateStreamAsync(sourced, token);
+        var window = TimeSpan.FromMinutes(2);
+        await Assert.That(actualOrdinary.Info.Config.DuplicateWindow).IsEqualTo(window);
+        await Assert.That(actualMirror.Info.Config.DuplicateWindow).IsEqualTo(TimeSpan.Zero);
+        await Assert.That(actualSourced.Info.Config.DuplicateWindow).IsEqualTo(TimeSpan.Zero);
+
+        await using var matchingProvider = StreamProvider(nativeOptions, ordinary with
+        {
+            DuplicateWindow = window
+        }, mirror, sourced);
+        var matching = matchingProvider.GetRequiredService<ITransport>();
+        await Assert.That((await matching.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+        await using var driftProvider = StreamProvider(nativeOptions, mirror with
+        {
+            DuplicateWindow = window
+        }, sourced with
+        {
+            DuplicateWindow = window
+        });
+        var drift = driftProvider.GetRequiredService<ITransport>();
+        var report = await drift.ApplyTopologyAsync(TopologyMode.Validate, token);
+        await Assert.That(report.Differences.Count).IsEqualTo(2);
+        await Assert.That(report.Differences[0]).Contains($"Stream '{mirrorName}': setting 'duplicate_window' expected 120000000000, actual null");
+        await Assert.That(report.Differences[1]).Contains($"Stream '{sourcedName}': setting 'duplicate_window' expected 120000000000, actual null");
     }
 
     [Test]
@@ -290,6 +385,22 @@ public class NatsTopologyTests
             };
             return reopened.Task;
         }
+    }
+
+    private static ServiceProvider StreamProvider(NatsOpts nativeOptions, params StreamConfig[] streams)
+    {
+        return NatsConfigurationTests.Provider(options =>
+        {
+            options.ConnectionOptions = nativeOptions;
+
+            foreach (var stream in streams)
+            {
+                options.Streams.Add(new(stream.Name!)
+                {
+                    Configuration = stream
+                });
+            }
+        });
     }
 
     internal sealed class Broker(IContainer container) : IAsyncDisposable
