@@ -25,7 +25,7 @@ public static class ServiceBusBuilderExtensions
         {
             transport.SendDefaults = new()
             {
-                HeaderNames = new("cloudEvents:")
+                HeaderNames = ServiceBusMessageBinding.CloudEventsHeaders
             };
             configure(transport);
         });
@@ -56,6 +56,8 @@ public static class ServiceBusBuilderExtensions
                 ServiceBusConsumer.ValidateDeclaration(name, options, (ConsumerDefinition<ServiceBusConsumerOptions>)consumer);
             }
 
+            ValidateHostedRouteHeaders(definition, provider.GetRequiredService<HandlerRegistry>());
+
             var admin = options.AdministrationClient;
 
             if (mode == TopologyMode.Provision && admin is null)
@@ -82,6 +84,28 @@ public static class ServiceBusBuilderExtensions
         builder.Services.AddKeyedSingleton<IConsumerControl>(name, (provider, key) => provider.GetRequiredKeyedService<ServiceBusHostedService>(key));
         builder.Services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<ServiceBusHostedService>(name));
         return builder;
+    }
+
+    private static void ValidateHostedRouteHeaders(TransportDefinition definition, HandlerRegistry handlers)
+    {
+        string receiveTypeHeader = ServiceBusMessageBinding.CloudEventsHeaders.Type;
+
+        foreach (var route in definition.Routes)
+        {
+            string sendTypeHeader = route.SendOptions.HeaderNames.Type;
+
+            if (route.SendOptions.EnvelopeMode == MessageEnvelopeMode.CloudEvents &&
+                sendTypeHeader != receiveTypeHeader &&
+                definition.Consumers.Any(consumer =>
+                    string.Equals(consumer.Source, route.Destination, StringComparison.OrdinalIgnoreCase) &&
+                    handlers.Descriptors.Any(handler => handler.MessageType == route.MessageType && consumer.Selects(handler))))
+            {
+                throw new InvalidOperationException(
+                    $"Service Bus transport '{definition.Name}': the CloudEvents send route for '{route.MessageType.Name}' " +
+                    $"to destination '{route.Destination}' writes '{sendTypeHeader}'. Hosted consumers require '{receiveTypeHeader}'. " +
+                    "Use the Service Bus default SendRouteOptions.HeaderNames.");
+            }
+        }
     }
 
     /// <summary>Customises the native outgoing Service Bus message immediately before sending.</summary>

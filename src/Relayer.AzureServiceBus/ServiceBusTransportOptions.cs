@@ -31,7 +31,7 @@ public sealed class ServiceBusTransportOptions
         get; set;
     }
 
-    /// <summary>Native queue declarations. Names match send destinations case-insensitively.</summary>
+    /// <summary>Native queue declarations. Names match send destinations and consumer sources case-insensitively.</summary>
     public IList<CreateQueueOptions> Queues
     {
         get;
@@ -126,7 +126,7 @@ public sealed class ServiceBusTransportOptions
 
             if (options.Subscription is not { } subscription)
             {
-                if (!implied.Declares(consumer.Source, StringComparison.Ordinal))
+                if (!implied.Declares(consumer.Source, StringComparison.OrdinalIgnoreCase))
                 {
                     implied.Queues.Add(new(consumer.Source)
                     {
@@ -167,6 +167,11 @@ public sealed class ServiceBusTransportOptions
         }
 
         return implied;
+    }
+
+    internal CreateQueueOptions? FindQueue(string entity)
+    {
+        return Queues.SingleOrDefault(queue => string.Equals(queue.Name, entity, StringComparison.OrdinalIgnoreCase));
     }
 
     private bool Declares(string entity, StringComparison comparison)

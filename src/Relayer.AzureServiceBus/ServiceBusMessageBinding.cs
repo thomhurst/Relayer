@@ -8,6 +8,11 @@ namespace Relayer.AzureServiceBus;
 /// <summary>Reads a native processor delivery without enumerating its headers.</summary>
 public readonly struct ServiceBusMessageBinding : IMessageBinding<ProcessMessageEventArgs>
 {
+    internal static HeaderNames CloudEventsHeaders
+    {
+        get;
+    } = new("cloudEvents:");
+
     /// <inheritdoc />
     /// <remarks>
     /// Borrows a single indexed AMQP Data section. The SDK's Body conversion handles other

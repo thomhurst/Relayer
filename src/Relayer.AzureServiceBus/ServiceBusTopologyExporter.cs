@@ -75,7 +75,7 @@ public sealed class ServiceBusTopologyExporter
 
             var found = native.Options.Subscription is { } subscription
                 ? options.Subscriptions.Any(item => item.TopicName == consumer.Source && item.SubscriptionName == subscription)
-                : options.Queues.Any(item => item.Name == consumer.Source);
+                : options.FindQueue(consumer.Source) is not null;
 
             if (!found)
             {

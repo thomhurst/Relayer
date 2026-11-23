@@ -120,7 +120,7 @@ internal sealed partial class ServiceBusSendTransport : ITransport, ITransportSe
                 continue;
             }
 
-            var queue = options.Queues.SingleOrDefault(item => string.Equals(item.Name, destination, StringComparison.OrdinalIgnoreCase));
+            var queue = options.FindQueue(destination);
             var topic = options.Topics.SingleOrDefault(item => string.Equals(item.Name, destination, StringComparison.OrdinalIgnoreCase));
 
             if ((queue is null) == (topic is null))
@@ -165,7 +165,7 @@ internal sealed partial class ServiceBusSendTransport : ITransport, ITransportSe
     {
         // An implied declaration has SDK defaults, which say nothing about the broker's actual limit.
         int? limit = subscription is null
-            ? _declaredOptions.Queues.SingleOrDefault(queue => queue.Name == source)?.MaxDeliveryCount
+            ? _declaredOptions.FindQueue(source)?.MaxDeliveryCount
             : _declaredOptions.Subscriptions.SingleOrDefault(item => item.TopicName == source && item.SubscriptionName == subscription)?.MaxDeliveryCount;
 
         if (limit <= nativeRedeliveries)
