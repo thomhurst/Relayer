@@ -170,14 +170,17 @@ internal sealed class NatsTopology
             Default(config, "max_bytes", -1);
             Default(config, "max_msg_size", -1);
             Default(config, "num_replicas", 1);
-            var maximumAge = config["max_age"]?.GetValue<long>() ?? 0;
-            Default(config, "duplicate_window", maximumAge > 0 ? Math.Min(maximumAge, 120_000_000_000L) : 120_000_000_000L);
+            config["persist_mode"] ??= "default";
 
-            if (config["subjects"] is null or JsonArray { Count: 0 } &&
-                config["mirror"] is null && config["sources"] is null or JsonArray { Count: 0 } &&
-                config["name"] is JsonValue streamName)
+            if (config["mirror"] is null && config["sources"] is null or JsonArray { Count: 0 })
             {
-                config["subjects"] = new JsonArray(streamName.DeepClone());
+                var maximumAge = config["max_age"]?.GetValue<long>() ?? 0;
+                Default(config, "duplicate_window", maximumAge > 0 ? Math.Min(maximumAge, 120_000_000_000L) : 120_000_000_000L);
+
+                if (config["subjects"] is null or JsonArray { Count: 0 } && config["name"] is JsonValue streamName)
+                {
+                    config["subjects"] = new JsonArray(streamName.DeepClone());
+                }
             }
         }
 
