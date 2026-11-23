@@ -168,9 +168,10 @@ Invalid bodies also enter failure handling individually; the handler sees only d
 items, so partial-failure indexes refer to the batch actually passed to the handler.
 A thrown handler exception fails every item passed to that invocation. If a failed
 item is already marked `SettledByHandler`, its native settlement is final. The call
-propagates the error without publishing batch dispositions. That item skips the
-retry and failure settlement policy. Invalid result indexes or null exceptions
-fail the invocation rather than losing a failure.
+propagates that item's error before applying retry or failure settlement to
+any item in the attempt. The caller's disposition buffer stays untouched.
+Invalid result indexes or null exceptions fail the invocation rather than losing
+a failure.
 The executable `FailurePipeline` retries only failed items, in a fresh scope, then
 produces durable per-message redelivery or dead-letter decisions. The explicit failure
 delegate remains available to transport integrations that own durable failure handling.
