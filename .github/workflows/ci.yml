@@ -143,9 +143,40 @@ jobs:
           docker pull mysql:8.4
           docker pull gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935
           docker pull ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa
-          mkdir -p .artifacts/ci-test-failure
+          mkdir -p .artifacts/ci-test-failure .artifacts/docker-teardown
+          bash scripts/Watch-DockerTeardown.sh .artifacts/docker-teardown &
+          watcher=$!
+          stop_watcher() {
+            kill "$watcher" 2>/dev/null || true
+            if ! wait "$watcher"; then
+              echo "::warning::Docker teardown watcher failed"
+            fi
+          }
+          trap stop_watcher EXIT
           # Bash pipefail preserves the test exit code; tee retains the original parallel run.
           dotnet test --no-build -c Release -f ${{ matrix.framework }} 2>&1 | tee .artifacts/ci-test-failure/tests.log
+
+      - name: Collect Docker teardown stacks
+        if: ${{ !cancelled() && hashFiles('.artifacts/docker-teardown/fallbacks.log') != '' }}
+        continue-on-error: true
+        run: |
+          daemon_dir=$(dirname "${DOCKER_HOST#unix://}")
+          out=.artifacts/docker-teardown
+          sudo cat "$daemon_dir/dockerd.log" > "$out/daemon.log"
+          sudo find "$daemon_dir/execroot" -maxdepth 1 -type f -name 'goroutine-stacks-*.log' \
+            -exec cp -t "$out" -- {} +
+          sudo chmod a+r "$out"/*
+
+      - name: Retain Docker teardown evidence
+        if: ${{ !cancelled() && hashFiles('.artifacts/docker-teardown/fallbacks.log') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docker-teardown-${{ matrix.framework }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/docker-teardown/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Collect failing test inputs
         if: failure() && steps.tests.outcome == 'failure'
