@@ -125,11 +125,13 @@ services.AddRelayer(relayer => relayer.Kafka("events", kafka =>
     })));
 ```
 
-`consumer.Handler<THandler>()` both selects the handler for that consumer and registers its generated descriptors and scoped DI service. No separate builder registration or assembly-wide handler registration is needed. The generator supports inherited contracts, explicit interface implementations, and handlers with several message or batch contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent. Each assembly gets its own generated `Handler<THandler>()` and `AddMessageTypesFromThisAssembly()`, hidden from other assemblies even through `InternalsVisibleTo`, so a library and its test project can both register handlers.
+`consumer.Handler<THandler>()` selects the handler for that consumer, registers its generated descriptors, and adds a scoped DI service by default. No separate builder registration or assembly-wide handler registration is needed. The generator supports inherited contracts, explicit interface implementations, and handlers with several message or batch contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent. Each assembly gets its own generated `Handler<THandler>()` and `AddMessageTypesFromThisAssembly()`, hidden from other assemblies even through `InternalsVisibleTo`, so a library and its test project can both register handlers.
 
 Generated dispatch preserves nullable reference annotations in message contracts such as `IBatchHandler<Envelope<string?>>`. To register that message identity manually, call `MessageTypes.Add<Envelope<string?>>("messages")`.
 
 Register an instance, factory or custom lifetime under the concrete, unkeyed handler type before calling `AddRelayer`. For example, `services.AddSingleton<OrderPlacedHandler>(handler)` makes dispatch use that instance. An `IHandler<OrderPlaced>` registration is independent of the concrete registration that dispatch resolves.
+
+Both generated and typed handler registration also respect an unkeyed open generic registration for the concrete handler. For example, `services.AddSingleton(typeof(AuditHandler<>))` gives each closed handler type its own singleton. An explicit closed registration still takes precedence in Microsoft DI. With Native AOT, use a closed registration for handlers with value-type arguments.
 
 Marking a handler with warning-level `[Obsolete]` leaves its generated descriptor available without emitting the standard obsolete warnings (`CS0612` and `CS0618`). Selecting that handler with `Handler<THandler>()` in your code still reports the warning.
 

@@ -22,14 +22,14 @@ internal static class RelayerGeneratedHandlers
         if (typeof(THandler) == typeof(global::Example.Derived))
         {
             global::Relayer.Pipeline.ConsumerInfrastructureExtensions.AddHandler(builder, new Dispatcher0());
-            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<global::Example.Derived>(builder.Services);
+            global::Relayer.Pipeline.ConsumerInfrastructureExtensions.TryAddHandlerService<global::Example.Derived>(builder.Services);
             return builder;
         }
         if (typeof(THandler) == typeof(global::Example.Handler))
         {
             global::Relayer.Pipeline.ConsumerInfrastructureExtensions.AddHandler(builder, new Dispatcher1());
             global::Relayer.Pipeline.ConsumerInfrastructureExtensions.AddHandler(builder, new Dispatcher2());
-            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<global::Example.Handler>(builder.Services);
+            global::Relayer.Pipeline.ConsumerInfrastructureExtensions.TryAddHandlerService<global::Example.Handler>(builder.Services);
             return builder;
         }
         throw new global::System.InvalidOperationException($"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>(), or call Handler<THandler, TMessage>() from generic code.");
