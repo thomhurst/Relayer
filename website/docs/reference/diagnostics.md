@@ -121,7 +121,7 @@ dotnet_diagnostic.RLY003.severity = none
 
 ## RLY004
 
-A consumer needs a handler even if its callback sets native options, concurrency, batching, or failure behavior with `Failures` or `Classify`. This check applies to both `TransportBuilder<TTransportOptions, TConsumerOptions>` and `ITransportConsumerBuilder`.
+A consumer needs a handler even if its callback sets native options, concurrency, batching, or failure behavior with `Failures` or `Classify`. Adding middleware with `Use<TMiddleware>()` or receive aliases with `Accepts<TMessage>()` still requires a handler. This check applies to both `TransportBuilder<TTransportOptions, TConsumerOptions>` and `ITransportConsumerBuilder`.
 
 ```csharp
 broker.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>());

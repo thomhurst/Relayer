@@ -756,6 +756,34 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("Broker", "c => c.Use<AuditMiddleware>()", "RLY004")]
+    [Arguments("Broker", "c => c.Accepts<Order>(\"old-order\")", "RLY004")]
+    [Arguments("ITransportConsumerBuilder", "c => c.Use<AuditMiddleware>()", "RLY004")]
+    [Arguments("ITransportConsumerBuilder", "c => c.Accepts<Order>(new MessageType(\"old-order\", 2))", "RLY004")]
+    [Arguments("Broker", "c => ConsumeBuilderExtensions.Accepts<Order>(c, \"old-order\")", "RLY004")]
+    [Arguments("Broker", "c => c.Use<AuditMiddleware>().Accepts<Order>(\"old-order\").Concurrency(8)", "RLY004")]
+    [Arguments("ITransportConsumerBuilder", "c => c.Use<AuditMiddleware>().Accepts<Order>(\"old-order\").Handler<H>()", "")]
+    [Arguments("ITransportConsumerBuilder", "c => c.Accepts<Order>(42)", "")]
+    public async Task Middleware_and_receive_aliases_do_not_count_as_handler_registration(string receiver, string callback, string expected)
+    {
+        await Verify(Imports + Handler + $$"""
+
+            public sealed class AuditMiddleware : IConsumeMiddleware
+            {
+                public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next) => next(context);
+            }
+
+            static class Setup
+            {
+                public static void Add({{receiver}} broker)
+                    => broker.Consume("orders", {{callback}});
+
+                public static void Accepts<T>(this IConsumerBuilder c, int value) => c.Handler<H>();
+            }
+            """, expected);
+    }
+
+    [Test]
     public async Task Registration_on_another_consumer_does_not_hide_empty_consumer()
     {
         await Verify(Imports + Handler + """
