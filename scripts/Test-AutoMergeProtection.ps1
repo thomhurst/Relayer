@@ -96,28 +96,40 @@ foreach ($case in @(
 # assert the mutation log so a denial cannot accidentally promote or merge a PR.
 $artifactsRoot = [IO.Path]::GetFullPath((Join-Path (Split-Path $PSScriptRoot -Parent) '.artifacts'))
 $testRoot = Join-Path $artifactsRoot "auto-merge-tests-$([Guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+$testScripts = Join-Path $testRoot 'scripts'
+New-Item -ItemType Directory -Path $testScripts -Force | Out-Null
+
+function Invoke-TestGit {
+    git -C $testRoot @args
+    if ($LASTEXITCODE -ne 0) { throw "git $args failed (exit $LASTEXITCODE)" }
+}
+
 try {
-    Copy-Item (Join-Path $PSScriptRoot 'Enable-AutoMerge.ps1') $testRoot
-    Copy-Item (Join-Path $PSScriptRoot 'AutoMergeProtection.ps1') $testRoot
-    Copy-Item (Join-Path $PSScriptRoot 'AssertPrGreenChecks.ps1') $testRoot
-    Copy-Item (Join-Path $PSScriptRoot 'GateScriptSource.ps1') $testRoot
-    Set-Content (Join-Path $testRoot 'Assert-PrGreen.ps1') 'exit 0'
-    $runner = @'
-param([string]$Scenario, [switch]$AlreadyReady)
-$ErrorActionPreference = 'Stop'
-# Run the copied wrapper in place; Test-GateScriptSource.ps1 covers the re-run from the base.
-$env:RELAYER_GATE_SCRIPTS_COMMIT = 'pinned-by-test'
-$global:AutoMergeTestState = @{ protectionReads = 0; targetReads = 0; draft = -not $AlreadyReady }
+    Copy-Item (Join-Path $PSScriptRoot 'Enable-AutoMerge.ps1') $testScripts
+    Copy-Item (Join-Path $PSScriptRoot 'AutoMergeProtection.ps1') $testScripts
+    Copy-Item (Join-Path $PSScriptRoot 'AssertPrGreenChecks.ps1') $testScripts
+    Copy-Item (Join-Path $PSScriptRoot 'GateScriptSource.ps1') $testScripts
+    $reviewGate = @'
+param([int]$Pr, [switch]$ForAutoMerge, [string]$Repo)
+if ($Pr -ne 123 -or -not $ForAutoMerge -or $Repo -cne 'owner/repo') {
+    throw "Unexpected arguments to Assert-PrGreen.ps1"
+}
+'@
+    Set-Content (Join-Path $testScripts 'Assert-PrGreen.ps1') $reviewGate
+    # Load the same gh stub from the checkout and from the archived base.
+    $mockGh = @'
+$script:AutoMergeTestState = @{ protectionReads = 0; targetReads = 0; draft = $env:RELAYER_AUTO_MERGE_TEST_READY -ne 'True' }
 function gh {
     $global:LASTEXITCODE = 0
+    $Scenario = $env:RELAYER_AUTO_MERGE_TEST_SCENARIO
+    $testRoot = $env:RELAYER_AUTO_MERGE_TEST_ROOT
     $command = ($args | ForEach-Object { if ($_ -is [array]) { $_ -join ',' } else { $_ } }) -join ' '
     if ($args[0] -eq 'api') {
         if ($args[1] -like '*/rules/branches/*') {
-            $global:AutoMergeTestState.protectionReads++
+            $script:AutoMergeTestState.protectionReads++
             if ($Scenario -eq 'api-failure') { $global:LASTEXITCODE = 1; return }
             if ($Scenario -eq 'malformed') { return 'not json' }
-            if ($Scenario -eq 'missing' -or ($Scenario -eq 'removed' -and $global:AutoMergeTestState.protectionReads -eq 2)) { return '[[]]' }
+            if ($Scenario -eq 'missing' -or ($Scenario -eq 'removed' -and $script:AutoMergeTestState.protectionReads -eq 2)) { return '[[]]' }
             # The valid rule is on page two: the production reader must flatten every page.
             return '[[],[{"type":"required_status_checks","ruleset_source_type":"Repository","ruleset_source":"owner/repo","ruleset_id":42,"parameters":{"required_status_checks":[{"context":"CI Passed","integration_id":15368}]}}]]'
         }
@@ -125,10 +137,16 @@ function gh {
             return '[{"id":42,"source":"owner/repo","target":"branch","enforcement":"active","current_user_can_bypass":"never","bypass_actors":[],"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"CI Passed","integration_id":15368}]}}]}]'
         }
     }
-    if ($command -eq 'repo view owner/repo --json nameWithOwner --jq .nameWithOwner') { return 'owner/repo' }
+    if ($command -in @(
+        'repo view --json nameWithOwner --jq .nameWithOwner',
+        'repo view owner/repo --json nameWithOwner --jq .nameWithOwner'
+    )) {
+        Add-Content (Join-Path $testRoot 'repo-views.log') "$command|$env:RELAYER_GATE_SCRIPTS_COMMIT"
+        return 'owner/repo'
+    }
     if ($command -like 'pr view*baseRefName*') {
-        $global:AutoMergeTestState.targetReads++
-        $branch = if ($Scenario -eq 'retargeted' -and $global:AutoMergeTestState.targetReads -eq 2) { 'other' } else { 'main' }
+        $script:AutoMergeTestState.targetReads++
+        $branch = if ($Scenario -eq 'retargeted' -and $script:AutoMergeTestState.targetReads -eq 2) { 'other' } else { 'main' }
         return (@{ baseRefName = $branch } | ConvertTo-Json -Compress)
     }
     if ($command -like 'pr view*mergeStateStatus*') {
@@ -136,29 +154,65 @@ function gh {
         if ($Scenario -eq 'early') { return '{"mergeStateStatus":"CLEAN","statusCheckRollup":[{"__typename":"CheckRun","workflowName":"CI","name":"CI Passed","status":"IN_PROGRESS","conclusion":""}]}' }
         return '{"mergeStateStatus":"BLOCKED","statusCheckRollup":[]}'
     }
-    if ($command -like 'pr view*isDraft,headRefOid*') { return (@{ isDraft = $global:AutoMergeTestState.draft; headRefOid = 'abc' } | ConvertTo-Json -Compress) }
+    if ($command -like 'pr view*isDraft,headRefOid*') { return (@{ isDraft = $script:AutoMergeTestState.draft; headRefOid = 'abc' } | ConvertTo-Json -Compress) }
     if ($command -like 'pr view*statusCheckRollup*') { return '1' }
     if ($command -like 'pr view*headRefOid*') { return 'abc' }
-    if ($command -like 'pr ready*') { Add-Content (Join-Path $PSScriptRoot 'mutations.log') 'ready'; $global:AutoMergeTestState.draft = $false; return }
+    if ($command -like 'pr ready*') { Add-Content (Join-Path $testRoot 'mutations.log') 'ready'; $script:AutoMergeTestState.draft = $false; return }
     if ($command -eq 'pr merge 123 --repo owner/repo --auto --squash --match-head-commit abc') {
-        Add-Content (Join-Path $PSScriptRoot 'mutations.log') 'merge'; return
+        Add-Content (Join-Path $testRoot 'mutations.log') 'merge'; return
     }
     throw "Unexpected gh call: $command"
 }
-& (Join-Path $PSScriptRoot 'Enable-AutoMerge.ps1') -Pr 123 -Repo owner/repo -MarkReady:(-not $AlreadyReady)
+'@
+    Add-Content -LiteralPath (Join-Path $testScripts 'AutoMergeProtection.ps1') -Value $mockGh
+
+    $runner = @'
+param([string]$Scenario, [switch]$AlreadyReady, [switch]$Delegate)
+$ErrorActionPreference = 'Stop'
+$env:RELAYER_AUTO_MERGE_TEST_SCENARIO = $Scenario
+$env:RELAYER_AUTO_MERGE_TEST_READY = [string][bool]$AlreadyReady
+$env:RELAYER_AUTO_MERGE_TEST_ROOT = $PSScriptRoot
+$wrapperArgs = @{ Pr = 123; MarkReady = -not $AlreadyReady }
+if ($Delegate) {
+    $env:RELAYER_GATE_SCRIPTS_COMMIT = $null
+}
+else {
+    $env:RELAYER_GATE_SCRIPTS_COMMIT = 'pinned-by-test'
+    $wrapperArgs.Repo = 'owner/repo'
+}
+& (Join-Path $PSScriptRoot 'scripts/Enable-AutoMerge.ps1') @wrapperArgs
 exit $LASTEXITCODE
 '@
     $runnerPath = Join-Path $testRoot 'Run-Wrapper.ps1'
     Set-Content $runnerPath $runner
+
+    # A detached older checkout and a local main ref exercise git archive and child pwsh.
+    $wrapperPath = Join-Path $testScripts 'Enable-AutoMerge.ps1'
+    Invoke-TestGit init -q --initial-branch=main
+    Invoke-TestGit config user.email test@example.com
+    Invoke-TestGit config user.name Test
+    Invoke-TestGit config core.autocrlf false
+    Add-Content -LiteralPath $wrapperPath -Value '# Stale checkout'
+    Invoke-TestGit add -- scripts
+    Invoke-TestGit -c commit.gpgsign=false commit -q -m 'Create stale checkout'
+    Copy-Item (Join-Path $PSScriptRoot 'Enable-AutoMerge.ps1') $testScripts
+    Invoke-TestGit -c commit.gpgsign=false commit -q -am 'Update base scripts'
+    $baseCommit = Invoke-TestGit rev-parse HEAD
+    Invoke-TestGit switch -q --detach HEAD~1
+    Invoke-TestGit remote add origin $testRoot
+
+    $repoViewLog = Join-Path $testRoot 'repo-views.log'
     foreach ($case in @(
         @{ scenario = 'missing' }, @{ scenario = 'api-failure' }, @{ scenario = 'malformed' },
         @{ scenario = 'removed' }, @{ scenario = 'retargeted' }, @{ scenario = 'valid' }, @{ scenario = 'early' },
-        @{ scenario = 'missing'; alreadyReady = $true }, @{ scenario = 'valid'; alreadyReady = $true }
+        @{ scenario = 'missing'; alreadyReady = $true }, @{ scenario = 'valid'; alreadyReady = $true },
+        @{ scenario = 'valid'; delegate = $true }
     )) {
         $scenario = $case.scenario
         $mutationLog = Join-Path $testRoot 'mutations.log'
         if (Test-Path $mutationLog) { Remove-Item -LiteralPath $mutationLog }
-        $output = & pwsh -NoProfile -File $runnerPath -Scenario $scenario -AlreadyReady:([bool]$case.alreadyReady) 2>&1
+        if (Test-Path $repoViewLog) { Remove-Item -LiteralPath $repoViewLog }
+        $output = & pwsh -NoProfile -File $runnerPath -Scenario $scenario -AlreadyReady:([bool]$case.alreadyReady) -Delegate:([bool]$case.delegate) 2>&1
         $code = $LASTEXITCODE
         $mutations = if (Test-Path $mutationLog) { (Get-Content $mutationLog) -join ',' } else { '' }
         $expected = switch ($scenario) {
@@ -171,6 +225,16 @@ exit $LASTEXITCODE
         if ($case.alreadyReady -and $scenario -eq 'valid') { $expected = 'merge' }
         if ($mutations -ne $expected -or (($scenario -eq 'valid') -ne ($code -eq 0))) {
             throw "Wrapper case ${scenario}: exit=$code mutations=$mutations; $output"
+        }
+        if ($case.delegate) {
+            $expectedRepoViews = @(
+                'repo view --json nameWithOwner --jq .nameWithOwner|',
+                "repo view owner/repo --json nameWithOwner --jq .nameWithOwner|$baseCommit"
+            )
+            $repoViews = (Get-Content -LiteralPath $repoViewLog -Raw).Trim()
+            if ($repoViews -cne ($expectedRepoViews -join [Environment]::NewLine)) {
+                throw "Expected the base wrapper to resolve owner/repo positionally at $baseCommit. Got: $repoViews"
+            }
         }
     }
 }
