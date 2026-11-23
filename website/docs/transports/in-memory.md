@@ -30,6 +30,12 @@ A typed CloudEvents send route to an endpoint with a hosted consumer must use th
 
 Configure declared endpoints through named Options. An endpoint with no override uses queue defaults. An override for an undeclared endpoint fails startup.
 
+For deterministic tests, configure a `TimeProvider` for the named transport before the host starts. The clock controls scheduled delivery, redelivery and retry timing. The default is `TimeProvider.System`.
+
+```csharp
+local.Options.Configure(options => options.UseTimeProvider(clock));
+```
+
 Keep `TransportCapabilities.Tombstones` disabled. In-memory endpoints store byte bodies and reject this capability during construction because they cannot preserve native null values. Native single and batch sends also reject any `OutgoingMessage` marked as a tombstone. Ordinary empty byte bodies are supported.
 
 ```csharp

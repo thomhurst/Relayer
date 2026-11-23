@@ -11,6 +11,8 @@ description: "Send messages with ISender: routing, per-send options, middleware,
 | Direct send inside a handler | The attempt buffered the message. Relayer flushes after the handler, middleware and scope disposal succeed. A failed attempt discards it. |
 | Active outbox transaction or selected EF Core unit of work | The unit enlisted the message. Its database commit makes it durable. Dispatch follows separately. |
 
+The table assumes the send reaches the end of the middleware chain. If middleware returns successfully without calling `next(context)`, the caller's await succeeds. That send skips native dispatch, handler buffering and outbox enlistment.
+
 With an outbox registered and no active unit of work, `SendAsync` throws. `SendWithoutOutboxAsync` bypasses the outbox and still follows the handler buffering rule.
 
 ## Configure a send route

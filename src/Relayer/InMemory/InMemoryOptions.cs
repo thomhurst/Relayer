@@ -42,6 +42,8 @@ public sealed record InMemoryEndpointOptions
 /// <summary>Named Options configuration for an in-memory transport.</summary>
 public sealed class InMemoryTransportOptions
 {
+    private TimeProvider _timeProvider = TimeProvider.System;
+
     /// <summary>Overrides for declared endpoints. Unspecified declared endpoints use queue defaults.</summary>
     public IDictionary<string, InMemoryEndpointOptions> Endpoints
     {
@@ -51,8 +53,22 @@ public sealed class InMemoryTransportOptions
     /// <summary>Clock used for native scheduling and redelivery.</summary>
     public TimeProvider TimeProvider
     {
-        get; init;
-    } = TimeProvider.System;
+        get
+        {
+            return _timeProvider;
+        }
+        init
+        {
+            _timeProvider = value;
+        }
+    }
+
+    /// <summary>Sets the clock from a named Options configuration callback before the transport is constructed.</summary>
+    public void UseTimeProvider(TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        _timeProvider = timeProvider;
+    }
 }
 
 /// <summary>Native consumer settings. Portable handlers and concurrency use the common builder.</summary>
