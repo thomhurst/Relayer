@@ -50,7 +50,6 @@ Built-in consumers require `BatchSize=1`. A broker client can fetch several deli
 
 ## Startup and reload
 
-
 The core validator is inserted before transport hosted services and checks all transport names, destinations, stable message registrations, duplicate routes, handler presence, positive concurrency and batching settings, topology enum values, and each transport's named Options validators. Malformed bound values and Options validation failures are included in the same error list. Options validation failures during adapter construction also preserve declaration errors. Other exception types from arbitrary configuration callbacks propagate.
 
 For runtime adapters, it also checks endpoint capability declarations: delays must be null or non-negative, the native batch count must be at least one, a declared message byte limit must be positive, and the consumption model must be defined. Null message limits remain unknown rather than unlimited. Null capability records and endpoint resolution failures (`ArgumentException`, `InvalidOperationException`, or `NotSupportedException`) become startup errors with transport and endpoint context. Unrelated exceptions propagate. An ordering key requires `OrderedByKey` on that route's destination; there is no ordering fallback. Errors identify the route and recommend an ordered endpoint or removal of the key.
@@ -61,4 +60,6 @@ The validator captures the topology mode and declaration lists at registration. 
 
 Binding supports configuration reload through `IOptionsMonitor<TOptions>`. This updates options, not routing or topology declarations. A transport decides which native settings it can safely apply live; changing a connection or entity declaration does not implicitly restart a native client. Use the named `Get` method rather than `CurrentValue`, which addresses the unnamed instance.
 
-For Native AOT, applications binding configuration enable `<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>` and call `Bind` with a concrete options type. The generic core never performs reflection-based binding. Topology provisioning and feature-specific execution remain separate from declaration validation.
+If named transport options fail validation during startup, correct and reload the configuration, then call `StartAsync` again on the same host. Relayer validates the current named options on the new attempt.
+
+For Native AOT, enable `<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>`. Call `Bind` with a concrete transport options type that has writable properties. For init-only `TracingOptions`, see [tracing registration](telemetry.md#tracing-registration-and-primitives). The generic core never performs reflection-based binding. Topology provisioning and feature-specific execution remain separate from declaration validation.

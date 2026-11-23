@@ -1,4 +1,6 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Relayer.Pipeline;
 using Relayer.Transports;
 
@@ -35,6 +37,34 @@ public class ConfigurationTests
         new ServiceCollection().AddRelayer(relayer => mode = relayer.TopologyMode);
 
         await Assert.That(mode).IsEqualTo(TopologyMode.Validate);
+    }
+
+    [Test]
+    public async Task Generated_configuration_binding_sets_init_only_tracing_options()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Relayer:Tracing:CreationContextAsParent"] = "false",
+            ["Relayer:Tracing:CreateSpansForBatches"] = "false",
+            ["Relayer:Tracing:IncludeBodySize"] = "true"
+        }).Build();
+        var services = new ServiceCollection();
+        services.AddRelayer(_ =>
+        {
+        });
+        var tracing = configuration.GetSection("Relayer:Tracing");
+        services.AddSingleton(Options.Create(new TracingOptions
+        {
+            CreationContextAsParent = tracing.GetValue("CreationContextAsParent", true),
+            CreateSpansForBatches = tracing.GetValue("CreateSpansForBatches", true),
+            IncludeBodySize = tracing.GetValue("IncludeBodySize", false)
+        }));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = provider.GetRequiredService<MessageTracing>().Options;
+        await Assert.That(options.CreationContextAsParent).IsFalse();
+        await Assert.That(options.CreateSpansForBatches).IsFalse();
+        await Assert.That(options.IncludeBodySize).IsTrue();
     }
 
     [Test]

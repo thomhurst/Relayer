@@ -15,12 +15,12 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
 
     internal Task InitializeCapabilitiesAsync(CancellationToken cancellationToken)
     {
-        // Share one attempt across StartingAsync callbacks. Retry cancellation on a new host start.
+        // The host passes the same token to its StartingAsync callbacks and creates a new token for each start.
         lock (_initialization)
         {
             if (_capabilityInitialization is null ||
-                (_capabilityInitialization.IsCanceled && _capabilityInitializationToken != cancellationToken &&
-                 !cancellationToken.IsCancellationRequested))
+                (_capabilityInitializationToken != cancellationToken && !cancellationToken.IsCancellationRequested &&
+                 (_capabilityInitialization.IsCanceled || _capabilityInitialization.Exception?.InnerException is OptionsValidationException)))
             {
                 _capabilityInitializationToken = cancellationToken;
                 _capabilityInitialization = InitializeCapabilitiesCoreAsync(cancellationToken);

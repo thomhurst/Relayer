@@ -140,6 +140,36 @@ public class BuilderTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Host_start_revalidates_named_options_after_reload(bool concurrent)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Events:Server"] = "" });
+        builder.Services.Configure<HostOptions>(options => options.ServicesStartConcurrently = concurrent);
+        builder.Services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", broker =>
+            broker.Options.Bind(builder.Configuration.GetSection("Events"))
+                .Validate(options => options.Server.Length > 0, "Server is required.")));
+        builder.Services.AddSingleton<TransportService>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<TransportService>());
+
+        using var host = builder.Build();
+        var transport = host.Services.GetRequiredService<TransportService>();
+        await Assert.That(() => host.StartAsync()).Throws<OptionsValidationException>()
+            .WithMessageContaining("Transport 'events': Server is required.");
+        await Assert.That(transport.Started).IsFalse();
+
+        builder.Configuration["Events:Server"] = "localhost";
+        ((IConfigurationRoot)builder.Configuration).Reload();
+        var monitor = host.Services.GetRequiredService<IOptionsMonitor<BrokerOptions>>();
+        await Assert.That(monitor.Get("events").Server).IsEqualTo("localhost");
+
+        await host.StartAsync();
+        await Assert.That(transport.Started).IsTrue();
+        await host.StopAsync();
+    }
+
+    [Test]
     public async Task Startup_reports_all_declaration_and_options_errors_together()
     {
         var services = new ServiceCollection();
