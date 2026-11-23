@@ -88,40 +88,29 @@ internal sealed class RabbitMqStreamsTransport : ITransport
             }
 
             await ConnectAsync(cancellationToken).ConfigureAwait(false);
+            var system = _system!;
             var differences = new List<string>();
 
-            foreach (var stream in _streams)
+            if (mode == TopologyMode.Provision)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (mode == TopologyMode.Provision && stream.Configuration is { } config)
-                {
-                    try
-                    {
-                        await _system!.CreateStream(config).ConfigureAwait(false);
-                    }
-                    catch (CreateStreamException error)
-                    {
-                        differences.Add($"Stream '{stream.Name}': {error.Message}. Reconcile native settings externally; Relayer never updates or deletes streams.");
-                    }
-                }
-                else if (!await _system!.StreamExists(stream.Name).ConfigureAwait(false))
-                {
-                    differences.Add($"Stream '{stream.Name}' does not exist. Supply native Configuration and select TopologyMode.Provision, or create it externally.");
-                }
-                else if (stream.Configuration is not null)
-                {
-                    differences.Add($"Stream '{stream.Name}' exists, but read-only configuration equivalence checks are unavailable. Use a name-only declaration for existence validation or Provision for native create-only equivalence checks.");
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
+                await ProvisionStreamsAsync(system, differences, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await ValidateStreamsAsync(system, mode, differences, cancellationToken).ConfigureAwait(false);
             }
 
             foreach (var superStream in _superStreams)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await ApplySuperStreamTopologyAsync(_system!, superStream, mode, differences, cancellationToken).ConfigureAwait(false);
+                await ApplySuperStreamTopologyAsync(system, superStream, mode, differences, cancellationToken).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (mode == TopologyMode.Provision)
+            {
+                // Name-only stream declarations can refer to partitions created by a super stream above.
+                await ValidateStreamsAsync(system, mode, differences, cancellationToken).ConfigureAwait(false);
             }
 
             return new(differences);
@@ -129,6 +118,55 @@ internal sealed class RabbitMqStreamsTransport : ITransport
         finally
         {
             _lifecycle.Release();
+        }
+    }
+
+    private async Task ProvisionStreamsAsync(StreamSystem system, List<string> differences, CancellationToken cancellationToken)
+    {
+        foreach (var stream in _streams)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (stream.Configuration is not { } config)
+            {
+                continue;
+            }
+
+            try
+            {
+                await system.CreateStream(config).ConfigureAwait(false);
+            }
+            catch (CreateStreamException error)
+            {
+                differences.Add($"Stream '{stream.Name}': {error.Message}. Reconcile native settings externally; Relayer never updates or deletes streams.");
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
+    private async Task ValidateStreamsAsync(StreamSystem system, TopologyMode mode, List<string> differences,
+        CancellationToken cancellationToken)
+    {
+        foreach (var stream in _streams)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (mode == TopologyMode.Provision && stream.Configuration is not null)
+            {
+                continue;
+            }
+
+            if (!await system.StreamExists(stream.Name).ConfigureAwait(false))
+            {
+                differences.Add($"Stream '{stream.Name}' does not exist. Supply native Configuration and select TopologyMode.Provision, or create it externally.");
+            }
+            else if (stream.Configuration is not null)
+            {
+                differences.Add($"Stream '{stream.Name}' exists, but read-only configuration equivalence checks are unavailable. Use a name-only declaration for existence validation or Provision for native create-only equivalence checks.");
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 
@@ -146,6 +184,11 @@ internal sealed class RabbitMqStreamsTransport : ITransport
             catch (CreateStreamException error)
             {
                 differences.Add($"Super stream '{name}': {error.Message}. Reconcile native settings externally; Relayer never updates or deletes super streams.");
+                return;
+            }
+            catch (ArgumentException error)
+            {
+                differences.Add($"Super stream '{name}': {error.Message}. Correct the native configuration and retry.");
                 return;
             }
 
