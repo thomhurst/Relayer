@@ -1,4 +1,6 @@
 using System.Buffers;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Relayer.InMemory;
 using Relayer.Testing;
 using Relayer.Transports;
@@ -39,6 +41,26 @@ public class InMemoryConformanceTests
     {
         var result = await Suite(log: true).RunAsync(scenario);
         await Assert.That(result.Skipped).IsFalse();
+    }
+
+    [Test]
+    public async Task Fixture_captures_adapter_failures_after_disposal()
+    {
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        var fixture = new InMemoryFixture(tracing, capabilities: new()
+        {
+            MaxMessageBytes = 1,
+        });
+
+        await using (fixture)
+        {
+            var message = new OutgoingMessage(fixture.Destination, new byte[] { 1, 2 });
+            await Assert.That(async () => await fixture.Transport.SendAsync(message, CancellationToken.None))
+                .Throws<InvalidOperationException>();
+        }
+
+        var error = await Assert.That(fixture.Logs.AssertClean).Throws<InvalidOperationException>();
+        await Assert.That(error!.Message).Contains("Relayer.InMemory.InMemoryTransport [Error] Message send failed.");
     }
 
     [Test]
@@ -181,6 +203,7 @@ public class InMemoryConformanceTests
 internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture
 {
     private readonly InMemoryTransport _transport;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly bool _log;
     private int _completed;
 
@@ -212,6 +235,7 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
     internal InMemoryFixture(MessageTracing? tracing, bool log = false, TransportCapabilities? capabilities = null, int capacity = 256)
     {
         _log = log;
+        _loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning).AddProvider(Logs));
         _transport = new("conformance", new Dictionary<string, InMemoryEndpointOptions>
         {
             [Destination] = new()
@@ -227,7 +251,7 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
                     MaxRedeliveryDelay = TimeSpan.FromMinutes(1),
                 },
             },
-        }, tracing: tracing);
+        }, tracing: tracing, loggerFactory: _loggerFactory);
     }
 
     public ITransport Transport => _transport;
@@ -316,12 +340,19 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
         return ValueTask.CompletedTask;
     }
 
-    // InMemoryTransport has no logger or external native receiver. Its completed loop is its closure boundary.
     public async ValueTask DisposeAsync()
     {
         StoppedBeforeDisposal = _transport.Completion.IsCompletedSuccessfully;
-        await _transport.DisposeAsync();
-        Disposed = true;
+
+        try
+        {
+            await _transport.DisposeAsync();
+            Disposed = true;
+        }
+        finally
+        {
+            _loggerFactory.Dispose();
+        }
 
         if (AfterDisposal is { } afterDisposal)
         {
