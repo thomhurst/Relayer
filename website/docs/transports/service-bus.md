@@ -116,12 +116,12 @@ using Relayer.Transports;
 bus.TopologyMode = TopologyMode.None; // the entities may not exist yet when the host starts
 bus.Options.Configure(options => options.AutoStartConsumers = false);
 
-// Later, once the entities exist:
+// After the host starts and the entities exist.
 var consumers = app.Services.GetRequiredKeyedService<IConsumerControl>("orders");
 await consumers.StartAsync(cancellationToken);
 ```
 
-The host still composes and validates every consumer at startup, and sending works while the processors are stopped. `StartAsync` fails before the host has started or after it stops. `StopAsync` stops new receives and drains in-flight work like host shutdown, so the same control pauses and resumes consumption, for example during a maintenance window; both calls do nothing when the processors are already in that state. Host shutdown stops processors that the control started. While the processors are stopped, consumer [health](#health) reports them as unavailable, not idle. Leave `TopologyMode` at `Validate` when the entities exist before startup; it checks them before the host starts.
+The host still composes and validates every consumer at startup, and sending works while the processors are stopped. `StartAsync` fails until the host signals `ApplicationStarted` and after the host stops. `StopAsync` stops new receives and drains in-flight work like host shutdown, so the same control pauses and resumes consumption, for example during a maintenance window; both calls do nothing when the processors are already in that state. Host shutdown stops processors that the control started. While the processors are stopped, consumer [health](#health) reports them as unavailable, not idle. Leave `TopologyMode` at `Validate` when the entities exist before startup; it checks them before the host starts.
 
 If any processor fails to start, Relayer attempts to stop all processors on that transport and waits for those attempts before returning the original startup error. Relayer logs any rollback failures when logging is configured.
 

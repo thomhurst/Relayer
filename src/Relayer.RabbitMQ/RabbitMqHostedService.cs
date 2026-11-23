@@ -68,7 +68,8 @@ internal sealed class RabbitMqHostedService(RabbitMqConsumerControl consumers) :
 }
 
 // Owns the consumers' lifetime for the host and for the transport's keyed IConsumerControl.
-internal sealed class RabbitMqConsumerControl(IServiceProvider provider, string name) : ConsumerHostedService($"RabbitMQ transport '{name}'")
+internal sealed class RabbitMqConsumerControl(IServiceProvider provider, string name)
+    : ConsumerHostedService($"RabbitMQ transport '{name}'", provider.GetService<IHostApplicationLifetime>())
 {
     private readonly TaskCompletionSource _faulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private RabbitMqNativeTransport? _transport;

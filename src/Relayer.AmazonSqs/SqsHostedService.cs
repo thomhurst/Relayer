@@ -1,6 +1,7 @@
 using System.Buffers;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Relayer.Pipeline;
@@ -9,7 +10,8 @@ using Relayer.Transports;
 
 namespace Relayer.AmazonSqs;
 
-internal sealed class SqsHostedService(IServiceProvider provider, string name) : ConsumerHostedService($"SQS transport '{name}'")
+internal sealed class SqsHostedService(IServiceProvider provider, string name)
+    : ConsumerHostedService($"SQS transport '{name}'", provider.GetService<IHostApplicationLifetime>())
 {
     private SqsSendTransport? _transport;
     private bool _composed;

@@ -11,7 +11,8 @@ using Relayer.Transports;
 
 namespace Relayer.Kafka;
 
-internal sealed partial class KafkaHostedService(IServiceProvider provider, string name) : ConsumerHostedService($"Kafka transport '{name}'")
+internal sealed partial class KafkaHostedService(IServiceProvider provider, string name)
+    : ConsumerHostedService($"Kafka transport '{name}'", provider.GetService<IHostApplicationLifetime>())
 {
     private KafkaProducerTransport? _transport;
     private bool _composed;

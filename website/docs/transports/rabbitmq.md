@@ -241,12 +241,12 @@ using Relayer.Transports;
 
 rabbit.Options.Configure(options => options.AutoStartConsumers = false);
 
-// Later, when the application is ready to receive:
+// After the host starts.
 var consumers = app.Services.GetRequiredKeyedService<IConsumerControl>("orders");
 await consumers.StartAsync(cancellationToken);
 ```
 
-The host still applies topology, validates and composes every consumer, and opens the connection and publisher channels at startup, so sending works while the consumers are stopped and messages wait on their queues. `StartAsync` issues the native `basic.consume` and fails before the host has started or after it stops. `StopAsync` sends `basic.cancel` and drains in-flight callbacks like host shutdown, so the same control pauses and resumes consumption; both calls do nothing when the consumers are already in that state. Host shutdown stops consumers that the control started, even when its token has expired. If startup is cancelled while rolling back a partially started group, Relayer closes the affected consumer channels. RabbitMQ requeues any unacknowledged deliveries, and acknowledgements interrupted by that channel close do not fault the host. While stopped, consumer [health](#health) reports them as unavailable.
+The host still applies topology, validates and composes every consumer, and opens the connection and publisher channels at startup, so sending works while the consumers are stopped and messages wait on their queues. `StartAsync` issues the native `basic.consume` and fails until the host signals `ApplicationStarted` and after the host stops. `StopAsync` sends `basic.cancel` and drains in-flight callbacks like host shutdown, so the same control pauses and resumes consumption; both calls do nothing when the consumers are already in that state. Host shutdown stops consumers that the control started, even when its token has expired. If startup is cancelled while rolling back a partially started group, Relayer closes the affected consumer channels. RabbitMQ requeues any unacknowledged deliveries, and acknowledgements interrupted by that channel close do not fault the host. While stopped, consumer [health](#health) reports them as unavailable.
 
 ## Health
 

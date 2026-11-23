@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Relayer.AzureServiceBus;
 using Relayer.Transports;
 
@@ -32,6 +33,80 @@ public sealed class ServiceBusConsumerControlTests
         await Assert.That(processor.Starts).IsEqualTo(2);
         await ServiceBusReceiveTests.Stop(provider);
         await Assert.That(processor.Stops).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Deferred_consumers_wait_for_successful_generic_host_startup(bool failStartup)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var token = deadline.Token;
+        var client = new ServiceBusReceiveTests.NativeClient();
+        var laterService = new StartupGate();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(Channel.CreateUnbounded<int>());
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.Infrastructure().MessageTypes.Add<DeferredPayload>("servicebus.deferred-start");
+            relayer.UseJsonSerializer(ServiceBusConsumerControlJson.Default);
+            relayer.ServiceBus("bus", bus =>
+            {
+                bus.TopologyMode = TopologyMode.None;
+                bus.Options.Configure(options =>
+                {
+                    options.Client = client;
+                    options.AutoStartConsumers = false;
+                });
+                bus.Consume("orders", consumer => consumer.Handler<DeferredHandler>());
+            });
+        });
+        builder.Services.AddHostedService(_ => laterService);
+
+        using var host = builder.Build();
+        var control = host.Services.GetRequiredKeyedService<IConsumerControl>("bus");
+        var startupError = new InvalidOperationException("Later hosted service failed to start.");
+        var starting = host.StartAsync(token);
+
+        try
+        {
+            await laterService.Entered.Task.WaitAsync(token);
+            await Assert.That(() => control.StartAsync(token).WaitAsync(token)).Throws<InvalidOperationException>()
+                .WithMessageContaining("start the host before starting its consumers");
+            await Assert.That(client.Processors.Single().Starts).IsEqualTo(0);
+        }
+        finally
+        {
+            if (failStartup)
+            {
+                laterService.Release.TrySetException(startupError);
+            }
+            else
+            {
+                laterService.Release.TrySetResult();
+            }
+
+            await starting.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+
+        var processor = client.Processors.Single();
+
+        if (failStartup)
+        {
+            var observed = await Assert.That(() => starting).Throws<InvalidOperationException>();
+            await Assert.That(observed).IsSameReferenceAs(startupError);
+            await Assert.That(() => control.StartAsync(token)).Throws<InvalidOperationException>();
+            await Assert.That(processor.Starts).IsEqualTo(0);
+        }
+        else
+        {
+            await starting;
+            await control.StartAsync(token);
+            await control.StartAsync(token);
+            await Assert.That(processor.Starts).IsEqualTo(1);
+        }
+
+        await host.StopAsync(token);
     }
 
     [Test]
@@ -202,6 +277,30 @@ public sealed class ServiceBusConsumerControlTests
         await provider.GetRequiredKeyedService<IConsumerControl>("bus").StartAsync(token);
         await Assert.That(await received.Reader.ReadAsync(token)).IsEqualTo(7);
         await ServiceBusReceiveTests.Stop(provider, token);
+    }
+
+    private sealed class StartupGate : IHostedService
+    {
+        public TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Release
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            Entered.SetResult();
+            return Release.Task.WaitAsync(cancellationToken);
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
     }
 
     [Message("servicebus.deferred-start")]

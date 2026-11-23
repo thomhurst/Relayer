@@ -4,7 +4,8 @@ namespace Relayer.Transports;
 
 // Owns a transport's consumer lifetime for the host and for its keyed IConsumerControl. One gate serialises both callers.
 // A transport whose consumers can fail outside the native client reports that failure through ExecuteAsync.
-internal abstract class ConsumerHostedService(string transport) : BackgroundService, IConsumerControl
+internal abstract class ConsumerHostedService(string transport, IHostApplicationLifetime? hostLifetime = null)
+    : BackgroundService, IConsumerControl
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     // Cancels a control start still running when host shutdown bypasses the gate, so it cannot start consumers
@@ -102,13 +103,20 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
 
     async Task IConsumerControl.StartAsync(CancellationToken cancellationToken)
     {
+        // Host startup can hold the gate while it composes the consumers.
+        if (hostLifetime?.ApplicationStarted.IsCancellationRequested == false)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw CreateHostNotRunningException();
+        }
+
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
             if (!Volatile.Read(ref _hostRunning))
             {
-                throw new InvalidOperationException($"{transport}: start the host before starting its consumers.");
+                throw CreateHostNotRunningException();
             }
 
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
@@ -132,6 +140,11 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
         {
             _gate.Release();
         }
+    }
+
+    private InvalidOperationException CreateHostNotRunningException()
+    {
+        return new InvalidOperationException($"{transport}: start the host before starting its consumers.");
     }
 
     private async Task StartAsyncCore(CancellationToken cancellationToken)

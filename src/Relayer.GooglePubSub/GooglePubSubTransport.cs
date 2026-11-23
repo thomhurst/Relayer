@@ -46,7 +46,21 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
             _options.Topics.Add(topic);
         }
 
-        _subscriptions = options.Subscriptions.ToFrozenDictionary(subscription => SubscriptionName.Parse(subscription.Name).ToString(), subscription => subscription.Clone(), StringComparer.Ordinal);
+        var subscriptions = new Dictionary<string, Subscription>(options.Subscriptions.Count, StringComparer.Ordinal);
+
+        for (var i = 0; i < options.Subscriptions.Count; i++)
+        {
+            var subscription = options.Subscriptions[i];
+
+            if (!SubscriptionName.TryParse(subscription.Name, out var subscriptionName))
+            {
+                throw new ArgumentException($"Pub/Sub transport '{name}': Subscriptions[{i}].Name is '{subscription.Name}'. Use 'projects/{{project}}/subscriptions/{{subscription}}'.");
+            }
+
+            subscriptions.Add(subscriptionName.ToString(), subscription.Clone());
+        }
+
+        _subscriptions = subscriptions.ToFrozenDictionary(StringComparer.Ordinal);
         var topicsWithUnorderedSubscriptions = _subscriptions.Values
             .Where(static subscription => !subscription.EnableMessageOrdering)
             .Select(static subscription => subscription.Topic)

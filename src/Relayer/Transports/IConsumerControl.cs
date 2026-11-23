@@ -6,7 +6,7 @@ namespace Relayer.Transports;
 /// </summary>
 public interface IConsumerControl
 {
-    /// <summary>Starts the native consumers. Does nothing when they already run. Fails until the host has started.</summary>
+    /// <summary>Starts the native consumers. Does nothing when they already run. Fails until the host completes startup and after it stops.</summary>
     Task StartAsync(CancellationToken cancellationToken);
 
     /// <summary>Stops the native consumers and drains in-flight work, as host shutdown does. Does nothing when they are stopped.</summary>

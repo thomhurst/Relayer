@@ -1,5 +1,6 @@
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Relayer.Pipeline;
@@ -9,7 +10,7 @@ using Relayer.Transports;
 namespace Relayer.AzureServiceBus;
 
 internal sealed class ServiceBusHostedService(IServiceProvider provider, string name)
-    : ConsumerHostedService($"Service Bus transport '{name}'")
+    : ConsumerHostedService($"Service Bus transport '{name}'", provider.GetService<IHostApplicationLifetime>())
 {
     private ServiceBusSendTransport? _transport;
     private bool _composed;
