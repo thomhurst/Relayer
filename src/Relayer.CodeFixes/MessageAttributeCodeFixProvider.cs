@@ -99,7 +99,7 @@ public sealed class MessageAttributeCodeFixProvider : CodeFixProvider
         {
             var document = solution.GetDocument(reference.SyntaxTree);
 
-            if (document is null
+            if (document is null or SourceGeneratedDocument
                 || await document.GetSyntaxRootAsync(cancellationToken).ConfigureAwait(false) is not CSharpSyntaxNode root
                 || root.FindNode(reference.Span) is not TypeDeclarationSyntax declaration)
             {

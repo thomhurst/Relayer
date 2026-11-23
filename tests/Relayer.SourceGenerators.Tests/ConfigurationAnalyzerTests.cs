@@ -1042,6 +1042,29 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    public async Task Code_fix_skips_source_generated_partial_message_declarations()
+    {
+        using var workspace = new AdhocWorkspace();
+        var original = AddCodeFixDocument(workspace, Imports + """
+            #if DEBUG
+            public partial record Order;
+            #endif
+            static class Setup { public static void Add(Broker broker) => broker.Send<Order>("orders"); }
+            """, new CSharpParseOptions(preprocessorSymbols: ["DEBUG"]));
+        var document = original.Project.AddAnalyzerReference(new PartialMessageGeneratorReference()).GetDocument(original.Id)!;
+        var diagnostic = (await AnalyzeDocumentAsync(document)).Single();
+        await Assert.That(diagnostic.Id).IsEqualTo("RLY001");
+
+        var actions = new List<CodeAction>();
+        await new MessageAttributeCodeFixProvider().RegisterCodeFixesAsync(new CodeFixContext(document, diagnostic,
+            (action, _) => actions.Add(action), CancellationToken.None));
+        var operation = (await actions.Single().GetOperationsAsync(CancellationToken.None)).OfType<ApplyChangesOperation>().Single();
+        var fixedDocument = operation.ChangedSolution.GetDocument(document.Id)!;
+        await Assert.That((await fixedDocument.GetTextAsync()).ToString()).Contains("[global::Relayer.MessageAttribute(\"Order\")]");
+        await Assert.That(Ids(await AnalyzeDocumentAsync(fixedDocument))).IsEqualTo("");
+    }
+
+    [Test]
     [Arguments("[System.Serializable]\n#if DEBUG\npublic\n#endif\nrecord Order;", true)]
     [Arguments("[System.Serializable]\n#if DEBUG\npublic\n#endif\nrecord Order;", false)]
     [Arguments("[System.Serializable]\n#if DEBUG\npublic\n#else\ninternal\n#endif\nrecord Order;", true)]
@@ -1212,6 +1235,38 @@ public class ConfigurationAnalyzerTests
         var fixedDocument = operation.ChangedSolution.GetDocument(document.Id)!;
         await Assert.That(Ids(await AnalyzeDocumentAsync(fixedDocument))).IsEqualTo("");
         return (await fixedDocument.GetTextAsync()).ToString();
+    }
+
+    private sealed class PartialMessageGeneratorReference : AnalyzerReference
+    {
+        private readonly ImmutableArray<ISourceGenerator> _generators = [new PartialMessageGenerator().AsSourceGenerator()];
+
+        public override string? FullPath => null;
+
+        public override object Id => nameof(PartialMessageGeneratorReference);
+
+        public override ImmutableArray<DiagnosticAnalyzer> GetAnalyzersForAllLanguages()
+        {
+            return [];
+        }
+
+        public override ImmutableArray<DiagnosticAnalyzer> GetAnalyzers(string language)
+        {
+            return [];
+        }
+
+        public override ImmutableArray<ISourceGenerator> GetGenerators(string language)
+        {
+            return _generators;
+        }
+    }
+
+    private sealed class PartialMessageGenerator : IIncrementalGenerator
+    {
+        public void Initialize(IncrementalGeneratorInitializationContext context)
+        {
+            context.RegisterPostInitializationOutput(static output => output.AddSource("Order.g.cs", "public partial record Order;"));
+        }
     }
 
     private sealed class DocumentDiagnostics(ImmutableArray<Diagnostic> diagnostics) : FixAllContext.DiagnosticProvider
