@@ -8,6 +8,7 @@ namespace Relayer;
 
 internal sealed class MessageSerializerStartupValidator(IServiceProvider services, RelayerConfigurationValidator validator) : IHostedLifecycleService
 {
+    private readonly HashSet<IMessageSerializerInitializer> _prepared = new(ReferenceEqualityComparer.Instance);
     private bool _initialized;
 
     public Task StartingAsync(CancellationToken cancellationToken)
@@ -55,9 +56,10 @@ internal sealed class MessageSerializerStartupValidator(IServiceProvider service
 
         foreach (var serializer in serializers)
         {
-            if (serializer is IMessageSerializerInitializer initializer)
+            if (serializer is IMessageSerializerInitializer initializer && !_prepared.Contains(initializer))
             {
                 await initializer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                _prepared.Add(initializer);
             }
         }
         // Declaration-only hosts remain usable without adapters. A runtime adapter composes all send routes at startup.
