@@ -803,6 +803,51 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    public async Task Hosted_scheduling_uses_the_clock_configured_through_named_options()
+    {
+        var clock = new InMemoryTestClock();
+        clock.Advance(DateTimeOffset.UtcNow.AddDays(3) - clock.GetUtcNow());
+        var received = Channel.CreateUnbounded<int>();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(received);
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.InMemory("local", local =>
+            {
+                local.Options.Configure(options =>
+                {
+                    options.UseTimeProvider(clock);
+                    options.Endpoints.Add("orders", new()
+                    {
+                        Capabilities = new()
+                        {
+                            DeadLetter = true,
+                            MaxDeliveryDelay = TimeSpan.FromHours(1),
+                        },
+                    });
+                });
+                local.Send<InMemoryOrder>("orders");
+                local.Consume("orders", consumer => consumer.Handler<InMemoryOrderHandler>());
+            });
+        });
+        using var host = builder.Build();
+        await host.StartAsync();
+
+        using var scope = host.Services.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var delay = TimeSpan.FromMinutes(5);
+        var due = clock.GetUtcNow() + delay;
+        await sender.SendAsync(new InMemoryOrder(42), options => options.DeliverAt = due);
+        await clock.NextTimer();
+        await Assert.That(received.Reader.TryRead(out _)).IsFalse();
+
+        clock.Advance(delay);
+        await Assert.That(await Next(received)).IsEqualTo(42);
+        await host.StopAsync();
+    }
+
+    [Test]
     public async Task Buffered_send_timeout_faults_the_hosted_receiver_when_queue_admission_is_full()
     {
         var services = new ServiceCollection();
