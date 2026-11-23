@@ -193,18 +193,40 @@ public class HandlerGeneratorTests
     }
 
     [Test]
-    public async Task Unrelated_edit_caches_models_and_source_output()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Unrelated_edit_caches_models_and_source_output(bool useAlias)
     {
         var unrelated = CSharpSyntaxTree.ParseText("class Unrelated { int Value => 1; }");
         var compilation = CreateCompilation(Handlers).AddSyntaxTrees(unrelated);
+
+        if (useAlias)
+        {
+            var reference = CreateCompilation(Handlers).WithAssemblyName("External").ToMetadataReference(["External"]);
+            var registration = CSharpSyntaxTree.ParseText("""
+                extern alias External;
+                using Relayer;
+                class Registration
+                {
+                    public static void Add(IConsumerBuilder builder) => builder.Handler<External::Example.Handler>();
+                }
+                """);
+            compilation = compilation.AddReferences(reference).AddSyntaxTrees(registration);
+        }
+
         var driver = Run(compilation, out _);
         var updated = compilation.ReplaceSyntaxTree(unrelated, CSharpSyntaxTree.ParseText("class Unrelated { int Value => 2; }"));
         var rerun = Run(updated, out _, driver);
         var result = rerun.GetRunResult().Results.Single();
 
+        if (useAlias)
+        {
+            await Assert.That(Generated(rerun)).Contains("TryAddScoped<@External::Example.Handler>");
+        }
+
         await Assert.That(Generated(rerun)).IsEqualTo(Generated(driver));
         await Assert.That(result.TrackedSteps["HandlerModels"].SelectMany(s => s.Outputs)
-            .All(o => o.Reason is IncrementalStepRunReason.Cached or IncrementalStepRunReason.Unchanged)).IsTrue();
+            .All(o => o.Reason == IncrementalStepRunReason.Cached)).IsTrue();
         await Assert.That(result.TrackedOutputSteps.SelectMany(s => s.Value).SelectMany(s => s.Outputs)
             .All(o => o.Reason == IncrementalStepRunReason.Cached)).IsTrue();
     }
@@ -403,6 +425,75 @@ public class HandlerGeneratorTests
         var driver = Run(compilation, out _);
         await Assert.That(Generated(driver)).Contains("TryAddScoped<@BrokerReference::Broker.OrderHandler>");
         await Assert.That(Generated(driver)).Contains("HandlerDescriptor<@BrokerReference::Broker.Order>");
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Same_named_handlers_keep_their_extern_aliases_with_split_references(bool globalLast)
+    {
+        const string Handler = """
+            using Relayer;
+            using System.Threading;
+            using System.Threading.Tasks;
+            namespace Billing;
+            public sealed class Order { }
+            public sealed class OrderHandler : IHandler<Order>
+            {
+                public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken cancellationToken) => default;
+            }
+            """;
+        var first = CreateReference("First", Handler + """
+
+            public sealed class UniqueHandler : IHandler<string>
+            {
+                public ValueTask HandleAsync(string message, MessageContext context, CancellationToken cancellationToken) => default;
+            }
+            """);
+        var second = CreateReference("Second", Handler);
+        var compilation = CreateCompilation("""
+            extern alias First;
+            extern alias Second;
+            using Relayer;
+
+            public static class Registration
+            {
+                public static void Add(ITransportConsumerBuilder transport)
+                {
+                    transport.Consume<First::Billing.OrderHandler>("first");
+                    transport.Consume<Second::Billing.OrderHandler>("second");
+                    transport.Consume<Billing.UniqueHandler>("unique");
+                }
+            }
+            """).AddReferences(Aliases(first, "First")).AddReferences(Aliases(second, "Second"));
+
+        var driver = Run(compilation, out _);
+        var generated = Generated(driver);
+        await Assert.That(generated).Contains("TryAddScoped<@First::Billing.OrderHandler>");
+        await Assert.That(generated).Contains("TryAddScoped<@Second::Billing.OrderHandler>");
+        await Assert.That(generated).Contains("HandlerDescriptor<@First::Billing.Order>");
+        await Assert.That(generated).Contains("HandlerDescriptor<@Second::Billing.Order>");
+        await Assert.That(generated).Contains("TryAddScoped<global::Billing.UniqueHandler>");
+
+        static PortableExecutableReference CreateReference(string name, string source)
+        {
+            using var stream = new MemoryStream();
+            var result = CreateCompilation(source).WithAssemblyName(name).Emit(stream);
+
+            if (!result.Success)
+            {
+                throw new InvalidOperationException(string.Join(Environment.NewLine, result.Diagnostics));
+            }
+
+            return MetadataReference.CreateFromImage(stream.ToArray());
+        }
+
+        MetadataReference[] Aliases(PortableExecutableReference reference, string alias)
+        {
+            // MSBuild passes each alias as a separate /reference entry.
+            var named = reference.WithAliases([alias]);
+            return globalLast ? [named, reference] : [reference, named];
+        }
     }
 
     [Test]

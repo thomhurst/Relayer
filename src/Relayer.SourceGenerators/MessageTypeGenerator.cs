@@ -464,11 +464,11 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
     private static bool RequiresExternAlias(ITypeSymbol type, Compilation compilation)
     {
         // System.Text.Json emits global qualifiers even if the context declaration uses extern aliases.
+        // The merged namespace accounts for assemblies passed as separate global and named references.
+        var globalNamespaces = compilation.GlobalNamespace.ConstituentNamespaces;
         return type.ToDisplayParts(SymbolDisplayFormat.FullyQualifiedFormat).Any(part =>
             part.Symbol is INamespaceSymbol { IsGlobalNamespace: true, ContainingAssembly: { } assembly }
-            && compilation.GetMetadataReference(assembly) is { } reference
-            && reference.Properties.Aliases is { IsDefaultOrEmpty: false } aliases
-            && !aliases.Contains("global"));
+            && !globalNamespaces.Any(root => SymbolEqualityComparer.Default.Equals(root.ContainingAssembly, assembly)));
     }
 
     private static bool CanUseJsonType(ITypeSymbol type, Compilation compilation)

@@ -133,7 +133,7 @@ Register an instance, factory or custom lifetime under the concrete, unkeyed han
 
 Marking a handler with warning-level `[Obsolete]` leaves its generated descriptor available without emitting the standard obsolete warnings (`CS0612` and `CS0618`). Selecting that handler with `Handler<THandler>()` in your code still reports the warning.
 
-When a project reference exposes a handler or its message types only through a C# `extern alias`, use that alias in your registration. Relayer includes the required aliases in its generated dispatch code.
+Use a C# `extern alias` to register a handler from an alias-only reference or to distinguish handlers with the same qualified name from different assemblies. Relayer includes the aliases needed by generated dispatch, including when a reference also lists `global`.
 
 ```csharp
 extern alias BrokerReference;

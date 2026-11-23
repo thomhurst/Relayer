@@ -727,23 +727,27 @@ public class MessageTypeGeneratorTests
     }
 
     [Test]
-    [Arguments("ExternalRef::ExternalContract.Payload", false)]
-    [Arguments("ExternalRef::ExternalContract.Payload[]", false)]
-    [Arguments("Envelope<ExternalRef::ExternalContract.Payload>.Nested", false)]
-    [Arguments("ExternalRef::ExternalContract.Payload", true)]
-    public async Task Explicit_json_type_requires_a_global_reference(string payloadType, bool globallyVisible)
+    [Arguments("ExternalRef::ExternalContract.Payload", false, false)]
+    [Arguments("ExternalRef::ExternalContract.Payload[]", false, false)]
+    [Arguments("Envelope<ExternalRef::ExternalContract.Payload>.Nested", false, false)]
+    [Arguments("ExternalRef::ExternalContract.Payload", true, false)]
+    [Arguments("ExternalRef::ExternalContract.Payload", true, true)]
+    public async Task Explicit_json_type_requires_a_global_reference(string payloadType, bool globallyVisible, bool splitReferences)
     {
         var external = CreateCompilation("ExternalContract", """
             namespace ExternalContract;
             public sealed record Payload(int Value);
             """);
+        var references = splitReferences
+            ? new MetadataReference[] { external.ToMetadataReference(), external.ToMetadataReference(["ExternalRef"]) }
+            : [external.ToMetadataReference(globallyVisible ? ["ExternalRef", "global"] : ["ExternalRef"])];
         var compilation = CreateCompilation("AliasPayload", $$"""
             extern alias ExternalRef;
             using Relayer;
             [assembly: GenerateMessageJsonType(typeof({{payloadType}}))]
             [Message("orders.placed")] public sealed record OrderPlaced(int Id);
             public static class Envelope<T> { public sealed record Nested(int Id); }
-            """).AddReferences(external.ToMetadataReference(globallyVisible ? ["ExternalRef", "global"] : ["ExternalRef"]));
+            """).AddReferences(references);
         await Assert.That(string.Join("\n", compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)))
             .IsEqualTo("");
 
