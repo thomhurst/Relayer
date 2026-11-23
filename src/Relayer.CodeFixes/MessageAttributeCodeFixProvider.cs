@@ -55,9 +55,11 @@ public sealed class MessageAttributeCodeFixProvider : CodeFixProvider
                 continue;
             }
 
-            // Directives between existing attributes and the declaration must precede the new attribute.
-            var firstDeclarationToken = declaration.Modifiers.Count > 0 ? declaration.Modifiers[0] : declaration.Keyword;
-            var position = firstDeclarationToken.SpanStart;
+            if (FindInsertionPosition(root, declaration) is not { } position)
+            {
+                continue;
+            }
+
             var suggestedName = type.ToDisplayString(s_identitySuggestionFormat);
             context.RegisterCodeFix(CodeAction.Create("Add [Message] attribute (choose a stable wire name)",
                 ct => AddAttributeAsync(document, position, suggestedName, ct), "Relayer.AddMessageAttribute"), diagnostic);
@@ -81,6 +83,76 @@ public sealed class MessageAttributeCodeFixProvider : CodeFixProvider
         }
 
         return true;
+    }
+
+    private static int? FindInsertionPosition(SyntaxNode root, TypeDeclarationSyntax declaration)
+    {
+        var keywordPosition = declaration.Keyword.SpanStart;
+        var firstModifierPosition = declaration.Modifiers.Count > 0 ? declaration.Modifiers[0].SpanStart : keywordPosition;
+        var position = firstModifierPosition;
+
+        // Search only the declaration prefix. Directives in its body cannot change where its attributes belong.
+        var prefix = TextSpan.FromBounds(declaration.FullSpan.Start, keywordPosition);
+        var branchStart = prefix.Start;
+
+        foreach (var trivia in declaration.DescendantTrivia(prefix))
+        {
+            var directive = trivia.GetStructure();
+
+            if (directive is BranchingDirectiveTriviaSyntax branch && branch.GetRelatedDirectives().Last().SpanStart >= keywordPosition)
+            {
+                branchStart = branch.FullSpan.End;
+            }
+
+            if (directive is not EndIfDirectiveTriviaSyntax endIf
+                || endIf.GetRelatedDirectives()[0] is not IfDirectiveTriviaSyntax startIf
+                || startIf.SpanStart >= position)
+            {
+                continue;
+            }
+
+            var branches = TextSpan.FromBounds(startIf.FullSpan.End, endIf.FullSpan.Start);
+            var (hasInactiveModifier, hasOnlyPrefixes) = InspectInactiveBranches(root, branches);
+
+            if (firstModifierPosition >= endIf.SpanStart && !hasInactiveModifier)
+            {
+                continue;
+            }
+
+            // Moving before the group would affect another member or leave the type's conditional branch.
+            if (!hasOnlyPrefixes || startIf.SpanStart < prefix.Start)
+            {
+                return null;
+            }
+
+            position = startIf.SpanStart;
+        }
+
+        return position >= branchStart ? position : null;
+    }
+
+    private static (bool HasModifier, bool HasOnlyPrefixes) InspectInactiveBranches(SyntaxNode root, TextSpan branches)
+    {
+        var hasModifier = false;
+        var hasOnlyPrefixes = true;
+
+        foreach (var trivia in root.DescendantTrivia(branches).Where(t => t.IsKind(SyntaxKind.DisabledTextTrivia)))
+        {
+            // Appending a declaration lets Roslyn distinguish inactive modifiers from other code.
+            var inactive = trivia.ToString() + "\n";
+            var parsed = SyntaxFactory.ParseCompilationUnit(inactive + "class Declaration {}");
+
+            if (parsed.Members.LastOrDefault() is not ClassDeclarationSyntax type || type.Keyword.SpanStart != inactive.Length)
+            {
+                hasOnlyPrefixes = false;
+                continue;
+            }
+
+            hasModifier |= type.Modifiers.Count > 0;
+            hasOnlyPrefixes &= type.FullSpan.Start == 0 && !parsed.ContainsDiagnostics;
+        }
+
+        return (hasModifier, hasOnlyPrefixes);
     }
 
     private static async Task<Solution> AddAttributeAsync(Document document, int position, string suggestedName,

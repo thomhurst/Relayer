@@ -964,6 +964,72 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("[System.Serializable]\n#if DEBUG\npublic\n#endif\nrecord Order;", true)]
+    [Arguments("[System.Serializable]\n#if DEBUG\npublic\n#endif\nrecord Order;", false)]
+    [Arguments("[System.Serializable]\n#if DEBUG\npublic\n#else\ninternal\n#endif\nrecord Order;", true)]
+    [Arguments("[System.Serializable]\n#if DEBUG\npublic\n#else\ninternal\n#endif\nrecord Order;", false)]
+    [Arguments("#if DEBUG\nrecord Other;\n#endif\nrecord Order;", false)]
+    [Arguments("#if true\n#if DEBUG\npublic\n#endif\nrecord Order;\n#endif", true)]
+    [Arguments("#if true\n#if DEBUG\npublic\n#endif\nrecord Order;\n#endif", false)]
+    public async Task Code_fix_preserves_shared_identity_across_conditional_prefixes(string declaration, bool applyInDebug)
+    {
+        var source = declaration
+            + "\nstatic class Setup { public static void Add(Broker broker) => broker.Send<Order>(\"orders\"); }\n";
+        using var workspace = new AdhocWorkspace();
+        var options = new CSharpParseOptions(preprocessorSymbols: applyInDebug ? ["DEBUG"] : []);
+        var document = AddCodeFixDocument(workspace, Imports + source, options);
+        var diagnostics = await AnalyzeDocumentAsync(document);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        var actions = new List<CodeAction>();
+        await new MessageAttributeCodeFixProvider().RegisterCodeFixesAsync(new CodeFixContext(document, diagnostics.Single(),
+            (action, _) => actions.Add(action), CancellationToken.None));
+        var operation = (await actions.Single().GetOperationsAsync(CancellationToken.None)).OfType<ApplyChangesOperation>().Single();
+        var fixedDocument = operation.ChangedSolution.GetDocument(document.Id)!;
+
+        foreach (var configuration in new[] { new CSharpParseOptions(preprocessorSymbols: ["DEBUG"]), new CSharpParseOptions() })
+        {
+            var configuredDocument = fixedDocument.Project.WithParseOptions(configuration).GetDocument(document.Id)!;
+            await Assert.That(Ids(await AnalyzeDocumentAsync(configuredDocument))).IsEqualTo("");
+            var compilation = (await configuredDocument.Project.GetCompilationAsync())!;
+            var order = compilation.GetTypeByMetadataName("Order")!;
+            await Assert.That(order.GetAttributes().Count(a => a.AttributeClass?.ToDisplayString() == "Relayer.MessageAttribute"))
+                .IsEqualTo(1);
+            var other = compilation.GetTypeByMetadataName("Other");
+
+            if (other is not null)
+            {
+                await Assert.That(other.GetAttributes().Length).IsEqualTo(0);
+            }
+        }
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Code_fix_is_unavailable_when_a_modifier_branch_includes_another_declaration(bool applyInDebug)
+    {
+        const string Source = """
+            #if DEBUG
+            public
+            #else
+            record Other;
+            #endif
+            record Order;
+
+            static class Setup { public static void Add(Broker broker) => broker.Send<Order>("orders"); }
+            """;
+        using var workspace = new AdhocWorkspace();
+        var options = new CSharpParseOptions(preprocessorSymbols: applyInDebug ? ["DEBUG"] : []);
+        var document = AddCodeFixDocument(workspace, Imports + Source, options);
+        var diagnostics = await AnalyzeDocumentAsync(document);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        var actions = new List<CodeAction>();
+        await new MessageAttributeCodeFixProvider().RegisterCodeFixesAsync(new CodeFixContext(document, diagnostics.Single(),
+            (action, _) => actions.Add(action), CancellationToken.None));
+        await Assert.That(actions.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Fix_all_preserves_both_nested_and_enclosing_edits()
     {
         const string Source = """

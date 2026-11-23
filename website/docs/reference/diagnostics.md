@@ -35,7 +35,7 @@ Declare a stable wire identity on each message used by `Send<TMessage>`, `IHandl
 public sealed record OrderPlaced(string OrderId);
 ```
 
-The code fix adds `[global::Relayer.MessageAttribute("OrderPlaced")]` to the message declaration. Suggestions include the namespace and containing type names when present, so Fix All can distinguish types that share a short name. **Edit the suggestion to the permanent wire name before publishing.** The fix preserves comments and supports classes, structs and records.
+The code fix adds `[global::Relayer.MessageAttribute("OrderPlaced")]` to the message declaration. Suggestions include the namespace and containing type names when present, so Fix All can distinguish types that share a short name. **Edit the suggestion to the permanent wire name before publishing.** The fix preserves comments and supports classes, structs and records. It keeps the attribute with the declaration when preprocessor directives control its attributes or modifiers. Add the identity manually if the directives prevent a single safe insertion.
 
 For a type from a referenced assembly, add the attribute in its owning project or register its identity explicitly. Use explicit registration for a closed generic contract or a contract nested in a generic type. The code fix is also unavailable if the message or a containing type is file-local or inaccessible to [generated registration](#rlym002).
 
