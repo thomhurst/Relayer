@@ -142,6 +142,13 @@ internal sealed class NatsTopology
     {
         Normalize(expected, consumer);
         Normalize(actual, consumer);
+
+        if (!consumer && expected["duplicate_window"] is null && expected["mirror"] is null && expected["sources"] is null)
+        {
+            CompareDefaultDuplicateWindow(entity, expected, actual, differences);
+            actual.Remove("duplicate_window");
+        }
+
         var names = new HashSet<string>(expected.Select(pair => pair.Key), StringComparer.Ordinal);
         names.UnionWith(actual.Select(pair => pair.Key));
 
@@ -156,6 +163,21 @@ internal sealed class NatsTopology
             }
 
             differences.Add($"{entity}: setting '{name}' expected {wanted?.ToJsonString() ?? "null"}, actual {found?.ToJsonString() ?? "null"}. Reconcile settings externally; Validate is read-only.");
+        }
+    }
+
+    private static void CompareDefaultDuplicateWindow(string entity, JsonObject expected, JsonObject actual, List<string> differences)
+    {
+        // Stream info reports the effective window but does not identify the server-wide cap.
+        const long MinimumWindow = 100_000_000;
+        const long DefaultWindow = 120_000_000_000;
+        var maximumAge = expected["max_age"]?.GetValue<long>() ?? 0;
+        var maximumWindow = maximumAge > 0 ? Math.Min(maximumAge, DefaultWindow) : DefaultWindow;
+        var actualWindow = actual["duplicate_window"]?.GetValue<long>();
+
+        if (actualWindow is null || actualWindow < MinimumWindow || actualWindow > maximumWindow)
+        {
+            differences.Add($"{entity}: setting 'duplicate_window' expected a JetStream default between {MinimumWindow} and {maximumWindow}, actual {actualWindow?.ToString() ?? "null"}. Reconcile settings externally; Validate is read-only.");
         }
     }
 
@@ -189,9 +211,6 @@ internal sealed class NatsTopology
 
             if (config["mirror"] is null && config["sources"] is null or JsonArray { Count: 0 })
             {
-                var maximumAge = config["max_age"]?.GetValue<long>() ?? 0;
-                Default(config, "duplicate_window", maximumAge > 0 ? Math.Min(maximumAge, 120_000_000_000L) : 120_000_000_000L);
-
                 if (config["subjects"] is null or JsonArray { Count: 0 } && config["name"] is JsonValue streamName)
                 {
                     config["subjects"] = new JsonArray(streamName.DeepClone());

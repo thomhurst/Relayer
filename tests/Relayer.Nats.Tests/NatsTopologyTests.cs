@@ -433,6 +433,87 @@ public class NatsTopologyTests
     }
 
     [Test]
+    public async Task Validate_accepts_a_server_capped_duplicate_window_and_reports_explicit_drift()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        await using var broker = await Broker.StartAsync(token, """
+            jetstream {
+                limits {
+                    duplicate_window: "30s"
+                }
+            }
+            authorization {
+                users: [
+                    { user: admin, password: admin },
+                    { user: reader, password: reader, permissions: {
+                        publish: ["$JS.API.STREAM.INFO.*"],
+                        subscribe: ["_INBOX.>"]
+                    } }
+                ]
+            }
+            """);
+        var name = TestContext.Current!.Isolation.GetIsolatedName("duplicates_capped");
+        var stream = new StreamConfig(name, [name]);
+        var adminOptions = broker.Options("admin");
+        var readerOptions = broker.Options("reader");
+        await using var provisionProvider = StreamProvider(adminOptions, stream);
+        var provision = provisionProvider.GetRequiredService<ITransport>();
+        await Assert.That((await provision.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences).IsEmpty();
+        await Assert.That((await provision.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences).IsEmpty();
+
+        await using var native = new NatsConnection(adminOptions);
+        var js = new NatsJSContext(native);
+        var actual = await js.GetStreamAsync(name, cancellationToken: token);
+        var configuredWindow = TimeSpan.FromSeconds(30);
+        await Assert.That(actual.Info.Config.DuplicateWindow).IsEqualTo(configuredWindow);
+
+        await using var omittedProvider = StreamProvider(readerOptions, stream);
+        var omitted = omittedProvider.GetRequiredService<ITransport>();
+        await Assert.That((await omitted.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+        await using var matchingProvider = StreamProvider(readerOptions, stream with
+        {
+            DuplicateWindow = configuredWindow
+        });
+        var matching = matchingProvider.GetRequiredService<ITransport>();
+        await Assert.That((await matching.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+        await using var driftProvider = StreamProvider(readerOptions, stream with
+        {
+            DuplicateWindow = TimeSpan.FromSeconds(20)
+        });
+        var drift = driftProvider.GetRequiredService<ITransport>();
+        var report = await drift.ApplyTopologyAsync(TopologyMode.Validate, token);
+        await Assert.That(report.Differences.Single()).Contains($"Stream '{name}': setting 'duplicate_window' expected 20000000000, actual 30000000000");
+    }
+
+    [Test]
+    public async Task Validate_reports_a_duplicate_window_above_the_largest_possible_default()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var name = TestContext.Current!.Isolation.GetIsolatedName("duplicates_long");
+        var stream = new StreamConfig(name, [name])
+        {
+            DuplicateWindow = TimeSpan.FromMinutes(3)
+        };
+        var nativeOptions = broker.Options();
+        await using var native = new NatsConnection(nativeOptions);
+        var js = new NatsJSContext(native);
+        await js.CreateStreamAsync(stream, token);
+
+        await using var provider = StreamProvider(nativeOptions, stream with
+        {
+            DuplicateWindow = TimeSpan.Zero
+        });
+        var transport = provider.GetRequiredService<ITransport>();
+        var report = await transport.ApplyTopologyAsync(TopologyMode.Validate, token);
+        await Assert.That(report.Differences.Single()).Contains($"Stream '{name}': setting 'duplicate_window'");
+    }
+
+    [Test]
     public async Task Existence_validation_uses_read_only_permissions_and_native_recovery_after_broker_restart()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
