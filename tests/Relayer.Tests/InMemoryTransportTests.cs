@@ -1787,6 +1787,99 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    public async Task Hosted_startup_can_retry_cancellation_before_registering_receivers()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var received = Channel.CreateUnbounded<int>();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(received);
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.InMemory("local", local =>
+            {
+                local.Options.Configure(options => options.Endpoints.Add("orders", new()
+                {
+                    Capabilities = new()
+                    {
+                        ConsumptionModel = ConsumptionModel.Log,
+                        DeadLetter = true,
+                    },
+                }));
+                local.Send<InMemoryOrder>("orders");
+                local.Consume("orders", consumer =>
+                {
+                    consumer.Options.Group = "billing";
+                    consumer.Handler<InMemoryOrderHandler>();
+                    consumer.ConfigurePipeline(_ => cancellation.Cancel());
+                });
+            });
+        });
+        using IHost host = builder.Build();
+        var transport = (InMemoryTransport)host.Services.GetRequiredService<ITransport>();
+
+        await Assert.That(() => host.StartAsync(cancellation.Token)).Throws<OperationCanceledException>();
+        await Assert.That(() => transport.GetCommittedPosition("orders", "billing", 0))
+            .Throws<InvalidOperationException>().WithMessageContaining("unknown group");
+
+        await host.StartAsync();
+        using var scope = host.Services.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await sender.SendAsync(new InMemoryOrder(42));
+
+        await Assert.That(await Next(received)).IsEqualTo(42);
+        await host.StopAsync();
+        await Assert.That(transport.GetCommittedPosition("orders", "billing", 0)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Hosted_startup_can_retry_after_a_later_named_transport_fails_composition()
+    {
+        var received = Channel.CreateUnbounded<int>();
+        int compositionAttempts = 0;
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(received);
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.InMemory("first", first => first.Consume("events", consumer => consumer.Handler<InMemoryOrderHandler>()));
+            relayer.InMemory("second", second =>
+            {
+                second.Send<InMemoryOrder>("orders");
+                second.Consume("orders", consumer =>
+                {
+                    consumer.Handler<InMemoryOrderHandler>();
+                    consumer.ConfigurePipeline(_ =>
+                    {
+                        if (++compositionAttempts == 1)
+                        {
+                            throw new InvalidOperationException("orders composition failed");
+                        }
+                    });
+                });
+            });
+        });
+        using IHost host = builder.Build();
+        var transport = host.Services.GetServices<ITransport>().OfType<InMemoryTransport>()
+            .Single(transport => transport.Name == "first");
+
+        await Assert.That(() => host.StartAsync()).Throws<InvalidOperationException>()
+            .WithMessageContaining("orders composition failed");
+        var firstRun = transport.Completion;
+        await Assert.That(firstRun.IsCompleted).IsFalse();
+
+        await host.StartAsync();
+        await Assert.That(transport.Completion).IsSameReferenceAs(firstRun);
+        using var scope = host.Services.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await sender.SendAsync(new InMemoryOrder(42));
+
+        await Assert.That(await Next(received)).IsEqualTo(42);
+        await host.StopAsync();
+        await Assert.That(compositionAttempts).IsEqualTo(2);
+    }
+
+    [Test]
     [Arguments("orders", true)]
     [Arguments("outgoing", false)]
     public async Task Hosted_startup_checks_custom_cloud_events_headers_only_on_consumed_endpoints(

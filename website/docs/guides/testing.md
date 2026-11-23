@@ -70,10 +70,12 @@ The collections return snapshots safe to enumerate while other work runs:
 | `Sent` | Successful logical sends, including sends enlisted in an outbox |
 | `Dispatched` | Successful native send calls, including outbox dispatch through the registered `ITransport` services |
 | `Consumed` | Deliveries entering the consume pipeline, including failed deliveries and native redeliveries |
-| `Failed` | Exceptions at logical send, native dispatch and consume boundaries, identified by `HarnessOperation` |
+| `Failed` | Exceptions observed by send middleware, native dispatch and consume instrumentation, identified by `HarnessOperation` |
 | `DeadLettered` | Successful native dead-letter operations, including manual in-memory native settlement |
 
 Dead-letter error headers preserve text values and own a copy of each byte-valued header.
+
+Logical send observation starts at send middleware. Route and destination selection happen earlier and report errors directly to the caller.
 
 Publish/subscribe observation uses the same `ISender.SendAsync` API. A send routed to an in-memory log appears once in `Sent` and once per consumer group in `Consumed`. The harness does not change routing, settlement, ordering or native batching. If a native batch fails after partial delivery, `Dispatched` does not claim that the batch succeeded; `Failed` records the failed batch operation for each input.
 
