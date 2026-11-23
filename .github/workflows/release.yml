@@ -28,6 +28,7 @@ jobs:
       id-token: write
     outputs:
       version: ${{ steps.release.outputs.version }}
+      published: ${{ steps.push.outputs.published }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,17 +72,21 @@ jobs:
           user: ${{ secrets.NUGET_USER }}
 
       - name: Publish packages and symbols
+        id: push
         env:
           NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: |
           dotnet nuget push '.artifacts/packages/*.nupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+          echo "published=true" >> "$GITHUB_OUTPUT"
           # Explicit symbol push repairs a partial release when the package already exists.
           dotnet nuget push '.artifacts/packages/*.snupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
 
-  # The draft was named, and its compare link written, for the suggested version. Follow the tag
-  # if it was edited before publishing. Cosmetic, so it never fails a release.
+  # The draft was named, and its Full Changelog link written, for the suggested version. Follow the
+  # tag if it was edited before publishing. Runs once the packages are on nuget.org, even if the
+  # symbol push failed. Cosmetic, so it never fails a release.
   name-release:
     needs: publish
+    if: always() && needs.publish.outputs.published == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -98,5 +103,6 @@ jobs:
           set -euo pipefail
           endpoint="repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"
           body=$(gh api "$endpoint" --jq '.body // ""')
-          body=$(printf '%s' "$body" | sed -E "s#(/compare/[^ )]+)\.\.\.[^ )]+#\1...$RELEASE_TAG#")
+          # Only GitHub's generated line; compare links the maintainer wrote are left alone.
+          body=$(printf '%s' "$body" | sed -E "/^\*\*Full Changelog\*\*: /s#(/compare/[^ )]+)\.\.\.[^ )]+#\1...$RELEASE_TAG#")
           gh api -X PATCH "$endpoint" -f name="$VERSION" -f body="$body" > /dev/null
