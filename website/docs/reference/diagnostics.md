@@ -43,7 +43,7 @@ With `Relayer.Transports` in scope, you can instead call `builder.Infrastructure
 
 For a generic handler whose message is nested in a generic type, such as `IHandler<Outer<T>.Message>`, RLY001 checks the closed message when you register the concrete handler. For example, `consumer.Handler<OuterHandler<int>>()` can use an identity registered with `builder.Infrastructure().MessageTypes.Add<Outer<int>.Message>("orders")`.
 
-When a generic local handler registration uses a message type parameter from an enclosing helper, the message stays open inside that helper. If the enclosing helper constrains its handler to `IHandler<TMessage>` or `IBatchHandler<TMessage>`, RLY001 checks the message identity at the call that supplies the concrete message type.
+RLY001 checks the handler constraint of a generic registration helper when a call supplies the concrete message type. This includes helpers from a referenced assembly and constraints such as `IHandler<Envelope<T>.Payload>` or `IBatchHandler<Envelope<T>.Payload>`. Register the identity for the resolved type, for example `Envelope<Order>.Payload`. Inside a helper, a local registration that still uses a type parameter from the enclosing helper stays open.
 
 When a generic helper registers an identity, apply `[RegistersMessageIdentity]` to the method and pass the name of the type parameter whose message identity it registers. Each call with a concrete type argument counts as a registration, including calls to a helper in a referenced assembly.
 

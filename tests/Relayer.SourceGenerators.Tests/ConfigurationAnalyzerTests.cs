@@ -548,6 +548,61 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("Envelope<{0}>.Payload", false)]
+    [Arguments("Envelope<{0}>.Payload", true)]
+    [Arguments("Envelope<{0}>.Partition.Item<int>", false)]
+    [Arguments("Envelope<{0}>.Partition.Item<int>", true)]
+    public async Task Referenced_generic_helper_checks_nested_message_at_call_site(string contract, bool registered)
+    {
+        var openMessage = string.Format(contract, "TMessage");
+        var message = string.Format(contract, "Order");
+        var external = Compile(Imports + $$"""
+            public record Order;
+            public class Envelope<T>
+            {
+                public record Payload(T Data);
+                public class Partition
+                {
+                    public record Item<TItem>(T Data, TItem Value);
+                }
+            }
+
+            public class PlacedHandler : IHandler<{{message}}>
+            {
+                public ValueTask HandleAsync({{message}} message, MessageContext context, CancellationToken ct) => default;
+            }
+
+            public static class Registrar
+            {
+                public static void Register<THandler, TMessage>(IConsumerBuilder consumer)
+                    where THandler : class, IHandler<{{openMessage}}> => consumer.Handler<THandler, {{openMessage}}>();
+            }
+            """).WithAssemblyName("External");
+        using var stream = new MemoryStream();
+        await Assert.That(external.Emit(stream).Success).IsTrue();
+        var compilation = Compile(Imports + $$"""
+            static class Setup
+            {
+                public static void Add(IRelayerBuilder builder, IConsumerBuilder consumer)
+                {
+                    {{(registered ? $"builder.Infrastructure().MessageTypes.Add<{message}>(\"orders\");" : "")}}
+                    Registrar.Register<PlacedHandler, Order>(consumer);
+                    consumer.Handler<PlacedHandler, {{message}}>();
+                }
+            }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(diagnostics)).IsEqualTo(registered ? "" : "RLY001,RLY001");
+
+        if (!registered)
+        {
+            await Assert.That(diagnostics.All(d => d.GetMessage().Contains(message))).IsTrue();
+            await Assert.That(diagnostics.Any(d => d.Location.SourceTree!.GetText().ToString(d.Location.SourceSpan)
+                == "Registrar.Register<PlacedHandler, Order>(consumer)")).IsTrue();
+        }
+    }
+
+    [Test]
     [Arguments("int", "")]
     [Arguments("string", "RLY001")]
     public async Task Generic_handler_checks_the_closed_nested_message_identity(string registeredType, string expected)

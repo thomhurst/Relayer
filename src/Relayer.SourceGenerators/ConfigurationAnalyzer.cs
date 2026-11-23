@@ -363,13 +363,37 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 : compilation.CreateArrayTypeSymbol(element, array.Rank, array.ElementNullableAnnotation);
         }
 
-        if (type is not INamedTypeSymbol { IsGenericType: true } named)
+        if (type is not INamedTypeSymbol { IsGenericType: true } named || named.TypeKind == TypeKind.Error)
         {
             return type;
         }
 
-        var arguments = new ITypeSymbol[named.TypeArguments.Length];
+        var definition = named.ConstructedFrom;
         var changed = false;
+
+        if (named.ContainingType is { } containingType
+            && Substitute(containingType, method, compilation) is INamedTypeSymbol substitutedContaining
+            && !SymbolEqualityComparer.Default.Equals(substitutedContaining, containingType))
+        {
+            // Construct only replaces the nested type's own arguments. Get its definition from the new container first.
+            var nestedDefinition = substitutedContaining.GetTypeMembers(named.Name, named.Arity)
+                .FirstOrDefault(member => SymbolEqualityComparer.Default.Equals(member.OriginalDefinition, named.OriginalDefinition));
+
+            if (nestedDefinition is null)
+            {
+                return named;
+            }
+
+            definition = nestedDefinition;
+            changed = true;
+        }
+
+        if (named.Arity == 0)
+        {
+            return definition;
+        }
+
+        var arguments = new ITypeSymbol[named.Arity];
 
         for (var i = 0; i < arguments.Length; i++)
         {
@@ -377,7 +401,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             changed |= !SymbolEqualityComparer.Default.Equals(arguments[i], named.TypeArguments[i]);
         }
 
-        return changed ? named.ConstructedFrom.Construct(arguments) : named;
+        return changed ? definition.Construct(arguments) : named;
     }
 
     private static (string? Name, int Version) Identity(AttributeData attribute)
