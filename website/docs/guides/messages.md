@@ -154,7 +154,17 @@ System.Text.Json references payload types through `global::` in generated code. 
 
 Register your own `IMessageSerializer` in the service collection, before, inside or after `AddRelayer`, to replace JSON. The default uses a lazy DI factory, so the final registration decides whether JSON metadata is needed at all.
 
-Use `transport.UseSerializer(provider => ...)` inside a named transport declaration to override serialization for that transport. Send routes and consumers use the same DI-owned singleton. Other transports keep the application serializer. Names are case-sensitive. Selecting twice on one declaration fails. The factory must return a thread-safe serializer and transfers its disposal to the host. The host disposes a shared instance once, even when several named factories return it. To reuse the application's DI-owned serializer in a named factory, return `provider.GetRequiredService<IMessageSerializer>()`. The host disposes that shared instance once as well. Contracts used only by custom serializers can omit JSON metadata at runtime. [AsyncAPI export](topology.md#asyncapi-export) still requires JSON metadata for every registered contract.
+Use `transport.UseSerializer(provider => ...)` inside a named transport declaration to create a serializer for that transport. The host owns disposal of the factory result and disposes a shared instance once when several named factories return it.
+
+Use `transport.UseSerializerFromServices(provider => ...)` to reuse an existing singleton. Its original registration controls disposal, including when you resolve a concrete type or a keyed service. For a singleton registered as an instance, the application still owns disposal. The resolver must return the existing singleton. For example, to select a keyed serializer:
+
+```csharp
+transport.UseSerializerFromServices(sp => sp.GetRequiredKeyedService<IMessageSerializer>("shared"));
+```
+
+Both methods require a thread-safe serializer. Send routes and consumers on the transport use the same instance. Other transports keep the application serializer. Transport names are case-sensitive, and each transport accepts only one serializer selection.
+
+Contracts used only by custom serializers can omit JSON metadata at runtime. [AsyncAPI export](topology.md#asyncapi-export) still requires JSON metadata for every registered contract.
 
 Application keyed `IMessageSerializer` registrations remain independent of transport selection, even when a key matches a transport name.
 

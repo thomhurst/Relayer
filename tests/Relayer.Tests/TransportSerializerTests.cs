@@ -51,6 +51,7 @@ public class TransportSerializerTests
             {
                 transport.UseSerializer(_ => custom);
                 Assert.Throws<InvalidOperationException>(() => transport.UseSerializer(_ => custom));
+                Assert.Throws<InvalidOperationException>(() => transport.UseSerializerFromServices(_ => custom));
             });
             builder.InMemory("default", _ =>
             {
@@ -170,6 +171,60 @@ public class TransportSerializerTests
         }
 
         await Assert.That(shared.Disposals).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Named_serializer_can_reuse_a_container_owned_singleton(bool keyed)
+    {
+        var serializer = new DisposableSerializer();
+        var builder = Host.CreateApplicationBuilder();
+        Func<IServiceProvider, IMessageSerializer> resolve;
+
+        if (keyed)
+        {
+            builder.Services.AddKeyedSingleton<IMessageSerializer>("shared", (_, _) => serializer);
+            resolve = provider => provider.GetRequiredKeyedService<IMessageSerializer>("shared");
+        }
+        else
+        {
+            builder.Services.AddSingleton(_ => serializer);
+            resolve = provider => provider.GetRequiredService<DisposableSerializer>();
+        }
+
+        builder.Services.AddRelayer(relayer =>
+            relayer.InMemory("events", transport => transport.UseSerializerFromServices(resolve)));
+
+        var host = builder.Build();
+
+        await using ((IAsyncDisposable)host)
+        {
+            await host.StartAsync();
+            await Assert.That(host.Services.GetMessageSerializer("events")).IsSameReferenceAs(serializer);
+            await Assert.That(serializer.Initializations).IsEqualTo(1);
+            await host.StopAsync();
+            await Assert.That(serializer.Disposals).IsEqualTo(0);
+        }
+
+        await Assert.That(serializer.Disposals).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Named_serializer_preserves_ownership_of_a_registered_instance()
+    {
+        await using var serializer = new DisposableSerializer();
+        var services = new ServiceCollection();
+        services.AddSingleton(serializer);
+        services.AddRelayer(relayer => relayer.InMemory("events", transport =>
+            transport.UseSerializerFromServices(provider => provider.GetRequiredService<DisposableSerializer>())));
+
+        await using (var provider = services.BuildServiceProvider())
+        {
+            await Assert.That(provider.GetMessageSerializer("events")).IsSameReferenceAs(serializer);
+        }
+
+        await Assert.That(serializer.Disposals).IsEqualTo(0);
     }
 
     [Test]
