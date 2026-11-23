@@ -57,6 +57,8 @@ NATS.Net 3.4.0 always uses TLS for `tls://` and `wss://` URLs. In the default `T
 
 Sends await native JetStream publication acknowledgements. Borrowed payload/header storage remains owned by the caller until completion. `SendBatchAsync` performs individual confirmed publications in input order; it is not an atomic broker batch.
 
+When tracing is enabled, a batch for one subject emits a logical send span with the batch count and links to each message's creation context. A batch across subjects emits per-message send spans. See [send tracing](../guides/sending.md#send-tracing).
+
 Receivers require durable pull consumers with explicit per-message acknowledgement, full payloads and unlimited `MaxDeliver`. Unsupported modes fail before consumption: auto/no acknowledgement can settle before durable work, and finite `MaxDeliver` can strand a poison message before its durable failure copy succeeds. Native flow control, delivery attempts, reconnect and acknowledgement timing remain NATS behavior. Configure `AckWait` for the processing duration, or call native `AckProgressAsync` through the delivery feature for long work; Relayer adds no renewal loop.
 
 `consumer.Options.Settings` passes native `NatsJSConsumeOpts` unchanged. `DrainOnCancel = true` is required and enabled by default. `Concurrency(n)` starts `n` native pull enumerations against the durable consumer, each processing one delivery at a time. Native buffer limits apply per enumeration. Shutdown requests pull cancellation for every durable consumer before waiting for workers to drain. JetStream drains through its native protocol. A stop deadline cancels processing. Incomplete work remains available for native redelivery.

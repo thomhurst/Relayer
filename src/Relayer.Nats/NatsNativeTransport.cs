@@ -419,11 +419,32 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         token.ThrowIfCancellationRequested();
-        // JetStream has individual publish acknowledgements, without an atomic native batch.
+
+        if (!messages.IsEmpty && _tracing.Source.HasListeners() && HasSingleSubject(messages.Span))
+        {
+            await EndpointFor(messages.Span[0].Destination).Tracing.SendBatchAsync(messages, token).ConfigureAwait(false);
+            return;
+        }
+
         for (var i = 0; i < messages.Length; i++)
         {
             await SendAsync(messages.Span[i], token).ConfigureAwait(false);
         }
+    }
+
+    private static bool HasSingleSubject(ReadOnlySpan<OutgoingMessage> messages)
+    {
+        var subject = messages[0].Destination;
+
+        foreach (var message in messages[1..])
+        {
+            if (!string.Equals(message.Destination, subject, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     [RuntimeAsyncMethodGeneration(false)]
