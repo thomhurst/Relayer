@@ -163,4 +163,4 @@ Relayer retains at most 256 reusable send states per topic publisher and 256 cal
 
 Poison copies omit service-owned attributes whose keys start with `goog`, which Pub/Sub rejects on publish. Application attributes, CloudEvents, body and ordering key remain preserved. The original delivery is unchanged.
 
-Mixed-destination batches publish destination groups sequentially. A later failure can leave earlier groups published; retrying a batch can therefore produce duplicates under at-least-once delivery.
+Mixed-destination batches submit messages to each topic's native publisher in input order, then wait for confirmation of every admitted send. Each publisher applies its own native batching thresholds. If you omit the delay threshold, a partial native batch can remain pending until more messages reach its count or byte threshold or the publisher shuts down. Cancellation after admission still waits for the native publisher to finish. A failed batch can leave messages published to multiple destinations, so retrying the batch can produce duplicates under at-least-once delivery.

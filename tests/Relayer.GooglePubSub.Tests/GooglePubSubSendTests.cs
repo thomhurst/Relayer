@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
 using Google.Api.Gax.Grpc;
 using Google.Cloud.PubSub.V1;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
+using TUnit.Assertions.Enums;
 
 namespace Relayer.GooglePubSub.Tests;
 
@@ -32,13 +34,71 @@ public class GooglePubSubSendTests
     }
 
     [Test]
-    public async Task Batch_drains_admitted_native_sends_when_a_later_callback_fails()
+    public async Task Alternating_topics_fill_native_count_batches_without_a_delay_threshold()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = deadline.Token;
+        await using var broker = await PubSubBroker.StartAsync(token);
+        var name = TestContext.Current!.Isolation.GetIsolatedName("mixed-batch");
+        var first = TopicName.FromProjectTopic("relayer-test", name + "-first");
+        var second = TopicName.FromProjectTopic("relayer-test", name + "-second");
+        await broker.Publisher.CreateTopicAsync(first, token);
+        await broker.Publisher.CreateTopicAsync(second, token);
+        var publisher = new RecordingPublisher(broker.Publisher);
+        await using var provider = Provider(publisher, transport => transport.Options.Configure(options =>
+        {
+            options.PublisherSettings.BatchingSettings = new(2, null, null);
+            options.Topics.Clear();
+            options.Topics.Add(first);
+            options.Topics.Add(second);
+            options.Subscriptions.Clear();
+        }));
+        var transport = provider.GetRequiredService<ITransport>();
+        var firstDestination = first.ToString();
+        var secondDestination = second.ToString();
+        OutgoingMessage[] messages =
+        [
+            new(firstDestination, new byte[] { 1 }),
+            new(secondDestination, new byte[] { 2 }),
+            new(firstDestination, new byte[] { 3 }),
+            new(secondDestination, new byte[] { 4 })
+        ];
+
+        var sending = transport.SendBatchAsync(messages, token).AsTask();
+
+        try
+        {
+            await sending.WaitAsync(TimeSpan.FromSeconds(10), token);
+        }
+        finally
+        {
+            if (!sending.IsCompleted)
+            {
+                // Flush pending native buffers before disposing the channel, even when the regression times out.
+                await deadline.CancelAsync();
+                await provider.DisposeAsync();
+                await Assert.That(async () => await sending).Throws<OperationCanceledException>();
+            }
+        }
+
+        var requests = publisher.Requests.ToDictionary(request => request.Topic);
+        await Assert.That(requests.Count).IsEqualTo(2);
+        await Assert.That(requests[firstDestination].Messages.Select(message => message.Data.Span[0]).ToArray())
+            .IsEquivalentTo([(byte)1, (byte)3], CollectionOrdering.Matching);
+        await Assert.That(requests[secondDestination].Messages.Select(message => message.Data.Span[0]).ToArray())
+            .IsEquivalentTo([(byte)2, (byte)4], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    [Arguments(Topic)]
+    [Arguments(DeadLetterTopic)]
+    public async Task Batch_drains_admitted_native_sends_when_a_later_callback_fails(string failingDestination)
     {
         var native = new GatedPublisher();
         await using var provider = Provider(native);
         var transport = provider.GetRequiredService<ITransport>();
         var options = new SendOptions().GooglePubSub(static _ => throw new InvalidOperationException("callback failed"));
-        var operation = transport.SendBatchAsync(new OutgoingMessage[] { new(Topic, new byte[] { 1 }), new(Topic, new byte[] { 2 }, options: options) }, default).AsTask();
+        var operation = transport.SendBatchAsync(new OutgoingMessage[] { new(Topic, new byte[] { 1 }), new(failingDestination, new byte[] { 2 }, options: options) }, default).AsTask();
         var request = await native.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(operation.IsCompleted).IsFalse();
         await Assert.That(request.Messages[0].Data.Memory.Span[0]).IsEqualTo((byte)1);
@@ -325,6 +385,20 @@ public class GooglePubSubSendTests
         {
             Started.TrySetResult(request);
             return Release.Task;
+        }
+    }
+
+    private sealed class RecordingPublisher(PublisherServiceApiClient inner) : PublisherServiceApiClient
+    {
+        internal ConcurrentQueue<PublishRequest> Requests
+        {
+            get;
+        } = new();
+
+        public override Task<PublishResponse> PublishAsync(PublishRequest request, CallSettings? callSettings = null)
+        {
+            Requests.Enqueue(request.Clone());
+            return inner.PublishAsync(request, callSettings);
         }
     }
 
