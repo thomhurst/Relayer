@@ -127,7 +127,9 @@ A missing provider fails its configured resource. Null consumer state or backlog
 consumer's future progress timestamp also fail health. No configured resources in a category means healthy
 with an explicit description. All resources in a category are checked; the worst status wins. The description
 names every resource. Each result's `Data` retains the individual `HealthCheckResult`, including native data and
-exceptions. Consumer data keys include transport, declaration index and source. Backlog result data includes
+exceptions. Consumer data keys use `transport/index:source`, with a zero-based declaration index.
+Within the transport name, `%` is encoded as `%25` and `/` as `%2F`. The source appears verbatim.
+Backlog result data includes
 `pending_count` and `pending_count_is_lower_bound`. When the probe reaches its limit, the description says
 “At least N pending rows eligible for dispatch” and `pending_count_is_lower_bound` is `true`; do not treat
 that value as an exact backlog size. Counts below the limit are exact. Health thresholds remain inclusive.

@@ -264,7 +264,8 @@ consumes, settles or declares probe messages. Closed/recovering connections repo
 unavailable before startup, during native recovery and after shutdown; idle receivers explicitly report healthy.
 Active receivers report the oldest callback's activation time across concurrent workers, so newer completions
 cannot hide a stalled older callback. `ConsumerStallTimeout` determines when that snapshot becomes unhealthy.
-Health tracking is enabled only by this optional registration.
+Health tracking is enabled only by this optional registration. The same registration works in test hosts
+that call `AddRelayerHarness()`.
 
 
 ## Performance validation

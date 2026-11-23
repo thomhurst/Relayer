@@ -119,6 +119,50 @@ public class HealthCheckTests
     }
 
     [Test]
+    public async Task Consumer_report_keys_distinguish_transport_names_with_delimiters()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddRelayer(builder =>
+        {
+            builder.AddTransport<EmptyOptions, EmptyOptions>("region", transport =>
+                transport.Consume("orders/0:archive", consumer => consumer.Handler<HealthHandler>()));
+            builder.AddTransport<EmptyOptions, EmptyOptions>("region/0:orders", transport =>
+                transport.Consume("archive", consumer => consumer.Handler<HealthHandler>()));
+            builder.AddTransport<EmptyOptions, EmptyOptions>("region%2F0:orders", transport =>
+                transport.Consume("archive", consumer => consumer.Handler<HealthHandler>()));
+        });
+
+        var calls = new List<IConsumerDefinition>();
+        var idleProvider = new ConsumerProvider((consumer, _) =>
+        {
+            calls.Add(consumer);
+            return ValueTask.FromResult<ConsumerHealthState?>(new(IsIdle: true, LastProgressAt: default));
+        });
+        services.AddKeyedSingleton<IConsumerHealthProvider>("region", idleProvider);
+        services.AddKeyedSingleton<IConsumerHealthProvider>("region/0:orders", idleProvider);
+        services.AddKeyedSingleton<IConsumerHealthProvider>("region%2F0:orders", idleProvider);
+        services.AddRelayerHealthChecks();
+
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        var checks = provider.GetRequiredService<HealthCheckService>();
+        var report = await checks.CheckHealthAsync(check => check.Name == "relayer.consumer");
+        var entry = report.Entries["relayer.consumer"];
+
+        await Assert.That(entry.Status).IsEqualTo(HealthStatus.Healthy);
+        await Assert.That(calls.Count).IsEqualTo(3);
+        await Assert.That(entry.Data.Keys.ToArray()).IsEquivalentTo(new[]
+        {
+            "region/0:orders/0:archive", "region%2F0:orders/0:archive", "region%252F0:orders/0:archive"
+        });
+
+        foreach (HealthCheckResult result in entry.Data.Values)
+        {
+            await Assert.That(result.Status).IsEqualTo(HealthStatus.Healthy);
+        }
+    }
+
+    [Test]
     public async Task Unavailable_consumer_state_is_unhealthy()
     {
         await using var provider = Create(configure: services =>
