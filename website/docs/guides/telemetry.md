@@ -192,10 +192,11 @@ after validation, native customization and message or batch preparation. A cance
 call rejected before that boundary, a preparation failure, and an unattempted batch
 tail contribute zero. Service Bus checks for cancellation after preparation and before
 recording send attempts or native send duration. Each Service Bus size/session/partition
-split counts only its own messages, including a failed split. Kafka batches without
-tombstones count the messages supplied to each native `ProduceAllAsync` call. Batches
-containing tombstones count each invoked `ProduceAsync` separately. Retries inside the
-native client do not add Relayer attempts.
+split counts only its own messages, including a failed split. A same-topic Kafka batch
+with no tombstones and no `KafkaRecord` transforms counts the messages supplied to each
+native `ProduceAllAsync` call. A batch that contains a tombstone or a transform, or that
+spans more than one topic, counts each invoked `ProduceAsync` separately, one message
+each. Retries inside the native client do not add Relayer attempts.
 It uses the adapter's precomputed native system and destination
 dimensions. Built-in Kafka, Service Bus and in-memory adapters use this shared send instrumentation.
 Standalone `MessageTracing` callers can supply `instrumentation:` to enable the same
@@ -208,10 +209,12 @@ the same messages.
 
 Kafka, Service Bus and Pub/Sub also record `messaging.client.operation.duration` in seconds
 for each actual native send call, from invocation through acknowledgement or failure.
-This includes native retries and works without an activity listener. A homogeneous Kafka
-batch records one duration for `ProduceAllAsync`; a Kafka batch containing tombstones
-uses individual native sends and records each completion. Mixed destinations are measured
-at their native send boundaries. Service Bus records each `SendMessageAsync` or
+This includes native retries and works without an activity listener. A same-topic Kafka
+batch with no tombstones and no `KafkaRecord` transforms records one duration for
+`ProduceAllAsync`. A Kafka batch containing a tombstone or a transform uses individual
+native sends and records each completion, so a single `SendOptions.KafkaRecord(...)`
+callback changes the whole batch to one duration per message. Mixed destinations are
+measured at their native send boundaries. Service Bus records each `SendMessageAsync` or
 `SendMessagesAsync` call, including each batch split by size, session or partition.
 Pub/Sub records each publish call the native topic publisher makes after forming a
 request. One Relayer batch can produce several requests, and overlapping individual

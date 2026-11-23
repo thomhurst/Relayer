@@ -114,7 +114,9 @@ OpenTelemetry providers. Keep sampling, resource attributes, log configuration a
 OTLP exporters in your ServiceDefaults or application. Do not register a second
 exporter if ServiceDefaults already supplies one. Aspire injects OTLP endpoint and
 authentication configuration when it starts the project. The sample calls
-`UseOtlpExporter` when `OTEL_EXPORTER_OTLP_ENDPOINT` is configured. Send requests
+`UseOtlpExporter` when `OTEL_EXPORTER_OTLP_ENDPOINT` is configured, and enables
+`IncludeScopes` on OpenTelemetry logging so that logging scopes, including Relayer's
+[failure-log scope](telemetry.md), reach the dashboard as structured attributes. Send requests
 then inspect **Traces**, **Metrics** and **Structured logs** in the dashboard; the
 existing [telemetry conventions](telemetry.md) apply unchanged.
 

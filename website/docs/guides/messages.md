@@ -265,7 +265,7 @@ The adapter passes your `MessagePackSerializerOptions` to native `IMessagePackFo
 
 No resolver is selected implicitly, and the adapter never reads or writes `MessagePackSerializer.DefaultOptions`. The composite above contains only explicitly supplied generated and primitive formatters; missing formatters fail rather than generating code at runtime. Avoid `MessagePackSerializerOptions.Standard`, `BuiltinResolver`, `StandardResolver`, contractless, typeless and dynamic resolvers for strict AOT/trimming: these retain reflection or dynamic code paths. Include generated or hand-written formatters for every nested type. The generator writes some primitives, such as the example's integer, directly; it resolves strings through the supplied `NullableStringFormatter`.
 
-For warning-clean Native AOT publishing with `MessagePackSecurity.UntrustedData`, also enable MessagePack's native nonreflective object comparer in the application project:
+For warning-clean Native AOT publishing with MessagePack-CSharp 3.1.12, enable MessagePack's native nonreflective object comparer in the application project. This applies with the default security settings as well as with `MessagePackSecurity.UntrustedData`. Without it, Native AOT compilation reports `IL3050` and `IL2060` from MessagePack's object comparer:
 
 ```xml
 <ItemGroup>
