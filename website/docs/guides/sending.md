@@ -164,6 +164,11 @@ When a handler buffers a CloudEvents send, Relayer records a `create {destinatio
 
 The native `ITransport.SendBatchAsync` entry point creates one `create {destination}` producer span per new message, followed by a client `send {destination}` span linked to those contexts. Existing contexts are preserved and linked without another create span. Batch spans carry `messaging.batch.message_count` and omit individual message IDs. The scoped sender still accepts one message per call; native batching does not imply atomic delivery.
 
+Some adapters send a batch as individually acknowledged messages and trace each one as an immediate send. Each message then gets its own `send {destination}` span, with no `create` spans, no batch span and no `messaging.batch.message_count`:
+
+- Kafka does this for a batch that spans more than one topic. A same-topic Kafka batch keeps the batch shape above, including one that contains tombstones or [`KafkaRecord` transforms](../transports/kafka.md#keys-batches-and-failures).
+- RabbitMQ does this for every `ITransport.SendBatchAsync` call. It still publishes the batch on one leased channel and waits for each confirmation ([RabbitMQ sending](../transports/rabbitmq.md)).
+
 Disable per-message batch spans, or opt into serialized body sizes, through the Options pattern before building the provider:
 
 ```csharp

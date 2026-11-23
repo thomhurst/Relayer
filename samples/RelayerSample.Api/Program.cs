@@ -35,7 +35,11 @@ builder.Services.AddOpenTelemetry().AddRelayerInstrumentation()
 if (!string.IsNullOrWhiteSpace(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]))
 {
     builder.Services.AddOpenTelemetry().UseOtlpExporter();
-    builder.Logging.AddOpenTelemetry(logging => logging.IncludeFormattedMessage = true);
+    builder.Logging.AddOpenTelemetry(logging =>
+    {
+        logging.IncludeFormattedMessage = true;
+        logging.IncludeScopes = true;
+    });
 }
 
 var app = builder.Build();
