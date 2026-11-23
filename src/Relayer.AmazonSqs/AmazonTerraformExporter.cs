@@ -435,6 +435,7 @@ public static class AmazonTerraformExporter
             ("queue", "SqsManagedSseEnabled") => ("sqs_managed_sse_enabled", 'b'),
             ("queue", "RedrivePolicy") => ("redrive_policy", 'j'),
             ("topic", "DisplayName") => ("display_name", 's'),
+            ("topic", "MaximumMessageSize") => ("maximum_message_size", 'n'),
             ("topic", "Policy") => ("policy", 'j'),
             ("topic", "DeliveryPolicy") => ("delivery_policy", 'j'),
             ("topic", "FifoTopic") => ("fifo_topic", 'b'),

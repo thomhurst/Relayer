@@ -48,6 +48,7 @@ public class AmazonTerraformTests
         await Assert.That(queue.Value.GetProperty("visibility_timeout_seconds").GetInt32()).IsEqualTo(45);
         await Assert.That(queue.Value.GetProperty("tags").GetProperty("purpose").GetString()).IsEqualTo("line\n\"quoted\"\\$${var.secret}%%{if true}");
         await Assert.That(topic.Value.GetProperty("fifo_topic").GetBoolean()).IsTrue();
+        await Assert.That(topic.Value.TryGetProperty("maximum_message_size", out _)).IsFalse();
         await Assert.That(access.Value.GetProperty("policy").GetString()).IsEqualTo(Policy);
         await Assert.That(access.Value.GetProperty("queue_url").GetString()).IsEqualTo("${aws_sqs_queue." + queue.Name + ".id}");
         await Assert.That(subscription.GetProperty("topic_arn").GetString()).IsEqualTo("${aws_sns_topic." + topic.Name + ".arn}");
@@ -79,6 +80,18 @@ public class AmazonTerraformTests
         using var document = JsonDocument.Parse(Export(provider));
         var queue = document.RootElement.GetProperty("resource").GetProperty("aws_sqs_queue").EnumerateObject().Single().Value;
         await Assert.That(queue.GetProperty("max_message_size").GetInt32()).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task Topic_message_size_exports_explicit_limit_as_number()
+    {
+        using var provider = Create(options => options.Topics.Add(new CreateTopicRequest("new-orders")
+        {
+            Attributes = new() { ["MaximumMessageSize"] = "524288" }
+        }));
+        using var document = JsonDocument.Parse(Export(provider));
+        var topic = document.RootElement.GetProperty("resource").GetProperty("aws_sns_topic").EnumerateObject().Single().Value;
+        await Assert.That(topic.GetProperty("maximum_message_size").GetInt32()).IsEqualTo(524_288);
     }
 
     [Test]
@@ -185,6 +198,7 @@ public class AmazonTerraformTests
     [Arguments("Unknown", "value")]
     [Arguments("FifoTopic", "yes")]
     [Arguments("SignatureVersion", "-1")]
+    [Arguments("MaximumMessageSize", "524288.0")]
     [Arguments("Policy", "not json")]
     public async Task Unsupported_or_malformed_native_attributes_leave_output_untouched(string key, string value)
     {

@@ -231,7 +231,7 @@ The generated file uses [Terraform JSON syntax](https://developer.hashicorp.com/
 }
 ```
 
-Configure the HashiCorp AWS provider separately for the **same account, region and partition** as the export. Provider 6.8.0 and later accept the exported SQS default of 1 MiB. Put this beside the generated file in `provider.tf`, then run `terraform init`, `terraform validate` and `terraform plan` with your normal AWS credentials:
+Configure the HashiCorp AWS provider separately for the **same account, region and partition** as the export. Provider 6.8.0 and later accept the exported SQS default of 1 MiB. If an SNS topic declares `MaximumMessageSize`, use [provider 6.67.0](https://github.com/hashicorp/terraform-provider-aws/releases/tag/v6.67.0) or later by setting `version = ">= 6.67.0"`. Put this beside the generated file in `provider.tf`, then run `terraform init`, `terraform validate` and `terraform plan` with your normal AWS credentials:
 
 ```hcl
 terraform {
@@ -254,10 +254,12 @@ Both `AmazonSqsTransportOptions.Queues` and SNS `QueueTopology.Queues` contribut
 | Declaration | Supported native attributes |
 | --- | --- |
 | Queue | `DelaySeconds`, `MaximumMessageSize`, `MessageRetentionPeriod`, `ReceiveMessageWaitTimeSeconds`, `VisibilityTimeout`, `FifoQueue`, `ContentBasedDeduplication`, `DeduplicationScope`, `FifoThroughputLimit`, `KmsMasterKeyId`, `KmsDataKeyReusePeriodSeconds`, `SqsManagedSseEnabled`, `RedrivePolicy`, `Policy`; native tags |
-| Topic | `DisplayName`, `Policy`, `DeliveryPolicy`, `FifoTopic`, `ContentBasedDeduplication`, `KmsMasterKeyId`, `SignatureVersion`, `TracingConfig`, `FifoThroughputScope`; native tags |
+| Topic | `DisplayName`, `MaximumMessageSize`, `Policy`, `DeliveryPolicy`, `FifoTopic`, `ContentBasedDeduplication`, `KmsMasterKeyId`, `SignatureVersion`, `TracingConfig`, `FifoThroughputScope`; native tags |
 | SQS subscription | `RawMessageDelivery`, `FilterPolicy`, `FilterPolicyScope`, `RedrivePolicy`, `DeliveryPolicy`, `SubscriptionRoleArn`; explicit topic and queue ARNs |
 
-FIFO names and flags are preserved; the exporter does not infer them. When `MaximumMessageSize` is omitted, the exporter writes `max_message_size = 1048576` to preserve the native SQS 1 MiB default rather than inheriting a Terraform provider's smaller default. Explicit message size limits are preserved. When a queue configures `KmsMasterKeyId` and explicitly disables `SqsManagedSseEnabled`, the exporter omits `sqs_managed_sse_enabled`: Terraform treats even `false` as conflicting with the KMS key. Standalone SSE-SQS settings are preserved. Boolean values must be `true` or `false`, numeric settings must be nonnegative integers, and policy settings must be JSON objects. AWS/provider semantic validation still applies during `plan`/`apply`. `ReturnSubscriptionArn` controls only the native API response and has no Terraform setting.
+FIFO names and flags are preserved; the exporter does not infer them. When a queue omits `MaximumMessageSize`, the exporter writes `max_message_size = 1048576` to preserve the native SQS 1 MiB default rather than inheriting a Terraform provider's smaller default. Explicit queue limits are preserved. When a queue configures `KmsMasterKeyId` and explicitly disables `SqsManagedSseEnabled`, the exporter omits `sqs_managed_sse_enabled`: Terraform treats even `false` as conflicting with the KMS key. Standalone SSE-SQS settings are preserved. Boolean values must be `true` or `false`, numeric settings must be nonnegative integers, and policy settings must be JSON objects. AWS/provider semantic validation still applies during `plan`/`apply`. `ReturnSubscriptionArn` controls only the native API response and has no Terraform setting.
+
+For an SNS topic, the exporter writes an explicit `MaximumMessageSize` as the integer argument `maximum_message_size` in bytes. Omitting the topic attribute leaves the SNS default of 256 KiB for new topics.
 
 ### SNS relationships and access policies
 
