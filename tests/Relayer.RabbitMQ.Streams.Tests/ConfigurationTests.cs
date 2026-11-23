@@ -1,4 +1,10 @@
+using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Sockets;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Stream.Client;
 using Relayer.Transports;
@@ -136,6 +142,67 @@ public class ConfigurationTests
             options.SuperStreams.Add(new("events"));
         });
         await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task Hosted_start_logs_native_failures_for_each_unavailable_endpoint()
+    {
+        // Keep both ports reserved without listening so connection attempts are refused.
+        using var first = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        using var second = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        first.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        second.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        var logs = new EndpointFailureLogs();
+        var builder = Host.CreateApplicationBuilder();
+        builder.Logging.ClearProviders();
+        builder.Logging.AddProvider(logs);
+        builder.Services.AddRelayer(relayer => relayer.RabbitMQStreams("events", streams =>
+            streams.Options.Configure(options => options.Configuration.Endpoints = [first.LocalEndPoint!, second.LocalEndPoint!])));
+
+        var host = builder.Build();
+        await using var hostLifetime = (IAsyncDisposable)host;
+        await Assert.That(async () => await host.StartAsync()).Throws<StreamSystemInitialisationException>();
+        await Assert.That(logs.Endpoints.ToArray()).IsEquivalentTo(new[] { first.LocalEndPoint!, second.LocalEndPoint! });
+    }
+
+    private sealed class EndpointFailureLogs : ILoggerProvider, ILogger
+    {
+        public ConcurrentQueue<EndPoint> Endpoints
+        {
+            get;
+        } = new();
+
+        public ILogger CreateLogger(string categoryName)
+        {
+            return categoryName == typeof(StreamSystem).FullName ? this : NullLogger.Instance;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return logLevel == LogLevel.Error;
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel) && exception is SocketException { SocketErrorCode: SocketError.ConnectionRefused } &&
+                state is IReadOnlyList<KeyValuePair<string, object?>> properties)
+            {
+                foreach (var endpoint in properties.Select(property => property.Value).OfType<EndPoint>())
+                {
+                    Endpoints.Enqueue(endpoint);
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+        }
     }
 
     internal static ServiceProvider Provider(Action<RabbitMqStreamsOptions> configure)

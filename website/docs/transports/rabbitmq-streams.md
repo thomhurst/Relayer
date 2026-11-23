@@ -44,6 +44,8 @@ services.AddRelayer(relayer => relayer.RabbitMQStreams("events", streams =>
 
 `Configuration` is the native `StreamSystemConfig` instance, passed unchanged. Native authentication, TLS, endpoint resolution, connection pools and locator recovery remain native behavior. DI resolution does not connect. Startup creates the owned system and checks native server properties. Shutdown and disposal close only that named system; externally created systems remain caller-owned and cannot be supplied to this registration.
 
+With application logging configured, the native client logs failed connection attempts, including the endpoint and exception, under the `RabbitMQ.Stream.Client.StreamSystem` category.
+
 Native operations do not accept a `CancellationToken`. Cancellation is checked before and after each operation; an in-flight operation finishes according to native connection/RPC timeouts before Relayer returns or disposes its connection. Set native timeouts for the deployment. Relayer never abandons a pending connection task.
 
 ## Topology modes
