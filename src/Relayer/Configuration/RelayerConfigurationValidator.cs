@@ -10,28 +10,42 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
     IServiceProvider services)
 {
     private readonly object _initialization = new();
-    private Task? _capabilityInitialization;
-    private CancellationToken _capabilityInitializationToken;
+    private Task? _startupValidation;
+    private CancellationToken _startupToken;
+    private bool _capabilitiesInitialized;
 
     internal Task InitializeCapabilitiesAsync(CancellationToken cancellationToken)
     {
         // The host passes the same token to its StartingAsync callbacks and creates a new token for each start.
         lock (_initialization)
         {
-            if (_capabilityInitialization is null ||
-                (_capabilityInitializationToken != cancellationToken && !cancellationToken.IsCancellationRequested &&
-                 (_capabilityInitialization.IsCanceled || _capabilityInitialization.Exception?.InnerException is OptionsValidationException)))
+            if (_startupValidation is null ||
+                (_startupValidation.IsCompleted && _startupToken != cancellationToken && !cancellationToken.IsCancellationRequested))
             {
-                _capabilityInitializationToken = cancellationToken;
-                _capabilityInitialization = InitializeCapabilitiesCoreAsync(cancellationToken);
+                _startupToken = cancellationToken;
+                _startupValidation = ValidateStartupAsync(cancellationToken);
             }
 
-            return _capabilityInitialization;
+            return _startupValidation;
         }
     }
 
-    private async Task InitializeCapabilitiesCoreAsync(CancellationToken cancellationToken)
+    private async Task ValidateStartupAsync(CancellationToken cancellationToken)
     {
+        if (_capabilitiesInitialized)
+        {
+            // Topology can fail after capabilities initialize. Recheck reloaded options without rebuilding adapters.
+            var failures = new List<string>();
+
+            foreach (var transport in configuration.Transports)
+            {
+                transport.ValidateOptions(services, failures);
+            }
+
+            ThrowIfInvalid(failures);
+            return;
+        }
+
         await ValidateAsync(deferCapabilityInitialization: true).ConfigureAwait(false);
         var adapters = services.GetServices<ITransport>().ToDictionary(transport => transport.Name, StringComparer.Ordinal);
 
@@ -45,6 +59,7 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
         }
 
         await ValidateAsync().ConfigureAwait(false);
+        _capabilitiesInitialized = true;
     }
 
     internal async ValueTask ValidateAsync(bool deferCapabilityInitialization = false)
@@ -145,7 +160,8 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
 
         try
         {
-            var capabilities = new EndpointCapabilityValidator(services.GetServices<ITransport>(), failures, services.GetRequiredService<EndpointCapabilityCache>(), services.GetRequiredService<OutboxCapabilities>());
+            var capabilities = new EndpointCapabilityValidator(ResolveAdapters(failures), failures,
+                services.GetRequiredService<EndpointCapabilityCache>(), services.GetRequiredService<OutboxCapabilities>());
 
             foreach (var transport in configuration.Transports)
             {
@@ -158,6 +174,26 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
             failures.Add($"ITransport adapter construction: {error.Message}");
         }
 
+        ThrowIfInvalid(failures);
+    }
+
+    private IEnumerable<ITransport> ResolveAdapters(List<string> failures)
+    {
+        try
+        {
+            return services.GetServices<ITransport>();
+        }
+        catch (Exception error) when (failures.Count != 0 &&
+            error is ArgumentException or (InvalidOperationException and not ObjectDisposedException))
+        {
+            // An adapter can throw while consuming an invalid declaration or malformed bound options.
+            failures.Add($"ITransport adapter construction: {error.Message}");
+            return [];
+        }
+    }
+
+    private static void ThrowIfInvalid(List<string> failures)
+    {
         if (failures.Count != 0)
         {
             throw new OptionsValidationException(Options.DefaultName, typeof(RelayerConfiguration), failures);

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Relayer.InMemory;
 
 namespace Relayer.Tests;
 
@@ -210,6 +211,46 @@ public class BuilderTests
         {
             await Assert.That(errors).Contains(expected);
         }
+    }
+
+    [Test]
+    [Arguments("source", "source must not be blank")]
+    [Arguments("destination", "destination must not be blank")]
+    [Arguments("duplicate", "Transport 'local' is declared more than once")]
+    [Arguments("binding", "Transport 'local': 'ErrorOnUnknownConfiguration' was set")]
+    public async Task In_memory_adapter_construction_preserves_declaration_errors(string invalidDeclaration, string expected)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Local:Endpoints:orders:Capacity"] = "wrong";
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.InMemory("local", transport =>
+            {
+                transport.Send<OrderPlaced>(invalidDeclaration == "destination" ? " " : "orders");
+                transport.Consume(invalidDeclaration == "source" ? " " : "orders",
+                    consumer => consumer.Concurrency(0).Handler<OrderHandler>());
+
+                if (invalidDeclaration == "binding")
+                {
+                    // Use the runtime binder because generated binding does not support TimeProvider.
+                    Action<IConfiguration, object, Action<BinderOptions>> bind = ConfigurationBinder.Bind;
+                    transport.Options.Configure(options => bind(builder.Configuration.GetSection("Local"), options,
+                        binder => binder.ErrorOnUnknownConfiguration = true));
+                }
+            });
+
+            if (invalidDeclaration == "duplicate")
+            {
+                relayer.InMemory("local", _ =>
+                {
+                });
+            }
+        });
+        using var host = builder.Build();
+        var failure = await Assert.That(() => host.StartAsync()).Throws<OptionsValidationException>();
+        await Assert.That(failure!.Message).Contains(expected);
+        await Assert.That(failure.Message).Contains("concurrency must be at least 1");
     }
 
     [Test]
