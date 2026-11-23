@@ -13,6 +13,7 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsu
     private readonly List<Type> _handlers = [];
     private readonly HashSet<(Type Handler, Type Message, bool IsBatch)> _selected = [];
     private readonly List<Action<ConsumePipelineBuilder>> _pipelineConfiguration = [];
+    private readonly List<ConsumerMessageAlias> _messageAliases = [];
     private int _concurrency = 1;
     private int _batchSize = 1;
     private TimeSpan _batchWait = TimeSpan.FromMilliseconds(100);
@@ -88,6 +89,18 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsu
         return ConfigurePipeline(configure);
     }
 
+    IConsumerBuilder IConsumerBuilder.DeclareAliases<TMessage>(MessageType[] identities)
+    {
+        ConfigurePipeline(pipeline => pipeline.Accepts<TMessage>(identities));
+
+        foreach (var identity in identities)
+        {
+            _messageAliases.Add(new(typeof(TMessage), typeof(Tombstone<TMessage>), identity));
+        }
+
+        return this;
+    }
+
     /// <summary>Sets this consumer's portable retry, redelivery and dead-letter policy.</summary>
     public ConsumerBuilder<TConsumerOptions> Failures(FailureOptions options)
     {
@@ -127,6 +140,6 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsu
     internal IConsumerDefinition Build()
     {
         _built = true;
-        return new ConsumerDefinition<TConsumerOptions>(_source, Options, _handlers.ToArray(), _concurrency, _batchSize, _batchWait, _pipelineConfiguration.ToArray(), _failure, _classifier, _selected);
+        return new ConsumerDefinition<TConsumerOptions>(_source, Options, _handlers.ToArray(), _concurrency, _batchSize, _batchWait, _pipelineConfiguration.ToArray(), _failure, _classifier, _selected, _messageAliases.ToArray());
     }
 }

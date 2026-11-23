@@ -228,6 +228,8 @@ public interface IConsumerDefinition
     /// <summary>Startup-only pipeline configuration, in declaration order.</summary>
     IReadOnlyList<Action<ConsumePipelineBuilder>> PipelineConfiguration => Array.Empty<Action<ConsumePipelineBuilder>>();
 
+    internal IReadOnlyList<ConsumerMessageAlias> MessageAliases => [];
+
     /// <summary>The maximum number of concurrent handler invocations.</summary>
     int Concurrency
     {
@@ -253,7 +255,7 @@ public sealed class ConsumerDefinition<TConsumerOptions> : IConsumerDefinition w
     internal ConsumerDefinition(string source, TConsumerOptions options, Type[] handlers,
         int concurrency, int batchSize, TimeSpan batchWait, Action<ConsumePipelineBuilder>[]? pipelineConfiguration = null,
         FailureOptions? failure = null, IFailureClassifier? failureClassifier = null,
-        HashSet<(Type Handler, Type Message, bool IsBatch)>? selected = null)
+        HashSet<(Type Handler, Type Message, bool IsBatch)>? selected = null, ConsumerMessageAlias[]? messageAliases = null)
     {
         _selected = selected;
         HasFailurePolicy = failure is not null;
@@ -261,6 +263,7 @@ public sealed class ConsumerDefinition<TConsumerOptions> : IConsumerDefinition w
         FailureClassifier = failureClassifier;
         Source = source;
         PipelineConfiguration = Array.AsReadOnly(pipelineConfiguration ?? []);
+        _messageAliases = Array.AsReadOnly(messageAliases ?? []);
         Options = options;
         Handlers = Array.AsReadOnly(handlers);
         Concurrency = concurrency;
@@ -274,6 +277,7 @@ public sealed class ConsumerDefinition<TConsumerOptions> : IConsumerDefinition w
         get;
     }
     private readonly HashSet<(Type Handler, Type Message, bool IsBatch)>? _selected;
+    private readonly IReadOnlyList<ConsumerMessageAlias> _messageAliases;
 
     /// <inheritdoc />
     public IReadOnlyList<Type> Handlers
@@ -312,6 +316,8 @@ public sealed class ConsumerDefinition<TConsumerOptions> : IConsumerDefinition w
     {
         get;
     }
+
+    IReadOnlyList<ConsumerMessageAlias> IConsumerDefinition.MessageAliases => _messageAliases;
 
     /// <inheritdoc />
     public FailureOptions Failure

@@ -18,7 +18,7 @@ public sealed class ConsumePipelineBuilder
     private readonly Dictionary<MessageType, ConsumeDelegate> _tombstones = [];
     private readonly List<HandlerDescriptor> _handlers = [];
     private readonly List<IConsumeMiddleware> _middleware = [];
-    private readonly List<AcceptedIdentity> _accepted = [];
+    private readonly List<ConsumerMessageAlias> _accepted = [];
     private bool _built;
     private EndpointTelemetry? _telemetry;
     private ConsumeDelegate? _settlement;
@@ -371,7 +371,7 @@ public sealed class ConsumePipelineBuilder
             {
                 var table = descriptor.IsTombstone ? _tombstones : _dispatch;
 
-                if (descriptor.MessageType != (descriptor.IsTombstone ? accepted.TombstoneType : accepted.MessageType))
+                if (!accepted.Matches(descriptor))
                 {
                     continue;
                 }
@@ -392,8 +392,6 @@ public sealed class ConsumePipelineBuilder
             }
         }
     }
-
-    private readonly record struct AcceptedIdentity(Type MessageType, Type TombstoneType, MessageType Identity);
 
     private sealed class NativeValueDispatch(ConsumeDelegate? value, ConsumeDelegate? tombstone)
     {

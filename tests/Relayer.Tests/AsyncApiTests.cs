@@ -77,6 +77,86 @@ public class AsyncApiTests
     }
 
     [Test]
+    public async Task Receive_lists_only_versions_that_can_reach_its_selected_handler()
+    {
+        using var provider = new ServiceCollection().AddRelayer(builder =>
+        {
+            var infrastructure = builder.Infrastructure();
+            infrastructure.MessageTypes.Add<ExportOldOrder>("order", 1).Add<ExportMiddleOrder>("order", 2)
+                .Add<ExportOrder>("order", 3).Add<ExportTree>("order", 4);
+            infrastructure.Upcasters.Add(new ExportFirstUpgrade()).Add(new ExportSecondUpgrade());
+            builder.UseJsonSerializer(ExportJsonContext.Default);
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events", transport =>
+            {
+                transport.Send<ExportOrder>("orders");
+                transport.Consume("orders", consumer => consumer.Handler<ExportHandler>());
+                transport.Consume("another-version", consumer => consumer.Handler<ExportTreeHandler>());
+                transport.Consume("tombstones", consumer => consumer.Handler<ExportTombstoneHandler>());
+            });
+        }).BuildServiceProvider();
+        using var document = JsonDocument.Parse(Export(provider));
+        var root = document.RootElement;
+        var received = OperationMessages(root, "operation1");
+
+        await Assert.That(received.Keys).IsEquivalentTo(new[] { "order;v=1", "order;v=2", "order;v=3" });
+        await Assert.That(Schema(received["order;v=1"]).GetProperty("properties").EnumerateObject().Single().Name).IsEqualTo("name");
+        await Assert.That(Schema(received["order;v=2"]).GetProperty("properties").EnumerateObject().Single().Name).IsEqualTo("order_number");
+        await Assert.That(OperationMessages(root, "operation0").Keys).IsEquivalentTo(new[] { "order;v=3" });
+        await Assert.That(OperationMessages(root, "operation2").Keys).IsEquivalentTo(new[] { "order;v=4" });
+        await Assert.That(OperationMessages(root, "operation3").Keys).IsEquivalentTo(new[] { "order;v=3" });
+        await Assert.That(root.GetProperty("channels").GetProperty("channel0").GetProperty("messages").EnumerateObject().Count()).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task Receive_aliases_use_the_selected_handlers_payload_only_on_the_declaring_consumer()
+    {
+        using var provider = new ServiceCollection().AddRelayer(builder =>
+        {
+            builder.Infrastructure().MessageTypes.Add<ExportOrder>("order").Add<ExportOldOrder>("order.legacy");
+            builder.UseJsonSerializer(ExportJsonContext.Default);
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events", transport =>
+            {
+                transport.Send<ExportOldOrder>("import");
+                transport.Consume("import", consumer => consumer.Handler<ExportHandler>()
+                    .Accepts<ExportOrder>(new MessageType("order.legacy", 1), new MessageType("orders/~é", 2)));
+                transport.Consume("normal", consumer => consumer.Handler<ExportHandler>().ConfigurePipeline(
+                    _ => throw new InvalidOperationException("Offline export must not run pipeline callbacks.")));
+            });
+        }).BuildServiceProvider();
+        using var document = JsonDocument.Parse(Export(provider));
+        var root = document.RootElement;
+        var imported = OperationMessages(root, "operation1");
+
+        await Assert.That(imported.Keys).IsEquivalentTo(new[] { "order;v=1", "order.legacy;v=1", "orders/~é;v=2" });
+        await Assert.That(imported["orders/~é;v=2"].GetProperty("name").GetString()).IsEqualTo("orders/~é");
+        await Assert.That(imported["orders/~é;v=2"].GetProperty("x-relayer-version").GetInt32()).IsEqualTo(2);
+        await Assert.That(Schema(imported["order.legacy;v=1"]).GetProperty("properties").TryGetProperty("customer_name", out _)).IsTrue();
+        await Assert.That(Schema(imported["orders/~é;v=2"]).GetProperty("properties").TryGetProperty("customer_name", out _)).IsTrue();
+        var sent = OperationMessages(root, "operation0");
+        await Assert.That(Schema(sent["order.legacy;v=1"]).GetProperty("properties").EnumerateObject().Single().Name).IsEqualTo("name");
+        await Assert.That(Schema(imported["order.legacy;v=1"]).GetProperty("$id").GetString())
+            .IsNotEqualTo(Schema(imported["order;v=1"]).GetProperty("$id").GetString());
+        await Assert.That(OperationMessages(root, "operation2").Keys).IsEquivalentTo(new[] { "order;v=1" });
+        await Assert.That(root.GetProperty("channels").GetProperty("channel0").GetProperty("messages").EnumerateObject().Count()).IsEqualTo(4);
+        await Assert.That(root.GetProperty("channels").GetProperty("channel1").GetProperty("messages").EnumerateObject().Count()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Different_schemas_for_the_same_wire_identity_get_distinct_resource_ids()
+    {
+        using var first = CreateWithSharedIdentity<ExportOrder>();
+        using var second = CreateWithSharedIdentity<ExportOldOrder>();
+        using var firstDocument = JsonDocument.Parse(Export(first));
+        using var secondDocument = JsonDocument.Parse(Export(second));
+        var firstComponent = firstDocument.RootElement.GetProperty("components").GetProperty("messages").EnumerateObject().Single();
+        var secondComponent = secondDocument.RootElement.GetProperty("components").GetProperty("messages").EnumerateObject().Single();
+
+        await Assert.That(firstComponent.Name).IsEqualTo(secondComponent.Name);
+        await Assert.That(Schema(firstComponent.Value).GetProperty("$id").GetString())
+            .IsNotEqualTo(Schema(secondComponent.Value).GetProperty("$id").GetString());
+    }
+
+    [Test]
     public async Task Export_before_serializer_resolution_preserves_serialization_contract()
     {
         using var provider = Create();
@@ -204,6 +284,55 @@ public class AsyncApiTests
             .EnumerateObject().Count()).IsEqualTo(1);
     }
 
+    private static Dictionary<string, JsonElement> OperationMessages(JsonElement root, string operationName)
+    {
+        var result = new Dictionary<string, JsonElement>();
+        var operation = root.GetProperty("operations").GetProperty(operationName);
+        var channelPath = operation.GetProperty("channel").GetProperty("$ref").GetString()!;
+        var channelMessages = ResolveReference(root, channelPath).GetProperty("messages");
+        var messagePrefix = channelPath + "/messages/";
+
+        foreach (var reference in operation.GetProperty("messages").EnumerateArray())
+        {
+            var path = reference.GetProperty("$ref").GetString()!;
+
+            if (!path.StartsWith(messagePrefix, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Expected the operation to reference its channel's message.");
+            }
+
+            var channelMessage = channelMessages.GetProperty(path[messagePrefix.Length..]);
+            var component = ResolveReference(root, channelMessage.GetProperty("$ref").GetString()!);
+            result.Add(component.GetProperty("x-relayer-wire-type").GetString()!, component);
+        }
+
+        return result;
+    }
+
+    private static JsonElement ResolveReference(JsonElement root, string path)
+    {
+        foreach (var segment in path[2..].Split('/'))
+        {
+            root = root.GetProperty(segment);
+        }
+
+        return root;
+    }
+
+    private static JsonElement Schema(JsonElement message)
+    {
+        return message.GetProperty("payload").GetProperty("schema");
+    }
+
+    private static ServiceProvider CreateWithSharedIdentity<TMessage>()
+    {
+        return new ServiceCollection().AddRelayer(builder =>
+        {
+            builder.Infrastructure().MessageTypes.Add<TMessage>("shared");
+            builder.UseJsonSerializer(ExportJsonContext.Default);
+        }).BuildServiceProvider();
+    }
+
     private static string Export(ServiceProvider provider)
     {
         using var output = new MemoryStream();
@@ -256,11 +385,46 @@ public sealed class ExportOtherHandler : IHandler<ExportOrder>
     }
 }
 
+public sealed record ExportMiddleOrder(int OrderNumber);
+
+public sealed class ExportFirstUpgrade : IUpcaster<ExportOldOrder, ExportMiddleOrder>
+{
+    public ExportMiddleOrder Upcast(ExportOldOrder message)
+    {
+        return new(message.Name.Length);
+    }
+}
+
+public sealed class ExportSecondUpgrade : IUpcaster<ExportMiddleOrder, ExportOrder>
+{
+    public ExportOrder Upcast(ExportMiddleOrder message)
+    {
+        return new("Customer", [message.OrderNumber]);
+    }
+}
+
+public sealed class ExportTreeHandler : IHandler<ExportTree>
+{
+    public ValueTask HandleAsync(ExportTree message, MessageContext context, CancellationToken cancellationToken)
+    {
+        return default;
+    }
+}
+
+public sealed class ExportTombstoneHandler : IHandler<Tombstone<ExportOrder>>
+{
+    public ValueTask HandleAsync(Tombstone<ExportOrder> message, MessageContext context, CancellationToken cancellationToken)
+    {
+        return default;
+    }
+}
+
 [JsonSerializable(typeof(ExportOrder))]
 internal partial class ExportDefaultContext : JsonSerializerContext;
 
 [JsonSerializable(typeof(ExportOrder))]
 [JsonSerializable(typeof(ExportOldOrder))]
+[JsonSerializable(typeof(ExportMiddleOrder))]
 [JsonSerializable(typeof(ExportTree))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 internal partial class ExportJsonContext : JsonSerializerContext;

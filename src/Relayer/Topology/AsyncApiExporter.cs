@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -12,7 +13,7 @@ internal static class AsyncApiExporter
 {
     internal static void Export(Stream destination, AsyncApiOptions options,
         IReadOnlyList<TransportDefinition> transports, MessageTypeRegistry registry, HandlerRegistry handlers,
-        IEnumerable<JsonSerializerRegistration> registrations)
+        UpcasterRegistry upcasters, IEnumerable<JsonSerializerRegistration> registrations)
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(options);
@@ -31,29 +32,10 @@ internal static class AsyncApiExporter
             {
                 throw new InvalidOperationException($"No stable message identity exists for '{type}'.");
             }
-            // Hex encoding preserves arbitrary wire names without component-key or JSON Pointer collisions.
-            var key = "m_" + Convert.ToHexString(Encoding.UTF8.GetBytes(identity.Name)) + "_v" + Number(identity.Version);
+
+            var key = GetComponentKey(identity);
             messageKeys.Add(identity, key);
-            var schema = contract.TypeInfo.GetJsonSchemaAsNode();
-
-            if (schema is JsonObject schemaObject)
-            {
-                schemaObject["$schema"] = "https://json-schema.org/draft/2020-12/schema";
-                // Embedded schemas are separate resources: recursive '#' references stay inside this payload.
-                schemaObject["$id"] = "urn:relayer:message:" + key;
-            }
-
-            messages.Add(key, new JsonObject
-            {
-                ["name"] = identity.Name,
-                ["x-relayer-version"] = identity.Version,
-                ["x-relayer-wire-type"] = identity.ToString(),
-                ["payload"] = new JsonObject
-                {
-                    ["schemaFormat"] = "application/schema+json;version=draft-2020-12",
-                    ["schema"] = schema
-                }
-            });
+            messages.Add(key, CreateMessage(identity, key, contract.TypeInfo.GetJsonSchemaAsNode()));
         }
 
         var channels = new JsonObject();
@@ -86,13 +68,23 @@ internal static class AsyncApiExporter
 
                     var key = GetMessageKey(registry, messageKeys, handler.MessageType);
 
-                    if (keys.Contains(key))
+                    AddReceiveMessage(channel, keys, key);
+
+                    if (!handler.IsTombstone)
                     {
-                        continue;
+                        foreach (var source in upcasters.GetSources(handler.MessageType))
+                        {
+                            AddReceiveMessage(channel, keys, GetMessageKey(registry, messageKeys, source.From));
+                        }
                     }
 
-                    keys.Add(key);
-                    AddMessage(channel, key);
+                    foreach (var alias in consumer.MessageAliases)
+                    {
+                        if (alias.Matches(handler))
+                        {
+                            AddReceiveMessage(channel, keys, GetAliasKey(messages, alias.Identity, key));
+                        }
+                    }
                 }
 
                 var operation = CreateOperation("receive", channel, keys);
@@ -113,6 +105,60 @@ internal static class AsyncApiExporter
         };
         using var writer = new Utf8JsonWriter(destination, new JsonWriterOptions { Indented = true });
         document.WriteTo(writer);
+    }
+
+    private static JsonObject CreateMessage(MessageType identity, string key, JsonNode schema)
+    {
+        if (schema is JsonObject schemaObject)
+        {
+            schemaObject.Remove("$id");
+            schemaObject["$schema"] = "https://json-schema.org/draft/2020-12/schema";
+
+            // Keep local references inside the payload and distinguish different schemas for the same wire identity.
+            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(schemaObject.ToJsonString()));
+            schemaObject["$id"] = "urn:relayer:message:" + key + ":" + Convert.ToHexString(hash);
+        }
+
+        return new JsonObject
+        {
+            ["name"] = identity.Name,
+            ["x-relayer-version"] = identity.Version,
+            ["x-relayer-wire-type"] = identity.ToString(),
+            ["payload"] = new JsonObject
+            {
+                ["schemaFormat"] = "application/schema+json;version=draft-2020-12",
+                ["schema"] = schema
+            }
+        };
+    }
+
+    private static string GetComponentKey(MessageType identity)
+    {
+        // Hex encoding keeps wire names safe in component keys and JSON Pointer paths.
+        return "m_" + Convert.ToHexString(Encoding.UTF8.GetBytes(identity.Name)) + "_v" + Number(identity.Version);
+    }
+
+    private static string GetAliasKey(JsonObject messages, MessageType identity, string payloadKey)
+    {
+        var key = GetComponentKey(identity) + "_as_" + payloadKey;
+
+        if (!messages.ContainsKey(key))
+        {
+            // Another consumer or a send route can use this wire identity with a different payload.
+            var schema = messages[payloadKey]!["payload"]!["schema"]!.DeepClone();
+            messages.Add(key, CreateMessage(identity, key, schema));
+        }
+
+        return key;
+    }
+
+    private static void AddReceiveMessage(Channel channel, List<string> keys, string key)
+    {
+        if (!keys.Contains(key))
+        {
+            keys.Add(key);
+            AddMessage(channel, key);
+        }
     }
 
     private static Channel GetChannel(JsonObject channels, Dictionary<(string, string), Channel> endpoints,

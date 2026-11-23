@@ -40,7 +40,9 @@ enables it automatically for its selected outbox context.
 ## Registration
 
 Create the [PostgreSQL schema](postgres-schema.md) first. Register ordinary scoped DbContexts with
-the same scoped service provider used by `ISender`:
+the same scoped service provider used by `ISender`. The outbox dispatcher resolves its logger when EF
+creates the context. The Generic Host registers logging automatically. For a standalone
+`ServiceCollection`, call `services.AddLogging()` before building the provider.
 
 ```csharp
 using Microsoft.EntityFrameworkCore;

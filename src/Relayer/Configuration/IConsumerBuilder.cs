@@ -15,6 +15,11 @@ public interface IConsumerBuilder
     /// <summary>Configures the existing consume pipeline once at startup, before global middleware.</summary>
     IConsumerBuilder ConfigurePipeline(Action<ConsumePipelineBuilder> configure);
 
+    internal IConsumerBuilder DeclareAliases<TMessage>(MessageType[] identities)
+    {
+        return ConfigurePipeline(pipeline => pipeline.Accepts<TMessage>(identities));
+    }
+
     /// <summary>Sets the portable retry, redelivery and dead-letter policy.</summary>
     IConsumerBuilder Failures(FailureOptions options);
 

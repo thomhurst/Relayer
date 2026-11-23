@@ -66,6 +66,6 @@ public static class ConsumeBuilderExtensions
         ArgumentNullException.ThrowIfNull(identities);
         ConsumePipelineBuilder.ValidateAccepted(identities);
         var accepted = (MessageType[])identities.Clone();
-        return builder.ConfigurePipeline(pipeline => pipeline.Accepts<TMessage>(accepted));
+        return builder.DeclareAliases<TMessage>(accepted);
     }
 }
