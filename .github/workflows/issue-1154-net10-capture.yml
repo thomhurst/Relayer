@@ -1,8 +1,8 @@
-name: Buffered allocation phase and caller capture (#1154)
+name: Buffered allocation ownership replicas (#1154)
 
 on:
   push:
-    branches: [diagnostics/issue-1154-batch-224]
+    branches: [diagnostics/issue-1154-current-main-replicas]
 
 permissions:
   contents: read
@@ -13,11 +13,21 @@ defaults:
 
 jobs:
   capture:
-    name: .NET 10 allocation capture (profiled)
+    name: Allocation ownership (${{ matrix.replica.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        replica:
+          - name: main-1
+            checkout: 11005a514e429bd302e261337dc5a5a764269cb0
+          - name: main-2
+            checkout: 11005a514e429bd302e261337dc5a5a764269cb0
+          - name: known-recurrence
+            checkout: 5e064a687be1cc2ccd52518702dca7ee6a569fb3
     runs-on: ubuntu-latest
     timeout-minutes: 28
     env:
-      ORIGINAL_CHECKOUT: 5e064a687be1cc2ccd52518702dca7ee6a569fb3
+      ORIGINAL_CHECKOUT: ${{ matrix.replica.checkout }}
       FRAMEWORK: net10.0
       CAPTURE_PAIRS: '65536'
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
@@ -132,7 +142,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: allocation-net10-profiled-${{ github.run_id }}-${{ github.run_attempt }}
+          name: allocation-net10-profiled-${{ matrix.replica.name }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             results/
             results-sha256.txt
