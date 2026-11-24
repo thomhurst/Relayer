@@ -202,9 +202,9 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     }
 
     internal ValueTask ClaimDirectBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
-        TimeSpan duration, CancellationToken cancellationToken, bool deferred = false)
+        NpgsqlInterval duration, CancellationToken cancellationToken, bool deferred = false)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(duration.Time, nameof(duration));
 
         foreach (var claim in claims.Span)
         {
@@ -218,7 +218,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ClaimBatchCoreAsync(string sql, ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
-        DateTimeOffset? now, DateTimeOffset expiresAt, TimeSpan? duration, CancellationToken cancellationToken)
+        DateTimeOffset? now, DateTimeOffset expiresAt, NpgsqlInterval? duration, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 

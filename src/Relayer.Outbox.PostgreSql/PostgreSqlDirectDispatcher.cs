@@ -3,6 +3,7 @@ using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using NpgsqlTypes;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
@@ -10,6 +11,7 @@ namespace Relayer.Outbox.PostgreSql;
 internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxDispatchBatch>
 {
     private readonly PostgreSqlOutboxStore _store;
+    private readonly NpgsqlInterval _databaseClaimDuration;
     private readonly PostgreSqlDispatchFailures _failures;
     private readonly string _schema;
     private readonly string _prefix;
@@ -82,6 +84,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         PostgreSqlOrderedDispatcher? ordered = null)
         : base(options.QueueCapacity, options.BatchSize, options.ClaimDuration, transports, logger, instrumentation, timeProvider ?? TimeProvider.System)
     {
+        _databaseClaimDuration = PostgreSqlInterval.ElapsedDuration(options.ClaimDuration);
         _failures = new(scopes);
         _source = dataSource;
         _target = new(dataSource.ConnectionString);
@@ -234,7 +237,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, bool deferred,
         CancellationToken cancellationToken)
     {
-        return _store.ClaimDirectBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), expires - now,
+        return _store.ClaimDirectBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), _databaseClaimDuration,
             cancellationToken, deferred);
     }
 

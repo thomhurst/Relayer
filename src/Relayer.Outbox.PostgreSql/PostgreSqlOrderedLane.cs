@@ -31,7 +31,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         _ready = $"SELECT requested.lane FROM unnest(@lanes) AS requested(lane) CROSS JOIN LATERAL (SELECT deliver_at, claim_expires_at FROM {table} AS pending WHERE pending.lane = requested.lane AND status = 'pending' AND NOT EXISTS (SELECT 1 FROM {table} AS parked WHERE parked.lane = requested.lane AND parked.status = 'parked' AND parked.ordering_key = pending.ordering_key AND parked.seq < pending.seq) ORDER BY seq LIMIT 1) AS head WHERE (head.deliver_at IS NULL OR head.deliver_at <= clock_timestamp()) AND (head.claim_expires_at IS NULL OR head.claim_expires_at <= clock_timestamp())";
         var fenced = "id = @id AND claim_token = @token AND claim_expires_at > clock_timestamp()";
         _claim = CreateMutation($"UPDATE {table} SET claim_token = @token, claim_expires_at = clock_timestamp() + @duration WHERE id = @id AND status = 'pending' AND (deliver_at IS NULL OR deliver_at <= clock_timestamp()) AND (claim_expires_at IS NULL OR claim_expires_at <= clock_timestamp())");
-        _claim.Parameters.Add(new NpgsqlParameter<TimeSpan>("duration", NpgsqlDbType.Interval) { TypedValue = duration });
+        _claim.Parameters.Add(new NpgsqlParameter<TimeSpan>("duration", NpgsqlDbType.Interval) { TypedValue = PostgreSqlInterval.RoundLeaseUp(duration) });
         var complete = $"DELETE FROM {table} WHERE {fenced}";
 
         if (options.RetainSentMessages)

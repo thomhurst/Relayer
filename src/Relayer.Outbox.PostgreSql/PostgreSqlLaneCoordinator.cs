@@ -25,7 +25,7 @@ internal sealed class PostgreSqlLaneCoordinator
     internal PostgreSqlLaneCoordinator(NpgsqlDataSource source, PostgreSqlOrderedDispatchOptions options)
     {
         _source = source;
-        _duration = options.LeaseDuration;
+        _duration = PostgreSqlInterval.RoundLeaseUp(options.LeaseDuration);
         var table = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "leases");
         _heartbeat = $"INSERT INTO {table} (name, owner, expires_at) VALUES (@member, @member, clock_timestamp() + @duration) ON CONFLICT (name) DO UPDATE SET expires_at = EXCLUDED.expires_at";

@@ -1,5 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using Npgsql;
+using NpgsqlTypes;
 using Relayer.Outbox.PostgreSql;
 using Relayer.Transports;
 
@@ -13,6 +14,7 @@ public class PostgreSqlDirectClockBenchmarks
     private NpgsqlConnection _connection = null!;
     private PostgreSqlOutboxStore _store = null!;
     private readonly PostgreSqlOutboxOptions _options = new() { TablePrefix = "clock_" + Guid.NewGuid().ToString("N")[..12] + "_" };
+    private readonly NpgsqlInterval _claimDuration = PostgreSqlInterval.ElapsedDuration(TimeSpan.FromMinutes(1));
     private OutboxClaim[] _claims = [];
     private bool[] _claimed = [];
     private string _table = null!;
@@ -83,7 +85,7 @@ public class PostgreSqlDirectClockBenchmarks
         await using var transaction = await _connection.BeginTransactionAsync();
         _store.UseDispatchTransaction(_connection, transaction);
         var started = TimeProvider.System.GetTimestamp();
-        await _store.ClaimDirectBatchAsync(_claims, _claimed, TimeSpan.FromMinutes(1), default);
+        await _store.ClaimDirectBatchAsync(_claims, _claimed, _claimDuration, default);
 
         if (TimeProvider.System.GetElapsedTime(started) >= TimeSpan.FromMinutes(1) || !_claimed[0])
         {

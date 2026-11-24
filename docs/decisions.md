@@ -576,7 +576,9 @@ cannot undo a broker send; crash recovery and sends that outlive their claims ca
 This preserves the at-least-once contract. Ordered routes additionally require lane ownership; row claims alone
 do not guarantee ordering. Schema scripts must persist claim tokens and expiry alongside pending/parked state.
 PostgreSQL direct dispatch, maintenance and change capture require a claim duration of at least one microsecond.
-The native interval conversion truncates smaller positive durations to zero, which would expire the claim immediately.
+The native `TimeSpan` interval conversion truncates smaller positive durations to zero, which would expire the claim immediately.
+Relayer rounds accepted claim durations up to a whole microsecond and binds them as elapsed time.
+A day of claim duration is 24 hours regardless of daylight saving changes in the database session time zone.
 
 ## D30. Share PostgreSQL schema SQL with application-owned EF migrations
 
@@ -788,6 +790,7 @@ live-claimed lanes incur no lease writes. This probe is only a hint: the worker 
 the lane transaction lock, so a stale probe cannot authorize a send or skip a head. Membership refreshes
 when one third of the lease duration has elapsed on the monotonic clock, including between slow lane
 batches, rather than once for every lane. The database clock still decides expiry and ownership.
+Round persisted membership, lane and row claim durations up to a whole microsecond before binding.
 Mutation commands and their typed parameters belong to the single dispatch loop and are reused across
 rows and batches. Per-row claim and completion statements deliberately remain: each send checks the
 head's eligibility, and each outcome checks its live token before advancing. Removing these fences or
@@ -902,7 +905,8 @@ cleanup jobs on every replica.
 
 **Decision.** Register maintenance explicitly with immutable named settings. Use separate `sweeper` and `cleanup`
 rows in the existing lease table. Database-clock expiries govern idle leadership; hold the lease row's transaction
-lock throughout each connected pass, then renew from completion. Release owned leases on graceful shutdown.
+lock throughout each connected pass, then renew from completion. Round the persisted lease duration up to
+a whole microsecond for acquisition and renewal. Release owned leases on graceful shutdown.
 Read bounded unordered, due, unclaimed pending rows older than a configured `created_at` threshold. Traverse by
 ID up to a fixed high-water mark captured at traversal start, then wrap after an empty pass within that boundary.
 This revisits failed or newly eligible older rows even under continuous newer traffic, while failed rows do not

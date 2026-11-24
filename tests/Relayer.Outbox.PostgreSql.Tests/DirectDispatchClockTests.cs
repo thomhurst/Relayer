@@ -56,7 +56,8 @@ public class DirectDispatchClockTests
                     TablePrefix = "test_"
                 });
             var claimed = new bool[1];
-            await competitor.ClaimDirectBatchAsync(new[] { new OutboxClaim(due.Id, Guid.NewGuid()) }, claimed, TimeSpan.FromMinutes(1), default);
+            await competitor.ClaimDirectBatchAsync(new[] { new OutboxClaim(due.Id, Guid.NewGuid()) }, claimed,
+                PostgreSqlInterval.ElapsedDuration(TimeSpan.FromMinutes(1)), default);
             await Assert.That(claimed[0]).IsFalse();
             // A host clock jump during a send must not change the fenced outcome.
             clock.UtcNow = now.AddHours(-hours);

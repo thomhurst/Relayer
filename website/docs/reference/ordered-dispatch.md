@@ -48,6 +48,9 @@ must be 1–65,536, batch sizes 1–10,000, and lease durations one second to on
 SQL Server, and MySQL, `PollInterval` must be at least 1 ms and less than one third of the lease
 duration. Invalid settings fail registration.
 
+For PostgreSQL, Relayer rounds `LeaseDuration` up to a whole microsecond when persisting
+membership, lane lease and row claim deadlines.
+
 Normal route registration validates native ordering support. Persisted rows referencing missing adapters,
 missing ordering keys or endpoints without `OrderedByKey` fail dispatch with actionable errors. Destination
 capabilities are retained for at most 256 successful `(transport, destination)` lookups per worker,
