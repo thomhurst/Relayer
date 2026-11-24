@@ -82,6 +82,21 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
+    public async Task Outage_accepts_delivery_acknowledged_after_token_cancellation()
+    {
+        var result = await Suite("late-ack").RunAsync(TransportConformanceCase.SendDuringOutage);
+        await Assert.That(result.Skipped).IsFalse();
+    }
+
+    [Test]
+    public async Task Outage_requires_delivery_acknowledged_after_token_cancellation()
+    {
+        var error = await Assert.That(async () => await Suite("late-ack-lost").RunAsync(TransportConformanceCase.SendDuringOutage))
+            .Throws<InvalidOperationException>().WithMessageContaining("outage recovery receive; outstanding values: 1.");
+        await Assert.That(error!.InnerException is OperationCanceledException).IsTrue();
+    }
+
+    [Test]
     public async Task Outage_reconnects_after_recognized_native_shutdown_failure()
     {
         await Assert.That((await Suite("shutdown-failure").RunAsync(TransportConformanceCase.SendDuringOutage)).Skipped).IsFalse();
@@ -518,6 +533,19 @@ public sealed class OutageConformanceTests
 
                 if (mode == "lost")
                 {
+                    return;
+                }
+
+                if (mode is "late-ack" or "late-ack-lost")
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+                    // Model a broker that accepts the send even after the caller's token expires.
+                    if (mode == "late-ack" || attempt != 1)
+                    {
+                        await _inner.Transport.SendAsync(message, CancellationToken.None);
+                    }
+
                     return;
                 }
 
