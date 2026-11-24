@@ -32,9 +32,10 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         _create = create;
         _timeout = timeout ?? TimeSpan.FromSeconds(30);
 
-        if (_timeout <= TimeSpan.Zero)
+        // CancelAfter truncates fractional milliseconds before checking the timer range.
+        if (_timeout <= TimeSpan.Zero || (long)_timeout.TotalMilliseconds >= uint.MaxValue)
         {
-            throw new ArgumentOutOfRangeException(nameof(timeout));
+            throw new ArgumentOutOfRangeException(nameof(timeout), "The scenario timeout must be positive and less than 4,294,967,295 milliseconds.");
         }
     }
 
