@@ -6,7 +6,8 @@ description: "Create the shared outbox, dead outbox, inbox and lease tables with
 Relayer implements PostgreSQL schema creation in `Relayer.Outbox.PostgreSql`, plus an EF Core migration
 extension in `Relayer.Outbox.PostgreSql.EntityFrameworkCore`. Schema creation does **not** enable durable sending,
 transaction enlistment, dispatch, lease acquisition, poison-row handling or inbox deduplication by itself.
-Register [EF Core transaction enlistment](ef-core-outbox.md) separately to persist outgoing rows.
+Register [EF Core transaction enlistment](ef-core-outbox.md) or the
+[ADO.NET/Dapper writer](postgres-outbox.md) separately to persist outgoing rows.
 [Ordered dispatch and lease acquisition](ordered-dispatch.md) and [unordered direct dispatch](direct-dispatch.md)
 are implemented separately. [Leased recovery and cleanup](postgres-maintenance.md) are also available.
 The separately registered dispatchers implement [poison-row handling and key release](postgres-store.md#poison-rows-and-key-release).
@@ -150,5 +151,7 @@ Schedules and expired claims exactly at `@now` are included. Future schedules, l
 rows in the dead table are excluded. The real PostgreSQL tests seed these cases, then verify the health
 integration at counts 9, 10, 19 and 20 with thresholds 10 and 20. This fixture validates the schema and predicate;
 the [PostgreSQL store](postgres-store.md) implements this predicate in its backlog and claim queries.
-[Unordered direct dispatch](direct-dispatch.md) uses these claims after EF commits;
-[ordered lane dispatch](ordered-dispatch.md) uses separate lane leases. [Leased recovery and cleanup](postgres-maintenance.md) provide unordered recovery and bounded retention.
+[Unordered direct dispatch](direct-dispatch.md) uses these claims after commits from EF Core and
+ADO.NET/Dapper writers configured with a dispatch-store name. [Ordered lane dispatch](ordered-dispatch.md)
+uses separate lane leases. [Leased recovery and cleanup](postgres-maintenance.md) provide unordered
+recovery and bounded retention.

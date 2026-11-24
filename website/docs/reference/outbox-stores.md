@@ -12,7 +12,8 @@ Both support ADO.NET/Dapper enlistment, atomic consumer inbox, commit-triggered 
 ordered dispatch with database-sequenced lanes and fenced leases, leased recovery, poison-row handling
 and bounded dead/inbox retention. Their provider pages describe explicit schema upgrades and integration
 boundaries; EF Core integration for these providers remains planned.
-[Unordered PostgreSQL direct dispatch](direct-dispatch.md) is available for EF commits.
+[Unordered PostgreSQL direct dispatch](direct-dispatch.md) is available after commit for both EF Core
+and ADO.NET/Dapper writers configured with a dispatch-store name.
 [Ordered PostgreSQL dispatch and lane leases](ordered-dispatch.md) are implemented separately.
 [Leased recovery and cleanup](postgres-maintenance.md) are available separately.
 [Inbox deduplication](ef-core-inbox.md) is implemented

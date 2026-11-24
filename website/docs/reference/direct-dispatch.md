@@ -3,21 +3,19 @@ title: Unordered outbox direct dispatch
 description: "Send committed PostgreSQL outbox messages immediately through named native transports."
 ---
 
-The PostgreSQL direct dispatcher sends due, unordered messages in the background as soon as an
-[EF Core outbox transaction](ef-core-outbox.md) commits. It does not wait for a polling interval.
-Committing the transaction does not wait for the broker. A rollback never queues sends.
+The PostgreSQL direct dispatcher can send due, unordered messages in the background after a
+successful commit from a configured [EF Core](ef-core-outbox.md) or [ADO.NET/Dapper](postgres-outbox.md)
+outbox writer. Dispatch can start before the next recovery poll. The transaction commits independently
+of the broker. A rollback never queues sends.
 
 ## Registration
 
-Create the [schema](postgres-schema.md) first. Use the same application-owned `NpgsqlDataSource`,
-database, schema and prefix for EF Core and dispatch. Keep your normal `AddRelayer` routes and named
-`ITransport` registrations. For EF Core applications, prefer [the combined outbox registration](ef-core-outbox.md#registration),
-which includes direct dispatch and recovery. To configure workers individually:
+Create the [schema](postgres-schema.md) first. Keep your normal `AddRelayer` routes and named
+`ITransport` registrations. Register the direct dispatcher and maintenance worker with the same
+application-owned `NpgsqlDataSource`, schema and table prefix. The example names both workers `orders`.
 
 ```csharp
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Outbox.PostgreSql;
 
 services.AddRelayerPostgreSqlDirectDispatch("orders", dataSource,
@@ -30,15 +28,6 @@ services.AddRelayerPostgreSqlDirectDispatch("orders", dataSource,
     });
 services.AddRelayerPostgreSqlMaintenance("orders", dataSource,
     new PostgreSqlMaintenanceOptions { Schema = "messaging", TablePrefix = "orders_" });
-services.AddRelayerEntityFrameworkCoreOutbox();
-services.AddDbContext<OrdersDbContext>((provider, options) =>
-    options.UseNpgsql(dataSource).AddRelayerOutbox(provider,
-        new EntityFrameworkCoreOutboxOptions
-        {
-            Schema = "messaging",
-            TablePrefix = "orders_",
-            DispatchStoreName = "orders"
-        }));
 ```
 
 Direct-dispatch registration also registers the named scoped `IOutboxStore`; do not register that store
@@ -50,26 +39,57 @@ the same tables. Ordered dispatch alone does not recover unordered rows.
 If you use `NpgsqlSlimDataSourceBuilder`, call `EnableArrays()` before `Build()`; fenced batch claim and deletion
 operations use native UUID array parameters. The regular `NpgsqlDataSource` builder enables these mappings by default.
 
-Set `DispatchStoreName` on each participating context. Names are case-sensitive. A missing dispatcher
-or mismatched schema/prefix fails when the DbContext options are built. Before committing an
-EF Core transaction with buffered outbox rows, Relayer checks that its configured PostgreSQL
-host, port and database match the selected dispatcher. Separate data sources with the same
-target are supported. Roll back the transaction and correct the connection settings if the
-check fails. Omitting the name keeps enlistment-only behavior. The EF Core options also bind
-this name from configuration.
-
 For dispatch limits from configuration, use
 `services.AddRelayerPostgreSqlDirectDispatch("orders", dataSource, configuration.GetSection("Dispatch"), storeOptions)`.
 Keys are `QueueCapacity`, `BatchSize` and `ClaimDuration`. Registration snapshots the values and rejects
 malformed or nonpositive values. Read the same named snapshot with
 `IOptionsMonitor<PostgreSqlDirectDispatchOptions>.Get("orders")`. Restart the host to change dispatch limits.
 
+### EF Core writer
+
+Prefer the [combined outbox registration](ef-core-outbox.md#registration), which includes direct
+dispatch and recovery. If you register the workers individually as above, configure each
+participating DbContext with the matching schema, table prefix and `DispatchStoreName`.
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Relayer.Outbox.EntityFrameworkCore;
+
+services.AddRelayerEntityFrameworkCoreOutbox();
+services.AddDbContext<OrdersDbContext>((provider, options) =>
+    options.UseNpgsql(dataSource).AddRelayerOutbox(provider,
+        new EntityFrameworkCoreOutboxOptions
+        {
+            Schema = "messaging",
+            TablePrefix = "orders_",
+            DispatchStoreName = "orders"
+        }));
+```
+
+Names are case-sensitive. A missing dispatcher or mismatched schema or table prefix fails when
+the DbContext options are built. Before committing an EF Core transaction with buffered outbox rows,
+Relayer checks that its configured PostgreSQL host, port and database match the selected dispatcher.
+Separate data sources with the same target are supported. Roll back the transaction and correct the
+connection settings if the check fails. Omitting the name keeps enlistment-only behavior. The EF Core
+options also bind this name from configuration.
+
+Both synchronous and asynchronous [saves](ef-core-outbox.md#save-without-an-explicit-transaction)
+and explicit EF transaction commits notify the worker after a successful commit.
+
+### ADO.NET and Dapper writer
+
+Use the [named writer registration](postgres-outbox.md#named-direct-dispatch) with
+`AddRelayerPostgreSqlOutbox("orders", options)`. Use the dispatcher's case-sensitive name and
+matching schema and table prefix. The unnamed writer only enqueues rows for separately registered
+workers. Both `Commit` and `CommitAsync` on the
+[PostgreSQL outbox transaction](postgres-outbox.md#adonet-and-dapper) notify the named worker after
+the native transaction commits successfully.
+
 ## Sending and ownership
 
-Use the ordinary [transactional send API](ef-core-outbox.md#save-without-an-explicit-transaction).
-Both synchronous and asynchronous saves and explicit EF transaction commits notify the worker only
-after successful commit. The worker takes ownership of reusable serialized buffers before the caller
-can reuse or dispose its scope. It never uses the committing DbContext in the background.
+The worker takes ownership of reusable serialized buffers before the caller can reuse or dispose
+its scope. It opens its own database connections for background work.
 
 For each native group, one conditional database update acquires fresh fenced claims for eligible rows.
 Competing instances cannot normally dispatch the same row. The worker excludes rows claimed by another

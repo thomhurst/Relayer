@@ -6,7 +6,8 @@ description: "Commit business changes and buffered messages atomically through a
 `Relayer.Outbox.PostgreSql` registers a scoped `PostgreSqlOutbox` and `IOutboxEnlistment`.
 Messages sent in its active transaction are copied into owned buffers. `Commit` or `CommitAsync` writes
 all messages in one PostgreSQL insert, then commits the native transaction containing your business changes.
-No broker send occurs inside the transaction. Use `AddRelayerPostgreSqlOutbox("store", options)` to hand committed unordered rows to the named [direct-dispatch worker](direct-dispatch.md); registrations without a dispatch-store name only enqueue.
+No broker send occurs inside the transaction. Use the [named writer registration](#named-direct-dispatch)
+to notify the direct-dispatch worker after commit.
 [Ordered PostgreSQL dispatch and lane leases](ordered-dispatch.md) are available through separate registration.
 [Inbox deduplication](ef-core-inbox.md) is available through the EF Core consumer boundary.
 Use [EF Core enlistment](ef-core-outbox.md) instead when EF owns the transaction.
@@ -42,6 +43,27 @@ To expose durable reads and backlog health, register the [keyed store](postgres-
 Successive configuration registrations combine their sections. A later section overrides keys it supplies.
 Reloading a contributing section refreshes the options monitor. A new scope reads the combined settings and resolves
 fresh validator dependencies, while an existing scope keeps its resolved snapshot.
+
+### Named direct dispatch
+
+Register the [direct-dispatch and maintenance workers](direct-dispatch.md#registration), then pass the
+case-sensitive direct-dispatch store name to the writer registration. Use this overload in place of
+the unnamed overload above, which only enqueues rows.
+
+```csharp
+services.AddRelayerPostgreSqlOutbox("orders", new PostgreSqlOutboxOptions
+{
+    Schema = "messaging",
+    TablePrefix = "orders_",
+    Lanes = 32
+});
+```
+
+Keep the writer and dispatcher schema and table prefix identical. Configure the writer and dispatcher
+with matching Npgsql host, port and database settings. Separate data sources can use different
+credentials or pooling settings. Set `Database` explicitly if the connection settings also omit
+`Username`. A database target mismatch throws `InvalidOperationException` before Relayer opens a
+writer connection or starts a transaction.
 
 ## ADO.NET and Dapper
 
@@ -80,11 +102,6 @@ await using var transaction = await outbox.BeginTransactionAsync(dataSource,
     cancellationToken: cancellationToken);
 // Use transaction.Connection for the business commands, then send and commit as above.
 ```
-
-For a named direct dispatcher, configure the writer and dispatcher with matching Npgsql host, port
-and database settings. Separate data sources can use different credentials or pooling settings.
-Set `Database` explicitly if the connection settings also omit `Username`. A mismatch throws
-`InvalidOperationException` before Relayer opens a writer connection or starts a transaction.
 
 The connection overload requires an already open connection and leaves it open after completion.
 The data source overload closes its opened connection on commit, rollback, failure or disposal, without
