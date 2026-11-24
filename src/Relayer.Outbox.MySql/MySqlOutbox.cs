@@ -168,13 +168,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
             return null;
         }
 
-        _batch.Prepare(transaction);
-
-        for (var i = 0; i < _count; i++)
-        {
-            _batch.Add(_rows[i]);
-        }
-
+        _batch.Prepare(transaction, _rows, _count);
         return _batch;
     }
 

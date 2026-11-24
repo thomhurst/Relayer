@@ -100,6 +100,82 @@ public class AdoNetEnlistmentTests
     }
 
     [Test]
+    public async Task Enqueued_delivery_times_are_rounded_up_to_mysql_precision()
+    {
+        await using var database = new MySqlFixture();
+        await database.StartAsync();
+        await using var provider = Services();
+        await using var scope = provider.CreateAsyncScope();
+        var outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
+        await using var transaction = await outbox.BeginTransactionAsync(database.Source);
+        var midnight = new DateTimeOffset(2030, 1, 1, 2, 0, 0, TimeSpan.FromHours(2));
+        (DateTimeOffset? Requested, string? Stored)[] cases =
+        [
+            (DateTimeOffset.MaxValue.AddTicks(-9), "9999-12-31 23:59:59.999999"),
+            (midnight.AddTicks(1234560), "2030-01-01 00:00:00.123456"),
+            (midnight.AddTicks(1), "2030-01-01 00:00:00.000001"),
+            (midnight.AddTicks(-1), "2030-01-01 00:00:00.000000"),
+            (null, null)
+        ];
+        var rows = new List<(Guid Id, string? Stored)>();
+
+        foreach (var (requested, stored) in cases)
+        {
+            var row = Record(requested);
+            await outbox.EnlistAsync(row, default);
+            rows.Add((row.Id, stored));
+        }
+
+        await transaction.CommitAsync();
+        await using var connection = await database.Source.OpenConnectionAsync();
+
+        foreach (var (id, stored) in rows)
+        {
+            var actual = await connection.QuerySingleAsync<string?>(
+                "SELECT DATE_FORMAT(deliver_at, '%Y-%m-%d %H:%i:%s.%f') FROM relayer_outbox WHERE id = @id",
+                new
+                {
+                    id = id.ToByteArray(bigEndian: true)
+                });
+            await Assert.That(actual).IsEqualTo(stored);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Deadline_above_mysql_precision_limit_rolls_back_and_allows_reuse(bool synchronous)
+    {
+        await using var database = new MySqlFixture();
+        await database.StartAsync();
+        await database.Execute("CREATE TABLE business (id INT PRIMARY KEY) ENGINE=InnoDB");
+        await using var provider = Services();
+        await using var scope = provider.CreateAsyncScope();
+        var outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
+        await using var transaction = await outbox.BeginTransactionAsync(database.Source);
+        await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (1)", transaction: transaction);
+        await outbox.EnlistAsync(Record(), default);
+        await outbox.EnlistAsync(Record(DateTimeOffset.MaxValue.AddTicks(-8)), default);
+
+        if (synchronous)
+        {
+            await Assert.That(() => transaction.Commit()).Throws<ArgumentOutOfRangeException>();
+        }
+        else
+        {
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => transaction.CommitAsync());
+        }
+
+        await Assert.That(await Scalar(database, "SELECT count(*) FROM business")).IsEqualTo(0L);
+        await Assert.That(await Scalar(database, "SELECT count(*) FROM relayer_outbox")).IsEqualTo(0L);
+
+        await using var next = await outbox.BeginTransactionAsync(database.Source);
+        await outbox.EnlistAsync(Record(), default);
+        await next.CommitAsync();
+        await Assert.That(await Scalar(database, "SELECT count(*) FROM relayer_outbox")).IsEqualTo(1L);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Rollback_disposal_and_failed_native_batch_leave_no_partial_work(bool synchronous)
@@ -393,10 +469,10 @@ public class AdoNetEnlistmentTests
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
-    private static OutboxRecord Record()
+    private static OutboxRecord Record(DateTimeOffset? deliverAt = null)
     {
         return new(Guid.CreateVersion7(), "events", "order;v=1",
-                new OutgoingMessage("orders", new byte[] { 1 }), DateTimeOffset.UtcNow);
+                new OutgoingMessage("orders", new byte[] { 1 }, deliverAt: deliverAt), DateTimeOffset.UtcNow);
     }
 
     private static async Task<long> Scalar(MySqlFixture database, string sql)

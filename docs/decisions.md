@@ -1218,6 +1218,10 @@ The data-source overload owns only its opened connection; caller-supplied open c
 application-owned. Core shares the existing owned message buffer, metadata validation, header codec
 and stable lane hash with PostgreSQL. MySQL parameters reuse network-order UUID bytes, UTC timestamp
 buffers and reusable MemoryStream array slices without changing native connection settings.
+Before binding a scheduled delivery deadline, the batch rounds it up to the next UTC microsecond
+when needed. MySqlConnector's date encoders discard sub-microsecond precision, and MySQL cannot
+store it in `DATETIME(6)`. A deadline past the final representable microsecond fails the flush and
+rolls back the transaction.
 
 **Consequences.** No parallel batching or bulk-loading protocol is introduced. MySqlBatch is marked
 experimental upstream and does not guarantee one round trip on MySQL; packet and execution behavior
