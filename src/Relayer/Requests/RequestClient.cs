@@ -9,7 +9,9 @@ internal sealed class RequestClient<TRequest, TResponse>(SendPipeline pipeline, 
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if ((timeout < TimeSpan.FromMilliseconds(1) && (timeout <= TimeSpan.Zero || replies.Clock == TimeProvider.System))
+        var clock = replies.Clock;
+
+        if ((timeout < TimeSpan.FromMilliseconds(1) && (timeout <= TimeSpan.Zero || clock == TimeProvider.System))
             || timeout.TotalMilliseconds > uint.MaxValue - 1)
         {
             throw new ArgumentOutOfRangeException(nameof(timeout),
@@ -27,7 +29,8 @@ internal sealed class RequestClient<TRequest, TResponse>(SendPipeline pipeline, 
 
         try
         {
-            using var deadline = new CancellationTokenSource(timeout, replies.Clock);
+            var timerDelay = clock == TimeProvider.System ? SystemTimerDelay.RoundUp(timeout) : timeout;
+            using var deadline = new CancellationTokenSource(timerDelay, clock);
             using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
 
             try

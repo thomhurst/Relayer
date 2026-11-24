@@ -55,7 +55,7 @@ When the requester also declares a response send route to its advertised reply d
 
 ## Timeouts and bounded state
 
-The timeout covers sending and waiting. With the default `TimeProvider.System`, the minimum is 1 ms. Custom time providers can support shorter positive durations. All timeouts must be positive and at most 4,294,967,294 ms. Invalid values raise `ArgumentOutOfRangeException` before reserving a reply slot or sending. An elapsed timeout raises `TimeoutException`. Caller cancellation raises `OperationCanceledException` with the caller's token. The normal send route timeout still applies independently. Cancellation is passed to the native send; a transport must honor that token. Cancellation cannot retract work already accepted by a broker or cancel a responder's business operation.
+The timeout covers sending and waiting. With the default `TimeProvider.System`, the minimum is 1 ms and the timer rounds fractional milliseconds up. For example, a 1.9 ms timeout programs a 2 ms timer. Custom time providers receive the exact timeout and can support shorter positive durations. All timeouts must be positive and at most 4,294,967,294 ms. Invalid values raise `ArgumentOutOfRangeException` before reserving a reply slot or sending. An elapsed timeout raises `TimeoutException`. Caller cancellation raises `OperationCanceledException` with the caller's token. The normal send route timeout still applies independently. Cancellation is passed to the native send; a transport must honor that token. Cancellation cannot retract work already accepted by a broker or cancel a responder's business operation.
 
 Pending state is provider-owned and bounded per request/response pair:
 
