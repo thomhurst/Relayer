@@ -22,6 +22,21 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
+    public async Task Reconnect_waits_for_the_restarted_receiver_and_accepts_warmup_redelivery()
+    {
+        var result = await Suite("reconnect").RunAsync(TransportConformanceCase.Reconnect);
+        await Assert.That(result.Skipped).IsFalse();
+    }
+
+    [Test]
+    public async Task Reconnect_requires_a_recovery_marker_even_after_warmup_redelivery()
+    {
+        var error = await Assert.That(async () => await Suite("reconnect-missing-marker").RunAsync(TransportConformanceCase.Reconnect))
+            .Throws<InvalidOperationException>().WithMessageContaining("reconnect recovery receive");
+        await Assert.That(error!.InnerException is OperationCanceledException).IsTrue();
+    }
+
+    [Test]
     [Arguments("unexpected", "outage sends")]
     [Arguments("lost", "outage recovery receive; outstanding values: 1, 2, 3")]
     public async Task Outage_rejects_unexpected_failures_and_lost_acknowledged_messages(string mode, string phase)
@@ -149,6 +164,11 @@ public sealed class OutageConformanceTests
         private int _outageSends;
         private int _warmupSettlements;
         private readonly TaskCompletionSource _warmupRedelivered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private bool _started;
+        private bool _restartPending;
+        private int _reconnectWarmupReceived;
+
+        private bool TestReconnect => mode is "reconnect" or "reconnect-missing-marker";
 
         public ITransport Transport => this;
 
@@ -176,27 +196,47 @@ public sealed class OutageConformanceTests
 
         public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive)
         {
-            _inner.RegisterConsumer(receive);
+            _inner.RegisterConsumer((incoming, token) =>
+            {
+                if (TestReconnect && incoming.Message.Body.Span.SequenceEqual("{\"Value\":2}"u8))
+                {
+                    Volatile.Write(ref _reconnectWarmupReceived, 1);
+                }
+
+                return receive(incoming, token);
+            });
         }
 
         public ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken token)
         {
             // Requeue exactly the post-restart warm-up. Handler observation precedes
             // settlement, so its next delivery may already be queued when outage recovery starts.
+            if (TestReconnect && incoming.Message.Body.Span.SequenceEqual("{\"Value\":2}"u8))
+            {
+                return SettleWarmup(incoming, disposition, token, replayOnSettlement: 1);
+            }
+
             if (mode == "warmup-redelivery" && incoming.Message.Body.Span.SequenceEqual("{\"Value\":0}"u8))
             {
-                var settlement = Interlocked.Increment(ref _warmupSettlements);
+                return SettleWarmup(incoming, disposition, token, replayOnSettlement: 2);
+            }
 
-                if (settlement == 2)
-                {
-                    incoming.Redeliver(TimeSpan.Zero);
-                    return default;
-                }
+            return _inner.SettleAsync(incoming, disposition, token);
+        }
 
-                if (settlement == 3)
-                {
-                    _warmupRedelivered.TrySetResult();
-                }
+        private ValueTask SettleWarmup(InMemoryDelivery incoming, Disposition disposition, CancellationToken token, int replayOnSettlement)
+        {
+            var settlement = Interlocked.Increment(ref _warmupSettlements);
+
+            if (settlement == replayOnSettlement)
+            {
+                incoming.Redeliver(TimeSpan.Zero);
+                return default;
+            }
+
+            if (settlement == replayOnSettlement + 1)
+            {
+                _warmupRedelivered.TrySetResult();
             }
 
             return _inner.SettleAsync(incoming, disposition, token);
@@ -219,6 +259,14 @@ public sealed class OutageConformanceTests
                 throw new InvalidOperationException("Faulted application was not recovered.");
             }
 
+            if (TestReconnect && _started)
+            {
+                // Model StartAsync returning before the restarted receiver connects.
+                _restartPending = true;
+                return Task.CompletedTask;
+            }
+
+            _started = true;
             return _inner.Transport.StartAsync(token);
         }
 
@@ -253,6 +301,11 @@ public sealed class OutageConformanceTests
 
         public async Task DisconnectAsync(CancellationToken token)
         {
+            if (TestReconnect && Volatile.Read(ref _reconnectWarmupReceived) == 0)
+            {
+                throw new InvalidOperationException("Disconnected before the restarted receiver received the warm-up.");
+            }
+
             if (hook is { Phase: "broker disconnect" })
             {
                 await hook.WaitAsync();
@@ -272,11 +325,17 @@ public sealed class OutageConformanceTests
             token.ThrowIfCancellationRequested();
             _offline = false;
             _recovered = true;
-            return Task.CompletedTask;
+            return TestReconnect ? _inner.ReconnectAsync(token) : Task.CompletedTask;
         }
 
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
         {
+            if (_restartPending)
+            {
+                await _inner.Transport.StartAsync(token);
+                _restartPending = false;
+            }
+
             if (_offline)
             {
                 var attempt = Interlocked.Increment(ref _outageSends);
@@ -311,9 +370,14 @@ public sealed class OutageConformanceTests
             }
             // Queue the redelivered warm-up before the recovery marker, regardless
             // of the in-memory endpoint's partition scheduling.
-            if (mode == "warmup-redelivery" && !_offline && Volatile.Read(ref _outageSends) != 0)
+            if (TestReconnect && _recovered || mode == "warmup-redelivery" && !_offline && Volatile.Read(ref _outageSends) != 0)
             {
                 await _warmupRedelivered.Task.WaitAsync(token);
+
+                if (mode == "reconnect-missing-marker")
+                {
+                    return;
+                }
             }
 
             await _inner.Transport.SendAsync(message, token);

@@ -558,17 +558,31 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
                 break;
             case TransportConformanceCase.Reconnect:
+                const int Warmup = 2;
+                const int Recovery = 3;
+
                 await Send(1).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 1);
                 // Drain the first completion before fault injection. At-least-once brokers may otherwise redeliver it legitimately.
                 await Stop().ConfigureAwait(false);
                 await Start().ConfigureAwait(false);
+                await Send(Warmup).ConfigureAwait(false);
+                CheckBody(await Next("reconnect warm-up receive").ConfigureAwait(false), Warmup);
                 progress.Phase = "broker disconnect";
                 await fixture.DisconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
                 progress.Phase = "broker reconnect";
                 await fixture.ReconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
-                await Send(2).ConfigureAwait(false);
-                CheckBody(await Next().ConfigureAwait(false), 2);
+                await Send(Recovery).ConfigureAwait(false);
+                Delivery recoveredDelivery;
+
+                // Observing the warm-up does not mean its native settlement survived the outage.
+                do
+                {
+                    recoveredDelivery = await Next("reconnect recovery receive").ConfigureAwait(false);
+                }
+                while (HasBody(recoveredDelivery, Warmup));
+
+                CheckBody(recoveredDelivery, Recovery);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(scenario));
@@ -661,7 +675,12 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
     private static void CheckBody(Delivery delivery, int value)
     {
-        Require(Encoding.UTF8.GetString(delivery.Body) == $"{{\"Value\":{value}}}", "Native body or delivery order changed.");
+        Require(HasBody(delivery, value), "Native body or delivery order changed.");
+    }
+
+    private static bool HasBody(Delivery delivery, int value)
+    {
+        return Encoding.UTF8.GetString(delivery.Body) == $"{{\"Value\":{value}}}";
     }
 
     private static void Require(bool condition, string message)
