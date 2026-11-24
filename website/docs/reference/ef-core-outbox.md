@@ -103,8 +103,10 @@ Named options and scoped snapshots each get their own instance, so configuring a
 preserves the default settings.
 
 Context pooling, concurrent use of one service scope and ambient
-`TransactionScope` enlistment are not supported. Other EF database providers fail on first use;
-[SQL Server schema tooling and ADO.NET enlistment](sqlserver-store.md) and [MySQL schema tooling](mysql-store.md) are implemented separately. EF Core integration for those providers remains planned.
+`TransactionScope` enlistment are not supported. Relayer supports EF Core outbox enlistment only for
+PostgreSQL. For other providers, see [SQL Server schema tooling and ADO.NET enlistment](sqlserver-store.md)
+or [MySQL transactional enqueue with ADO.NET or Dapper](mysql-store.md#transactional-enqueue-with-adonet-or-dapper).
+EF Core integration for SQL Server and MySQL remains planned.
 
 `AddDbContextPool` and `AddPooledDbContextFactory` reuse options and interceptors across application
 scopes. Relayer's interceptors must share the current `ISender` scope's outbox coordinator so sends,
@@ -116,9 +118,13 @@ initialized EF's shared internal service provider. Manually configuring outbox o
 an application scope's provider. Use `AddDbContext` for both outbox and EF consumer
 contexts. Npgsql connection pooling is independent and remains supported.
 
-Application-owned scoped factories can select native stores for manually initiated units and explicitly
-composed tenant endpoints. See [native tenant store selection](tenant-stores.md) for database/schema
-isolation, ownership and the current dynamic-consumer limitation.
+Application-owned scoped factories can select PostgreSQL stores for manually initiated units.
+With `AddRelayerTenancy`, a single-message `EntityFrameworkCore<TContext>` consumer can also resolve
+its PostgreSQL DbContext in the delivery scope after the application authorizes the incoming tenant.
+This setup requires no fallback tenant at startup. Follow the
+[tenant-store consumer setup](tenant-stores.md#consumer-and-dispatch-boundary) to configure the scoped
+factory. `Saga<TContext, TState>` still resolves a DbContext at startup to validate its state model,
+so its factory must work without a tenant in scope.
 
 ### Individual registrations
 
