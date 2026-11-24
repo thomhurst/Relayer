@@ -669,6 +669,17 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 while (HasBody(recoveredDelivery, Initial) || HasBody(recoveredDelivery, Warmup));
 
                 CheckBody(recoveredDelivery, Recovery);
+                await Stop().ConfigureAwait(false);
+                progress.Phase = "reconnect drain verification";
+
+                while (received.TryRead(out var bufferedDelivery))
+                {
+                    token.ThrowIfCancellationRequested();
+                    Require(HasBody(bufferedDelivery, Initial) || HasBody(bufferedDelivery, Warmup) ||
+                        HasBody(bufferedDelivery, Recovery), "Unexpected reconnect delivery body.");
+                }
+
+                token.ThrowIfCancellationRequested();
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(scenario));

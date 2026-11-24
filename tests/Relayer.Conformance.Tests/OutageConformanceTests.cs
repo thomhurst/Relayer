@@ -1,3 +1,4 @@
+using System.Text;
 using Relayer.InMemory;
 using Relayer.Testing;
 using Relayer.Transports;
@@ -41,6 +42,26 @@ public sealed class OutageConformanceTests
     public async Task Reconnect_waits_for_the_restarted_receiver_and_accepts_warmup_redelivery()
     {
         var result = await Suite("reconnect").RunAsync(TransportConformanceCase.Reconnect);
+        await Assert.That(result.Skipped).IsFalse();
+    }
+
+    [Test]
+    public async Task Reconnect_rejects_unexpected_delivery_during_final_drain()
+    {
+        var suite = Suite("reconnect", finalDrainValue: 99);
+        var error = await Assert.That(async () => await suite.RunAsync(TransportConformanceCase.Reconnect))
+            .Throws<InvalidOperationException>().WithMessageContaining("reconnect drain verification");
+        await Assert.That(error!.InnerException!.Message).Contains("Unexpected reconnect delivery body.");
+    }
+
+    [Test]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    public async Task Reconnect_accepts_marker_replay_during_final_drain(int value)
+    {
+        var suite = Suite("reconnect", finalDrainValue: value);
+        var result = await suite.RunAsync(TransportConformanceCase.Reconnect);
         await Assert.That(result.Skipped).IsFalse();
     }
 
@@ -314,17 +335,22 @@ public sealed class OutageConformanceTests
     }
 
     private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(string mode,
-        string? replayBefore = null, bool omitMarker = false)
+        string? replayBefore = null, bool omitMarker = false, int? finalDrainValue = null)
     {
         return new((tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
-            new OutageFixture(tracing, mode, replayBefore: replayBefore, omitMarker: omitMarker)), TimeSpan.FromSeconds(2));
+            new OutageFixture(tracing, mode, replayBefore: replayBefore, omitMarker: omitMarker,
+                finalDrainValue: finalDrainValue)), TimeSpan.FromSeconds(2));
     }
 
     // A controlled fixture tests the contract's assertions, not a broker's reconnect implementation.
     private sealed class OutageFixture(MessageTracing tracing, string mode, PendingHook? hook = null, List<string>? calls = null,
-        string? replayBefore = null, bool omitMarker = false) : ITransportConformanceFixture<InMemoryDelivery>, ITransport
+        string? replayBefore = null, bool omitMarker = false, int? finalDrainValue = null)
+        : ITransportConformanceFixture<InMemoryDelivery>, ITransport
     {
+        private const string FinalDrainKey = "final-drain";
         private readonly InMemoryFixture _inner = new(tracing);
+        private readonly TaskCompletionSource _finalDrainReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private OutgoingMessage? _finalDrainDelivery;
         private OutgoingMessage _initial;
         private bool _offline;
         private bool _shutdownFailed;
@@ -375,7 +401,7 @@ public sealed class OutageConformanceTests
         {
             calls?.Add(nameof(RegisterConsumer));
 
-            _inner.RegisterConsumer((incoming, token) =>
+            _inner.RegisterConsumer(async (incoming, token) =>
             {
                 var body = incoming.Message.Body.Span;
 
@@ -385,7 +411,14 @@ public sealed class OutageConformanceTests
                     Volatile.Write(ref _restartWarmupReceived, 1);
                 }
 
-                return receive(incoming, token);
+                var disposition = await receive(incoming, token);
+
+                if (finalDrainValue is not null && incoming.Message.OrderingKey?.ToString() == FinalDrainKey)
+                {
+                    _finalDrainReceived.TrySetResult();
+                }
+
+                return disposition;
             });
         }
 
@@ -471,6 +504,13 @@ public sealed class OutageConformanceTests
                 _shutdownIncomplete = true;
                 // Model a disconnected native drain that outlives the caller's stop budget.
                 throw new IOException("Disconnected drain is still pending.");
+            }
+
+            if (_finalDrainDelivery is { } delivery)
+            {
+                _finalDrainDelivery = null;
+                await _inner.Transport.SendAsync(delivery, token);
+                await _finalDrainReceived.Task.WaitAsync(token);
             }
 
             await _inner.Transport.StopAsync(token);
@@ -637,6 +677,12 @@ public sealed class OutageConformanceTests
                         return;
                     }
                 }
+            }
+
+            if (_recovered && finalDrainValue is { } value)
+            {
+                var body = Encoding.UTF8.GetBytes($"{{\"Value\":{value}}}");
+                _finalDrainDelivery = new(message.Destination, body, message.Headers.ToArray(), new WireString(FinalDrainKey));
             }
 
             await _inner.Transport.SendAsync(message, token);
