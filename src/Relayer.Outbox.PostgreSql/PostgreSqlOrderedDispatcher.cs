@@ -13,6 +13,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
     private readonly NpgsqlDataSource _source;
     private readonly PostgreSqlDispatchFailures _failures;
     private readonly PostgreSqlOrderedDispatchOptions _options;
+    private readonly TimeSpan _laneTimeout;
     private readonly PostgreSqlLaneCoordinator _coordinator;
     private readonly PostgreSqlOrderedLane _lane;
     private readonly Dictionary<string, ITransport> _transports = new(StringComparer.Ordinal);
@@ -40,6 +41,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
         _hostLifetime = hostLifetime;
         _options = options;
         var store = options.Validate();
+        _laneTimeout = OrderedLaneWorker.HalfLeaseTimeout(options.LeaseDuration);
         _coordinator = new(source, options);
         _lane = new(source, store, options.LeaseDuration);
         _rows = new OutboxRecord[options.BatchSize];
@@ -148,7 +150,8 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
     // Reuse native membership, readiness probes and fenced lane transactions in one catalog turn.
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    internal async ValueTask DispatchPassAsync(TimeSpan remainingTurn, CancellationToken cancellationToken)
+    internal async ValueTask DispatchPassAsync(TimeSpan remainingTurn, CancellationToken cancellationToken,
+        Action<CancellationTokenSource, TimeSpan>? scheduleTimeout = null)
     {
         var started = _timeProvider.GetTimestamp();
         await _coordinator.RebalanceAsync(cancellationToken).ConfigureAwait(false);
@@ -169,7 +172,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                     continue;
                 }
 
-                deadline.CancelAfter(_options.LeaseDuration / 2);
+                OrderedLaneWorker.ScheduleTimeout(deadline, _laneTimeout, scheduleTimeout);
                 var remaining = remainingTurn - _timeProvider.GetElapsedTime(started);
 
                 if (remaining <= TimeSpan.Zero)

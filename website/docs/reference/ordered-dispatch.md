@@ -94,6 +94,10 @@ fenced row outcomes finish. A competing owner cannot take over while that transa
 even after lease expiry. The worker sets a deadline of half the lease duration for acquiring, reading,
 sending and committing each batch. It stops admitting rows after one quarter of the lease duration, reserving the remaining deadline for the final admitted send and commit. Slow healthy batches therefore commit a confirmed prefix instead of repeatedly replaying it. A single send must still fit the configured hard deadline. It awaits cancellation completion before freeing borrowed payloads.
 
+System cancellation timers round fractional half-lease durations up to the next whole millisecond.
+For example, a lease of 1,001.8 ms programs a 501 ms timer. This applies to lane batches, including
+PostgreSQL tenant dispatch, and to lease release during ordered-worker shutdown.
+
 Reads follow the partial `(lane, seq)` pending index, in database-assigned insertion order. Scheduling and existing claims
 never cause the worker to skip a head row. A future or live-claimed head temporarily stalls its lane.
 Later rows with a parked head's ordering key stay parked while other keys can continue, using the parked-key

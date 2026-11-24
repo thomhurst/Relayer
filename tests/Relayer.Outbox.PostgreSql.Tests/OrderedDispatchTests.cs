@@ -483,6 +483,39 @@ public class OrderedDispatchTests
     }
 
     [Test]
+    [Arguments(600_018_000L, 30_001L)]
+    [Arguments(600_020_000L, 30_001L)]
+    public async Task Catalog_pass_schedules_the_half_lease_in_whole_milliseconds(long leaseTicks, long milliseconds)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Insert(source, Id(1), 0);
+
+        var scheduled = new List<TimeSpan>();
+        var transport = new RecordingTransport();
+        using var worker = new PostgreSqlOrderedDispatcher(source,
+            new PostgreSqlOrderedDispatchOptions
+            {
+                Lanes = 1,
+                LeaseDuration = TimeSpan.FromTicks(leaseTicks)
+            },
+            [transport],
+            NullLogger<PostgreSqlOrderedDispatcher>.Instance, new BudgetClock());
+
+        await worker.DispatchPassAsync(TimeSpan.FromSeconds(10), default, scheduleTimeout: (deadline, delay) =>
+        {
+            scheduled.Add(delay);
+            deadline.CancelAfter(delay);
+        });
+        await worker.ReleaseAsync(default);
+
+        await Assert.That(scheduled).IsEquivalentTo(new[] { TimeSpan.FromMilliseconds(milliseconds) });
+        await Assert.That(transport.Ids).IsEquivalentTo(new[] { Id(1) });
+    }
+
+    [Test]
     public async Task Hosted_worker_drains_backlog_without_waiting_for_poll_timer()
     {
         await using var fixture = new PostgreSqlFixture();
