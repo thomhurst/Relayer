@@ -95,6 +95,9 @@ calculations within PostgreSQL's timestamp range. `RecoveryDelay` accepts zero, 
 retention durations must be positive. To retain dead rows or inbox records indefinitely,
 set the corresponding option to `null` in code or `"infinite"` in configuration.
 
+PostgreSQL intervals have microsecond precision. Relayer rounds fractional microseconds
+up for all four cutoff ages. For example, an age of nine ticks uses a one-microsecond cutoff.
+
 ## Retention
 
 Successfully dispatched outbox rows are deleted immediately in fenced batches. **Pending and parked outbox
