@@ -45,6 +45,9 @@ Keys are `QueueCapacity`, `BatchSize` and `ClaimDuration`. Registration snapshot
 malformed or nonpositive values. Read the same named snapshot with
 `IOptionsMonitor<PostgreSqlDirectDispatchOptions>.Get("orders")`. Restart the host to change dispatch limits.
 
+PostgreSQL requires a `ClaimDuration` of at least one microsecond (10 ticks) in code and configuration.
+PostgreSQL intervals have microsecond resolution. Npgsql truncates fractional microseconds.
+
 ### EF Core writer
 
 Prefer the [combined outbox registration](ef-core-outbox.md#registration), which includes direct

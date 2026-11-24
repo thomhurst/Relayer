@@ -48,6 +48,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         }
 
         dispatchOptions ??= new();
+        PostgreSqlDirectDispatchOptions.ValidateClaimDurationResolution(dispatchOptions.ClaimDuration);
 
         if (dispatchOptions.QueueCapacity is <= 0 or int.MaxValue || dispatchOptions.BatchSize <= 0 || dispatchOptions.ClaimDuration <= TimeSpan.Zero)
         {

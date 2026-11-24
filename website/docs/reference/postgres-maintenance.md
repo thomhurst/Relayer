@@ -51,6 +51,9 @@ or `null` in code, to disable deletion from that table. Settings are immutable s
 Leadership leases must be 1 second–1 hour.
 All instances sharing these tables must agree on retention and timing settings.
 
+Set `ClaimDuration` to at least one microsecond (10 ticks) in code and configuration.
+PostgreSQL intervals have microsecond resolution. Npgsql truncates fractional microseconds.
+
 ## Recovery and ownership
 
 Hosted maintenance waits for the application to finish starting before claiming rows.

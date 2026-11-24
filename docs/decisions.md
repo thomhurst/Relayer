@@ -572,6 +572,8 @@ The durable store contract needs explicit recovery and ownership rules before da
 cannot undo a broker send; crash recovery and sends that outlive their claims can still duplicate delivery.
 This preserves the at-least-once contract. Ordered routes additionally require lane ownership; row claims alone
 do not guarantee ordering. Schema scripts must persist claim tokens and expiry alongside pending/parked state.
+PostgreSQL direct dispatch, maintenance and change capture require a claim duration of at least one microsecond.
+The native interval conversion truncates smaller positive durations to zero, which would expire the claim immediately.
 
 ## D30. Share PostgreSQL schema SQL with application-owned EF migrations
 
