@@ -427,6 +427,14 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Send(2).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 2);
                 await Stop().ConfigureAwait(false);
+                progress.Phase = "restart replay verification";
+
+                while (received.TryRead(out var delivery))
+                {
+                    token.ThrowIfCancellationRequested();
+                    Require(!HasBody(delivery, 1), "Original message replayed after the restart marker.");
+                }
+
                 progress.Phase = "native settlement verification";
                 await WaitForLifecycleAsync(fixture.VerifySettlementAsync(token).AsTask(), token).ConfigureAwait(false);
                 break;
