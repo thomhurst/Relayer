@@ -142,6 +142,35 @@ public class ConsumerCircuitTests
             TimeSpan.FromMilliseconds(breakMs), new Clock())).Throws<ArgumentOutOfRangeException>();
     }
 
+    [Test]
+    [Arguments(1.0001, 2.0009, 2L, 3L)]
+    [Arguments(1.0, 4_294_967_294.0, 1L, 4_294_967_294L)]
+    [Arguments(4_294_967_293.9999, 1000.0, 4_294_967_294L, 1000L)]
+    public async Task System_timer_rounds_up_without_exceeding_timer_bounds(
+        double samplingMs, double breakMs, long expectedSamplingMs, long expectedBreakMs)
+    {
+        var (samplingInterval, breakInterval) = ConsumerCircuit.GetTimerDurations(
+            TimeProvider.System, TimeSpan.FromMilliseconds(samplingMs), TimeSpan.FromMilliseconds(breakMs));
+
+        await Assert.That(samplingInterval).IsEqualTo(TimeSpan.FromMilliseconds(expectedSamplingMs));
+        await Assert.That(breakInterval).IsEqualTo(TimeSpan.FromMilliseconds(expectedBreakMs));
+    }
+
+    [Test]
+    public async Task Custom_timer_receives_exact_durations()
+    {
+        var time = new Clock();
+        var samplingDuration = TimeSpan.FromTicks(10_001);
+        var breakDuration = TimeSpan.FromTicks(20_009);
+        using var circuit = new ConsumerCircuit(1, 1, samplingDuration, breakDuration, time);
+
+        await Assert.That(time.Sampling.Due).IsEqualTo(samplingDuration);
+        await Assert.That(time.Sampling.Period).IsEqualTo(samplingDuration);
+        await Assert.That(circuit.Complete(false, true)).IsTrue();
+        await Assert.That(time.Recovery.Due).IsEqualTo(breakDuration);
+        await Assert.That(time.Recovery.Period).IsEqualTo(Timeout.InfiniteTimeSpan);
+    }
+
     internal sealed class Clock : TimeProvider
     {
         private readonly List<Timer> _timers = [];
@@ -166,6 +195,11 @@ public class ConsumerCircuitTests
             get; private set;
         }
 
+        internal TimeSpan Period
+        {
+            get; private set;
+        }
+
         internal bool Disposed
         {
             get; private set;
@@ -179,6 +213,7 @@ public class ConsumerCircuitTests
         public bool Change(TimeSpan dueTime, TimeSpan period)
         {
             Due = dueTime;
+            Period = period;
             return !Disposed;
         }
 
