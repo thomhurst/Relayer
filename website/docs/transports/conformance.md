@@ -57,6 +57,8 @@ The PostgreSQL local fixture runs `SendReceiveSettle`, `OrderingByKey`, `TracePr
 
 ## Contracts
 
+If the caller cancels or the scenario deadline expires while the dead-letter read is pending, `DeadLetter` reports a failure during `dead-letter receive` and proceeds with bounded cleanup. The suite observes any later read fault in the background.
+
 | Case | Checks | Native capability required |
 |---|---|---|
 | `SendReceiveSettle` | Body/header ownership, no replay after consumer restart and native completion of the restart marker | None; requires `VerifySettlementAsync` |
