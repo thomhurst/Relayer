@@ -115,10 +115,23 @@ internal abstract class OutboxMaintenanceWorker(int tableCount, int batchSize, i
 
                 var delay = next - clock.GetElapsedTime(start);
 
-                if (delay > TimeSpan.Zero)
+                if (delay <= TimeSpan.Zero)
                 {
-                    // Task.Delay truncates to milliseconds. Round up to avoid spinning before the deadline.
-                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(delay.TotalMilliseconds)), clock, idleToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (clock == TimeProvider.System)
+                {
+                    // Round up to avoid spinning before the deadline.
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(delay.TotalMilliseconds)), idleToken).ConfigureAwait(false);
+                }
+                else if (delay.Ticks % TimeSpan.TicksPerMillisecond == 0)
+                {
+                    await Task.Delay(delay, clock, idleToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await WaitForCustomTimerAsync(delay, clock, idleToken).ConfigureAwait(false);
                 }
             }
         }
@@ -137,6 +150,26 @@ internal abstract class OutboxMaintenanceWorker(int tableCount, int batchSize, i
             {
                 ReportFailure("lease release", error);
             }
+        }
+    }
+
+    private static async ValueTask WaitForCustomTimerAsync(TimeSpan delay, TimeProvider clock, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Task.Delay truncates fractional milliseconds before calling the provider.
+        var elapsed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ITimer timer;
+
+        using (ExecutionContext.IsFlowSuppressed() ? default : ExecutionContext.SuppressFlow())
+        {
+            timer = clock.CreateTimer(static state => ((TaskCompletionSource)state!).TrySetResult(),
+                elapsed, delay, Timeout.InfiniteTimeSpan);
+        }
+
+        using (timer)
+        {
+            await elapsed.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
