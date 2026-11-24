@@ -9,8 +9,8 @@ See the [database integration support matrix](outbox-stores.md#database-integrat
 It supplies durable reads, atomic claims, renewal, completion, failure persistence and eligible backlog counts.
 [EF Core transaction enlistment](ef-core-outbox.md) and [ADO.NET/Dapper transactions](postgres-outbox.md)
 supply atomic enqueue. [Unordered direct dispatch](direct-dispatch.md) can send due rows immediately after
-an EF commit. [Ordered dispatch with lane leases](ordered-dispatch.md) is available through separate
-registration. [Leased recovery and cleanup](postgres-maintenance.md) are available separately.
+either writer commits when configured with a dispatch-store name. [Ordered dispatch with lane leases](ordered-dispatch.md)
+is available through separate registration. [Leased recovery and cleanup](postgres-maintenance.md) are available separately.
 [Inbox deduplication](ef-core-inbox.md) is available through the EF Core consumer boundary.
 
 ## Registration
