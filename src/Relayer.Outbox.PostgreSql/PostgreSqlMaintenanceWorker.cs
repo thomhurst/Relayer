@@ -15,6 +15,10 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
     private readonly NpgsqlDataSource _source;
     private readonly TimeProvider? _admissionTimeProvider;
     private readonly PostgreSqlMaintenanceOptions _options;
+    private readonly NpgsqlInterval _recoveryAge;
+    private readonly NpgsqlInterval _sentRetention;
+    private readonly NpgsqlInterval _deadRetention;
+    private readonly NpgsqlInterval _inboxRetention;
     private readonly PostgreSqlOutboxStore _store;
     private readonly PostgreSqlDirectDispatcher _dispatcher;
     private readonly ILogger<PostgreSqlMaintenanceWorker> _logger;
@@ -50,6 +54,11 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         _admissionTimeProvider = admissionTimeProvider;
         _options = options;
         var store = options.Validate();
+        _recoveryAge = RoundCutoffAge(options.RecoveryDelay);
+        _sentRetention = RoundCutoffAge(options.SentRetention);
+        _deadRetention = RoundCutoffAge(options.DeadRetention.GetValueOrDefault());
+        _inboxRetention = RoundCutoffAge(options.InboxRetention.GetValueOrDefault());
+
         _store = new(source, store);
         _logger = logger;
         _dispatcher = new(source, store, new()
@@ -79,6 +88,15 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         // Recheck age on the target row after a concurrent completion refreshes it under a row lock.
         _sent = $"DELETE FROM {Table("outbox_sent")} WHERE sent_at <= clock_timestamp() - @retention AND id IN (SELECT id FROM {Table("outbox_sent")} WHERE sent_at <= clock_timestamp() - @retention ORDER BY sent_at, id LIMIT @limit)";
         _inbox = $"DELETE FROM {Table("inbox")} WHERE (consumer, message_id) IN (SELECT consumer, message_id FROM {Table("inbox")} WHERE processed_at <= clock_timestamp() - @retention ORDER BY processed_at, consumer, message_id LIMIT @limit)";
+    }
+
+    private static NpgsqlInterval RoundCutoffAge(TimeSpan age)
+    {
+        // Preserve the calendar-day component Npgsql derives from TimeSpan. Across DST,
+        // rounding the remaining time up to 24 hours cannot carry into another calendar day.
+        long ticksInDay = age.Ticks % TimeSpan.TicksPerDay;
+        long microseconds = (ticksInDay + TimeSpan.TicksPerMicrosecond - 1) / TimeSpan.TicksPerMicrosecond;
+        return new(0, age.Days, microseconds);
     }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
@@ -276,7 +294,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         }
 
         await using var command = new NpgsqlCommand(_read, connection, transaction);
-        command.Parameters.AddWithValue("age", _options.RecoveryDelay);
+        command.Parameters.AddWithValue("age", NpgsqlDbType.Interval, _recoveryAge);
         command.Parameters.Add(new NpgsqlParameter<Guid?>("after", NpgsqlDbType.Uuid) { TypedValue = _after });
         command.Parameters.Add(new NpgsqlParameter<Guid?>("through", NpgsqlDbType.Uuid) { TypedValue = _through });
         command.Parameters.AddWithValue("limit", _rows.Length);
@@ -352,17 +370,17 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
     {
         return table switch
         {
-            0 => await DeleteAsync(connection, transaction, _sent, _options.SentRetention, cancellationToken).ConfigureAwait(false),
-            1 => await DeleteAsync(connection, transaction, _dead, _options.DeadRetention.GetValueOrDefault(), cancellationToken).ConfigureAwait(false),
-            _ => await DeleteAsync(connection, transaction, _inbox, _options.InboxRetention.GetValueOrDefault(), cancellationToken).ConfigureAwait(false),
+            0 => await DeleteAsync(connection, transaction, _sent, _sentRetention, cancellationToken).ConfigureAwait(false),
+            1 => await DeleteAsync(connection, transaction, _dead, _deadRetention, cancellationToken).ConfigureAwait(false),
+            _ => await DeleteAsync(connection, transaction, _inbox, _inboxRetention, cancellationToken).ConfigureAwait(false),
         };
     }
 
     private async ValueTask<int> DeleteAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
-        string sql, TimeSpan retention, CancellationToken cancellationToken)
+        string sql, NpgsqlInterval retention, CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(sql, connection, transaction);
-        command.Parameters.AddWithValue("retention", retention);
+        command.Parameters.AddWithValue("retention", NpgsqlDbType.Interval, retention);
         command.Parameters.AddWithValue("limit", _options.BatchSize);
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }

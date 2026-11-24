@@ -113,6 +113,66 @@ public class MaintenanceTests
     }
 
     [Test]
+    [Arguments(9L, 1L)]
+    [Arguments(10L, 1L)]
+    [Arguments(11L, 2L)]
+    [Arguments(TimeSpan.TicksPerDay - 1, TimeSpan.MicrosecondsPerDay)]
+    public async Task Recovery_and_retention_use_the_rounded_cutoff(long ageTicks, long cutoffMicroseconds)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        var settings = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+        {
+            SearchPath = "public, pg_catalog",
+            Timezone = "Europe/London"
+        };
+        await using var source = NpgsqlDataSource.Create(settings.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        // Freeze the clock at microsecond precision in this test database, just after a DST transition.
+        await Sql(source, """
+            CREATE FUNCTION public.clock_timestamp() RETURNS timestamptz
+            LANGUAGE sql IMMUTABLE AS $$ SELECT timestamptz '2026-03-29 12:00:00+00' $$;
+            """);
+        await Insert(source, Id(1));
+        await Insert(source, Id(2));
+        await using var seed = source.CreateCommand("""
+            UPDATE relayer_outbox
+            SET created_at = clock_timestamp() - interval '1 microsecond' *
+                (CASE WHEN id = @younger THEN @cutoff - 1 ELSE @cutoff END);
+            INSERT INTO relayer_outbox_dead (id, transport, destination, message_type, headers, body, created_at, failed_at)
+            SELECT id, transport, destination, message_type, headers, body, created_at, created_at FROM relayer_outbox;
+            INSERT INTO relayer_inbox (consumer, message_id, processed_at)
+            SELECT 'orders', id, created_at FROM relayer_outbox;
+            INSERT INTO relayer_outbox_sent (id, destination, sent_at)
+            SELECT id, destination, created_at FROM relayer_outbox;
+            """);
+        seed.Parameters.AddWithValue("younger", Id(2));
+        seed.Parameters.AddWithValue("cutoff", cutoffMicroseconds);
+        await seed.ExecuteNonQueryAsync();
+
+        var age = TimeSpan.FromTicks(ageTicks);
+        var transport = new RecordingTransport();
+        using var worker = Worker(source, transport, new()
+        {
+            RecoveryDelay = age,
+            RetainSentMessages = true,
+            SentRetention = age,
+            DeadRetention = age,
+            InboxRetention = age
+        });
+
+        var expired = await worker.CleanupAsync(default);
+        await Assert.That(expired).IsEqualTo(3);
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(1L);
+        await Assert.That(await Count(source, "relayer_inbox")).IsEqualTo(1L);
+        await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(1L);
+
+        var recovered = await worker.SweepAsync(default);
+        await Assert.That(recovered).IsEqualTo(1);
+        await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
+    }
+
+    [Test]
     public async Task Connected_sweeper_holds_leadership_through_native_send_then_rival_takes_over_after_release()
     {
         await using var fixture = new PostgreSqlFixture();

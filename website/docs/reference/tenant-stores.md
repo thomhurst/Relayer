@@ -249,7 +249,8 @@ Registration requires `PollInterval` and `TurnTimeout` to be between 1 ms and 4,
 inclusive. They default to 1 second and 15 seconds, respectively.
 
 Catalog dispatch applies the same [PostgreSQL cutoff age limits](postgres-maintenance.md#cutoff-age-limits)
-as standalone maintenance.
+as standalone maintenance. It rounds fractional microseconds up for `RecoveryDelay`,
+`DeadRetention`, `InboxRetention`, and `SentRetention` before calculating database cutoffs.
 
 Ordered batches stop admitting messages after half the remaining turn budget (or the existing lease-based
 admission budget, whichever is shorter), reserving time for the final admitted send and database commit.
