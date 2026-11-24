@@ -75,6 +75,11 @@ If a custom rule retries `MessageEnvelopeException`, an in-process retry checks 
 
 Consumers retry retryable handler failures three times by default, with backoffs of 100 ms, 500 ms and 1 s before jitter (four total attempts). Jitter shortens each backoff by up to 20%. A brief dependency failure can recover without a dead-letter or another broker delivery. Permanent failures still dead-letter immediately, and durable redelivery is disabled until configured. Retries keep the current native delivery open, so account for this delay in broker lock or acknowledgement deadlines.
 
+A zero entry in `RetryDelays` retries immediately. With `TimeProvider.System`, Relayer schedules
+a timer of at least 1 ms for every positive entry, even when jitter shortens it below 1 ms.
+The actual wait depends on the system timer resolution. Custom time providers receive
+nonzero jittered delays at tick precision and determine how precisely to schedule them.
+
 To opt out and dead-letter on the first failure, call `consumer.Failures(FailureOptions.None)`. To disable only in-process retries while retaining other settings, set `RetryDelays = []` on your `FailureOptions`. Custom retry lists replace the default sequence; setting only `RedeliveryDelays` retains the default in-process retries before each redelivery.
 
 For adapters that support delayed redelivery, add `RedeliveryDelays` to the same options:

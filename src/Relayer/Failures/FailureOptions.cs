@@ -17,7 +17,11 @@ public sealed class FailureOptions(
     public static FailureOptions None => new() { RetryDelays = [] };
 
     /// <summary>In-process retry backoffs. Null selects 100 ms, 500 ms and 1 s before jitter. Set empty to disable.</summary>
-    /// <remarks>Null keeps configuration binding from appending configured delays to the default sequence.</remarks>
+    /// <remarks>
+    /// Zero retries immediately. The system timer uses a minimum of 1 ms for a positive configured backoff,
+    /// applied after jitter. Custom time providers receive nonzero jittered delays at tick precision.
+    /// Null keeps configuration binding from appending configured delays to the default sequence.
+    /// </remarks>
     public TimeSpan[]? RetryDelays
     {
         get; set;

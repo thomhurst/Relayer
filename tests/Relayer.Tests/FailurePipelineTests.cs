@@ -419,6 +419,72 @@ public class FailurePipelineTests
     }
 
     [Test]
+    [Arguments(1L, 0.0)]
+    [Arguments(1L, 1.0)]
+    [Arguments(TimeSpan.TicksPerMillisecond, 1.0)]
+    public async Task Positive_system_retry_backoff_uses_a_timer(long ticks, double jitter)
+    {
+        using var provider = Provider(new Transport());
+        var failure = new FailurePipeline(provider, "test", "source", "consumer", new()
+        {
+            RetryDelays = [TimeSpan.FromTicks(ticks)],
+            Jitter = jitter
+        });
+
+        // A timer may fire before the assertion. The zero-delay path returns the shared completed task.
+        var pending = failure.WaitRetryAsync(0, CancellationToken.None).AsTask();
+        await Assert.That(pending).IsNotSameReferenceAs(Task.CompletedTask);
+        await pending;
+    }
+
+    [Test]
+    public async Task Explicit_zero_system_retry_backoff_completes_immediately()
+    {
+        using var provider = Provider(new Transport());
+        var failure = new FailurePipeline(provider, "test", "source", "consumer", new()
+        {
+            RetryDelays = [TimeSpan.Zero],
+            Jitter = 1
+        });
+
+        await Assert.That(failure.WaitRetryAsync(0, CancellationToken.None).IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    [Arguments(1L, false)]
+    [Arguments(TimeSpan.TicksPerMillisecond + 1, false)]
+    [Arguments(1L, true)]
+    public async Task Fractional_retry_backoff_uses_custom_clock_tick_precision(long ticks, bool cancel)
+    {
+        var time = new ControlledTime();
+        using var provider = Provider(new Transport());
+        using var cancellation = new CancellationTokenSource();
+        var delay = TimeSpan.FromTicks(ticks);
+        var failure = new FailurePipeline(provider, "test", "source", "consumer", new()
+        {
+            RetryDelays = [delay],
+            Jitter = 0
+        }, timeProvider: time);
+
+        var pending = failure.WaitRetryAsync(0, cancellation.Token);
+        await Assert.That(time.Delay).IsEqualTo(delay);
+        await Assert.That(pending.IsCompleted).IsFalse();
+
+        if (cancel)
+        {
+            cancellation.Cancel();
+            await Assert.That(async () => await pending).Throws<OperationCanceledException>();
+        }
+        else
+        {
+            time.Fire();
+            await pending;
+        }
+
+        await Assert.That(time.TimerDisposed).IsTrue();
+    }
+
+    [Test]
     public async Task Retry_backoff_is_jittered_and_cancellation_does_not_settle()
     {
         var time = new ControlledTime();
@@ -1990,6 +2056,11 @@ public class FailurePipelineTests
         {
             get; private set;
         }
+
+        internal bool TimerDisposed
+        {
+            get; private set;
+        }
         private TimerCallback? _callback;
         private object? _state;
 
@@ -2002,6 +2073,7 @@ public class FailurePipelineTests
         {
             Delay = dueTime;
             Delays.Add(dueTime);
+            TimerDisposed = false;
             _callback = callback;
             _state = state;
 
@@ -2010,10 +2082,10 @@ public class FailurePipelineTests
                 callback(state);
             }
 
-            return new Timer();
+            return new Timer(this);
         }
 
-        private sealed class Timer : ITimer
+        private sealed class Timer(ControlledTime time) : ITimer
         {
             public bool Change(TimeSpan dueTime, TimeSpan period)
             {
@@ -2022,10 +2094,12 @@ public class FailurePipelineTests
 
             public void Dispose()
             {
+                time.TimerDisposed = true;
             }
 
             public ValueTask DisposeAsync()
             {
+                Dispose();
                 return default;
             }
         }
