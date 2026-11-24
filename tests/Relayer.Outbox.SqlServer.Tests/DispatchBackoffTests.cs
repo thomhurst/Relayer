@@ -40,8 +40,12 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
             await Assert.That(row.Error).IsEqualTo("System.IO.IOException: broker offline");
             await Assert.That(row.Status).IsEqualTo("pending");
             await Assert.That(row.Claimed).IsFalse();
-            await Assert.That(row.Due >= before.AddSeconds(delays[index])).IsTrue();
-            await Assert.That(row.Due <= after.AddSeconds(delays[index])).IsTrue();
+            var delay = delays[index];
+            var deadline = row.Due?.ToString("O") ?? "<null>";
+            var clockSamples = $"Attempt {index + 1}, expected delay {delay}s, persisted deadline {deadline}, " +
+                $"database UTC before dispatch {before:O}, after dispatch {after:O}";
+            await Assert.That(row.Due >= before.AddSeconds(delay)).IsTrue().Because(clockSamples);
+            await Assert.That(row.Due <= after.AddSeconds(delay)).IsTrue().Because(clockSamples);
             await Assert.That(await Count(SqlServerOutboxSchema.DeadTable(data.Options))).IsEqualTo(0L);
 
             // A fresh direct/maintenance worker or another lane pass respects the persisted deadline.
