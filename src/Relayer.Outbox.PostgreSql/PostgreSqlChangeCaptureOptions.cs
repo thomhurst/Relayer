@@ -55,7 +55,7 @@ public sealed class PostgreSqlChangeCaptureOptions
         get; init;
     } = TimeSpan.FromSeconds(30);
 
-    /// <summary>Delay before reconnecting after a transient native connection failure.</summary>
+    /// <summary>Delay before reconnecting after a transient native connection failure. At least one millisecond.</summary>
     public TimeSpan ReconnectDelay
     {
         get; init;
@@ -78,9 +78,10 @@ public sealed class PostgreSqlChangeCaptureOptions
             throw new ArgumentException("Outbox CDC requires pgoutput protocol V1 without streaming or two-phase decoding.", nameof(Replication));
         }
 
-        if (ReconnectDelay <= TimeSpan.Zero || ReconnectDelay.TotalMilliseconds > uint.MaxValue - 1)
+        if (ReconnectDelay.TotalMilliseconds is < 1 or > uint.MaxValue - 1)
         {
-            throw new ArgumentOutOfRangeException(nameof(ReconnectDelay));
+            throw new ArgumentOutOfRangeException(nameof(ReconnectDelay), ReconnectDelay,
+                $"Reconnect delay must be at least 1 millisecond and at most {uint.MaxValue - 1} milliseconds.");
         }
 
         if (IdleCheckpointInterval != TimeSpan.Zero)

@@ -57,6 +57,28 @@ public class ChangeCaptureTests
     }
 
     [Test]
+    public async Task Registration_requires_a_reconnect_delay_of_at_least_one_millisecond()
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var services = new ServiceCollection();
+
+        await Assert.That(() => Register(TimeSpan.FromTicks(1)))
+            .Throws<ArgumentOutOfRangeException>()
+            .WithMessageContaining("at least 1 millisecond");
+        Register(TimeSpan.FromMilliseconds(1));
+
+        void Register(TimeSpan delay)
+        {
+            services.AddRelayerPostgreSqlChangeCapture("orders", source, () => new("Host=unused"), new PostgreSqlChangeCaptureOptions
+            {
+                Slot = new("orders"),
+                Replication = new("orders", PgOutputProtocolVersion.V1),
+                ReconnectDelay = delay
+            });
+        }
+    }
+
+    [Test]
     public async Task Startup_requires_persistent_slot_and_insert_only_unfiltered_publication()
     {
         await using var fixture = new PostgreSqlFixture();
