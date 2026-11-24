@@ -8,6 +8,34 @@ namespace Relayer.Conformance.Tests;
 public class ConformanceFailureTests
 {
     [Test]
+    [Arguments(0L)]
+    [Arguments(-1L)]
+    [Arguments(4_294_967_295L)]
+    public async Task Constructor_rejects_unsupported_scenario_timeout(long timeoutMilliseconds)
+    {
+        Action construct = () => _ = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
+            static (tracing, _) => new(new InMemoryFixture(tracing)),
+            timeout: TimeSpan.FromMilliseconds(timeoutMilliseconds));
+
+        var error = await Assert.That(construct).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(error!.ParamName).IsEqualTo("timeout");
+    }
+
+    [Test]
+    [Arguments(4_294_967_294d)]
+    [Arguments(4_294_967_294.5d)]
+    public async Task Scenario_runs_at_the_timer_timeout_boundary(double timeoutMilliseconds)
+    {
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
+            static (tracing, _) => new(new InMemoryFixture(tracing, capabilities: new())),
+            timeout: TimeSpan.FromMilliseconds(timeoutMilliseconds));
+
+        var result = await suite.RunAsync(TransportConformanceCase.Delay);
+
+        await Assert.That(result.Skipped).IsTrue();
+    }
+
+    [Test]
     public async Task Pre_canceled_run_fails_before_invoking_fixture_factory()
     {
         using var caller = new CancellationTokenSource();
