@@ -20,6 +20,9 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
     private readonly Func<MessageTracing, CancellationToken, ValueTask<ITransportConformanceFixture<TIncoming>>> _create;
     private readonly TimeSpan _timeout;
     private static readonly TimeSpan s_delay = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan s_outageWatchdogGrace = TimeSpan.FromSeconds(5);
+    // The runtime truncates fractional milliseconds and reserves uint.MaxValue for an infinite timer.
+    private static readonly TimeSpan s_outageSendTimeoutLimit = TimeSpan.FromMilliseconds(uint.MaxValue) - s_outageWatchdogGrace;
     private const string TraceParent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
     private const string TraceState = "relayer=conformance";
 
@@ -167,6 +170,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             }
 
             Require(budget > TimeSpan.Zero, "OutageSendTimeout must be positive for SendDuringOutage. Set it to null to skip this case.");
+            Require(budget < s_outageSendTimeoutLimit, "OutageSendTimeout must be less than 4,294,962,295 milliseconds to leave five seconds for the SendDuringOutage watchdog.");
             outageSendTimeout = budget;
         }
 
@@ -545,7 +549,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
                     try
                     {
-                        acknowledged = await allSends.WaitAsync(outageSendTimeout + TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+                        acknowledged = await allSends.WaitAsync(outageSendTimeout + s_outageWatchdogGrace, token).ConfigureAwait(false);
                     }
                     catch (Exception error) when (error is OperationCanceledException or TimeoutException)
                     {
