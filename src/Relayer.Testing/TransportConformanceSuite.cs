@@ -43,7 +43,13 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         }
     }
 
-    /// <summary>Runs one contract. Only absent native capabilities produce skips; failures propagate to the caller.</summary>
+    /// <summary>Runs one transport contract. Contract failures propagate to the caller.</summary>
+    /// <returns>
+    /// The result, with <see cref="TransportConformanceResult.SkipReason"/> set when the endpoint lacks a required
+    /// native capability or <see cref="ITransportConformanceFixture{TIncoming}.OutageSendTimeout"/>
+    /// is <see langword="null"/> for <see cref="TransportConformanceCase.SendDuringOutage"/>.
+    /// </returns>
+    /// <remarks>An out-of-range non-null outage timeout throws <see cref="InvalidOperationException"/>.</remarks>
     public async Task<TransportConformanceResult> RunAsync(TransportConformanceCase scenario, CancellationToken cancellationToken = default)
     {
         if (!Enum.IsDefined(scenario))
