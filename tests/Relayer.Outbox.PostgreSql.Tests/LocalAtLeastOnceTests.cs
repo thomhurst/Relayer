@@ -78,6 +78,110 @@ public class LocalAtLeastOnceTests(PostgreSqlLocalSessionFixture server)
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Saturated_direct_destination_resumes_when_one_slot_opens(bool competingFailure)
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var options = new PostgreSqlOutboxOptions();
+        await using var transport = new PostgreSqlLocalTransport("local", source, options, ["work", "work-other"]);
+        using var worker = new PostgreSqlDirectDispatcher(source, options, new(), [transport],
+            NullLogger<PostgreSqlDirectDispatcher>.Instance);
+        transport.Dispatcher = worker;
+
+        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSecond = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var otherSettled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finalBarrier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var expectedValue = competingFailure ? 5 : 3;
+        transport.Register("work", async (delivery, token) =>
+        {
+            var value = delivery.Message.Body.Span[0];
+
+            if (value == 1)
+            {
+                firstEntered.SetResult();
+                await releaseFirst.Task.WaitAsync(token);
+            }
+            else if (value == 2)
+            {
+                secondEntered.SetResult();
+                await releaseSecond.Task.WaitAsync(token);
+            }
+
+            await transport.SettleAsync(delivery, Disposition.Complete, token);
+
+            if (value == expectedValue)
+            {
+                resumed.SetResult();
+            }
+
+            return Disposition.SettledByHandler;
+        }, concurrency: 2, atLeastOnce: true);
+        transport.Register("work-other", async (delivery, token) =>
+        {
+            await transport.SettleAsync(delivery, Disposition.Complete, token);
+            (delivery.Message.Body.Span[0] == 4 ? otherSettled : finalBarrier).SetResult();
+            return Disposition.SettledByHandler;
+        }, atLeastOnce: true);
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await worker.StartAsync(deadline.Token);
+
+        try
+        {
+            await SendAsync("work", 1);
+            await firstEntered.Task.WaitAsync(deadline.Token);
+            await SendAsync("work", 2);
+            await secondEntered.Task.WaitAsync(deadline.Token);
+            await SendAsync("work", 3);
+            await SendAsync("work-other", 4);
+            // This destination is visited after "work", even if both commits are coalesced.
+            await otherSettled.Task.WaitAsync(deadline.Token);
+            await Assert.That(resumed.Task.IsCompleted).IsFalse();
+            await Assert.That(await Count(source, "relayer_outbox WHERE claim_token IS NULL")).IsEqualTo(1L);
+
+            if (competingFailure)
+            {
+                // Simulate another process failing the parked row with a retry due immediately.
+                // Its current attempt must be read by recovery instead of using the retained commit snapshot.
+                await using var failure = source.CreateCommand("UPDATE relayer_outbox SET attempts = 1 WHERE claim_token IS NULL");
+                await Assert.That(await failure.ExecuteNonQueryAsync(deadline.Token)).IsEqualTo(1);
+                await SendAsync("work", 5);
+                await SendAsync("work-other", 6);
+                await finalBarrier.Task.WaitAsync(deadline.Token);
+            }
+
+            releaseFirst.SetResult();
+            await resumed.Task.WaitAsync(deadline.Token);
+            await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(competingFailure ? 2L : 1L);
+        }
+        finally
+        {
+            releaseFirst.TrySetResult();
+            releaseSecond.TrySetResult();
+            await worker.StopAsync(default);
+        }
+
+        await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(competingFailure ? 1L : 0L);
+        await Assert.That(await Count(source, "relayer_outbox WHERE attempts = 1 AND claim_token IS NULL"))
+            .IsEqualTo(competingFailure ? 1L : 0L);
+
+        ValueTask SendAsync(string destination, byte value)
+        {
+            KeyValuePair<string, WireString>[] headers =
+                [new("ce_id", new(Guid.CreateVersion7().ToString())), new("ce_type", new("local.work;v=1"))];
+            return transport.SendAsync(new(destination, new byte[] { value }, headers), deadline.Token);
+        }
+    }
+
+    [Test]
     public async Task Hosted_direct_burst_shares_admission_with_recovery_and_retains_retry_deadlines()
     {
         await using var database = server.CreateDatabase();

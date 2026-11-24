@@ -21,6 +21,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly string _claim;
     private readonly string _claimBatch;
     private readonly string _claimDirectBatch;
+    private readonly string _claimDeferredBatch;
     private readonly string _completeDirectBatch;
     private readonly string _observeDirectBatch;
     private readonly string _failDirect;
@@ -73,13 +74,14 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id, seq FROM {table} WHERE {eligible} AND lane IS NOT DISTINCT FROM @lane AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit";
         _claim = $"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible} RETURNING true";
 
-        string ClaimBatch(string now, string expires)
+        string ClaimBatch(string now, string expires, string attempts = "")
         {
-            return $"UPDATE {table} AS row SET claim_token = claims.token, claim_expires_at = {expires} FROM unnest(@ids, @tokens) WITH ORDINALITY AS claims(id, token, ordinal) WHERE row.id = claims.id AND {Eligible(now)} AND lane IS NULL RETURNING claims.ordinal";
+            return $"UPDATE {table} AS row SET claim_token = claims.token, claim_expires_at = {expires} FROM unnest(@ids, @tokens) WITH ORDINALITY AS claims(id, token, ordinal) WHERE row.id = claims.id AND {Eligible(now)} AND lane IS NULL{attempts} RETURNING claims.ordinal";
         }
 
         _claimBatch = ClaimBatch("@now", "@expires");
         _claimDirectBatch = ClaimBatch("clock_timestamp()", "clock_timestamp() + @duration");
+        _claimDeferredBatch = ClaimBatch("clock_timestamp()", "clock_timestamp() + @duration", " AND attempts = 0");
         _renew = $"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced} RETURNING true";
         _complete = $"DELETE FROM {table} WHERE {fenced} RETURNING true";
         _completeInTransaction = $"DELETE FROM {table} WHERE id = @id AND claim_token = @token AND claim_expires_at > clock_timestamp() RETURNING true";
@@ -196,11 +198,11 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             Validate(claim, now, expiresAt);
         }
 
-        return ClaimBatchCoreAsync(claims, claimed, now, expiresAt, null, cancellationToken);
+        return ClaimBatchCoreAsync(_claimBatch, claims, claimed, now, expiresAt, null, cancellationToken);
     }
 
     internal ValueTask ClaimDirectBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
-        TimeSpan duration, CancellationToken cancellationToken)
+        TimeSpan duration, CancellationToken cancellationToken, bool deferred = false)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
 
@@ -209,12 +211,13 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             Validate(claim);
         }
 
-        return ClaimBatchCoreAsync(claims, claimed, null, default, duration, cancellationToken);
+        return ClaimBatchCoreAsync(deferred ? _claimDeferredBatch : _claimDirectBatch,
+            claims, claimed, null, default, duration, cancellationToken);
     }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask ClaimBatchCoreAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
+    private async ValueTask ClaimBatchCoreAsync(string sql, ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
         DateTimeOffset? now, DateTimeOffset expiresAt, TimeSpan? duration, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -231,7 +234,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             return;
         }
 
-        using var command = CreateBatchMutation(duration.HasValue ? _claimDirectBatch : _claimBatch, claims, now);
+        using var command = CreateBatchMutation(sql, claims, now);
 
         if (duration is { } claimDuration)
         {

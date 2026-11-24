@@ -12,7 +12,7 @@ namespace Relayer.Outbox;
 // database commands, transactional completion and failure classification.
 internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService where TBatch : class
 {
-    private readonly Channel<TBatch> _queue;
+    private readonly Channel<TBatch?> _queue;
     private readonly TBatch?[] _pool;
     private readonly int _queueCapacity;
     private readonly int _batchSize;
@@ -26,6 +26,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     protected readonly DateTimeOffset[] _created;
     protected readonly RelayerInstrumentation? _instrumentation;
     protected readonly ILogger _logger;
+    private int _deferredDispatchRequested;
 
     protected OutboxDirectDispatchWorker(int queueCapacity, int batchSize, TimeSpan claimDuration, IEnumerable<ITransport> transports,
         ILogger logger, RelayerInstrumentation? instrumentation, TimeProvider? leaseTime = null)
@@ -37,7 +38,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         _logger = logger;
         _instrumentation = instrumentation;
         _transports = transports.ToFrozenDictionary(static transport => transport.Name, StringComparer.Ordinal);
-        _queue = Channel.CreateBounded<TBatch>(new BoundedChannelOptions(queueCapacity)
+        _queue = Channel.CreateBounded<TBatch?>(new BoundedChannelOptions(queueCapacity)
         {
             SingleReader = true,
             SingleWriter = false,
@@ -97,6 +98,24 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     {
         admitted = true;
         return null;
+    }
+
+    protected virtual void DeferGroup(TBatch batch, int offset, ITransport transport)
+    {
+    }
+
+    protected virtual ValueTask DispatchDeferredAsync(CancellationToken cancellationToken)
+    {
+        return default;
+    }
+
+    protected void RequestDeferredDispatch()
+    {
+        if (Interlocked.Exchange(ref _deferredDispatchRequested, 1) == 0)
+        {
+            // A null entry wakes an idle reader. A full channel already has work to wake it.
+            _queue.Writer.TryWrite(null);
+        }
     }
 
     protected virtual ValueTask SendLocalAsync(TBatch batch, int offset, ITransport transport, CancellationToken cancellationToken)
@@ -174,8 +193,17 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                 {
                     try
                     {
-                        Coalesce(batch, _queueCapacity - 1);
-                        await DispatchAsync(batch, stoppingToken, background: true).ConfigureAwait(false);
+                        if (Volatile.Read(ref _deferredDispatchRequested) != 0)
+                        {
+                            Interlocked.Exchange(ref _deferredDispatchRequested, 0);
+                            await DispatchDeferredAsync(stoppingToken).ConfigureAwait(false);
+                        }
+
+                        if (batch is not null)
+                        {
+                            Coalesce(batch, _queueCapacity - 1);
+                            await DispatchAsync(batch, stoppingToken, background: true).ConfigureAwait(false);
+                        }
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                     {
@@ -187,7 +215,10 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                     }
                     finally
                     {
-                        Return(batch);
+                        if (batch is not null)
+                        {
+                            Return(batch);
+                        }
                     }
                 }
             }
@@ -209,6 +240,11 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     {
         for (var i = 0; i < _queueCapacity && _queue.Reader.TryRead(out var batch); i++)
         {
+            if (batch is null)
+            {
+                continue;
+            }
+
             try
             {
                 i += Coalesce(batch, _queueCapacity - i - 1);
@@ -228,8 +264,8 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         var drained = 0;
 
         while (drained < notificationLimit && Count(batch) < _batchSize &&
-            _queue.Reader.TryPeek(out var next) && Count(next) <= _batchSize - Count(batch) &&
-            _queue.Reader.TryRead(out next))
+            _queue.Reader.TryPeek(out var next) && next is not null && Count(next) <= _batchSize - Count(batch) &&
+            _queue.Reader.TryRead(out next) && next is not null)
         {
             try
             {
@@ -252,7 +288,10 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
 
         while (_queue.Reader.TryRead(out var batch))
         {
-            Return(batch);
+            if (batch is not null)
+            {
+                Return(batch);
+            }
         }
     }
 
@@ -320,6 +359,11 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
 
                 if (!admitted)
                 {
+                    if (background)
+                    {
+                        DeferGroup(batch, first, transport);
+                    }
+
                     continue;
                 }
 
@@ -514,7 +558,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         return live;
     }
 
-    private void Return(TBatch batch)
+    protected void Return(TBatch batch)
     {
         Clear(batch);
 

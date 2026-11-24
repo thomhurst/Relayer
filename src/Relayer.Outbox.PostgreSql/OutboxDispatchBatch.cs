@@ -57,6 +57,17 @@ internal sealed class OutboxDispatchBatch
         source.Count = 0;
     }
 
+    internal void TakeRow(OutboxDispatchBatch source, int index)
+    {
+        if (Count == Rows.Count)
+        {
+            Rows.Add(new());
+        }
+
+        Rows[Count] = source.ExchangeRow(index, Rows[Count]);
+        Count++;
+    }
+
     internal BufferedOutboxMessage ExchangeRow(int index, BufferedOutboxMessage replacement)
     {
         var row = Rows[index];

@@ -4,6 +4,7 @@ namespace Relayer.Outbox.PostgreSql;
 public sealed class PostgreSqlDirectDispatchOptions
 {
     /// <summary>Maximum queued commits. Overflow leaves durable rows pending and logs an error.</summary>
+    /// <remarks>Also bounds the number of unordered local rows the worker can defer while consumers are full.</remarks>
     public int QueueCapacity
     {
         get; init;
