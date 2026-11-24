@@ -101,19 +101,21 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
-    [Arguments(0)]
-    [Arguments(-1)]
-    public async Task Outage_rejects_nonpositive_timeout_before_lifecycle_calls(int milliseconds)
+    [Arguments(0L)]
+    [Arguments(-TimeSpan.TicksPerMillisecond)]
+    [Arguments(1L)]
+    [Arguments(TimeSpan.TicksPerMillisecond - 1L)]
+    public async Task Outage_rejects_timeout_below_one_millisecond_before_lifecycle_calls(long ticks)
     {
         var calls = new List<string>();
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
             (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
-                new OutageFixture(tracing, "success", calls: calls) { OutageSendTimeout = TimeSpan.FromMilliseconds(milliseconds) }));
+                new OutageFixture(tracing, "success", calls: calls) { OutageSendTimeout = TimeSpan.FromTicks(ticks) }));
 
         var failure = await Assert.That(async () => await suite.RunAsync(TransportConformanceCase.SendDuringOutage))
             .Throws<InvalidOperationException>();
         await Assert.That(calls.ToArray()).IsEquivalentTo([nameof(IAsyncDisposable.DisposeAsync)]);
-        await Assert.That(failure!.Message).Contains("OutageSendTimeout must be positive");
+        await Assert.That(failure!.Message).Contains(nameof(ITransportConformanceFixture<InMemoryDelivery>.OutageSendTimeout));
     }
 
     [Test]
@@ -187,6 +189,7 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
+    [Arguments(1L)]
     [Arguments(25L)]
     [Arguments(4_294_962_294L)]
     public async Task Cancelled_outage_wait_cleans_up_before_pending_send_faults(long milliseconds)

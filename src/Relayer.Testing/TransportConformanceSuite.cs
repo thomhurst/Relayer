@@ -20,6 +20,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
     private readonly Func<MessageTracing, CancellationToken, ValueTask<ITransportConformanceFixture<TIncoming>>> _create;
     private readonly TimeSpan _timeout;
     private static readonly TimeSpan s_delay = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan s_minimumTimerTimeout = TimeSpan.FromMilliseconds(1);
     private static readonly TimeSpan s_outageWatchdogGrace = TimeSpan.FromSeconds(5);
     // The runtime truncates fractional milliseconds and reserves uint.MaxValue for an infinite timer.
     private static readonly TimeSpan s_outageSendTimeoutLimit = TimeSpan.FromMilliseconds(uint.MaxValue) - s_outageWatchdogGrace;
@@ -36,9 +37,9 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         _timeout = timeout ?? TimeSpan.FromSeconds(30);
 
         // CancelAfter truncates fractional milliseconds before checking the timer range.
-        if (_timeout <= TimeSpan.Zero || (long)_timeout.TotalMilliseconds >= uint.MaxValue)
+        if (_timeout < s_minimumTimerTimeout || (long)_timeout.TotalMilliseconds >= uint.MaxValue)
         {
-            throw new ArgumentOutOfRangeException(nameof(timeout), "The scenario timeout must be positive and less than 4,294,967,295 milliseconds.");
+            throw new ArgumentOutOfRangeException(nameof(timeout), "The scenario timeout must be at least 1 millisecond and less than 4,294,967,295 milliseconds.");
         }
     }
 
@@ -169,7 +170,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 return new(scenario, "Fixture has no bounded broker-outage send contract.");
             }
 
-            Require(budget > TimeSpan.Zero, "OutageSendTimeout must be positive for SendDuringOutage. Set it to null to skip this case.");
+            Require(budget >= s_minimumTimerTimeout, "OutageSendTimeout must be at least 1 millisecond for SendDuringOutage. Set it to null to skip this case.");
             Require(budget < s_outageSendTimeoutLimit, "OutageSendTimeout must be less than 4,294,962,295 milliseconds to leave five seconds for the SendDuringOutage watchdog.");
             outageSendTimeout = budget;
         }
