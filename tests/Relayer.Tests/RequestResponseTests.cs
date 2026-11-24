@@ -394,6 +394,43 @@ public class RequestResponseTests
     }
 
     [Test]
+    [Arguments("REQUESTS", "external-replies")]
+    [Arguments("reply-source", "REQUESTS")]
+    public async Task Service_Bus_startup_rejects_reply_addresses_that_differ_from_the_request_destination_only_by_case(
+        string replySource, string replyDestination)
+    {
+        await using var provider = new ServiceCollection().AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.ServiceBus("service-bus", transport =>
+            {
+                transport.TopologyMode = TopologyMode.None;
+                transport.Options.Configure(options => options.ConnectionString =
+                    "Endpoint=sb://test.servicebus.windows.net/;SharedAccessKeyName=test;SharedAccessKey=dGVzdA==");
+                transport.Request<RpcRequest, RpcResponse>("requests", replySource,
+                    request => request.ReplyDestination = replyDestination);
+            });
+        }).BuildServiceProvider();
+
+        var validator = provider.GetRequiredService<RelayerConfigurationValidator>();
+        await Assert.That(async () => await validator.ValidateAsync()).Throws<Microsoft.Extensions.Options.OptionsValidationException>()
+            .WithMessageContaining("distinct from the request destination");
+    }
+
+    [Test]
+    public async Task In_memory_startup_allows_reply_addresses_that_differ_from_the_request_destination_by_case()
+    {
+        await using var provider = new ServiceCollection().AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("local", transport =>
+                transport.Request<RpcRequest, RpcResponse>("requests", "REQUESTS"));
+        }).BuildServiceProvider();
+
+        await provider.GetRequiredService<RelayerConfigurationValidator>().ValidateAsync();
+    }
+
+    [Test]
     public async Task Startup_rejects_a_request_with_several_routes()
     {
         using var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder =>

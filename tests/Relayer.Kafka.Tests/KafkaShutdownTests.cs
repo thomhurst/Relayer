@@ -30,26 +30,35 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
         try
         {
             await using var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).BuildAsync(token);
+            var graceful = !abort && !fail;
+            const int ProbeOffset = 3;
+            var recordCount = graceful ? ProbeOffset + 1 : ProbeOffset;
 
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < recordCount; i++)
             {
                 await producer.ProduceAsync(new()
                 {
                     Topic = topic,
+                    Partition = partition.Partition,
+                    Key = [(byte)(i == ProbeOffset ? 1 : 0)],
                     Value = new byte[] { (byte)i }
                 }, token);
             }
 
             using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
             var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var probeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var handled = new List<long>();
+            var concurrency = graceful ? 2 : 1;
             var options = new PartitionedProcessingOptions
             {
                 Ordering = PartitionedProcessingOrder.Key,
+                MaxConcurrentHandlersPerPartition = concurrency,
                 CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
-                StopTimeout = TimeSpan.FromSeconds(1),
+                // Only the forced-stop cases need a short deadline. Graceful stop also waits for the broker commit.
+                StopTimeout = TimeSpan.FromSeconds(abort ? 1 : 30),
             };
             long first;
 
@@ -59,12 +68,19 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                     System = "kafka",
                     Destination = topic,
                     ConsumerGroup = topic
-                }, options, 1))
+                }, options, concurrency))
             {
                 try
                 {
                     await adapter.StartAsync(token);
                     await entered.Task.WaitAsync(token);
+
+                    if (graceful)
+                    {
+                        // This later offset runs on a second key, proving the held key's suffix reached the dispatcher.
+                        await probeEntered.Task.WaitAsync(token);
+                    }
+
                     using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
                     var stopping = adapter.StopAsync(deadline.Token);
 
@@ -109,17 +125,17 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                     await reader.InitializeAsync(token);
                     var checkpoint = await reader.GetCommittedOffsetAsync(partition, token) is { } committed and >= 0 ? committed : 0;
 
-                    if (abort || fail)
+                    if (graceful)
+                    {
+                        // A graceful drain finishes the held record and the records already queued behind it.
+                        await Assert.That(checkpoint).IsEqualTo((long)recordCount);
+                        await Assert.That(handled.ToArray()).IsEquivalentTo(new long[] { 0, 1, 2 });
+                    }
+                    else
                     {
                         // The unfinished or failed record is never committed.
                         await Assert.That(checkpoint).IsLessThanOrEqualTo(blocked);
                         await Assert.That(handled.ToArray()).IsEquivalentTo(Enumerable.Range(0, blocked + 1).Select(i => (long)i).ToArray());
-                    }
-                    else
-                    {
-                        // A graceful drain finishes the held record and the records already queued behind it.
-                        await Assert.That(checkpoint).IsEqualTo(3L);
-                        await Assert.That(handled.ToArray()).IsEquivalentTo(new long[] { 0, 1, 2 });
                     }
 
                     first = checkpoint;
@@ -137,7 +153,7 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
 
             await using (var batches = restarted.ConsumeBatchAsync(token).GetAsyncEnumerator(token))
             {
-                while (replay.Count < 3 - first && await batches.MoveNextAsync())
+                while (replay.Count < recordCount - first && await batches.MoveNextAsync())
                 {
                     foreach (var record in batches.Current)
                     {
@@ -146,7 +162,7 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                 }
             }
 
-            await Assert.That(replay.ToArray()).IsEquivalentTo(Enumerable.Range((int)first, 3 - (int)first).Select(i => (long)i).ToArray());
+            await Assert.That(replay.ToArray()).IsEquivalentTo(Enumerable.Range((int)first, recordCount - (int)first).Select(i => (long)i).ToArray());
 
             IKafkaConsumer<byte[], byte[]> CreateConsumer()
             {
@@ -180,6 +196,12 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
 
             async ValueTask<Disposition> Receive(KafkaDelivery delivery, CancellationToken cancellationToken)
             {
+                if (delivery.Result.Offset == ProbeOffset)
+                {
+                    probeEntered.SetResult();
+                    return Disposition.Complete;
+                }
+
                 lock (handled)
                 {
                     handled.Add(delivery.Result.Offset);

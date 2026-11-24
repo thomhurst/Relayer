@@ -23,7 +23,8 @@ public static class ServiceBusBuilderExtensions
         builder.Services.TryAddSingleton<ServiceBusTopologyExporter>();
         builder.AddTransport<ServiceBusTransportOptions, ServiceBusConsumerOptions>(name, transport =>
         {
-            transport.SetRouteDestinationNormalizer(static destination => destination.ToUpperInvariant());
+            transport.SetRouteDestinationNormalizer(static destination => destination.ToUpperInvariant(),
+                normalizeConsumerSources: true);
             transport.SendDefaults = new()
             {
                 HeaderNames = ServiceBusMessageBinding.CloudEventsHeaders

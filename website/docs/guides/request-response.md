@@ -78,7 +78,7 @@ Use `request.Replies` to configure the reply consumer with the transport's usual
 
 Relayer adds the request client, send route and reply consumer after both configuration callbacks succeed. If either callback throws, correct the request configuration and retry the declaration.
 
-On the same transport, the request destination must differ from both the reply consumer source and the advertised reply destination. Startup rejects either collision.
+On the same transport, the request destination must differ from both the reply consumer source and the advertised reply destination. Startup rejects either collision. Azure Service Bus compares these names without regard to case, so `orders` and `ORDERS` refer to the same queue.
 
 | Transport | Reply endpoint setup |
 | --- | --- |

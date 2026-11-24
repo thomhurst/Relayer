@@ -175,6 +175,42 @@ public class AsyncApiTests
     }
 
     [Test]
+    public async Task Send_and_receive_alias_share_a_channel_message_when_the_contracts_match()
+    {
+        using var provider = new ServiceCollection().AddRelayer(builder =>
+        {
+            builder.Infrastructure().MessageTypes.Add<LegacyExportOrder>("order.created")
+                .Add<CurrentExportOrder>("order.placed");
+            builder.UseJsonSerializer(ExportDefaultContext.Default);
+            builder.InMemory("events", transport =>
+            {
+                transport.Send<LegacyExportOrder>("orders");
+                transport.Consume("orders", consumer => consumer.Handler<CurrentExportOrderHandler>()
+                    .Accepts<CurrentExportOrder>(new MessageType("order.created", 1)));
+            });
+        }).BuildServiceProvider();
+        using var document = JsonDocument.Parse(Export(provider));
+        var root = document.RootElement;
+        var channel = root.GetProperty("channels").GetProperty("channel0");
+        const string LegacyWireType = "order.created;v=1";
+        var channelMatches = channel.GetProperty("messages").EnumerateObject()
+            .Select(entry => ResolveReference(root, entry.Value.GetProperty("$ref").GetString()!))
+            .Where(message => RequiredWireType(message) == LegacyWireType)
+            .ToArray();
+
+        await Assert.That(channel.GetProperty("address").GetString()).IsEqualTo("orders");
+        await Assert.That(channelMatches.Length).IsEqualTo(1);
+        await Assert.That(Schema(channelMatches[0]).GetProperty("properties").GetProperty("Number")
+            .GetProperty("type").GetString()).IsEqualTo("string");
+        var sent = OperationMessages(root, "operation0");
+        var received = OperationMessages(root, "operation1");
+        await Assert.That(sent.Keys).IsEquivalentTo(new[] { LegacyWireType });
+        await Assert.That(received.Keys).IsEquivalentTo(new[] { LegacyWireType, "order.placed;v=1" });
+        await Assert.That(sent[LegacyWireType]).IsEqualTo(channelMatches[0]);
+        await Assert.That(received[LegacyWireType]).IsEqualTo(channelMatches[0]);
+    }
+
+    [Test]
     public async Task Different_schemas_for_the_same_wire_identity_get_distinct_resource_ids()
     {
         using var first = CreateWithSharedIdentity<ExportOrder>();
@@ -413,7 +449,19 @@ public sealed record ExportOrder(string CustomerName, int[] Items);
 
 public sealed record ExportOldOrder(string Name);
 
+public sealed record LegacyExportOrder(string Number);
+
+public sealed record CurrentExportOrder(string Number);
+
 public sealed record ExportTree(string Name, ExportTree? Child);
+
+public sealed class CurrentExportOrderHandler : IHandler<CurrentExportOrder>
+{
+    public ValueTask HandleAsync(CurrentExportOrder message, MessageContext context, CancellationToken cancellationToken)
+    {
+        return default;
+    }
+}
 
 public sealed class ExportHandler : IHandler<ExportOrder>
 {
@@ -466,6 +514,8 @@ public sealed class ExportTombstoneHandler : IHandler<Tombstone<ExportOrder>>
 }
 
 [JsonSerializable(typeof(ExportOrder))]
+[JsonSerializable(typeof(LegacyExportOrder))]
+[JsonSerializable(typeof(CurrentExportOrder))]
 internal partial class ExportDefaultContext : JsonSerializerContext;
 
 [JsonSerializable(typeof(ExportOrder))]

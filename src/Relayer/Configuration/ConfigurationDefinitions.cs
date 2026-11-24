@@ -28,10 +28,12 @@ public sealed class RelayerConfiguration
 public sealed class TransportDefinition
 {
     private readonly Func<string, string>? _normalizeRouteDestination;
+    private readonly bool _normalizeConsumerSources;
 
     internal TransportDefinition(string name, Type optionsType, IRouteDefinition[] routes,
         IConsumerDefinition[] consumers, TopologyMode? topologyMode,
-        Action<IServiceProvider, List<string>> validateOptions, Func<string, string>? normalizeRouteDestination = null)
+        Action<IServiceProvider, List<string>> validateOptions, Func<string, string>? normalizeRouteDestination = null,
+        bool normalizeConsumerSources = false)
     {
         Name = name;
         OptionsType = optionsType;
@@ -39,6 +41,7 @@ public sealed class TransportDefinition
         Consumers = Array.AsReadOnly(consumers);
         TopologyMode = topologyMode;
         _normalizeRouteDestination = normalizeRouteDestination;
+        _normalizeConsumerSources = normalizeConsumerSources;
         ValidateOptions = validateOptions;
     }
 
@@ -79,8 +82,19 @@ public sealed class TransportDefinition
 
     internal (Type MessageType, string Transport, string Destination) GetRouteKey(IRouteDefinition route)
     {
-        var destination = route.Destination;
-        return (route.MessageType, Name, _normalizeRouteDestination?.Invoke(destination) ?? destination);
+        return (route.MessageType, Name, NormalizeRouteDestination(route.Destination));
+    }
+
+    internal string NormalizeRouteDestination(string destination)
+    {
+        return _normalizeRouteDestination?.Invoke(destination) ?? destination;
+    }
+
+    internal bool RouteDestinationMatchesConsumerSource(string destination, string source)
+    {
+        return _normalizeConsumerSources
+            ? NormalizeRouteDestination(destination) == NormalizeRouteDestination(source)
+            : destination == source;
     }
 }
 

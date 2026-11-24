@@ -86,7 +86,8 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
                     continue;
                 }
 
-                if (route.Destination == replies.Source || route.Destination == replies.Destination)
+                if (transport.RouteDestinationMatchesConsumerSource(route.Destination, replies.Source) ||
+                    transport.NormalizeRouteDestination(route.Destination) == transport.NormalizeRouteDestination(replies.Destination))
                 {
                     failures.Add($"Request route to '{route.Destination}': use a reply consumer source and advertised reply destination distinct from the request destination.");
                 }
