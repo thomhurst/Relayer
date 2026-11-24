@@ -27,13 +27,17 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
     private readonly ILogger<PostgreSqlOrderedDispatcher> _logger;
     private readonly TimeProvider _timeProvider;
     private readonly RelayerInstrumentation? _instrumentation;
+    private readonly IHostApplicationLifetime? _hostLifetime;
 
     internal PostgreSqlOrderedDispatcher(NpgsqlDataSource source, PostgreSqlOrderedDispatchOptions options,
-        IEnumerable<ITransport> transports, ILogger<PostgreSqlOrderedDispatcher> logger, TimeProvider? timeProvider = null, RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null)
+        IEnumerable<ITransport> transports, ILogger<PostgreSqlOrderedDispatcher> logger, TimeProvider? timeProvider = null,
+        RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null,
+        IHostApplicationLifetime? hostLifetime = null)
     {
         _failures = new(scopes);
         _source = source;
         _instrumentation = instrumentation;
+        _hostLifetime = hostLifetime;
         _options = options;
         var store = options.Validate();
         _coordinator = new(source, options);
@@ -70,7 +74,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
     {
         using var idleStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _idleStop.Token);
         await OrderedLaneWorker.RunAsync(this, _options.LeaseDuration, _options.PollInterval,
-            _timeProvider, stoppingToken, idleStop.Token, _wake).ConfigureAwait(false);
+            _timeProvider, stoppingToken, idleStop.Token, _wake, _hostLifetime).ConfigureAwait(false);
     }
 
     internal bool Matches(string? schema, string prefix)

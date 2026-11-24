@@ -176,7 +176,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         services.AddKeyedSingleton<PostgreSqlOrderedDispatcher>(name, (provider, _) =>
             new(dataSource, provider.GetRequiredService<IOptionsMonitor<PostgreSqlOrderedDispatchOptions>>().Get(name),
                 provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>(),
-                instrumentation: provider.GetService<RelayerInstrumentation>(), scopes: provider.GetRequiredService<IServiceScopeFactory>()));
+                instrumentation: provider.GetService<RelayerInstrumentation>(), scopes: provider.GetRequiredService<IServiceScopeFactory>(),
+                hostLifetime: provider.GetService<IHostApplicationLifetime>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<PostgreSqlOrderedDispatcher>(name));
         services.AddSingleton<PostgreSqlSchedulingRegistration>(provider =>
         {

@@ -52,7 +52,8 @@ public static partial class MySqlOutboxServiceCollectionExtensions
 
             return new(dataSource, worker, provider.GetServices<ITransport>(),
                 provider.GetRequiredService<ILogger<MySqlOrderedDispatcher>>(),
-                instrumentation: provider.GetService<RelayerInstrumentation>());
+                instrumentation: provider.GetService<RelayerInstrumentation>(),
+                hostLifetime: provider.GetService<IHostApplicationLifetime>());
         });
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<MySqlOrderedDispatcher>(name));
         return services;

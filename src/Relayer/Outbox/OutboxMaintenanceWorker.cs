@@ -26,20 +26,9 @@ internal abstract class OutboxMaintenanceWorker(int tableCount, int batchSize, i
 
     protected async Task RunMaintenanceAsync(CancellationToken stoppingToken, CancellationToken idleToken)
     {
-        // A background service can run before later hosted transports finish opening their publishers.
-        if (hostLifetime?.ApplicationStarted is { IsCancellationRequested: false } started)
+        if (!await OutboxHostStartup.WaitAsync(hostLifetime, idleToken).ConfigureAwait(false))
         {
-            var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            using var registration = started.UnsafeRegister(static state => ((TaskCompletionSource)state!).SetResult(), ready);
-
-            try
-            {
-                await ready.Task.WaitAsync(idleToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (idleToken.IsCancellationRequested)
-            {
-                return;
-            }
+            return;
         }
 
         var clock = idleTimeProvider ?? TimeProvider.System;

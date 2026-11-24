@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Hosting;
 
 namespace Relayer;
 
@@ -36,8 +37,15 @@ internal interface IOrderedLaneWorker
 // Shared ownership cadence, sequential lane traversal, batch deadlines and drain-before-release.
 internal static class OrderedLaneWorker
 {
-    internal static async Task RunAsync(IOrderedLaneWorker worker, TimeSpan leaseDuration, TimeSpan pollInterval, TimeProvider timeProvider, CancellationToken stoppingToken, CancellationToken idleToken, OrderedLaneWake? wake = null)
+    internal static async Task RunAsync(IOrderedLaneWorker worker, TimeSpan leaseDuration, TimeSpan pollInterval,
+        TimeProvider timeProvider, CancellationToken stoppingToken, CancellationToken idleToken,
+        OrderedLaneWake? wake = null, IHostApplicationLifetime? hostLifetime = null)
     {
+        if (!await OutboxHostStartup.WaitAsync(hostLifetime, idleToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         // Reuse the deadline source across successful batches. Cancellation is an exceptional path.
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         long? lastRebalance = null;

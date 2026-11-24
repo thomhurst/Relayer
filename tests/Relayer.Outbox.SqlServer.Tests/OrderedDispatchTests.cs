@@ -14,6 +14,70 @@ namespace Relayer.Outbox.SqlServer.Tests;
 public sealed class OrderedDispatchTests(SqlServerFixture database)
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Hosted_worker_leaves_due_row_pending_until_startup(bool stopBeforeStartup)
+    {
+        var data = new StoreData(database);
+        await data.Create();
+        await data.Insert(Id(1), DateTimeOffset.UtcNow.AddMinutes(-1), 0, orderedHeaders: true);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var startup = new ObservedHostStartup();
+        var earlySend = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new RecordingTransport((_, _) =>
+        {
+            if (!startup.IsStarted)
+            {
+                earlySend.TrySetResult();
+                throw new InvalidOperationException("The transport is still starting.");
+            }
+
+            delivered.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+        var services = new ServiceCollection().AddLogging();
+        services.AddSingleton<IHostApplicationLifetime>(startup);
+        services.AddSingleton<ITransport>(transport);
+        services.AddRelayerSqlServerOrderedDispatch("orders", database.ConnectionString, Options(data, maxAttempts: 1));
+        await using var provider = services.BuildServiceProvider();
+        var worker = (BackgroundService)provider.GetRequiredService<IHostedService>();
+        await worker.StartAsync(timeout.Token);
+
+        try
+        {
+            await Task.WhenAny(startup.Observed, earlySend.Task).WaitAsync(timeout.Token);
+            await Assert.That(earlySend.Task.IsCompleted).IsFalse();
+            await using var connection = await Open();
+            await using var pending = new SqlCommand($"SELECT COUNT_BIG(*) FROM {data.Table} WHERE status = 'pending' AND attempts = 0", connection);
+            await Assert.That((long)(await pending.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(1L);
+
+            if (stopBeforeStartup)
+            {
+                await worker.StopAsync(timeout.Token);
+                await worker.ExecuteTask!.WaitAsync(timeout.Token);
+                startup.Start();
+                await Assert.That(delivered.Task.IsCompleted).IsFalse();
+                await Assert.That((long)(await pending.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(1L);
+                return;
+            }
+
+            startup.Start();
+            await delivered.Task.WaitAsync(timeout.Token);
+            await using var remaining = new SqlCommand($"SELECT COUNT_BIG(*) FROM {data.Table}", connection);
+
+            while ((long)(await remaining.ExecuteScalarAsync(timeout.Token))! != 0)
+            {
+                await Task.Delay(10, timeout.Token);
+            }
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Test]
     [Arguments("headers = 0x00")]
     [Arguments("destination = N' '")]
     public async Task Malformed_rows_count_attempts_and_park_only_the_original_key(string corruption)
@@ -547,6 +611,43 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
     private static Guid Id(int number)
     {
         return Guid.Parse($"01900000-0000-7000-8000-{number:x12}");
+    }
+
+    private sealed class ObservedHostStartup : IHostApplicationLifetime, IDisposable
+    {
+        private readonly CancellationTokenSource _started = new();
+        private readonly TaskCompletionSource _observed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal bool IsStarted => _started.IsCancellationRequested;
+
+        internal Task Observed => _observed.Task;
+
+        public CancellationToken ApplicationStarted
+        {
+            get
+            {
+                _observed.TrySetResult();
+                return _started.Token;
+            }
+        }
+
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+
+        internal void Start()
+        {
+            _started.Cancel();
+        }
+
+        public void StopApplication()
+        {
+        }
+
+        public void Dispose()
+        {
+            _started.Dispose();
+        }
     }
 
     private sealed class RecordingTransport(Func<OutgoingMessage, CancellationToken, ValueTask>? send = null) : ITransport

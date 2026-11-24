@@ -390,6 +390,9 @@ services.AddRelayerSqlServerOrderedDispatch("orders", connectionString,
     });
 ```
 
+The worker waits for the .NET host to finish startup before joining a lane group or dispatching rows.
+This gives hosted transports time to initialize even when services start concurrently.
+
 Writers and workers must target the same database, schema, prefix and lane count. Drain before changing
 lane count. A configuration-section overload binds these immutable settings through named options without
 reflection; native SqlClient runtime trimming/AOT restrictions still apply. Register unordered direct dispatch
