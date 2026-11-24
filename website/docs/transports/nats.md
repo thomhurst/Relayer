@@ -53,6 +53,8 @@ Register source-generated JSON serialization as described in [serialization](../
 
 NATS.Net 3.4.0 always uses TLS for `tls://` and `wss://` URLs. In the default `TlsMode.Auto`, either scheme requires TLS for all servers in the pool. Use `TlsMode.Prefer` if a mixed pool intentionally includes plaintext URLs. For TLS upgrades after INFO against servers older than 2.12, list all cluster servers explicitly to keep failover available during initial discovery. See the [NATS.Net 3.4.0 release notes](https://github.com/nats-io/nats.net/releases/tag/v3.4.0) for the full set of changes.
 
+Relayer builds every receive pipeline before registering the named transport's workers. If pipeline configuration throws, retrying startup on the same host rebuilds the pipelines from the declarations. If native startup fails, for example because a durable consumer is missing, retrying after correcting the error reuses the fully configured workers.
+
 ## Delivery and failure boundaries
 
 Sends await native JetStream publication acknowledgements. Borrowed payload/header storage remains owned by the caller until completion. `SendBatchAsync` performs individual confirmed publications in input order; it is not an atomic broker batch.

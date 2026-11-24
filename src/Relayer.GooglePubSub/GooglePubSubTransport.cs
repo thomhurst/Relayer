@@ -430,12 +430,10 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
         return endpoint;
     }
 
-    internal GooglePubSubConsumer AddConsumer(string source, SubscriberClient.Settings settings)
+    internal GooglePubSubConsumer CreateConsumer(string source, SubscriberClient.Settings settings)
     {
         var prepared = settings.Clone();
-        var worker = new GooglePubSubConsumer(() => new SubscriberClientImpl(SubscriptionName.Parse(source), [_options.Subscriber!], prepared, static () => Task.CompletedTask), _tracing, TopicFor(source), this, source);
-        Consumers.Add(worker);
-        return worker;
+        return new(() => new SubscriberClientImpl(SubscriptionName.Parse(source), [_options.Subscriber!], prepared, static () => Task.CompletedTask), _tracing, TopicFor(source), this, source);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)

@@ -162,6 +162,103 @@ public class NatsExecutionTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Hosted_startup_retry_registers_one_configured_worker_per_durable(bool failNativeStart)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var isolation = TestContext.Current!.Isolation;
+        var stream = isolation.GetIsolatedName("startup_retry");
+        var subject = isolation.GetIsolatedName("orders");
+        var deadLetter = isolation.GetIsolatedName("dead");
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        await js.CreateStreamAsync(new(stream, [subject]), token);
+        await js.CreateStreamAsync(new(stream + "_dead", [deadLetter]), token);
+        await js.CreateConsumerAsync(stream, new("first"), token);
+
+        if (!failNativeStart)
+        {
+            await js.CreateConsumerAsync(stream, new("second"), token);
+        }
+
+        var compositionAttempts = 0;
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(NatsExecutionJson.Default);
+            relayer.Nats("execution", transport =>
+            {
+                transport.TopologyMode = TopologyMode.None;
+                transport.Options.Configure(options =>
+                {
+                    options.ConnectionOptions = broker.Options();
+                    options.Consumers.Add(new(stream, "first"));
+                    options.Consumers.Add(new(stream, "second"));
+                });
+
+                foreach (var durable in new[] { "first", "second" })
+                {
+                    transport.Consume(durable, consumer =>
+                    {
+                        consumer.Options.Stream = stream;
+                        consumer.Failures(new()
+                        {
+                            DeadLetterEndpoint = deadLetter
+                        });
+                        consumer.Handler<ConfirmedAckHandler>();
+
+                        if (durable == "second")
+                        {
+                            consumer.ConfigurePipeline(_ =>
+                            {
+                                if (++compositionAttempts == 1 && !failNativeStart)
+                                {
+                                    throw new InvalidOperationException("Transient composition failure.");
+                                }
+                            });
+                        }
+                    });
+                }
+            });
+        });
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+        var transport = host.Services.GetRequiredKeyedService<NatsNativeTransport>("execution");
+
+        if (failNativeStart)
+        {
+            await Assert.That(() => host.StartAsync(token)).Throws<NatsJSApiException>();
+            await Assert.That(transport.Consumers.Count).IsEqualTo(2);
+            await Assert.That(transport.Consumers.All(worker => worker.Completion.IsCompletedSuccessfully)).IsTrue();
+            await js.CreateConsumerAsync(stream, new("second"), token);
+        }
+        else
+        {
+            await Assert.That(() => host.StartAsync(token)).Throws<InvalidOperationException>()
+                .WithMessageContaining("Transient composition failure.");
+            await Assert.That(transport.Consumers).IsEmpty();
+        }
+
+        var composed = transport.Consumers.ToArray();
+        await host.StartAsync(token);
+        await Assert.That(transport.Consumers.Count).IsEqualTo(2);
+        await Assert.That(transport.Consumers.All(worker => worker.Receive is not null && !worker.Completion.IsCompleted)).IsTrue();
+        await Assert.That(compositionAttempts).IsEqualTo(failNativeStart ? 1 : 2);
+
+        if (failNativeStart)
+        {
+            await Assert.That(transport.Consumers[0]).IsSameReferenceAs(composed[0]);
+            await Assert.That(transport.Consumers[1]).IsSameReferenceAs(composed[1]);
+        }
+
+        await host.StopAsync(token);
+    }
+
+    [Test]
     public async Task Repeated_start_during_outage_does_not_ping_or_close_the_running_transport()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
@@ -209,8 +306,8 @@ public class NatsExecutionTests
         });
         var transport = (NatsNativeTransport)provider.GetRequiredService<ITransport>();
         var settings = new NatsJSConsumeOpts { MaxMsgs = 1, DrainOnCancel = true };
-        var first = transport.AddConsumer(stream, "first", settings, 1);
-        var second = transport.AddConsumer(stream, "second", settings, 1);
+        var first = transport.CreateConsumer(stream, "first", settings, 1);
+        var second = transport.CreateConsumer(stream, "second", settings, 1);
         var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -227,6 +324,7 @@ public class NatsExecutionTests
             return ValueTask.FromResult(Disposition.Complete);
         };
 
+        transport.Consumers.AddRange([first, second]);
         await transport.StartAsync(token);
         var body = new byte[] { 0 };
         var serializer = NatsRawSerializer<byte[]>.Default;
@@ -286,7 +384,7 @@ public class NatsExecutionTests
         await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
         await using var native = new NatsConnection(broker.Options());
         var js = new NatsJSContext(native);
-        var worker = adapter.AddConsumer(stream, "worker", new()
+        var worker = adapter.CreateConsumer(stream, "worker", new()
         {
             MaxMsgs = 1,
             DrainOnCancel = true
@@ -310,6 +408,8 @@ public class NatsExecutionTests
 
             return Disposition.Complete;
         };
+
+        adapter.Consumers.Add(worker);
 
         try
         {
@@ -1034,7 +1134,7 @@ public class NatsExecutionTests
         var harness = provider.GetRequiredService<RelayerHarness>();
         var adapter = provider.GetRequiredKeyedService<NatsNativeTransport>("ack_failure");
         await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
-        var worker = adapter.AddConsumer(events, "worker", new()
+        var worker = adapter.CreateConsumer(events, "worker", new()
         {
             MaxMsgs = 1,
             DrainOnCancel = true,
@@ -1145,6 +1245,7 @@ public class NatsExecutionTests
                 throw;
             }
         };
+        adapter.Consumers.Add(worker);
         await adapter.StartAsync(token);
         await using var native = new NatsConnection(broker.Options());
         var js = new NatsJSContext(native);
@@ -1245,7 +1346,7 @@ public class NatsExecutionTests
         await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
         await using var native = new NatsConnection(broker.Options());
         var js = new NatsJSContext(native);
-        var worker = adapter.AddConsumer(events, "worker", new()
+        var worker = adapter.CreateConsumer(events, "worker", new()
         {
             MaxMsgs = 1,
             DrainOnCancel = true,
@@ -1296,6 +1397,7 @@ public class NatsExecutionTests
 
             return Disposition.SettledByHandler;
         };
+        adapter.Consumers.Add(worker);
         await adapter.StartAsync(token);
         (await js.PublishAsync(subject, new byte[] { 42 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token)).EnsureSuccess();
         await Task.WhenAny(redelivered.Task, worker.Completion).WaitAsync(token);

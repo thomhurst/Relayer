@@ -39,19 +39,36 @@ public static class GooglePubSubBuilderExtensions
 internal sealed class GooglePubSubHostedService(IServiceProvider provider, string name) : BackgroundService
 {
     private GooglePubSubTransport? _transport;
+    private bool _consumersRegistered;
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        _transport = provider.GetRequiredKeyedService<GooglePubSubTransport>(name);
+        _transport ??= provider.GetRequiredKeyedService<GooglePubSubTransport>(name);
+
+        if (!_consumersRegistered)
+        {
+            RegisterConsumers(_transport);
+            _consumersRegistered = true;
+        }
+
+        await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void RegisterConsumers(GooglePubSubTransport transport)
+    {
         var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
         var registry = provider.GetRequiredService<HandlerRegistry>();
         var tracing = provider.GetRequiredService<MessageTracing>();
+
+        // Publish the worker set only after every receive pipeline has been built.
+        var workers = new List<GooglePubSubConsumer>(definition.Consumers.Count);
 
         foreach (var declaration in definition.Consumers)
         {
             var consumer = (ConsumerDefinition<GooglePubSubConsumerOptions>)declaration;
             var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Source, consumer.Failure, Copy);
-            var endpoint = new MessagingEndpoint { System = "gcp_pubsub", Destination = _transport.TopicFor(consumer.Source), Subscription = consumer.Source };
+            var endpoint = new MessagingEndpoint { System = "gcp_pubsub", Destination = transport.TopicFor(consumer.Source), Subscription = consumer.Source };
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
                 consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>())
@@ -62,7 +79,7 @@ internal sealed class GooglePubSubHostedService(IServiceProvider provider, strin
                     Destination = endpoint.Destination,
                     Subscription = endpoint.Subscription
                 }));
-            var worker = _transport.AddConsumer(consumer.Source, consumer.Options.Settings);
+            var worker = transport.CreateConsumer(consumer.Source, consumer.Options.Settings);
             pipeline.Settle(worker.SettleContextAsync);
             pipeline.ConfigureConsumer(provider, consumer);
 
@@ -76,10 +93,10 @@ internal sealed class GooglePubSubHostedService(IServiceProvider provider, strin
 
             var receive = new ReceivePipeline<GooglePubSubDelivery, GooglePubSubBinding>(pipeline.Build(consumer.Concurrency), new("ce-"), consumer.Concurrency);
             worker.Receive = receive.ProcessAsync;
+            workers.Add(worker);
         }
 
-        await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
-        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+        transport.Consumers.AddRange(workers);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

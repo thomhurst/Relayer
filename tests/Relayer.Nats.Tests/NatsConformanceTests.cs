@@ -177,7 +177,7 @@ internal sealed class NatsFixture : ITransportConformanceFixture<NatsDelivery>, 
 
     public void RegisterConsumer(Func<NatsDelivery, CancellationToken, ValueTask<Disposition>> receive)
     {
-        _worker = Adapter.AddConsumer(_stream, "orders", new()
+        _worker = Adapter.CreateConsumer(_stream, "orders", new()
         {
             MaxMsgs = 32,
             DrainOnCancel = true
@@ -187,6 +187,7 @@ internal sealed class NatsFixture : ITransportConformanceFixture<NatsDelivery>, 
             _receiver = delivery.Message.Connection;
             return receive(delivery, token);
         };
+        Adapter.Consumers.Add(_worker);
     }
 
     public ValueTask SettleAsync(NatsDelivery incoming, Disposition disposition, CancellationToken token)

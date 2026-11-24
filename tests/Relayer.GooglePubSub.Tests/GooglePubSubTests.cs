@@ -250,19 +250,117 @@ public class GooglePubSubTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Hosted_startup_retry_registers_one_configured_worker_per_subscription(bool cancelBeforeNativeStart)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        using var firstStart = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        var token = deadline.Token;
+        await using var broker = await PubSubBroker.StartAsync(token);
+        var compositionAttempts = 0;
+        var (host, topic, _) = CreateStartupHost(broker, consumer => consumer.ConfigurePipeline(_ =>
+        {
+            if (++compositionAttempts != 1)
+            {
+                return;
+            }
+
+            if (!cancelBeforeNativeStart)
+            {
+                throw new InvalidOperationException("Transient composition failure.");
+            }
+
+            firstStart.Cancel();
+        }));
+        await using var lifetime = (IAsyncDisposable)host;
+        var transport = host.Services.GetRequiredKeyedService<GooglePubSubTransport>("events");
+
+        if (cancelBeforeNativeStart)
+        {
+            await Assert.That(() => host.StartAsync(firstStart.Token)).Throws<OperationCanceledException>();
+            await Assert.That(transport.Consumers.Count).IsEqualTo(2);
+            await Assert.That(transport.Consumers.All(worker => worker.Completion.IsCompletedSuccessfully)).IsTrue();
+        }
+        else
+        {
+            await Assert.That(() => host.StartAsync(firstStart.Token)).Throws<InvalidOperationException>()
+                .WithMessageContaining("Transient composition failure.");
+            await Assert.That(transport.Consumers).IsEmpty();
+        }
+
+        var composed = transport.Consumers.ToArray();
+        await host.StartAsync(token);
+        await Assert.That(transport.Consumers.Count).IsEqualTo(2);
+        await Assert.That(transport.Consumers.All(worker => worker.Receive is not null && !worker.Completion.IsCompleted)).IsTrue();
+        await Assert.That(compositionAttempts).IsEqualTo(cancelBeforeNativeStart ? 1 : 2);
+
+        if (cancelBeforeNativeStart)
+        {
+            await Assert.That(transport.Consumers[0]).IsSameReferenceAs(composed[0]);
+            await Assert.That(transport.Consumers[1]).IsSameReferenceAs(composed[1]);
+        }
+
+        var message = new PubsubMessage { Data = ByteString.CopyFromUtf8("""{"Value":42}""") };
+        message.Attributes.Add("ce-id", "after-startup-retry");
+        message.Attributes.Add("ce-source", "/startup-retry");
+        message.Attributes.Add("ce-specversion", "1.0");
+        message.Attributes.Add("ce-type", "tests.pubsub.order;v=1");
+        await broker.Publisher.PublishAsync(topic, [message], token);
+        var handled = host.Services.GetRequiredService<PubSubControl>();
+        await Assert.That(await handled.Values.Reader.ReadAsync(token)).IsEqualTo(42);
+        await Assert.That(await handled.Values.Reader.ReadAsync(token)).IsEqualTo(42);
+
+        await host.StopAsync(token);
+    }
+
+    [Test]
     public async Task Hosted_startup_failure_stops_earlier_subscribers()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = deadline.Token;
         await using var broker = await PubSubBroker.StartAsync(token);
-        var name = TestContext.Current!.Isolation.GetIsolatedName("startup-rollback");
+        var (host, topic, first) = CreateStartupHost(broker,
+            consumer => consumer.Options.Settings.AckDeadline = TimeSpan.FromSeconds(1));
+        await using var lifetime = (IAsyncDisposable)host;
+
+        await Assert.That(() => host.StartAsync(token)).Throws<ArgumentOutOfRangeException>();
+        var transport = host.Services.GetRequiredKeyedService<GooglePubSubTransport>("events");
+        var workers = transport.Consumers.ToArray();
+        await Assert.That(workers.Length).IsEqualTo(2);
+        await Assert.That(workers[0].Completion.IsCompletedSuccessfully).IsTrue();
+
+        await Assert.That(() => host.StartAsync(token)).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(transport.Consumers.Count).IsEqualTo(2);
+        await Assert.That(transport.Consumers[0]).IsSameReferenceAs(workers[0]);
+        await Assert.That(transport.Consumers[1]).IsSameReferenceAs(workers[1]);
+        await Assert.That(workers[0].Completion.IsCompletedSuccessfully).IsTrue();
+
+        var message = new PubsubMessage { Data = ByteString.CopyFromUtf8("""{"Value":42}""") };
+        message.Attributes.Add("ce-id", "after-startup-failure");
+        message.Attributes.Add("ce-source", "/startup-rollback");
+        message.Attributes.Add("ce-specversion", "1.0");
+        message.Attributes.Add("ce-type", "tests.pubsub.order;v=1");
+        var published = await broker.Publisher.PublishAsync(topic, [message], token);
+        await host.StopAsync(token);
+
+        var handled = host.Services.GetRequiredService<PubSubControl>();
+        await Assert.That(handled.Values.Reader.TryRead(out _)).IsFalse();
+        var pending = await broker.Subscriber.PullAsync(first, 1, token);
+        await Assert.That(pending.ReceivedMessages.Single().Message.MessageId).IsEqualTo(published.MessageIds.Single());
+    }
+
+    private static (IHost Host, TopicName Topic, SubscriptionName First) CreateStartupHost(PubSubBroker broker,
+        Action<ConsumerBuilder<GooglePubSubConsumerOptions>> configureSecond)
+    {
+        var name = TestContext.Current!.Isolation.GetIsolatedName("startup");
         var topic = TopicName.FromProjectTopic("relayer-test", name);
         var deadLetter = TopicName.FromProjectTopic("relayer-test", name + "-dead");
         var first = SubscriptionName.FromProjectSubscription("relayer-test", name + "-first");
         var second = SubscriptionName.FromProjectSubscription("relayer-test", name + "-second");
-        var handled = new PubSubControl();
+        SubscriptionName[] subscriptions = [first, second];
         var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddSingleton(handled);
+        builder.Services.AddSingleton<PubSubControl>();
         builder.Services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
@@ -277,55 +375,36 @@ public class GooglePubSubTests
                     options.PublisherSettings.EnableMessageOrdering = true;
                     options.Topics.Add(topic);
                     options.Topics.Add(deadLetter);
-                    options.Subscriptions.Add(new()
+
+                    foreach (var subscription in subscriptions)
                     {
-                        SubscriptionName = first,
-                        TopicAsTopicName = topic
-                    });
-                    options.Subscriptions.Add(new()
-                    {
-                        SubscriptionName = second,
-                        TopicAsTopicName = topic
-                    });
+                        options.Subscriptions.Add(new()
+                        {
+                            SubscriptionName = subscription,
+                            TopicAsTopicName = topic
+                        });
+                    }
                 });
-                transport.Consume(first.ToString(), consumer =>
+
+                foreach (var subscription in subscriptions)
                 {
-                    consumer.Failures(new()
+                    transport.Consume(subscription.ToString(), consumer =>
                     {
-                        DeadLetterEndpoint = deadLetter.ToString()
+                        consumer.Failures(new()
+                        {
+                            DeadLetterEndpoint = deadLetter.ToString()
+                        });
+                        consumer.Handler<PubSubHandler>();
+
+                        if (subscription == second)
+                        {
+                            configureSecond(consumer);
+                        }
                     });
-                    consumer.Handler<PubSubHandler>();
-                });
-                transport.Consume(second.ToString(), consumer =>
-                {
-                    consumer.Options.Settings.AckDeadline = TimeSpan.FromSeconds(1);
-                    consumer.Failures(new()
-                    {
-                        DeadLetterEndpoint = deadLetter.ToString()
-                    });
-                    consumer.Handler<PubSubHandler>();
-                });
+                }
             });
         });
-        var host = builder.Build();
-        await using var lifetime = (IAsyncDisposable)host;
-
-        await Assert.That(() => host.StartAsync(token)).Throws<ArgumentOutOfRangeException>();
-        var transport = host.Services.GetRequiredKeyedService<GooglePubSubTransport>("events");
-        var firstStopped = transport.Consumers[0].Completion.IsCompletedSuccessfully;
-
-        var message = new PubsubMessage { Data = ByteString.CopyFromUtf8("""{"Value":42}""") };
-        message.Attributes.Add("ce-id", "after-startup-failure");
-        message.Attributes.Add("ce-source", "/startup-rollback");
-        message.Attributes.Add("ce-specversion", "1.0");
-        message.Attributes.Add("ce-type", "tests.pubsub.order");
-        var published = await broker.Publisher.PublishAsync(topic, [message], token);
-        await host.StopAsync(token);
-
-        await Assert.That(firstStopped).IsTrue();
-        await Assert.That(handled.Values.Reader.TryRead(out _)).IsFalse();
-        var pending = await broker.Subscriber.PullAsync(first, 1, token);
-        await Assert.That(pending.ReceivedMessages.Single().Message.MessageId).IsEqualTo(published.MessageIds.Single());
+        return (builder.Build(), topic, first);
     }
 
     [Test]
