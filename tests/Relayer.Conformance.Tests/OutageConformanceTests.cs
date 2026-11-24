@@ -78,7 +78,8 @@ public sealed class OutageConformanceTests
     [Arguments(TransportConformanceCase.Reconnect, "broker reconnect")]
     [Arguments(TransportConformanceCase.SendDuringOutage, "broker disconnect")]
     [Arguments(TransportConformanceCase.SendDuringOutage, "broker reconnect")]
-    public async Task Cancellation_abandons_pending_broker_hook_and_attempts_cleanup(TransportConformanceCase scenario, string phase)
+    [Arguments(TransportConformanceCase.SendDuringOutage, "offline shutdown")]
+    public async Task Cancellation_reports_outage_phase_and_cleans_up_before_late_fault(TransportConformanceCase scenario, string phase)
     {
         var hook = new PendingHook(phase);
         using var caller = new CancellationTokenSource();
@@ -96,10 +97,12 @@ public sealed class OutageConformanceTests
             await Assert.That(failure!.InnerException is OperationCanceledException).IsTrue();
             await Assert.That(hook.StoppedWhilePending).IsTrue();
             await Assert.That(hook.DisposedWhilePending).IsTrue();
+
+            hook.Completion.SetException(new IOException($"Late {phase} failure."));
         }
         finally
         {
-            hook.Completion.TrySetCanceled();
+            hook.Completion.TrySetResult();
 
             try
             {
@@ -272,6 +275,12 @@ public sealed class OutageConformanceTests
 
         public async Task StopAsync(CancellationToken token)
         {
+            if (_offline && hook is { Phase: "offline shutdown" } && !hook.Entered.Task.IsCompleted)
+            {
+                await hook.WaitAsync();
+                return;
+            }
+
             if (hook is { IsPending: true })
             {
                 hook.StoppedWhilePending = true;
