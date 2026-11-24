@@ -5,6 +5,8 @@ namespace Relayer.GooglePubSub;
 
 internal static class GooglePubSubTopology
 {
+    private const long DefaultExpirationSeconds = 31 * 24 * 60 * 60;
+
     internal static void ValidateDeclaration(Subscription subscription)
     {
         // Fail closed for native entity kinds/options this topology validator does not inspect.
@@ -24,6 +26,12 @@ internal static class GooglePubSubTopology
             ExpirationPolicy = subscription.ExpirationPolicy,
         };
         supported.Labels.Add(subscription.Labels);
+
+        // Pub/Sub represents pull delivery with an omitted or empty PushConfig.
+        if (subscription.PushConfig?.Equals(new PushConfig()) == true)
+        {
+            supported.PushConfig = subscription.PushConfig;
+        }
 
         if (!supported.Equals(subscription))
         {
@@ -123,12 +131,29 @@ internal static class GooglePubSubTopology
 
             if (expected.ExpirationPolicy is not null)
             {
-                Check(Equals(actual.ExpirationPolicy, expected.ExpirationPolicy), "ExpirationPolicy", expected.ExpirationPolicy, actual.ExpirationPolicy);
+                // An absent policy uses the service default. A present policy without a TTL never expires.
+                var actualExpiration = actual.ExpirationPolicy ?? new ExpirationPolicy
+                {
+                    Ttl = new()
+                    {
+                        Seconds = DefaultExpirationSeconds
+                    }
+                };
+                Check(Equals(actualExpiration, expected.ExpirationPolicy), "ExpirationPolicy", expected.ExpirationPolicy, actualExpiration);
             }
 
             foreach (var label in expected.Labels)
             {
-                Check(actual.Labels.TryGetValue(label.Key, out var value) && value == label.Value, "Labels[" + label.Key + "]", label.Value, value);
+                string field = $"Labels[{label.Key}]";
+
+                if (actual.Labels.TryGetValue(label.Key, out var value))
+                {
+                    Check(value == label.Value, field, label.Value, value);
+                }
+                else
+                {
+                    ReportDifference(field, label.Value, "label is missing");
+                }
             }
 
             if (actual.PushConfig is { PushEndpoint.Length: > 0 } || actual.BigqueryConfig is not null || actual.CloudStorageConfig is not null)
@@ -140,8 +165,13 @@ internal static class GooglePubSubTopology
             {
                 if (!equal)
                 {
-                    differences.Add($"Subscription '{expected.Name}' {field}: expected '{wanted}', actual '{found}'. Reconcile externally; Provision never mutates existing entities.");
+                    ReportDifference(field, wanted, $"actual '{found}'");
                 }
+            }
+
+            void ReportDifference(string field, object? wanted, string actualDescription)
+            {
+                differences.Add($"Subscription '{expected.Name}' {field}: expected '{wanted}', {actualDescription}. Reconcile externally; Provision never mutates existing entities.");
             }
         }
 

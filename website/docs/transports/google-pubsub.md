@@ -133,9 +133,11 @@ Relayer emits `gcp_pubsub` process/send spans and an `ack` settlement span when 
 
 `None` makes no administration calls. `Validate` only reads topic/subscription state and reports missing entities or differences. `Provision` creates missing topics/subscriptions, tolerates concurrent creation and never rewrites or deletes existing entities.
 
-Topic declarations check existence. Subscription declarations support pull delivery, topic, acknowledgement deadline, ordering, exactly-once delivery, filter, native dead-letter/retry policies, retention, expiration and labels. Native subscription messages are passed unchanged to creation. Nondefault unsupported fields, including push/export delivery, fail startup. Unspecified acknowledgement deadline, retention and expiration accept service defaults; declared values are checked. Extra labels on existing subscriptions are preserved.
+Topic declarations check existence. Subscription declarations support pull delivery, topic, acknowledgement deadline, ordering, exactly-once delivery, filter, native dead-letter/retry policies, retention, expiration and labels. Native subscription messages are passed unchanged to creation. A pull declaration can omit `PushConfig` or explicitly set an empty `PushConfig`. Unsupported fields such as push and export delivery fail startup. Unspecified acknowledgement deadline, retention and expiration accept service defaults. Declared values are checked. The topology report identifies missing declared labels, including labels whose expected value is empty. Provision preserves extra labels on existing subscriptions.
 
-When a native policy is declared, `Validate` and `Provision` compare its effective settings. Pub/Sub defaults an omitted retry minimum to 10 seconds, an omitted retry maximum to 600 seconds, and zero or omitted dead-letter attempts to 5. Explicit backoffs, including zero seconds, and explicit nonzero delivery attempts still affect the comparison. Omitting a whole policy checks that the corresponding policy is absent.
+When a retry or dead-letter policy is declared, `Validate` and `Provision` compare its effective settings. Pub/Sub defaults an omitted retry minimum to 10 seconds, an omitted retry maximum to 600 seconds, and zero or omitted dead-letter attempts to 5. Explicit backoffs, including zero seconds, and explicit nonzero delivery attempts still affect the comparison. Omitting either policy checks that the corresponding policy is absent.
+
+A declared expiration policy of 31 days also matches a broker response that omits its expiration policy, which represents the Pub/Sub default. A present policy without a TTL means the subscription never expires.
 
 ## Native AOT and emulator validation
 
