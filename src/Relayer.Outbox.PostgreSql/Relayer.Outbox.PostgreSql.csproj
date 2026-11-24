@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>PostgreSQL (ADO.NET) outbox and inbox for Relayer.</Description>
+    <Description>PostgreSQL ADO.NET outbox and shared inbox storage for Relayer. Consumer inbox transactions are provided by Relayer.Outbox.PostgreSql.EntityFrameworkCore.</Description>
   </PropertyGroup>
 
   <ItemGroup>
