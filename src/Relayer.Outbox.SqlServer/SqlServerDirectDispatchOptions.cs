@@ -15,7 +15,7 @@ public sealed class SqlServerDirectDispatchOptions
         get; init;
     } = 100;
 
-    /// <summary>Lifetime of a fenced claim. A send that outlives it can be delivered again.</summary>
+    /// <summary>Lifetime of a fenced claim, greater than zero and at most 1,000,000 days. A send that outlives it can be delivered again.</summary>
     public TimeSpan ClaimDuration
     {
         get; init;

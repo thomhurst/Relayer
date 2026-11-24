@@ -59,7 +59,7 @@ public sealed class SqlServerMaintenanceOptions
         get; init;
     } = TimeSpan.FromSeconds(30);
 
-    /// <summary>Row claim duration; choose longer than native send and database latency.</summary>
+    /// <summary>Row claim duration, greater than zero and at most 1,000,000 days. Choose longer than native send and database latency.</summary>
     public TimeSpan ClaimDuration
     {
         get; init;
@@ -106,7 +106,7 @@ public sealed class SqlServerMaintenanceOptions
         }
 
         ValidateDelay(SweepInterval, nameof(SweepInterval));
-        ValidateDuration(ClaimDuration, nameof(ClaimDuration));
+        OutboxClaimDuration.Validate(ClaimDuration, nameof(ClaimDuration));
         ValidateDelay(CleanupInterval, nameof(CleanupInterval));
 
         if (DeadRetention is { } dead)

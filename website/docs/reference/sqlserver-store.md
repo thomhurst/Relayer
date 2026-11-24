@@ -207,6 +207,8 @@ with the database's exact spelling. Server aliases must match the writer's nativ
 This validates caller-owned connections, including `ChangeDatabase`, without opening another pooled
 connection or relying on a login's default database. `DispatchStoreName` is optional: without it, transactions only persist messages.
 The configuration overload for transaction enlistment also binds `DispatchStoreName`.
+For direct dispatch and maintenance, `ClaimDuration` must be greater than zero and at most
+1,000,000 days in both code and configuration.
 
 After a successful synchronous or asynchronous commit, unordered buffers move to a bounded
 in-process queue. The committing scope can end or begin another transaction while the worker sends.

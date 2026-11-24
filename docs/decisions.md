@@ -562,6 +562,9 @@ The durable store contract needs explicit recovery and ownership rules before da
 **Decision.** Supersede D12's row-claim protocol detail while retaining its direct-dispatch and lane-lease design.
 - Claim only pending, unparked rows that are due and have no live claim, using an atomic conditional update.
 - Give every dispatch attempt a fresh nonempty fencing token and a future expiry. Never reuse tokens.
+- SQL Server and PostgreSQL reject unordered `ClaimDuration` values above 1,000,000 days at registration,
+  including PostgreSQL change capture. A fixed cap gives the shared dispatch worker's `DateTimeOffset`
+  arithmetic millennia of UTC headroom and fits both providers' native claim expressions.
 - Renewal, completion and failed-attempt updates require the matching token and a claim live at the supplied UTC instant.
   Renewal never shortens an expiry. Failure increments attempts, records the error and releases the claim atomically.
 - Count the same eligible rows for health, across all lanes. Future schedules, live claims and parked/dead rows are excluded.
