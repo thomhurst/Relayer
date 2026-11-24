@@ -63,6 +63,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
         try
         {
+            token.ThrowIfCancellationRequested();
             creation = _create(tracing, token).AsTask();
             fixture = await creation.WaitAsync(token).ConfigureAwait(false);
         }
