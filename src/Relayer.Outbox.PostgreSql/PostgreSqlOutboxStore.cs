@@ -403,7 +403,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     }
 
     // A local handler's Retry uses its consumer's attempt limit and delays the row's next attempt.
-    internal ValueTask<int> RecordLocalFailureAsync(OutboxClaim claim, string error, int limit, TimeSpan delay,
+    internal ValueTask<int> RecordLocalFailureAsync(OutboxClaim claim, string error, int limit, NpgsqlInterval delay,
         CancellationToken cancellationToken)
     {
         Validate(claim);

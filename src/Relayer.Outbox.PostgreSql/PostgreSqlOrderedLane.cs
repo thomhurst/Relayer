@@ -54,7 +54,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         _failLocal = CreateMutation(PostgreSqlPoisonSql.LocalFailure(table, dead, fenced));
         _failLocal.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
         _failLocal.Parameters.Add(new NpgsqlParameter<int>("limit", NpgsqlDbType.Integer));
-        _failLocal.Parameters.Add(new NpgsqlParameter<TimeSpan>("delay", NpgsqlDbType.Interval));
+        _failLocal.Parameters.Add(new NpgsqlParameter<NpgsqlInterval>("delay", NpgsqlDbType.Interval));
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -117,10 +117,10 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
     }
 
     internal ValueTask<bool> FailLocalAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
-        OutboxClaim claim, string error, int limit, TimeSpan delay, CancellationToken cancellationToken)
+        OutboxClaim claim, string error, int limit, NpgsqlInterval delay, CancellationToken cancellationToken)
     {
         ((NpgsqlParameter<int>)_failLocal.Parameters[3]).TypedValue = limit;
-        ((NpgsqlParameter<TimeSpan>)_failLocal.Parameters[4]).TypedValue = delay;
+        ((NpgsqlParameter<NpgsqlInterval>)_failLocal.Parameters[4]).TypedValue = delay;
         return MutateAsync(connection, transaction, _failLocal, claim, error, cancellationToken);
     }
 

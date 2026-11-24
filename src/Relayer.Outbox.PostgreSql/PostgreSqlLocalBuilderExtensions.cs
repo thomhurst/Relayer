@@ -16,7 +16,11 @@ public sealed class PostgreSqlLocalOptions;
 [Experimental("RLYEXP002", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp002")]
 public sealed class PostgreSqlLocalConsumerOptions
 {
-    /// <summary>Durable delay before the next attempt after each retryable handler failure. The last delay repeats. Empty (the default) makes the row due again at once.</summary>
+    /// <summary>
+    /// Durable delay before the next attempt after each retryable handler failure.
+    /// Fractional microseconds round up to PostgreSQL interval precision.
+    /// The last delay repeats. Empty (the default) makes the row due again at once.
+    /// </summary>
     public TimeSpan[] RedeliveryDelays
     {
         get; set;

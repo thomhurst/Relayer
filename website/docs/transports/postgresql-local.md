@@ -149,7 +149,9 @@ builder.PostgreSqlLocal("local", source, transport =>
 });
 ```
 
-`RedeliveryDelays[n]` is the delay after the attempt numbered n + 1 fails, and the last delay repeats. `MaxAttempts` overrides `MaxDispatchAttempts` for that consumer; `int.MaxValue` never dead-letters a `Retry` failure, but a `DeadLetter` classification still dead-letters at once. Negative delays and a non-positive `MaxAttempts` fail startup. A delayed ordered row blocks later rows with its key until it succeeds. Declare the same schedule on every dispatching instance. `consumer.Failures(...)` is rejected for local consumers, because its in-process retries and copy-based redelivery cannot take part in the fenced row transition. Watch rows that keep retrying with the `relayer.outbox.dispatch_lag` histogram and the `attempts` and `last_error` columns.
+`RedeliveryDelays[n]` is the delay after the attempt numbered n + 1 fails, and the last delay repeats. PostgreSQL intervals have microsecond precision. Both direct and ordered dispatch round fractional microseconds up to the next whole microsecond when setting the retry deadline.
+
+`MaxAttempts` overrides `MaxDispatchAttempts` for that consumer; `int.MaxValue` never dead-letters a `Retry` failure, but a `DeadLetter` classification still dead-letters at once. Negative delays and a non-positive `MaxAttempts` fail startup. A delayed ordered row blocks later rows with its key until it succeeds. Declare the same schedule on every dispatching instance. `consumer.Failures(...)` is rejected for local consumers, because its in-process retries and copy-based redelivery cannot take part in the fenced row transition. Watch rows that keep retrying with the `relayer.outbox.dispatch_lag` histogram and the `attempts` and `last_error` columns.
 
 Send and completion state pools grow to retain peak concurrent usage, including beyond their initial 16 send and 64 completion slots. After warm-up, higher concurrency reuses those states; native Npgsql and serializer allocations still apply. Retained send resources are disposed with the transport.
 
