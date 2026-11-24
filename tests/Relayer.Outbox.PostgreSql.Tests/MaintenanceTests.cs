@@ -53,6 +53,66 @@ public class MaintenanceTests
     }
 
     [Test]
+    [Arguments(nameof(PostgreSqlMaintenanceOptions.RecoveryDelay))]
+    [Arguments(nameof(PostgreSqlMaintenanceOptions.DeadRetention))]
+    [Arguments(nameof(PostgreSqlMaintenanceOptions.InboxRetention))]
+    [Arguments(nameof(PostgreSqlMaintenanceOptions.SentRetention))]
+    public async Task Registration_rejects_age_above_the_cutoff_limit(string option)
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            [option] = "1700000.00:00:00.0000001"
+        }).Build();
+
+        var standalone = await Assert.That(() =>
+            new ServiceCollection().AddRelayerPostgreSqlMaintenance("orders", source, configuration))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(standalone!.ParamName).IsEqualTo(option);
+
+        var tenant = await Assert.That(() => new ServiceCollection().AddRelayerPostgreSqlTenantDispatch(configuration))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(tenant!.ParamName).IsEqualTo(option);
+    }
+
+    [Test]
+    public async Task Maximum_cutoff_age_sweeps_and_cleans_up_without_matching_recent_rows()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Insert(source, Id(1));
+        await Sql(source, """
+            INSERT INTO relayer_outbox_dead (id, transport, destination, message_type, headers, body, created_at, failed_at)
+            SELECT id, transport, destination, message_type, headers, body, created_at, clock_timestamp()
+            FROM relayer_outbox;
+            INSERT INTO relayer_inbox (consumer, message_id, processed_at) VALUES ('orders', gen_random_uuid(), clock_timestamp());
+            INSERT INTO relayer_outbox_sent VALUES (gen_random_uuid(), 'orders', clock_timestamp());
+            """);
+        var maxAge = TimeSpan.FromDays(1_700_000);
+        var transport = new RecordingTransport();
+        await using var provider = new ServiceCollection().AddLogging().AddSingleton<ITransport>(transport)
+            .AddRelayerPostgreSqlMaintenance("orders", source, new PostgreSqlMaintenanceOptions
+            {
+                RecoveryDelay = maxAge,
+                RetainSentMessages = true,
+                DeadRetention = maxAge,
+                InboxRetention = maxAge,
+                SentRetention = maxAge
+            }).BuildServiceProvider();
+        var worker = provider.GetRequiredKeyedService<PostgreSqlMaintenanceWorker>("orders");
+
+        await Assert.That(await worker.SweepAsync(default)).IsEqualTo(0);
+        await Assert.That(await worker.CleanupAsync(default)).IsEqualTo(0);
+        await Assert.That(transport.Ids.Count).IsEqualTo(0);
+        await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(1L);
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(1L);
+        await Assert.That(await Count(source, "relayer_inbox")).IsEqualTo(1L);
+        await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Connected_sweeper_holds_leadership_through_native_send_then_rival_takes_over_after_release()
     {
         await using var fixture = new PostgreSqlFixture();

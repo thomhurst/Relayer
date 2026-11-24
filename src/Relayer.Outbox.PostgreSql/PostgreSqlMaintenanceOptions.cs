@@ -3,6 +3,11 @@ namespace Relayer.Outbox.PostgreSql;
 /// <summary>Immutable settings for leased PostgreSQL recovery and retention workers.</summary>
 public sealed class PostgreSqlMaintenanceOptions
 {
+    // Leave room for time-zone offsets even if the database clock is as early as 0001 AD.
+    // PostgreSQL's earliest timestamp is more than 1,700,000 days before that date.
+    private const int MaxCutoffAgeDays = 1_700_000;
+    private static readonly TimeSpan s_maxCutoffAge = TimeSpan.FromDays(MaxCutoffAgeDays);
+
     /// <summary>Database schema. Null selects public.</summary>
     public string? Schema
     {
@@ -99,10 +104,7 @@ public sealed class PostgreSqlMaintenanceOptions
             throw new ArgumentOutOfRangeException(nameof(BatchSize));
         }
 
-        if (RecoveryDelay < TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(RecoveryDelay));
-        }
+        ValidateCutoffAge(RecoveryDelay, nameof(RecoveryDelay), allowZero: true);
 
         if (LeaseDuration < TimeSpan.FromSeconds(1) || LeaseDuration > TimeSpan.FromHours(1))
         {
@@ -112,16 +114,16 @@ public sealed class PostgreSqlMaintenanceOptions
         ValidateDelay(SweepInterval, nameof(SweepInterval));
         ValidateDuration(ClaimDuration, nameof(ClaimDuration));
         ValidateDelay(CleanupInterval, nameof(CleanupInterval));
-        ValidateDuration(SentRetention, nameof(SentRetention));
+        ValidateCutoffAge(SentRetention, nameof(SentRetention));
 
         if (DeadRetention is { } dead)
         {
-            ValidateDuration(dead, nameof(DeadRetention));
+            ValidateCutoffAge(dead, nameof(DeadRetention));
         }
 
         if (InboxRetention is { } inbox)
         {
-            ValidateDuration(inbox, nameof(InboxRetention));
+            ValidateCutoffAge(inbox, nameof(InboxRetention));
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxDispatchAttempts);
@@ -129,6 +131,16 @@ public sealed class PostgreSqlMaintenanceOptions
         var store = new PostgreSqlOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, MaxDispatchAttempts = MaxDispatchAttempts, RetainSentMessages = RetainSentMessages };
         _ = PostgreSqlOutboxSchema.CreateScript(store);
         return store;
+    }
+
+    private static void ValidateCutoffAge(TimeSpan value, string name, bool allowZero = false)
+    {
+        if (value < TimeSpan.Zero || (!allowZero && value == TimeSpan.Zero) || value > s_maxCutoffAge)
+        {
+            var lowerBound = allowZero ? "zero or positive" : "positive";
+            throw new ArgumentOutOfRangeException(name, value,
+                $"The duration must be {lowerBound} and at most {MaxCutoffAgeDays} days.");
+        }
     }
 
     private static void ValidateDelay(TimeSpan value, string name)
