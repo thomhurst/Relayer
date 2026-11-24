@@ -1465,6 +1465,8 @@ Direct dispatch validates native autocommit at startup. Since later connections 
 session settings, each dispatch claim, completion and send retry checks `@@SESSION.autocommit` and
 reports a disabled session in the mutation result without another database round trip. Failure
 recording commits the dead copy and live-row transition in an explicit transaction.
+Direct claims use the client UTC timestamp at `DATETIME(6)` precision. Round the duration up
+before formatting the expiry so the stored deadline is at least that duration from the claim timestamp.
 
 **Consequences.** MySQL batching remains experimental upstream and does not promise one round
 trip. Partial claim batches may leave expiring claims after an error; no send begins without all

@@ -128,6 +128,37 @@ public sealed class OrderedLaneWorkerTests
         await Assert.That(worker.Releases).IsEqualTo(1);
     }
 
+    [Test]
+    [Arguments(false, 19_000)]
+    [Arguments(true, 19_000)]
+    [Arguments(false, 20_000)]
+    [Arguments(true, 20_000)]
+    public async Task Idle_poll_timer_rounds_up_to_whole_milliseconds(bool localWake, int ticks)
+    {
+        var worker = new Worker();
+        worker.Ready[0] = worker.Ready[1] = false;
+        var clock = new StalledClock();
+        using var idle = new CancellationTokenSource();
+        var wake = localWake ? new OrderedLaneWake() : null;
+        var run = OrderedLaneWorker.RunAsync(worker, TimeSpan.FromSeconds(30), TimeSpan.FromTicks(ticks), clock,
+            default, idle.Token, wake);
+
+        TimeSpan dueTime;
+
+        try
+        {
+            dueTime = await clock.Polled.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            await idle.CancelAsync();
+            await run.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+
+        await Assert.That(dueTime).IsEqualTo(TimeSpan.FromMilliseconds(2));
+        await Assert.That(worker.Releases).IsEqualTo(1);
+    }
+
     private static Task Run(Worker worker, TimeProvider clock, CancellationToken idle = default)
     {
         return OrderedLaneWorker.RunAsync(worker, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(1), clock, default, idle);
@@ -135,14 +166,14 @@ public sealed class OrderedLaneWorkerTests
 
     private sealed class StalledClock : TimeProvider
     {
-        internal TaskCompletionSource Polled
+        internal TaskCompletionSource<TimeSpan> Polled
         {
             get;
         } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
-            Polled.TrySetResult();
+            Polled.TrySetResult(dueTime);
             return new SilentTimer();
         }
 

@@ -432,7 +432,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     {
         EnsureAvailable(cancellationToken);
         Validate(claim, now, expires);
-        _claimBatch.Prepare(new ReadOnlySpan<OutboxClaim>(in claim), now, expires);
+        _claimBatch.Prepare(new ReadOnlySpan<OutboxClaim>(in claim), now, RoundDispatchExpiry(now, expires));
         var recoveryConnection = RecoveryConnection;
         await using var ownedConnection = recoveryConnection is null
             ? await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false)
@@ -461,7 +461,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         }
 
         ValidateBatch(claims.Span, now, expires);
-        _claimBatch.Prepare(claims.Span, now, expires);
+        _claimBatch.Prepare(claims.Span, now, RoundDispatchExpiry(now, expires));
         var recoveryConnection = RecoveryConnection;
         await using var ownedConnection = recoveryConnection is null
             ? await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false)
@@ -512,6 +512,14 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
                 }
             }
         }
+    }
+
+    private static DateTimeOffset RoundDispatchExpiry(DateTimeOffset now, DateTimeOffset expires)
+    {
+        // The binding truncates both timestamps to microseconds. Round their difference
+        // so the stored expiry is far enough from the timestamp used by the claim predicate.
+        long remainingTicks = (expires - now).Ticks % TimeSpan.TicksPerMicrosecond;
+        return remainingTicks == 0 ? expires : expires.AddTicks(TimeSpan.TicksPerMicrosecond - remainingTicks);
     }
 
     private static void ValidateBatch(ReadOnlySpan<OutboxClaim> claims, DateTimeOffset? now = null, DateTimeOffset? expires = null)
