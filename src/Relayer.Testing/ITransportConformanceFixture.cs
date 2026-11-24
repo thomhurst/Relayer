@@ -49,7 +49,7 @@ public interface ITransportConformanceFixture<TIncoming> : IAsyncDisposable
     /// <summary>The ordering key for sends without an explicit scenario key. Supply one when the endpoint requires it.</summary>
     WireString? DefaultOrderingKey => null;
 
-    /// <summary>Positive native outage send budget under 4,294,962,295 milliseconds, or null to skip the outage case.</summary>
+    /// <summary>Native outage send budget of at least 1 millisecond and less than 4,294,962,295 milliseconds, or null to skip the outage case.</summary>
     TimeSpan? OutageSendTimeout => null;
 
     /// <summary>Recognizes native connectivity failures expected while the broker is stopped, including offline shutdown.</summary>

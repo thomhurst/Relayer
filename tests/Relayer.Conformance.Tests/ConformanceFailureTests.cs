@@ -9,16 +9,26 @@ public class ConformanceFailureTests
 {
     [Test]
     [Arguments(0L)]
-    [Arguments(-1L)]
-    [Arguments(4_294_967_295L)]
-    public async Task Constructor_rejects_unsupported_scenario_timeout(long timeoutMilliseconds)
+    [Arguments(-TimeSpan.TicksPerMillisecond)]
+    [Arguments(1L)]
+    [Arguments(TimeSpan.TicksPerMillisecond - 1L)]
+    [Arguments(4_294_967_295L * TimeSpan.TicksPerMillisecond)]
+    public async Task Constructor_rejects_unsupported_scenario_timeout(long timeoutTicks)
     {
         Action construct = () => _ = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
             static (tracing, _) => new(new InMemoryFixture(tracing)),
-            timeout: TimeSpan.FromMilliseconds(timeoutMilliseconds));
+            timeout: TimeSpan.FromTicks(timeoutTicks));
 
         var error = await Assert.That(construct).Throws<ArgumentOutOfRangeException>();
         await Assert.That(error!.ParamName).IsEqualTo("timeout");
+    }
+
+    [Test]
+    public void Constructor_accepts_one_millisecond_scenario_timeout()
+    {
+        _ = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
+            static (tracing, _) => new(new InMemoryFixture(tracing)),
+            timeout: TimeSpan.FromMilliseconds(1));
     }
 
     [Test]
