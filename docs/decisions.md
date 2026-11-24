@@ -771,8 +771,10 @@ database clock. Live members, sorted by their unique IDs, divide lanes by rank. 
 lanes outside its fair share. Successors wait for expiry; shutdown releases leases after native work drains.
 Each bounded batch holds its lane lease row lock in a separate database transaction through sequential
 native sends, row claims and fenced outcomes. Broker latency never enters the business transaction.
-A cancellation deadline of half the lease duration covers the entire batch. Admission stops after one quarter
-of the lease duration to reserve time for the final send and commit; healthy slow batches commit their prefix.
+A cancellation deadline of half the lease duration covers the entire batch. Round fractional half-lease
+intervals up to whole milliseconds when programming .NET batch and worker shutdown release timers.
+Admission stops after one quarter of the lease duration to reserve time for the final send and commit;
+healthy slow batches commit their prefix.
 A single native operation must still fit the hard deadline. A connected transaction is never
 forcibly revoked. Reads use the pending lane/ID index and never skip a scheduled or live-claimed head.
 An indexed anti-join excludes later rows of parked keys while allowing other keys to continue.

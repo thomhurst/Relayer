@@ -3,6 +3,34 @@ namespace Relayer.Tests;
 public sealed class OrderedLaneWorkerTests
 {
     [Test]
+    [Arguments(10_000_000L, 500L)]
+    [Arguments(10_000_001L, 501L)]
+    [Arguments(10_018_000L, 501L)]
+    [Arguments(10_020_000L, 501L)]
+    [Arguments(36_000_000_000L, 1_800_000L)]
+    public async Task Dispatch_and_release_schedule_the_half_lease_in_whole_milliseconds(long leaseTicks, long milliseconds)
+    {
+        var scheduled = new List<TimeSpan>();
+        var worker = new Worker();
+        worker.Send = _ =>
+        {
+            worker.StopRequested = true;
+            return new(1);
+        };
+
+        await OrderedLaneWorker.RunAsync(worker, TimeSpan.FromTicks(leaseTicks), TimeSpan.FromMilliseconds(1),
+            TimeProvider.System, default, default, scheduleTimeout: (source, delay) =>
+            {
+                scheduled.Add(delay);
+                source.CancelAfter(delay);
+            });
+
+        var expected = TimeSpan.FromMilliseconds(milliseconds);
+        await Assert.That(scheduled).IsEquivalentTo(new[] { expected, expected });
+        await Assert.That(worker.Releases).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Slow_batch_refreshes_membership_and_does_not_dispatch_a_transferred_lane()
     {
         var clock = new Clock();

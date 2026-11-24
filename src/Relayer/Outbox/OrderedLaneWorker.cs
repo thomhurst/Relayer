@@ -37,10 +37,33 @@ internal interface IOrderedLaneWorker
 // Shared ownership cadence, sequential lane traversal, batch deadlines and drain-before-release.
 internal static class OrderedLaneWorker
 {
+    internal static TimeSpan HalfLeaseTimeout(TimeSpan leaseDuration)
+    {
+        // Divide the original ticks directly so half a tick above a whole millisecond rounds up.
+        var (milliseconds, remainingTicks) = Math.DivRem(leaseDuration.Ticks, 2 * TimeSpan.TicksPerMillisecond);
+        return TimeSpan.FromMilliseconds(milliseconds + (remainingTicks > 0 ? 1 : 0));
+    }
+
+    internal static void ScheduleTimeout(CancellationTokenSource source, TimeSpan delay,
+        Action<CancellationTokenSource, TimeSpan>? scheduleTimeout)
+    {
+        if (scheduleTimeout is null)
+        {
+            source.CancelAfter(delay);
+        }
+        else
+        {
+            scheduleTimeout(source, delay);
+        }
+    }
+
     internal static async Task RunAsync(IOrderedLaneWorker worker, TimeSpan leaseDuration, TimeSpan pollInterval,
         TimeProvider timeProvider, CancellationToken stoppingToken, CancellationToken idleToken,
-        OrderedLaneWake? wake = null, IHostApplicationLifetime? hostLifetime = null)
+        OrderedLaneWake? wake = null, IHostApplicationLifetime? hostLifetime = null,
+        Action<CancellationTokenSource, TimeSpan>? scheduleTimeout = null)
     {
+        var laneTimeout = HalfLeaseTimeout(leaseDuration);
+
         if (!await OutboxHostStartup.WaitAsync(hostLifetime, idleToken).ConfigureAwait(false))
         {
             return;
@@ -80,7 +103,7 @@ internal static class OrderedLaneWorker
                             continue;
                         }
 
-                        deadline.CancelAfter(leaseDuration / 2);
+                        ScheduleTimeout(deadline, laneTimeout, scheduleTimeout);
 
                         try
                         {
@@ -127,10 +150,11 @@ internal static class OrderedLaneWorker
         finally
         {
             deadline.Dispose();
-            using var cleanup = new CancellationTokenSource(leaseDuration / 2);
+            using var cleanup = new CancellationTokenSource();
 
             try
             {
+                ScheduleTimeout(cleanup, laneTimeout, scheduleTimeout);
                 await worker.ReleaseAsync(cleanup.Token).ConfigureAwait(false);
             }
             catch (Exception error)
