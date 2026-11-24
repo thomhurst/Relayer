@@ -22,6 +22,11 @@ def verification_step():
 
 
 class ReviewWorkflowTests(unittest.TestCase):
+    def test_review_action_opts_in_to_fork_pull_requests(self):
+        steps = re.split(r'^      - name: ', WORKFLOW.read_text(), flags=re.MULTILINE)
+        review = next(step for step in steps if step.startswith('Run Claude Code Review\n'))
+        self.assertIn('\n          allow_fork_prs: "true"\n', review)
+
     def test_verifier_runs_after_review_with_pinned_context(self):
         workflow = WORKFLOW.read_text()
         step = verification_step()

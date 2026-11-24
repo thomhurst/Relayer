@@ -101,6 +101,8 @@ jobs:
           # permissions above.
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_non_write_users: "*"
+          # The action defaults to skipping forks, but this workflow requires a verdict.
+          allow_fork_prs: "true"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
