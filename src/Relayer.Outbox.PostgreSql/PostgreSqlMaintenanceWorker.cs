@@ -15,6 +15,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
     private readonly NpgsqlDataSource _source;
     private readonly TimeProvider? _admissionTimeProvider;
     private readonly PostgreSqlMaintenanceOptions _options;
+    private readonly TimeSpan _databaseLeaseDuration;
     private readonly NpgsqlInterval _recoveryAge;
     private readonly NpgsqlInterval _sentRetention;
     private readonly NpgsqlInterval _deadRetention;
@@ -54,10 +55,11 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         _admissionTimeProvider = admissionTimeProvider;
         _options = options;
         var store = options.Validate();
-        _recoveryAge = RoundCutoffAge(options.RecoveryDelay);
-        _sentRetention = RoundCutoffAge(options.SentRetention);
-        _deadRetention = RoundCutoffAge(options.DeadRetention.GetValueOrDefault());
-        _inboxRetention = RoundCutoffAge(options.InboxRetention.GetValueOrDefault());
+        _databaseLeaseDuration = PostgreSqlInterval.RoundLeaseUp(options.LeaseDuration);
+        _recoveryAge = PostgreSqlInterval.CalendarDuration(options.RecoveryDelay);
+        _sentRetention = PostgreSqlInterval.CalendarDuration(options.SentRetention);
+        _deadRetention = PostgreSqlInterval.CalendarDuration(options.DeadRetention.GetValueOrDefault());
+        _inboxRetention = PostgreSqlInterval.CalendarDuration(options.InboxRetention.GetValueOrDefault());
 
         _store = new(source, store);
         _logger = logger;
@@ -88,15 +90,6 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         // Recheck age on the target row after a concurrent completion refreshes it under a row lock.
         _sent = $"DELETE FROM {Table("outbox_sent")} WHERE sent_at <= clock_timestamp() - @retention AND id IN (SELECT id FROM {Table("outbox_sent")} WHERE sent_at <= clock_timestamp() - @retention ORDER BY sent_at, id LIMIT @limit)";
         _inbox = $"DELETE FROM {Table("inbox")} WHERE (consumer, message_id) IN (SELECT consumer, message_id FROM {Table("inbox")} WHERE processed_at <= clock_timestamp() - @retention ORDER BY processed_at, consumer, message_id LIMIT @limit)";
-    }
-
-    private static NpgsqlInterval RoundCutoffAge(TimeSpan age)
-    {
-        // Preserve the calendar-day component Npgsql derives from TimeSpan. Across DST,
-        // rounding the remaining time up to 24 hours cannot carry into another calendar day.
-        long ticksInDay = age.Ticks % TimeSpan.TicksPerDay;
-        long microseconds = (ticksInDay + TimeSpan.TicksPerMicrosecond - 1) / TimeSpan.TicksPerMicrosecond;
-        return new(0, age.Days, microseconds);
     }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
@@ -248,7 +241,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
             await using var lease = new NpgsqlCommand(_acquire, connection, transaction);
             lease.Parameters.AddWithValue("name", name);
             lease.Parameters.AddWithValue("owner", _owner);
-            lease.Parameters.AddWithValue("duration", _options.LeaseDuration);
+            lease.Parameters.AddWithValue("duration", _databaseLeaseDuration);
 
             if (await lease.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true)
             {
@@ -262,7 +255,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
             await using var renew = new NpgsqlCommand(_renew, connection, transaction);
             renew.Parameters.AddWithValue("name", name);
             renew.Parameters.AddWithValue("owner", _owner);
-            renew.Parameters.AddWithValue("duration", _options.LeaseDuration);
+            renew.Parameters.AddWithValue("duration", _databaseLeaseDuration);
             await renew.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             committed = true;

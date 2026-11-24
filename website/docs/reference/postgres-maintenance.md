@@ -53,7 +53,9 @@ Leadership leases must be 1 second–1 hour.
 All instances sharing these tables must agree on retention and timing settings.
 
 Set `ClaimDuration` to at least one microsecond (10 ticks) in code and configuration.
-PostgreSQL intervals have microsecond resolution. Npgsql truncates fractional microseconds.
+Relayer rounds `LeaseDuration` and `ClaimDuration` up to a whole microsecond when persisting deadlines
+from the database clock. This applies to both acquisition and renewal of the sweeper and cleanup leases.
+Row claims use elapsed time, including across daylight saving changes.
 
 ## Recovery and ownership
 

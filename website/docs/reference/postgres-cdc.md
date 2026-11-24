@@ -94,7 +94,8 @@ and at most 1,000,000 days in both code and configuration.
 Restart the host to change settings.
 
 Set `ClaimDuration` to at least one microsecond (10 ticks) in code and configuration.
-PostgreSQL intervals have microsecond resolution. Npgsql truncates fractional microseconds.
+Relayer rounds the persisted claim duration up to a whole microsecond from the database clock sample.
+Claim durations measure elapsed time. One day is 24 hours even across daylight saving changes.
 
 ## Recovery and delivery
 

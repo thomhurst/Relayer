@@ -83,20 +83,12 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int concurrency,
         int? maxAttempts, TimeSpan[]? redeliveryDelays, bool atLeastOnce)
     {
-        var retryIntervals = redeliveryDelays is null ? [] : Array.ConvertAll(redeliveryDelays, RoundRedeliveryDelay);
+        var retryIntervals = redeliveryDelays is null ? [] : Array.ConvertAll(redeliveryDelays, PostgreSqlInterval.CalendarDuration);
 
         if (!receivers.TryAdd(endpoint, new(receive, concurrency, maxAttempts ?? _options.MaxDispatchAttempts, retryIntervals, atLeastOnce)))
         {
             throw new InvalidOperationException($"Declare only one PostgreSQL local consumer for '{endpoint}'.");
         }
-    }
-
-    private static NpgsqlInterval RoundRedeliveryDelay(TimeSpan delay)
-    {
-        // Keep calendar days separate, even when rounding the time component up to 24 hours.
-        long ticksInDay = delay.Ticks % TimeSpan.TicksPerDay;
-        long microseconds = (ticksInDay + TimeSpan.TicksPerMicrosecond - 1) / TimeSpan.TicksPerMicrosecond;
-        return new(0, delay.Days, microseconds);
     }
 
     internal sealed class Receiver(Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int maximum,

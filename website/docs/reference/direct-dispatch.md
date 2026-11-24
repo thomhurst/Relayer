@@ -47,7 +47,8 @@ in both code and configuration. Read the same named snapshot with
 `IOptionsMonitor<PostgreSqlDirectDispatchOptions>.Get("orders")`. Restart the host to change dispatch limits.
 
 PostgreSQL requires a `ClaimDuration` of at least one microsecond (10 ticks) in code and configuration.
-PostgreSQL intervals have microsecond resolution. Npgsql truncates fractional microseconds.
+Relayer rounds the persisted claim duration up to a whole microsecond from the database clock sample.
+Claim durations measure elapsed time. One day is 24 hours even across daylight saving changes.
 
 ### EF Core writer
 
