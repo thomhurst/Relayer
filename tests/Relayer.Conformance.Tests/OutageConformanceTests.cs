@@ -96,6 +96,39 @@ public sealed class OutageConformanceTests
         }
     }
 
+    [Test]
+    public async Task Cancelled_outage_wait_cleans_up_before_pending_send_faults()
+    {
+        var send = new PendingHook("outage sends");
+        using var caller = new CancellationTokenSource();
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
+            (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new OutageFixture(tracing, "success", send)));
+        var run = suite.RunAsync(TransportConformanceCase.SendDuringOutage, caller.Token);
+
+        try
+        {
+            await send.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var body = send.Message.Body.ToArray();
+            var headers = send.Message.Headers.ToArray();
+            caller.Cancel();
+
+            var failure = await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
+                .Throws<InvalidOperationException>().WithMessageContaining("outage sends");
+            await Assert.That(failure!.InnerException is OperationCanceledException).IsTrue();
+            await Assert.That(send.StoppedWhilePending).IsTrue();
+            await Assert.That(send.DisposedWhilePending).IsTrue();
+            await Assert.That(send.IsPending).IsTrue();
+            await Assert.That(send.Message.Body.Span.SequenceEqual(body)).IsTrue();
+            await Assert.That(send.Message.Headers.Span.SequenceEqual(headers)).IsTrue();
+
+            send.Completion.SetException(new InvalidOperationException("Unexpected late native send failure."));
+        }
+        finally
+        {
+            send.Completion.TrySetResult();
+        }
+    }
+
     private sealed class PendingHook(string phase)
     {
         public string Phase
@@ -115,6 +148,11 @@ public sealed class OutageConformanceTests
 
         public bool IsPending => Entered.Task.IsCompleted && !Completion.Task.IsCompleted;
 
+        public OutgoingMessage Message
+        {
+            get; private set;
+        }
+
         public bool StoppedWhilePending
         {
             get; set;
@@ -125,8 +163,9 @@ public sealed class OutageConformanceTests
             get; set;
         }
 
-        public Task WaitAsync()
+        public Task WaitAsync(OutgoingMessage message = default)
         {
+            Message = message;
             Entered.SetResult();
             return Completion.Task;
         }
@@ -280,6 +319,12 @@ public sealed class OutageConformanceTests
             if (_offline)
             {
                 var attempt = Interlocked.Increment(ref _outageSends);
+
+                if (hook is { Phase: "outage sends" } && attempt == 1)
+                {
+                    await hook.WaitAsync(message);
+                    return;
+                }
 
                 if (mode == "unexpected")
                 {

@@ -119,21 +119,18 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         }
         catch (OperationCanceledException error) when (cleanupDeadline.IsCancellationRequested)
         {
-            _ = ObserveDisposalAsync(disposal);
+            ObserveLateFault(disposal);
             throw new TimeoutException($"Transport conformance {scenario} fixture disposal exceeded its independent 15-second cleanup budget. Disposal continues; the fixture must release its owned resources.", error);
         }
     }
 
-    private static async Task ObserveDisposalAsync(Task disposal)
+    private static void ObserveLateFault(Task abandoned)
     {
-        try
+        _ = abandoned.ContinueWith(static task =>
         {
-            await disposal.ConfigureAwait(false);
-        }
-        catch
-        {
-            // RunAsync already reported the timeout. Observe late cleanup failures.
-        }
+            _ = task.Exception;
+        }, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     private static async Task DisposeLateFixtureAsync(Task<ITransportConformanceFixture<TIncoming>> creation)
@@ -324,11 +321,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             {
                 // The wait can end while the adapter still borrows the arrays. Leave them intact
                 // and observe any late fault from the send after the scenario exits.
-                _ = send.ContinueWith(static task =>
-                {
-                    _ = task.Exception;
-                }, CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                ObserveLateFault(send);
                 throw;
             }
             // A native client must not retain the caller's borrowed buffers after SendAsync completes.
@@ -507,7 +500,21 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     Require(budget > TimeSpan.Zero, "Outage send budget must be positive.");
                     outage.CancelAfter(budget);
                     var pending = Enumerable.Range(1, 3).Select(value => OutageSend(value, outage.Token)).ToArray();
-                    var acknowledged = await Task.WhenAll(pending).WaitAsync(budget + TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+                    var allSends = Task.WhenAll(pending);
+                    bool[] acknowledged;
+
+                    try
+                    {
+                        acknowledged = await allSends.WaitAsync(budget + TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+                    }
+                    catch (Exception error) when (error is OperationCanceledException or TimeoutException)
+                    {
+                        // The wait can end while sends still borrow their buffers.
+                        // Observe faults on the aggregate without delaying shutdown or disposal.
+                        ObserveLateFault(allSends);
+                        throw;
+                    }
+
                     progress.Phase = "offline shutdown";
                     using var offlineShutdown = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
