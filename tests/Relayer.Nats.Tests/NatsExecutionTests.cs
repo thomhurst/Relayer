@@ -340,9 +340,24 @@ public class NatsExecutionTests
             // Wait for the native drain fence before publishing fresh work to the second subject.
             await second.Completion.WaitAsync(TimeSpan.FromSeconds(10), token);
             await Assert.That(stopping.IsCompleted).IsFalse();
-            (await js.PublishAsync(secondSubject, body, serializer, cancellationToken: token)).EnsureSuccess();
-            var secondInfo = (await js.GetConsumerAsync(stream, "second", token)).Info;
-            await Assert.That(secondInfo.NumPending).IsEqualTo(1);
+            var published = await js.PublishAsync(secondSubject, body, serializer, cancellationToken: token);
+            published.EnsureSuccess();
+
+            // The publish ACK can arrive before JetStream updates the consumer's pending count.
+            var reader = await js.GetConsumerAsync(stream, "second", token);
+            var next = await reader.NextAsync(serializer, new()
+            {
+                Expires = TimeSpan.FromSeconds(5)
+            }, token);
+            await Assert.That(next).IsNotNull();
+            next!.EnsureSuccess();
+            var metadata = next.Metadata!.Value;
+            await Assert.That(metadata.Sequence.Stream).IsEqualTo(published.Seq);
+            await Assert.That(metadata.NumDelivered).IsEqualTo(1UL);
+            await next.AckAsync(new()
+            {
+                DoubleAck = true
+            }, token);
         }
         finally
         {
