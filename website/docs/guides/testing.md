@@ -50,6 +50,8 @@ With the harness enabled, RabbitMQ verifies delayed-exchange capabilities during
 
 The harness leaves transport disposal to dependency injection. A transport registered as a singleton instance remains caller-owned. When a factory returns a transport already owned by the built-in container, .NET 11 deduplicates disposal by reference. On .NET 10, the container can call disposal more than once for that alias.
 
+For an implementation-type singleton such as `AddSingleton<ITransport, MyTransport>()`, the built-in container selects the constructor and validates its dependencies when `ValidateOnBuild` is enabled. The harness uses a private DI key for the inner transport. If a constructor uses `[ServiceKey]` or inherits a key through parameterless `[FromKeyedServices]`, register the transport separately with the intended key (or as an unkeyed concrete type) and register `ITransport` with a factory that resolves it.
+
 ## Inspect a whole message flow
 
 For an in-memory test that asserts on every message in a flow, wait for idle before reading the snapshots:

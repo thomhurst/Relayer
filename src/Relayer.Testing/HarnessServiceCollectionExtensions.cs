@@ -91,11 +91,22 @@ public static class HarnessServiceCollectionExtensions
             // Let DI track the original instance for disposal. Use a separate service type
             // so keyed transport enumeration does not expose the undecorated transport.
             var transportKey = new object();
-            var innerRegistration = original.ImplementationInstance is ITransport instance
-                ? ServiceDescriptor.KeyedSingleton<IAsyncDisposable>(transportKey, instance)
-                : ServiceDescriptor.KeyedSingleton<IAsyncDisposable>(transportKey, (provider, _) =>
-                    (ITransport)(original.ImplementationFactory?.Invoke(provider)
-                        ?? ActivatorUtilities.CreateInstance(provider, original.ImplementationType!)));
+            ServiceDescriptor innerRegistration;
+
+            if (original.ImplementationType is { } implementationType)
+            {
+                // Keep the implementation type visible to DI for constructor selection and ValidateOnBuild.
+                innerRegistration = ServiceDescriptor.KeyedSingleton(typeof(IAsyncDisposable), transportKey, implementationType);
+            }
+            else if (original.ImplementationFactory is { } factory)
+            {
+                innerRegistration = ServiceDescriptor.KeyedSingleton<IAsyncDisposable>(transportKey, (provider, _) => (ITransport)factory(provider));
+            }
+            else
+            {
+                innerRegistration = ServiceDescriptor.KeyedSingleton<IAsyncDisposable>(transportKey, (ITransport)original.ImplementationInstance!);
+            }
+
             services.Add(innerRegistration);
             services[i] = ServiceDescriptor.Singleton<ITransport>(provider =>
             {
