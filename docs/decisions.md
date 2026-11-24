@@ -1505,7 +1505,8 @@ native `messages: true`. Each transactional marker supplies a commit in the exis
 feedback on that loop so it advances only after earlier outbox dispatch completes. Leave supplied
 `PgOutputReplicationOptions` unchanged, and use local commit for marker writes so they do not depend
 on replication feedback. Validate slot usability from the native catalog at startup and before
-reconnection because Npgsql's transient SQLSTATE classification includes invalidated slots.
+reconnection because Npgsql's transient SQLSTATE classification includes invalidated slots. Round
+reconnect and idle checkpoint intervals up to whole milliseconds before scheduling the .NET timers.
 
 **Consequences.** CDC can dispatch new rows before the next maintenance poll through the existing unordered
 recovery pipeline. A crash after broker acceptance can duplicate delivery.

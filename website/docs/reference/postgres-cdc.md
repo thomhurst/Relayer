@@ -91,7 +91,8 @@ Do not mutate native replication options after registration. Only protocol V1 wi
 or two-phase decoding is supported. Batch size is 1–10000. `ClaimDuration` must be greater than zero
 and at most 1,000,000 days in both code and configuration.
 `ReconnectDelay` defaults to 5 seconds. Registration accepts delays from 1 to 4,294,967,294 milliseconds.
-Restart the host to change settings.
+`ReconnectDelay` and `IdleCheckpointInterval` round fractional milliseconds up to the next whole
+millisecond. Restart the host to change settings.
 
 Set `ClaimDuration` to at least one microsecond (10 ticks) in code and configuration.
 PostgreSQL intervals have microsecond resolution. Npgsql truncates fractional microseconds.

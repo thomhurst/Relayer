@@ -44,7 +44,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         var target = MySqlDirectDispatcher.ValidateDataSource(dataSource);
         _options = options;
         var settings = options.Validate();
-        _store = new(dataSource, settings, options.ClaimDuration);
+        _store = new(dataSource, settings, Micros(options.ClaimDuration));
         _dispatcher = new(dataSource, settings, new()
         {
             BatchSize = options.BatchSize,

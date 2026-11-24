@@ -16,6 +16,9 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
     private readonly PostgreSqlMaintenanceWorker _recovery;
     private readonly ILogger<PostgreSqlChangeCaptureWorker> _logger;
     private readonly IHostApplicationLifetime? _hostLifetime;
+    private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _reconnectDelay;
+    private readonly TimeSpan _idleCheckpointInterval;
     private readonly string _schema;
     private readonly string _table;
 
@@ -23,16 +26,25 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
         PostgreSqlChangeCaptureOptions options, IEnumerable<ITransport> transports,
         ILogger<PostgreSqlChangeCaptureWorker> logger, ILogger<PostgreSqlMaintenanceWorker> recoveryLogger,
         ILogger<PostgreSqlDirectDispatcher> dispatchLogger, RelayerInstrumentation? instrumentation = null,
-        IServiceScopeFactory? scopes = null, IHostApplicationLifetime? hostLifetime = null)
+        IServiceScopeFactory? scopes = null, IHostApplicationLifetime? hostLifetime = null, TimeProvider? timeProvider = null)
     {
         _source = source;
         _connectionFactory = connectionFactory;
         _options = options;
         _logger = logger;
         _hostLifetime = hostLifetime;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _schema = options.Schema ?? "public";
         _table = options.TablePrefix + "outbox";
         _recovery = new(source, options.Validate(), transports, recoveryLogger, dispatchLogger, instrumentation, scopes: scopes);
+        _reconnectDelay = RoundUpToMilliseconds(options.ReconnectDelay);
+        _idleCheckpointInterval = RoundUpToMilliseconds(options.IdleCheckpointInterval);
+    }
+
+    private static TimeSpan RoundUpToMilliseconds(TimeSpan duration)
+    {
+        var (milliseconds, remainingTicks) = Math.DivRem(duration.Ticks, TimeSpan.TicksPerMillisecond);
+        return TimeSpan.FromMilliseconds(milliseconds + (remainingTicks > 0 ? 1 : 0));
     }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
@@ -107,7 +119,7 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
                     // The slot already retains commits made during this bounded startup traversal.
                     await _recovery.DispatchCommittedAsync(stoppingToken).ConfigureAwait(false);
 
-                    if (_options.IdleCheckpointInterval == TimeSpan.Zero)
+                    if (_idleCheckpointInterval == TimeSpan.Zero)
                     {
                         await ReadReplicationAsync(connection, stoppingToken).ConfigureAwait(false);
                     }
@@ -119,7 +131,7 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
                 catch (NpgsqlException error) when (error.IsTransient && !stoppingToken.IsCancellationRequested)
                 {
                     Reconnecting(_logger, error);
-                    await Task.Delay(_options.ReconnectDelay, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_reconnectDelay, _timeProvider, stoppingToken).ConfigureAwait(false);
                 }
             }
         }
@@ -177,7 +189,7 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
 
     private async Task EmitCheckpointsAsync(CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(_options.IdleCheckpointInterval);
+        using var timer = new PeriodicTimer(_idleCheckpointInterval, _timeProvider);
         // Flush locally so the marker never waits for feedback from its own reader.
         await using var marker = _source.CreateCommand("""
             SELECT pg_catalog.set_config('synchronous_commit', 'local', true),

@@ -370,7 +370,8 @@ services.AddRelayerMySqlMaintenance("orders", dataSource, new MySqlMaintenanceOp
 
 The overload taking an `IConfiguration` section snapshots immutable named options through the
 Options pattern. `SweepInterval` and `CleanupInterval` must each be greater than zero and at most
-4,294,967,294 ms. `ClaimDuration` must be greater than zero and at most 1,000,000 days.
+4,294,967,294 ms. `ClaimDuration` must be greater than zero and at most 1,000,000 days. Recovery
+rounds fractional microseconds up to the next whole microsecond and adds the duration to the MySQL UTC clock.
 Use `infinite` in configuration or `null` in code to retain dead rows or inbox records indefinitely.
 `RecoveryDelay`, `DeadRetention`, and `InboxRetention` use the MySQL UTC clock. If subtracting
 the configured age would give a cutoff before January 1, 1000 UTC, that operation matches zero rows.

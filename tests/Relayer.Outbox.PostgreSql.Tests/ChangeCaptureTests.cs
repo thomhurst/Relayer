@@ -551,7 +551,9 @@ public class ChangeCaptureTests
     }
 
     [Test]
-    public async Task Transient_native_disconnect_reconnects_to_persistent_slot_and_captures_new_commits()
+    [Arguments(19_000L, 2)]
+    [Arguments(20_000L, 2)]
+    public async Task Transient_native_disconnect_reconnects_to_persistent_slot_and_captures_new_commits(long ticks, int milliseconds)
     {
         await using var fixture = new PostgreSqlFixture();
         await fixture.StartAsync();
@@ -559,22 +561,27 @@ public class ChangeCaptureTests
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await Provision(source, fixture.ConnectionString);
         var transport = new RecordingTransport();
+        var clock = new RecordingTimerProvider();
+        var interval = TimeSpan.FromTicks(ticks);
+        var expectedPeriod = TimeSpan.FromMilliseconds(milliseconds);
         using var worker = new PostgreSqlChangeCaptureWorker(source,
             () => new(fixture.ConnectionString) { WalReceiverStatusInterval = TimeSpan.FromMilliseconds(25) },
             new()
             {
                 Slot = new(Slot),
-                Replication = new("orders", PgOutputProtocolVersion.V1),
-                ReconnectDelay = TimeSpan.FromMilliseconds(20)
+                Replication = new("orders", PgOutputProtocolVersion.V1, messages: true),
+                ReconnectDelay = interval,
+                IdleCheckpointInterval = interval
             },
             [transport], NullLogger<PostgreSqlChangeCaptureWorker>.Instance, NullLogger<PostgreSqlMaintenanceWorker>.Instance,
-            NullLogger<PostgreSqlDirectDispatcher>.Instance);
+            NullLogger<PostgreSqlDirectDispatcher>.Instance, timeProvider: clock);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await worker.StartAsync(timeout.Token);
 
         try
         {
             await Streaming(source, timeout.Token);
+            await Assert.That(await clock.CheckpointPeriod.Task.WaitAsync(timeout.Token)).IsEqualTo(expectedPeriod);
             int previous;
 
             await using (var command = source.CreateCommand($"SELECT active_pid FROM pg_replication_slots WHERE slot_name = '{Slot}'"))
@@ -593,10 +600,38 @@ public class ChangeCaptureTests
             await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
             await using var current = source.CreateCommand($"SELECT active_pid FROM pg_replication_slots WHERE slot_name = '{Slot}'");
             await Assert.That((int)(await current.ExecuteScalarAsync(timeout.Token))!).IsNotEqualTo(previous);
+            await Assert.That(await clock.ReconnectDelay.Task.WaitAsync(timeout.Token)).IsEqualTo(expectedPeriod);
         }
         finally
         {
             await worker.StopAsync(timeout.Token);
+        }
+    }
+
+    private sealed class RecordingTimerProvider : TimeProvider
+    {
+        internal TaskCompletionSource<TimeSpan> CheckpointPeriod
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource<TimeSpan> ReconnectDelay
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            if (period == Timeout.InfiniteTimeSpan)
+            {
+                ReconnectDelay.TrySetResult(dueTime);
+            }
+            else
+            {
+                CheckpointPeriod.TrySetResult(period);
+            }
+
+            return TimeProvider.System.CreateTimer(callback, state, dueTime, period);
         }
     }
 

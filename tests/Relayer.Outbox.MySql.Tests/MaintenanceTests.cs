@@ -96,6 +96,34 @@ public sealed class MaintenanceTests
     }
 
     [Test]
+    [Arguments(863_999_136_000_000_010L, 86_399_913_600_000_001L)]
+    [Arguments(863_999_136_000_000_019L, 86_399_913_600_000_002L)]
+    [Arguments(864_000_000_000_000_000L, 86_400_000_000_000_000L)]
+    public async Task Recovery_persists_claim_deadline_rounded_up_to_whole_microseconds(long ticks, long expectedMicroseconds)
+    {
+        await using var data = new MySqlFixture();
+        await data.StartAsync();
+        await using var source = WithDatabaseTime(data, s_databaseTime);
+        await data.Insert(Guid.CreateVersion7(), s_databaseTime.AddMinutes(-1));
+
+        long? claimedMicroseconds = null;
+        var transport = new Transport(async token =>
+        {
+            await using var command = source.CreateCommand(
+                "SELECT TIMESTAMPDIFF(MICROSECOND, UTC_TIMESTAMP(6), claim_expires_at) FROM relayer_outbox");
+            claimedMicroseconds = (long?)await command.ExecuteScalarAsync(token);
+        });
+        using var worker = new MySqlMaintenanceWorker(source, new()
+        {
+            ClaimDuration = TimeSpan.FromTicks(ticks)
+        }, [transport], NullLogger<MySqlMaintenanceWorker>.Instance);
+
+        await Assert.That(await worker.SweepAsync()).IsEqualTo(1);
+        await Assert.That(transport.Sent).IsEqualTo(1);
+        await Assert.That(claimedMicroseconds).IsEqualTo(expectedMicroseconds);
+    }
+
+    [Test]
     public async Task Recovery_sets_durable_retry_deadline_from_mysql_time()
     {
         await using var data = new MySqlFixture();
