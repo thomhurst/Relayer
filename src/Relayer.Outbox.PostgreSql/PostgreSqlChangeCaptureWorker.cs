@@ -15,18 +15,21 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
     private readonly PostgreSqlChangeCaptureOptions _options;
     private readonly PostgreSqlMaintenanceWorker _recovery;
     private readonly ILogger<PostgreSqlChangeCaptureWorker> _logger;
+    private readonly IHostApplicationLifetime? _hostLifetime;
     private readonly string _schema;
     private readonly string _table;
 
     internal PostgreSqlChangeCaptureWorker(NpgsqlDataSource source, Func<LogicalReplicationConnection> connectionFactory,
         PostgreSqlChangeCaptureOptions options, IEnumerable<ITransport> transports,
         ILogger<PostgreSqlChangeCaptureWorker> logger, ILogger<PostgreSqlMaintenanceWorker> recoveryLogger,
-        ILogger<PostgreSqlDirectDispatcher> dispatchLogger, RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null)
+        ILogger<PostgreSqlDirectDispatcher> dispatchLogger, RelayerInstrumentation? instrumentation = null,
+        IServiceScopeFactory? scopes = null, IHostApplicationLifetime? hostLifetime = null)
     {
         _source = source;
         _connectionFactory = connectionFactory;
         _options = options;
         _logger = logger;
+        _hostLifetime = hostLifetime;
         _schema = options.Schema ?? "public";
         _table = options.TablePrefix + "outbox";
         _recovery = new(source, options.Validate(), transports, recoveryLogger, dispatchLogger, instrumentation, scopes: scopes);
@@ -79,6 +82,11 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!await OutboxHostStartup.WaitAsync(_hostLifetime, stoppingToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         try
         {
             var reconnecting = false;

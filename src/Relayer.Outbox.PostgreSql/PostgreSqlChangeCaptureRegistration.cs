@@ -18,7 +18,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
     /// <summary>Dispatches committed unordered rows using native PostgreSQL logical replication notifications.</summary>
     /// <remarks>
     /// The factory must return a new native replication connection to the writer's database; the worker owns it.
-    /// Provision the slot and INSERT-only publication first. Register maintenance for retries, expired claims,
+    /// Hosted startup validates the slot and INSERT-only publication. Replication and dispatch begin after the host
+    /// signals <see cref="IHostApplicationLifetime.ApplicationStarted"/>. Register maintenance for retries, expired claims,
     /// future schedules and cleanup, and the ordered dispatcher for ordered rows. The data source stays application-owned.
     /// </remarks>
     [Experimental("RLYEXP003", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp003")]
@@ -50,7 +51,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             provider.GetRequiredService<IOptionsMonitor<PostgreSqlChangeCaptureOptions>>().Get(name),
             provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlChangeCaptureWorker>>(),
             provider.GetRequiredService<ILogger<PostgreSqlMaintenanceWorker>>(), provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>(),
-            provider.GetService<RelayerInstrumentation>(), scopes: provider.GetRequiredService<IServiceScopeFactory>()));
+            provider.GetService<RelayerInstrumentation>(), scopes: provider.GetRequiredService<IServiceScopeFactory>(),
+            hostLifetime: provider.GetService<IHostApplicationLifetime>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<PostgreSqlChangeCaptureWorker>(name));
         return services;
     }

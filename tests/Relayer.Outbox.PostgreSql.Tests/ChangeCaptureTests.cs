@@ -72,6 +72,77 @@ public class ChangeCaptureTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Hosted_capture_waits_for_startup_before_opening_replication(bool stopBeforeStartup)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var id = Id(1);
+        await Insert(source, id);
+        await Provision(source, fixture.ConnectionString);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var startup = new ObservedHostStartup();
+        var replicationRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new RecordingTransport((_, _) =>
+        {
+            if (!startup.IsStarted)
+            {
+                throw new InvalidOperationException("The transport is still starting.");
+            }
+
+            return ValueTask.CompletedTask;
+        });
+        var services = new ServiceCollection().AddLogging();
+        services.AddSingleton<IHostApplicationLifetime>(startup);
+        services.AddSingleton<ITransport>(transport);
+        services.AddRelayerPostgreSqlChangeCapture("orders", source, () =>
+        {
+            replicationRequested.TrySetResult();
+            return new(fixture.ConnectionString);
+        }, Options(retainSentMessages: true));
+        await using var provider = services.BuildServiceProvider();
+        var worker = (PostgreSqlChangeCaptureWorker)provider.GetRequiredService<IHostedService>();
+        await worker.StartAsync(timeout.Token);
+
+        try
+        {
+            await Task.WhenAny(startup.Observed, replicationRequested.Task).WaitAsync(timeout.Token);
+            await Assert.That(replicationRequested.Task.IsCompleted).IsFalse();
+            await Assert.That(transport.Ids.IsEmpty).IsTrue();
+            await using var pending = source.CreateCommand(
+                "SELECT count(*) FROM relayer_outbox WHERE status = 'pending' AND attempts = 0 AND claim_token IS NULL");
+            await Assert.That((long)(await pending.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(1L);
+
+            if (stopBeforeStartup)
+            {
+                await worker.StopAsync(timeout.Token);
+                await worker.ExecuteTask!.WaitAsync(timeout.Token);
+                startup.SignalStarted();
+                await Assert.That(replicationRequested.Task.IsCompleted).IsFalse();
+                await Assert.That(transport.Ids.IsEmpty).IsTrue();
+                await Assert.That((long)(await pending.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(1L);
+                return;
+            }
+
+            startup.SignalStarted();
+            // Streaming begins after the initial catch-up transaction has settled the row.
+            await Streaming(source, timeout.Token);
+            await Assert.That(transport.Ids.ToArray()).IsEquivalentTo([id]);
+            await Assert.That(await Count(source)).IsEqualTo(0L);
+            await using var sent = source.CreateCommand("SELECT id FROM relayer_outbox_sent");
+            await Assert.That((Guid)(await sent.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(id);
+        }
+        finally
+        {
+            await StopAndWaitForSlotReleaseAsync(worker, source);
+        }
+    }
+
+    [Test]
     public async Task Idle_checkpoint_advances_past_unpublished_writes()
     {
         await using var fixture = new PostgreSqlFixture();
@@ -630,6 +701,43 @@ public class ChangeCaptureTests
     {
         await using var command = source.CreateCommand("SELECT count(*) FROM relayer_outbox");
         return (long)(await command.ExecuteScalarAsync())!;
+    }
+
+    private sealed class ObservedHostStartup : IHostApplicationLifetime, IDisposable
+    {
+        private readonly CancellationTokenSource _started = new();
+        private readonly TaskCompletionSource _observed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal bool IsStarted => _started.IsCancellationRequested;
+
+        internal Task Observed => _observed.Task;
+
+        public CancellationToken ApplicationStarted
+        {
+            get
+            {
+                _observed.TrySetResult();
+                return _started.Token;
+            }
+        }
+
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+
+        internal void SignalStarted()
+        {
+            _started.Cancel();
+        }
+
+        public void StopApplication()
+        {
+        }
+
+        public void Dispose()
+        {
+            _started.Dispose();
+        }
     }
 
     private sealed class RecordingTransport(Func<OutgoingMessage, CancellationToken, ValueTask>? send = null) : ITransport

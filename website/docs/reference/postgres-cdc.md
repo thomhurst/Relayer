@@ -97,10 +97,13 @@ One slot supports one active reader. Deploy one active CDC worker per slot; othe
 run leased maintenance. PostgreSQL enforces slot exclusivity. CDC uses row fencing instead of waiting for
 the maintenance leader's idle lease.
 
-At startup and after transient connection failures, CDC traverses pending unordered rows through a fixed
-ID boundary in bounded transactions. This includes rows committed before slot creation. The existing slot
-retains changes during catch-up, closing the gap before live capture. Each subsequent captured outbox
-commit triggers another bounded traversal. Rolled-back writer transactions never dispatch.
+Hosted CDC waits for `IHostApplicationLifetime.ApplicationStarted` before opening its replication
+connection or dispatching rows. This gives hosted transports time to finish startup even when services
+start concurrently. On the initial connection and after transient connection failures, CDC traverses
+pending unordered rows through a fixed ID boundary in bounded transactions. This includes rows committed
+before slot creation. The existing slot retains changes during catch-up, closing the gap before live
+capture. Each subsequent captured outbox commit triggers another bounded traversal. Rolled-back writer
+transactions never dispatch.
 
 The reader advances the applied and flushed positions after all dispatch transactions for a captured
 commit have completed. Npgsql sends feedback on its native status interval. Failed sends can be
