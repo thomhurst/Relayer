@@ -441,6 +441,9 @@ turn, not database latency; native command timeouts and cancellation still gover
 They are not a measured cleanup capacity guarantee. Tune the limits for your workload and monitor
 retained row counts and database load.
 
+System-clock idle waits round fractional milliseconds up. A custom `TimeProvider`
+with finer timer precision receives the exact remaining wait.
+
 MySQL Event Scheduler executes scheduled SQL but cannot call application transports. It is
 neither enabled nor required; recovery uses bounded application passes.
 

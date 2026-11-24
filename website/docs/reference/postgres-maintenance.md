@@ -107,6 +107,9 @@ turn, not database latency; native command timeouts and cancellation still gover
 They are not a measured cleanup capacity guarantee. Tune the limits for your workload and monitor
 retained row counts and database load.
 
+System-clock idle waits round fractional milliseconds up. A custom `TimeProvider`
+with finer timer precision receives the exact remaining wait.
+
 Retention applies to existing tables. The [EF Core consumer boundary](ef-core-inbox.md) supplies inbox recording;
 [Poison management](postgres-store.md#poison-rows-and-key-release) supplies inspection, redrive and explicit purge. Dead rows with an active ordered key barrier are retained until management releases them.
 

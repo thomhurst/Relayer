@@ -158,6 +158,11 @@ public abstract class OutboxMaintenanceContractTests
     {
         public TimeSpan DueTime => dueTime;
 
+        public bool IsDisposed
+        {
+            get; private set;
+        }
+
         public void Fire()
         {
             clock.Advance(dueTime);
@@ -171,10 +176,12 @@ public abstract class OutboxMaintenanceContractTests
 
         public void Dispose()
         {
+            IsDisposed = true;
         }
 
         public ValueTask DisposeAsync()
         {
+            Dispose();
             return ValueTask.CompletedTask;
         }
     }
@@ -484,6 +491,44 @@ public abstract class OutboxMaintenanceContractTests
         {
             await worker.StopAsync();
         }
+    }
+
+    [Test]
+    [Arguments(1L)]
+    [Arguments(TimeSpan.TicksPerMillisecond + 1)]
+    public async Task Hosted_cleanup_preserves_fractional_idle_delays(long cleanupTicks)
+    {
+        await using var fixture = await CreateFixtureAsync();
+        var clock = new IdleClock();
+        var transport = new RecordingTransport();
+        var cleanupInterval = TimeSpan.FromTicks(cleanupTicks);
+        using var worker = fixture.Worker(transport, idleTimeProvider: clock,
+            sweepInterval: TimeSpan.FromSeconds(5), cleanupInterval: cleanupInterval);
+        IdleTimer nextIdle;
+        await worker.StartAsync();
+
+        try
+        {
+            var firstIdle = await clock.NextIdle();
+            await Assert.That(firstIdle.DueTime).IsEqualTo(cleanupInterval);
+
+            var old = DateTimeOffset.UtcNow.AddDays(-8);
+            await fixture.InsertInbox("consumer", Id(1), old);
+            await fixture.Insert(Id(2), old);
+            firstIdle.Fire();
+
+            nextIdle = await clock.NextIdle();
+            await Assert.That(firstIdle.IsDisposed).IsTrue();
+            await Assert.That(nextIdle.DueTime).IsEqualTo(cleanupInterval);
+            await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(0L);
+            await Assert.That(transport.Ids).IsEmpty();
+        }
+        finally
+        {
+            await worker.StopAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        }
+
+        await Assert.That(nextIdle.IsDisposed).IsTrue();
     }
 
     [Test]
