@@ -12,7 +12,7 @@ namespace Relayer.Outbox;
 // database commands, transactional completion and failure classification.
 internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService where TBatch : class
 {
-    private readonly Channel<TBatch> _queue;
+    private readonly Channel<TBatch?> _queue;
     private readonly TBatch?[] _pool;
     private readonly int _queueCapacity;
     private readonly int _batchSize;
@@ -26,6 +26,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     protected readonly DateTimeOffset[] _created;
     protected readonly RelayerInstrumentation? _instrumentation;
     protected readonly ILogger _logger;
+    private int _deferredDispatchRequested;
 
     protected OutboxDirectDispatchWorker(int queueCapacity, int batchSize, TimeSpan claimDuration, IEnumerable<ITransport> transports,
         ILogger logger, RelayerInstrumentation? instrumentation, TimeProvider? leaseTime = null)
@@ -37,7 +38,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         _logger = logger;
         _instrumentation = instrumentation;
         _transports = transports.ToFrozenDictionary(static transport => transport.Name, StringComparer.Ordinal);
-        _queue = Channel.CreateBounded<TBatch>(new BoundedChannelOptions(queueCapacity)
+        _queue = Channel.CreateBounded<TBatch?>(new BoundedChannelOptions(queueCapacity)
         {
             SingleReader = true,
             SingleWriter = false,
@@ -72,7 +73,8 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         bool recovery, CancellationToken cancellationToken);
 
     // Native operations are forwarded unchanged, without another async state machine on the success path.
-    protected abstract ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken);
+    protected abstract ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, bool deferred,
+        CancellationToken cancellationToken);
 
     protected abstract ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken);
 
@@ -97,6 +99,24 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     {
         admitted = true;
         return null;
+    }
+
+    protected virtual void DeferGroup(TBatch batch, int offset, ITransport transport)
+    {
+    }
+
+    protected virtual ValueTask DispatchDeferredAsync(CancellationToken cancellationToken)
+    {
+        return default;
+    }
+
+    protected void RequestDeferredDispatch()
+    {
+        if (Interlocked.Exchange(ref _deferredDispatchRequested, 1) == 0)
+        {
+            // A null entry wakes an idle reader. A full channel already has work to wake it.
+            _queue.Writer.TryWrite(null);
+        }
     }
 
     protected virtual ValueTask SendLocalAsync(TBatch batch, int offset, ITransport transport, CancellationToken cancellationToken)
@@ -174,8 +194,17 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                 {
                     try
                     {
-                        Coalesce(batch, _queueCapacity - 1);
-                        await DispatchAsync(batch, stoppingToken, background: true).ConfigureAwait(false);
+                        if (Volatile.Read(ref _deferredDispatchRequested) != 0)
+                        {
+                            Interlocked.Exchange(ref _deferredDispatchRequested, 0);
+                            await DispatchDeferredAsync(stoppingToken).ConfigureAwait(false);
+                        }
+
+                        if (batch is not null)
+                        {
+                            Coalesce(batch, _queueCapacity - 1);
+                            await DispatchAsync(batch, stoppingToken, background: true).ConfigureAwait(false);
+                        }
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                     {
@@ -187,7 +216,10 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                     }
                     finally
                     {
-                        Return(batch);
+                        if (batch is not null)
+                        {
+                            Return(batch);
+                        }
                     }
                 }
             }
@@ -209,6 +241,11 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     {
         for (var i = 0; i < _queueCapacity && _queue.Reader.TryRead(out var batch); i++)
         {
+            if (batch is null)
+            {
+                continue;
+            }
+
             try
             {
                 i += Coalesce(batch, _queueCapacity - i - 1);
@@ -228,8 +265,8 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         var drained = 0;
 
         while (drained < notificationLimit && Count(batch) < _batchSize &&
-            _queue.Reader.TryPeek(out var next) && Count(next) <= _batchSize - Count(batch) &&
-            _queue.Reader.TryRead(out next))
+            _queue.Reader.TryPeek(out var next) && next is not null && Count(next) <= _batchSize - Count(batch) &&
+            _queue.Reader.TryRead(out next) && next is not null)
         {
             try
             {
@@ -252,7 +289,10 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
 
         while (_queue.Reader.TryRead(out var batch))
         {
-            Return(batch);
+            if (batch is not null)
+            {
+                Return(batch);
+            }
         }
     }
 
@@ -277,7 +317,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     protected async ValueTask DispatchAsync(TBatch batch, CancellationToken cancellationToken,
         bool recovery = false, bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null,
-        TimeProvider? admissionTimeProvider = null, bool background = false)
+        TimeProvider? admissionTimeProvider = null, bool background = false, bool deferred = false)
     {
         var started = admissionBudget.HasValue ? (admissionTimeProvider ?? TimeProvider.System).GetTimestamp() : 0;
         Sort(batch);
@@ -320,6 +360,11 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
 
                 if (!admitted)
                 {
+                    if (background)
+                    {
+                        DeferGroup(batch, first, transport);
+                    }
+
                     continue;
                 }
 
@@ -327,7 +372,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                 var expires = now + _claimDuration;
                 // PostgreSQL leases use database time; measure age from before the round trip.
                 var claimStarted = _leaseTime?.GetTimestamp() ?? 0;
-                await ClaimAsync(count, now, expires, cancellationToken).ConfigureAwait(false);
+                await ClaimAsync(count, now, expires, deferred, cancellationToken).ConfigureAwait(false);
                 var live = CompactClaims(_messages.AsSpan(0, count), _claims.AsSpan(0, count), _claimed.AsSpan(0, count),
                     _created.AsSpan(0, count));
 
@@ -514,7 +559,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         return live;
     }
 
-    private void Return(TBatch batch)
+    protected void Return(TBatch batch)
     {
         Clear(batch);
 

@@ -26,6 +26,12 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     private bool _schemaValidated;
     private int _quiescing;
     private readonly PostgreSqlOrderedDispatcher? _ordered;
+    private readonly int _deferredCapacity;
+    // Only the hosted queue reader touches parked rows. Slot release only signals that reader.
+    private Dictionary<PostgreSqlLocalTransport.Receiver, Queue<OutboxDispatchBatch>>? _deferredLocal;
+    private Stack<Queue<OutboxDispatchBatch>>? _emptyDeferredQueues;
+    private Action? _requestDeferredDispatch;
+    private int _deferredCount;
     private PostgreSqlLocalStatePool<LocalAttempt>? _localAttempts;
     private TaskCompletionSource? _localDrained;
     // The queue reader owns the initial count until it exits. Each detached attempt owns one more.
@@ -81,6 +87,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         _target = new(dataSource.ConnectionString);
         _retainSentMessages = storeOptions.RetainSentMessages;
         _maxDispatchAttempts = storeOptions.MaxDispatchAttempts;
+        _deferredCapacity = options.QueueCapacity;
         _store = store ?? new(dataSource, storeOptions);
         _schema = storeOptions.Schema ?? "public";
         _prefix = storeOptions.TablePrefix;
@@ -224,9 +231,11 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         return new(offset);
     }
 
-    protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken)
+    protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, bool deferred,
+        CancellationToken cancellationToken)
     {
-        return _store.ClaimDirectBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), expires - now, cancellationToken);
+        return _store.ClaimDirectBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), expires - now,
+            cancellationToken, deferred);
     }
 
     protected override ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken)
@@ -307,6 +316,102 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         return receiver;
     }
 
+    protected override void DeferGroup(OutboxDispatchBatch batch, int offset, ITransport transport)
+    {
+        var receiver = PostgreSqlLocalTransport.Find(transport)?.GetReceiver(batch.Rows[offset].Destination);
+
+        if (receiver is null)
+        {
+            return;
+        }
+
+        if (_deferredCount == _deferredCapacity)
+        {
+            OutboxDirectDispatchLog.NotQueued(_logger, 1);
+            return;
+        }
+
+        var deferred = _deferredLocal ??= [];
+
+        if (!deferred.TryGetValue(receiver, out var waiting))
+        {
+            waiting = _emptyDeferredQueues?.TryPop(out var empty) == true ? empty : new();
+            deferred.Add(receiver, waiting);
+            receiver.CapacityReleased += _requestDeferredDispatch ??= RequestDeferredDispatch;
+        }
+
+        // Local endpoints have MaxBatchSize = 1. Transfer the row before the original batch returns to the pool.
+        var parked = RentBatch();
+        parked.TakeRow(batch, offset);
+        waiting.Enqueue(parked);
+        _deferredCount++;
+
+        // Admission can open between the failed TryEnter and subscribing to its release.
+        if (receiver.AvailableSlots > 0)
+        {
+            RequestDeferredDispatch();
+        }
+    }
+
+    [RuntimeAsyncMethodGeneration(false)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    protected override async ValueTask DispatchDeferredAsync(CancellationToken cancellationToken)
+    {
+        if (_deferredCount == 0)
+        {
+            return;
+        }
+
+        OutboxDispatchBatch? ready = null;
+        var deferred = _deferredLocal!;
+
+        try
+        {
+            foreach (var (receiver, waiting) in deferred)
+            {
+                var slots = receiver.AvailableSlots;
+
+                while (slots-- > 0 && waiting.TryDequeue(out var parked))
+                {
+                    _deferredCount--;
+
+                    if (ready is null)
+                    {
+                        ready = parked;
+                    }
+                    else
+                    {
+                        ready.Append(parked);
+                        Return(parked);
+                    }
+                }
+
+                if (waiting.Count == 0)
+                {
+                    receiver.CapacityReleased -= _requestDeferredDispatch;
+                    // Dictionary removal preserves the active enumerator on .NET.
+                    deferred.Remove(receiver);
+                    (_emptyDeferredQueues ??= new()).Push(waiting);
+                }
+            }
+
+            if (ready is not null)
+            {
+                // Recovery or ordered dispatch may race for capacity. The normal admission and claim
+                // path arbitrates both races and can park these rows again.
+                // A competing failure may have changed attempt metadata in PostgreSQL while a row waited.
+                await DispatchAsync(ready, cancellationToken, background: true, deferred: true).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            if (ready is not null)
+            {
+                Return(ready);
+            }
+        }
+    }
+
     protected override ValueTask SendLocalAsync(OutboxDispatchBatch batch, int offset, ITransport transport, CancellationToken cancellationToken)
     {
         var local = PostgreSqlLocalTransport.Find(transport)!;
@@ -336,6 +441,23 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
 
     protected override Task DrainLocalDispatchAsync()
     {
+        if (_deferredLocal is { } deferred)
+        {
+            foreach (var (receiver, waiting) in deferred)
+            {
+                receiver.CapacityReleased -= _requestDeferredDispatch;
+
+                while (waiting.TryDequeue(out var parked))
+                {
+                    Return(parked);
+                }
+            }
+
+            _deferredLocal = null;
+            _emptyDeferredQueues = null;
+            _deferredCount = 0;
+        }
+
         if (_localDrained is not { } drained)
         {
             return Task.CompletedTask;

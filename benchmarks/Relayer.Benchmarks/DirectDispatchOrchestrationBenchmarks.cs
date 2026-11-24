@@ -130,7 +130,7 @@ public class DirectDispatchOrchestrationBenchmarks
                     PrepareGroup(batch, ref offset, limit, ref count);
                     var now = DateTimeOffset.UtcNow;
                     var expires = now + TimeSpan.FromMinutes(1);
-                    await ClaimAsync(count, now, expires, default).ConfigureAwait(false);
+                    await ClaimAsync(count, now, expires, deferred: false, default).ConfigureAwait(false);
                     var live = CompactClaims(_messages.AsSpan(0, count), _claims.AsSpan(0, count),
                         _claimed.AsSpan(0, count), _created.AsSpan(0, count));
 
@@ -162,7 +162,8 @@ public class DirectDispatchOrchestrationBenchmarks
             }
         }
 
-        protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken)
+        protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, bool deferred,
+            CancellationToken cancellationToken)
         {
             return _completion?.Begin() ?? ValueTask.CompletedTask;
         }

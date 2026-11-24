@@ -172,7 +172,8 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         return _store.ClaimForDispatchAsync(claim, _claimSql, cancellationToken);
     }
 
-    protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken)
+    protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, bool deferred,
+        CancellationToken cancellationToken)
     {
         return _store.ClaimBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), _claimSql, cancellationToken);
     }

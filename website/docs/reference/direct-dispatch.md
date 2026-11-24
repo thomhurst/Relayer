@@ -154,6 +154,10 @@ worker is stopped, the worker attempts to log how many committed rows remain pen
 leaves the commit result intact. Shutdown completes the queue and drains it within the host's shutdown
 deadline. Cancellation leaves unfinished work durable.
 
+For [PostgreSQL local consumers](../transports/postgresql-local.md), the worker also holds up to
+`QueueCapacity` deferred unordered rows across saturated consumers. It retries admission when a
+consumer slot opens. Overflow and unfinished deferred rows remain available for recovery.
+
 [Ordered lane dispatch](ordered-dispatch.md) handles rows with ordering keys separately.
 [Leased recovery and cleanup](postgres-maintenance.md) handles due unordered rows left by failure,
 overflow, cancellation, process death or a future `DeliverAt`. Register it explicitly alongside this worker.
