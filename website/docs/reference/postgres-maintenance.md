@@ -86,6 +86,14 @@ Database fencing cannot retract an accepted native request, and connection loss 
 its claim can still duplicate delivery. Connected leadership does not provide broker-side fencing.
 Native-send failures use [durable backoff and failure classification](postgres-store.md#poison-rows-and-key-release). Local-handler failures classified as `Retry` retain the `MaxDispatchAttempts` budget (default 10), then atomically move to dead storage.
 
+## Cutoff age limits
+
+`RecoveryDelay`, `DeadRetention`, `InboxRetention`, and `SentRetention` each accept at most
+1,700,000 days, inclusive. Registration rejects larger values to keep database-clock cutoff
+calculations within PostgreSQL's timestamp range. `RecoveryDelay` accepts zero, and finite
+retention durations must be positive. To retain dead rows or inbox records indefinitely,
+set the corresponding option to `null` in code or `"infinite"` in configuration.
+
 ## Retention
 
 Successfully dispatched outbox rows are deleted immediately in fenced batches. **Pending and parked outbox

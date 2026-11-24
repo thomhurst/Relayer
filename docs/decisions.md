@@ -911,6 +911,10 @@ so sustained expiry cannot monopolize recovery. Cancellation or lease loss stops
 completed batches remain committed. Keep the existing parked-payload and concurrent-completion guards.
 Inbox retention defines a finite deduplication window and must cover the application's replay horizon.
 
+Validate PostgreSQL recovery and finite retention ages at registration, including catalog dispatch.
+Cap these ages at 1,700,000 days so the existing database-clock subtraction stays in PostgreSQL's
+timestamp range even with a clock as early as 0001 AD and time-zone adjustments.
+
 Opt-in PostgreSQL sent history retains only ID, destination and completion time in a separate table.
 Reuse PostgreSQL's data-modifying CTE and `DELETE RETURNING` pattern from poison completion: capture only
 rows removed by the matching live claim, in the same statement and transaction. Direct, ordered, recovery,
