@@ -190,11 +190,11 @@ With no ambient consumer span, the creation context is also its parent by defaul
 and never counts enqueue. Adapters count immediately before invoking a native send API,
 after validation, native customization and message or batch preparation. A cancelled
 call rejected before that boundary, a preparation failure, and an unattempted batch
-tail contribute zero. Amazon SQS, Amazon SNS, Kafka and Service Bus check for cancellation
-after preparation and before recording send attempts or native send duration. Each SQS
-or SNS batch request and each Service Bus size/session/partition split counts only its
-own messages, including a failed request. A same-topic Kafka batch
-with no tombstones and no `KafkaRecord` transforms counts the messages supplied to each
+tail contribute zero. Amazon SQS, Amazon SNS, Kafka, RabbitMQ and Service Bus check for
+cancellation after preparation and before recording send attempts or native send duration.
+Each SQS or SNS batch request and each Service Bus size/session/partition split counts only
+its own messages, including a failed request. RabbitMQ counts each publish individually.
+A same-topic Kafka batch with no tombstones and no `KafkaRecord` transforms counts the messages supplied to each
 native `ProduceAllAsync` call. A batch that contains a tombstone or a transform, or that
 spans more than one topic, counts each invoked `ProduceAsync` separately, one message
 each. Retries inside the native client do not add Relayer attempts.
@@ -208,7 +208,7 @@ and `SendBatchAsync` compose spans without counting sends. Custom adapters call
 actually passed to that call. Do not also call `EndpointTelemetry.RecordSent` for
 the same messages.
 
-Amazon SQS, Amazon SNS, Kafka, Service Bus and Pub/Sub also record
+Amazon SQS, Amazon SNS, Kafka, RabbitMQ, Service Bus and Pub/Sub also record
 `messaging.client.operation.duration` in seconds for each native send call, from
 invocation through acknowledgement or failure.
 This includes native retries and works without an activity listener. A same-topic Kafka
@@ -217,8 +217,9 @@ batch with no tombstones and no `KafkaRecord` transforms records one duration fo
 native sends and records each completion, so a single `SendOptions.KafkaRecord(...)`
 callback changes the whole batch to one duration per message. Mixed destinations are
 measured at their native send boundaries. SQS and SNS record one duration per native
-request, including each batch split. Service Bus records each `SendMessageAsync` or
-`SendMessagesAsync` call, including each batch split by size, session or partition.
+request, including each batch split. RabbitMQ measures each native publish through
+confirmation or failure, including every publish within a batch. Service Bus records each
+`SendMessageAsync` or `SendMessagesAsync` call, including each batch split by size, session or partition.
 Pub/Sub records each publish call the native topic publisher makes after forming a
 request. One Relayer batch can produce several requests, and overlapping individual
 sends can share a request. Publishes through `IGooglePubSubClients.PublisherFor(topic)`

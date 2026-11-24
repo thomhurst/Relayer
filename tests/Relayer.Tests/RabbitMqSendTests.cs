@@ -353,6 +353,83 @@ public class RabbitMqSendTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Native_publish_metrics_exclude_preparation(bool batch)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        await using var native = await broker.Factory().CreateConnectionAsync(token);
+        await using var channel = await native.CreateChannelAsync(cancellationToken: token);
+        await channel.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
+        await using var provider = Provider(broker.Factory(), ["orders", "missing"], options => options.PublisherCount = 1);
+        var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
+        using var durations = new SendDurationCapture(instrumentation);
+        long attempts = 0;
+        using var meter = new MeterListener
+        {
+            InstrumentPublished = (instrument, listener) =>
+            {
+                if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            },
+        };
+        meter.SetMeasurementEventCallback<long>((_, value, _, _) => Interlocked.Add(ref attempts, value));
+        meter.Start();
+        var transport = provider.GetRequiredService<ITransport>();
+        await transport.StartAsync(token);
+
+        var preparationError = new InvalidOperationException("Rejected before publish");
+        var throwing = new SendOptions().RabbitMQ(_ => throw preparationError);
+        await Assert.That(async () => await Send(new("orders", default, options: throwing), token))
+            .Throws<InvalidOperationException>();
+        await Assert.That(attempts).IsEqualTo(0L);
+        await Assert.That(durations.Values).IsEmpty();
+
+        using var cancelled = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var cancelling = new SendOptions().RabbitMQ(_ => cancelled.Cancel());
+        var cancellation = await Assert.That(async () => await Send(new("orders", default, options: cancelling), cancelled.Token))
+            .Throws<OperationCanceledException>();
+        await Assert.That(cancellation!.CancellationToken).IsEqualTo(cancelled.Token);
+        await Assert.That(attempts).IsEqualTo(0L);
+        await Assert.That(durations.Values).IsEmpty();
+        await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).MessageCount).IsEqualTo(0u);
+
+        long preparedAt = 0;
+        var slow = new SendOptions().RabbitMQ(_ =>
+        {
+            // Include a measured gap that the native duration must exclude.
+            Thread.Sleep(100);
+            preparedAt = Stopwatch.GetTimestamp();
+        });
+        await Send(new("orders", new byte[] { 42 }, options: slow), token);
+        var sincePreparation = Stopwatch.GetElapsedTime(preparedAt).TotalSeconds;
+        await Assert.That(preparedAt).IsGreaterThan(0L);
+        await Assert.That(attempts).IsEqualTo(1L);
+        var confirmed = durations.Values.Single();
+        await Assert.That(confirmed.Seconds).IsGreaterThan(0d);
+        await Assert.That(confirmed.Seconds).IsLessThanOrEqualTo(sincePreparation);
+        await Assert.That(confirmed.Tags.ContainsKey("error.type")).IsFalse();
+        await Assert.That((await channel.BasicGetAsync("orders", true, token))!.Body.Span[0]).IsEqualTo((byte)42);
+
+        var returned = await Assert.That(async () => await Send(new("missing", default), token)).Throws<PublishException>();
+        await Assert.That(returned!.IsReturn).IsTrue();
+        await Assert.That(attempts).IsEqualTo(2L);
+        await Assert.That(durations.Values.Count).IsEqualTo(2);
+        var failed = durations.Values.Last();
+        await Assert.That(failed.Seconds).IsGreaterThan(0d);
+        await Assert.That(failed.Tags["error.type"]).IsEqualTo("_OTHER");
+
+        ValueTask Send(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            return batch ? transport.SendBatchAsync(new[] { message }, cancellationToken) : transport.SendAsync(message, cancellationToken);
+        }
+    }
+
+    [Test]
     public async Task Telemetry_uses_rabbitmq_destination_routing_tags_and_preserves_creation_context()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
