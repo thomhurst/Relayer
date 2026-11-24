@@ -65,6 +65,22 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
+    [Arguments(0)]
+    [Arguments(-1)]
+    public async Task Outage_rejects_nonpositive_timeout_before_lifecycle_calls(int milliseconds)
+    {
+        var calls = new List<string>();
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
+            (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
+                new OutageFixture(tracing, "success", calls: calls) { OutageSendTimeout = TimeSpan.FromMilliseconds(milliseconds) }));
+
+        var failure = await Assert.That(async () => await suite.RunAsync(TransportConformanceCase.SendDuringOutage))
+            .Throws<InvalidOperationException>();
+        await Assert.That(calls.ToArray()).IsEquivalentTo([nameof(IAsyncDisposable.DisposeAsync)]);
+        await Assert.That(failure!.Message).Contains("OutageSendTimeout must be positive");
+    }
+
+    [Test]
     public async Task Fixture_without_real_fault_injection_explicitly_skips_outage()
     {
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
@@ -196,7 +212,7 @@ public sealed class OutageConformanceTests
     }
 
     // A controlled fixture tests the contract's assertions, not a broker's reconnect implementation.
-    private sealed class OutageFixture(MessageTracing tracing, string mode, PendingHook? hook = null) : ITransportConformanceFixture<InMemoryDelivery>, ITransport
+    private sealed class OutageFixture(MessageTracing tracing, string mode, PendingHook? hook = null, List<string>? calls = null) : ITransportConformanceFixture<InMemoryDelivery>, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
         private bool _offline;
@@ -224,7 +240,10 @@ public sealed class OutageConformanceTests
 
         public HeaderNames HeaderNames => _inner.HeaderNames;
 
-        public TimeSpan? OutageSendTimeout => TimeSpan.FromMilliseconds(25);
+        public TimeSpan? OutageSendTimeout
+        {
+            get; init;
+        } = TimeSpan.FromMilliseconds(25);
 
         public bool IsExpectedOutageFailure(Exception error)
         {
@@ -238,6 +257,8 @@ public sealed class OutageConformanceTests
 
         public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive)
         {
+            calls?.Add(nameof(RegisterConsumer));
+
             _inner.RegisterConsumer((incoming, token) =>
             {
                 if (TestReconnect && incoming.Message.Body.Span.SequenceEqual("{\"Value\":2}"u8))
@@ -291,6 +312,8 @@ public sealed class OutageConformanceTests
 
         public Task StartAsync(CancellationToken token)
         {
+            calls?.Add(nameof(StartAsync));
+
             if (_shutdownIncomplete)
             {
                 throw new InvalidOperationException("Interrupted shutdown must finish before restart.");
@@ -314,6 +337,8 @@ public sealed class OutageConformanceTests
 
         public async Task StopAsync(CancellationToken token)
         {
+            calls?.Add(nameof(StopAsync));
+
             if (_offline && hook is { Phase: "offline shutdown" } && !hook.Entered.Task.IsCompleted)
             {
                 await hook.WaitAsync();
@@ -349,6 +374,8 @@ public sealed class OutageConformanceTests
 
         public async Task DisconnectAsync(CancellationToken token)
         {
+            calls?.Add(nameof(DisconnectAsync));
+
             if (TestReconnect && Volatile.Read(ref _reconnectWarmupReceived) == 0)
             {
                 throw new InvalidOperationException("Disconnected before the restarted receiver received the warm-up.");
@@ -365,6 +392,8 @@ public sealed class OutageConformanceTests
 
         public Task ReconnectAsync(CancellationToken token)
         {
+            calls?.Add(nameof(ReconnectAsync));
+
             if (hook is { Phase: "broker reconnect" })
             {
                 return hook.WaitAsync();
@@ -449,6 +478,8 @@ public sealed class OutageConformanceTests
 
         public ValueTask DisposeAsync()
         {
+            calls?.Add(nameof(DisposeAsync));
+
             if (hook is { IsPending: true })
             {
                 hook.DisposedWhilePending = true;

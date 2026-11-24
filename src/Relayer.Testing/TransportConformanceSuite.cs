@@ -157,9 +157,21 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             throw new InvalidOperationException("CleanShutdown requires ITransportShutdownConformanceFixture with native lifecycle evidence and fixture-local logging.");
         }
 
+        var outageSendTimeout = TimeSpan.Zero;
+
+        if (scenario == TransportConformanceCase.SendDuringOutage)
+        {
+            if (fixture.OutageSendTimeout is not { } budget)
+            {
+                return new(scenario, "Fixture has no bounded broker-outage send contract.");
+            }
+
+            Require(budget > TimeSpan.Zero, "OutageSendTimeout must be positive for SendDuringOutage. Set it to null to skip this case.");
+            outageSendTimeout = budget;
+        }
+
         var capabilities = fixture.Transport.GetCapabilities(fixture.Destination);
-        var skip = scenario == TransportConformanceCase.SendDuringOutage && fixture.OutageSendTimeout is null
-            ? "Fixture has no bounded broker-outage send contract." : SkipReason(scenario, capabilities);
+        var skip = SkipReason(scenario, capabilities);
 
         if (skip is not null)
         {
@@ -249,7 +261,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         try
         {
             await WaitForLifecycleAsync(fixture.Transport.StartAsync(token), token).ConfigureAwait(false);
-            await RunScenarioAsync(scenario, fixture, received.Reader, spans, () => redeliverAt, orderRelease, progress, shutdown, token).ConfigureAwait(false);
+            await RunScenarioAsync(scenario, fixture, received.Reader, spans, () => redeliverAt, orderRelease, progress, shutdown,
+                outageSendTimeout, token).ConfigureAwait(false);
         }
         catch (Exception error)
         {
@@ -304,7 +317,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
     private static async Task RunScenarioAsync(TransportConformanceCase scenario, ITransportConformanceFixture<TIncoming> fixture,
         ChannelReader<Delivery> received, ConcurrentQueue<Activity> spans, Func<DateTimeOffset> redeliverAt,
-        TaskCompletionSource orderRelease, ScenarioProgress progress, ShutdownProgress shutdown, CancellationToken token)
+        TaskCompletionSource orderRelease, ScenarioProgress progress, ShutdownProgress shutdown, TimeSpan outageSendTimeout,
+        CancellationToken token)
     {
         WireString? defaultOrderingKey = fixture.DefaultOrderingKey;
 
@@ -524,16 +538,14 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 progress.Phase = "outage sends";
                 using (var outage = CancellationTokenSource.CreateLinkedTokenSource(token))
                 {
-                    var budget = fixture.OutageSendTimeout!.Value;
-                    Require(budget > TimeSpan.Zero, "Outage send budget must be positive.");
-                    outage.CancelAfter(budget);
+                    outage.CancelAfter(outageSendTimeout);
                     var pending = Enumerable.Range(1, 3).Select(value => OutageSend(value, outage.Token)).ToArray();
                     var allSends = Task.WhenAll(pending);
                     bool[] acknowledged;
 
                     try
                     {
-                        acknowledged = await allSends.WaitAsync(budget + TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+                        acknowledged = await allSends.WaitAsync(outageSendTimeout + TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
                     }
                     catch (Exception error) when (error is OperationCanceledException or TimeoutException)
                     {
