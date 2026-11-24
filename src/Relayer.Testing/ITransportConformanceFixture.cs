@@ -117,10 +117,19 @@ public enum TransportConformanceCase
     FailureHandlingFailure,
 }
 
-/// <summary>A successful scenario, or an explicit capability-based skip. Contract failures throw.</summary>
+/// <summary>
+/// A successful scenario or a skip. The suite skips a scenario when the endpoint lacks a required native
+/// capability or <see cref="ITransportConformanceFixture{TIncoming}.OutageSendTimeout"/>
+/// is <see langword="null"/> for <see cref="TransportConformanceCase.SendDuringOutage"/>.
+/// See <see cref="SkipReason"/> for the reason returned by the suite. Contract failures throw.
+/// </summary>
 public sealed record TransportConformanceResult(TransportConformanceCase Case, string? SkipReason = null)
 {
-    /// <summary>Whether the endpoint lacks the native capability required by this scenario.</summary>
+    /// <summary>
+    /// Whether the endpoint lacks a required native capability or
+    /// <see cref="ITransportConformanceFixture{TIncoming}.OutageSendTimeout"/> is <see langword="null"/>
+    /// for <see cref="TransportConformanceCase.SendDuringOutage"/>. See <see cref="SkipReason"/> for the reason.
+    /// </summary>
     public bool Skipped => SkipReason is not null;
 }
 
