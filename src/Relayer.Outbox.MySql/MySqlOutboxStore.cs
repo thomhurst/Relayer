@@ -40,11 +40,11 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
 
     /// <summary>Uses an application-owned data source and snapshots the table prefix.</summary>
     public MySqlOutboxStore(MySqlDataSource dataSource, MySqlOutboxOptions? options = null)
-        : this(dataSource, options, recoveryClaimDuration: null)
+        : this(dataSource, options, recoveryClaimMicroseconds: null)
     {
     }
 
-    internal MySqlOutboxStore(MySqlDataSource dataSource, MySqlOutboxOptions? options, TimeSpan? recoveryClaimDuration)
+    internal MySqlOutboxStore(MySqlDataSource dataSource, MySqlOutboxOptions? options, long? recoveryClaimMicroseconds)
     {
         ArgumentNullException.ThrowIfNull(dataSource);
         ValidateDataSource(dataSource);
@@ -67,9 +67,9 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         var eligible = EligibleAt("@now");
         var fenced = FencedAt("@now");
         // Maintenance uses the same clock for selection, claims and fenced mutations.
-        var dispatchNow = recoveryClaimDuration.HasValue ? "UTC_TIMESTAMP(6)" : "@now";
-        var dispatchExpires = recoveryClaimDuration is { } duration
-            ? FormattableString.Invariant($"TIMESTAMPADD(MICROSECOND, {(long)Math.Ceiling(duration.TotalMicroseconds)}, {dispatchNow})")
+        var dispatchNow = recoveryClaimMicroseconds.HasValue ? "UTC_TIMESTAMP(6)" : "@now";
+        var dispatchExpires = recoveryClaimMicroseconds is { } microseconds
+            ? FormattableString.Invariant($"TIMESTAMPADD(MICROSECOND, {microseconds}, {dispatchNow})")
             : "@expires";
         var dispatchFence = FencedAt(dispatchNow);
         _read = new($"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {eligible} AND lane <=> CAST(@lane AS SIGNED) AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit");
