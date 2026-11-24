@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
@@ -93,6 +94,84 @@ public class LocalStoreStartupTests(PostgreSqlLocalSessionFixture server)
 
             await using var transaction = await outbox.BeginTransactionAsync(source, cancellationToken: deadline.Token);
             await sender.SendAsync(new LocalTransportTests.LocalWork(7), cancellationToken: deadline.Token);
+            await transaction.CommitAsync(deadline.Token);
+
+            while (await LocalTransportTests.Count(source, "local_business", deadline.Token) != 2)
+            {
+                await Task.Delay(20, deadline.Token);
+            }
+
+            await Assert.That(await LocalTransportTests.Count(source, "relayer_outbox", deadline.Token)).IsEqualTo(0L);
+            await Assert.That(await LocalTransportTests.Count(source, "relayer_outbox_dead", deadline.Token)).IsEqualTo(0L);
+        }
+        finally
+        {
+            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await host.StopAsync(stop.Token);
+        }
+    }
+
+    [Test]
+    public async Task Hosted_startup_can_retry_after_a_later_consumer_fails_composition()
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+
+        await using (var create = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await create.ExecuteNonQueryAsync();
+        }
+
+        int compositionAttempts = 0;
+        var builder = Host.CreateApplicationBuilder();
+        builder.Logging.ClearProviders();
+        builder.Services.AddSingleton(source);
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.PostgreSqlLocal("local", source, transport =>
+            {
+                transport.Send<LocalTransportTests.LocalWork>(["audit", "orders"],
+                    static message => message.Value == 7 ? "audit" : "orders");
+                transport.Consume("audit", consumer => consumer.Handler<LocalTransportTests.LocalHandler>());
+                transport.Consume("orders", consumer =>
+                {
+                    consumer.Handler<LocalTransportTests.LocalHandler>();
+                    consumer.ConfigurePipeline(_ =>
+                    {
+                        if (++compositionAttempts == 1)
+                        {
+                            throw new InvalidOperationException("orders composition failed");
+                        }
+                    });
+                });
+            });
+        });
+        builder.Services.AddRelayerPostgreSqlOutbox("local");
+        builder.Services.AddRelayerPostgreSqlDirectDispatch("local", source);
+        builder.Services.AddRelayerPostgreSqlMaintenance("local", source);
+
+        using var host = builder.Build();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await Assert.That(() => host.StartAsync(deadline.Token)).Throws<InvalidOperationException>()
+            .WithMessage("orders composition failed");
+        var transport = PostgreSqlLocalTransport.Find(host.Services.GetRequiredService<ITransport>())!;
+        await Assert.That(transport.GetReceiver("audit")).IsNull();
+
+        await host.StartAsync(deadline.Token);
+
+        try
+        {
+            await Assert.That(compositionAttempts).IsEqualTo(2);
+
+            await using var scope = host.Services.CreateAsyncScope();
+            var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+            var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+            await using var transaction = await outbox.BeginTransactionAsync(source, cancellationToken: deadline.Token);
+            await sender.SendAsync(new LocalTransportTests.LocalWork(7), cancellationToken: deadline.Token);
+            await sender.SendAsync(new LocalTransportTests.LocalWork(8), cancellationToken: deadline.Token);
             await transaction.CommitAsync(deadline.Token);
 
             while (await LocalTransportTests.Count(source, "local_business", deadline.Token) != 2)
