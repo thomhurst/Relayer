@@ -86,7 +86,7 @@ The copy contract exercises the adapter boundary used by outbox dispatch, schedu
 
 ## Send, receive and settle
 
-Implement `ITransportConformanceFixture<TIncoming>.VerifySettlementAsync` to confirm that both messages, including the post-restart marker, completed durably. The suite stops the restarted consumer, then calls the hook with the scenario token before fixture disposal. Use native state or broker-confirmed settlement, such as a queue with no ready or in-flight messages or a committed consumer offset past the marker. Missing verification fails the case.
+The suite rejects a replay of the original message after restart, including during the final drain after the marker arrives. Implement `ITransportConformanceFixture<TIncoming>.VerifySettlementAsync` to confirm that both messages completed durably. The suite drains the restarted consumer, checks for replay, then calls the hook with the scenario token before fixture disposal. Use native state or broker-confirmed settlement, such as a queue with no ready or in-flight messages or a committed consumer offset past the marker. Missing verification fails the case.
 
 ## Graceful stop
 
