@@ -18,7 +18,6 @@ public sealed class FailurePipeline
     private readonly TimeSpan[] _redeliveries;
     private readonly double _jitter;
     private readonly string? _deadLetterEndpoint;
-    private readonly TimeSpan _copyTimeout;
     private readonly Func<MessageContext, string, OutgoingMessage>? _copy;
     private readonly IFailureScheduler? _scheduler;
     private readonly TimeProvider _time;
@@ -29,6 +28,11 @@ public sealed class FailurePipeline
     private readonly long? _deadLetterMaxBytes;
 
     internal (string TransportName, string Source) ReceiveEndpoint => (_transport.Name, _source);
+
+    internal TimeSpan CopyTimerDelay
+    {
+        get;
+    }
 
     // An adapter can require stronger delivery guarantees for copies than for ordinary sends.
     internal ITransport? CopyTransport
@@ -64,7 +68,7 @@ public sealed class FailurePipeline
         options ??= new();
         _jitter = options.Jitter;
         _deadLetterEndpoint = options.DeadLetterEndpoint;
-        _copyTimeout = options.CopyTimeout ?? TimeSpan.FromSeconds(30);
+        var copyTimeout = options.CopyTimeout ?? TimeSpan.FromSeconds(30);
         _copy = copy;
         _scheduler = scheduler;
         _time = timeProvider ?? TimeProvider.System;
@@ -77,10 +81,12 @@ public sealed class FailurePipeline
             throw InvalidOption("Jitter must be between zero and one.");
         }
 
-        if (_copyTimeout < TimeSpan.FromMilliseconds(1) || _copyTimeout.TotalMilliseconds > uint.MaxValue - 1)
+        if (copyTimeout < TimeSpan.FromMilliseconds(1) || copyTimeout.TotalMilliseconds > uint.MaxValue - 1)
         {
             throw InvalidOption($"{nameof(FailureOptions.CopyTimeout)} must be between 1 and {uint.MaxValue - 1} ms.");
         }
+
+        CopyTimerDelay = GetSystemTimerDelay(copyTimeout);
 
         foreach (var delay in _retries)
         {
@@ -294,8 +300,7 @@ public sealed class FailurePipeline
 
         if (_time == TimeProvider.System)
         {
-            var minimumDelay = TimeSpan.FromMilliseconds(1);
-            return new(Task.Delay(delay < minimumDelay ? minimumDelay : delay, cancellationToken));
+            return new(Task.Delay(GetSystemTimerDelay(delay), cancellationToken));
         }
 
         if (delay.Ticks % TimeSpan.TicksPerMillisecond != 0)
@@ -304,6 +309,12 @@ public sealed class FailurePipeline
         }
 
         return delay == TimeSpan.Zero ? ValueTask.CompletedTask : new(Task.Delay(delay, _time, cancellationToken));
+    }
+
+    internal static TimeSpan GetSystemTimerDelay(TimeSpan delay)
+    {
+        // Jitter can reduce a positive configured retry to zero ticks. It still needs a timer.
+        return TimeSpan.FromMilliseconds(Math.Max(1, Math.Ceiling(delay.TotalMilliseconds)));
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -432,7 +443,7 @@ public sealed class FailurePipeline
         }
         // Fallback work is on the error path. Its timeout covers the whole durable operation.
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
-        timeout.CancelAfter(_copyTimeout);
+        timeout.CancelAfter(CopyTimerDelay);
 
         if (schedule)
         {

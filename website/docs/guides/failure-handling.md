@@ -75,8 +75,8 @@ If a custom rule retries `MessageEnvelopeException`, an in-process retry checks 
 
 Consumers retry retryable handler failures three times by default, with backoffs of 100 ms, 500 ms and 1 s before jitter (four total attempts). Jitter shortens each backoff by up to 20%. A brief dependency failure can recover without a dead-letter or another broker delivery. Permanent failures still dead-letter immediately, and durable redelivery is disabled until configured. Retries keep the current native delivery open, so account for this delay in broker lock or acknowledgement deadlines.
 
-A zero entry in `RetryDelays` retries immediately. With `TimeProvider.System`, Relayer schedules
-a timer of at least 1 ms for every positive entry, even when jitter shortens it below 1 ms.
+A zero entry in `RetryDelays` retries immediately. With `TimeProvider.System`, Relayer rounds
+the jittered delay for each positive entry up to a whole millisecond, with a minimum of 1 ms.
 The actual wait depends on the system timer resolution. Custom time providers receive
 nonzero jittered delays at tick precision and determine how precisely to schedule them.
 
@@ -123,6 +123,10 @@ consumer.Failures(configuration.GetSection("OrdersFailure").Get<FailureOptions>(
 `FailureOptions` also supports Options-pattern registration with `services.AddOptions<FailureOptions>().Bind(section)` and resolution through `IOptions<FailureOptions>.Value`.
 
 A missing or null `RetryDelays` selects the default three retries. A missing or null `CopyTimeout` selects 30 seconds. Explicit values must be between 1 and 4,294,967,294 ms, inclusive. An empty retry array disables immediate retries. Configured arrays replace the defaults rather than append to them. Enable the .NET configuration binding source generator when binding in a trimmed or Native AOT application. Each consumer captures its validated failure policy when the pipeline is composed at startup. Startup errors for invalid jitter, copy timeout, or delay values name the affected consumer, source and transport. Active consumers keep that policy through configuration reloads or changes to the original `FailureOptions` object.
+
+For fallback dead-letter and scheduled redelivery copies, Relayer rounds `CopyTimeout` up to a
+whole millisecond when programming the system timer. For example, 1.9 ms programs a 2 ms timeout.
+Actual timing depends on system timer resolution. Cancellation of the receive still cancels the copy.
 
 PostgreSQL local endpoints use their fenced outbox row recovery policy (`PostgreSqlOutboxOptions`). They reject a separate `Failures` policy at startup; per-consumer `Classify` is supported. Circuit breaking remains a native adapter option on Kafka and Azure Service Bus, where pause/resume executors are implemented.
 
