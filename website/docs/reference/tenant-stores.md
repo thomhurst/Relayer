@@ -260,8 +260,12 @@ unordered recovery age, and cleanup follows `CleanupInterval` and the retention 
 next catalog pass after other phases run. Each batch commits and releases its connection and
 rechecks the cleanup lease before the next batch. A large
 catalog may take several lane lease durations to revisit a store; native ownership is re-established
-on each turn before dispatch. Scheduling settings also bind from `IConfiguration`; `infinite` disables
-a retention limit. Defaults retain dead rows for 30 days and inbox identities for seven days.
+on each turn before dispatch.
+
+Scheduling settings also bind from `IConfiguration`. Set `DeadRetention` or `InboxRetention` to
+`infinite` to keep the corresponding records indefinitely. By default, dead rows are retained for
+30 days and inbox identities for seven days. `SentRetention` requires a positive duration and
+defaults to seven days. It applies to stores that enable `RetainSentMessages`.
 
 ## Durable tenant binding
 
