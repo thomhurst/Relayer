@@ -10,6 +10,13 @@ namespace Relayer.Outbox.SqlServer;
 
 internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWorker
 {
+    private const string AgeCutoffSql = """
+        DECLARE @now datetime2(7) = SYSUTCDATETIME();
+        DECLARE @cutoff datetimeoffset(7);
+        IF DATEDIFF_BIG(millisecond, '0001-01-01', @now) >= CAST(@ageDays AS bigint) * 86400000 + @ageRemainder
+            SET @cutoff = DATEADD(millisecond, -@ageRemainder, DATEADD(day, -@ageDays, @now));
+        """;
+
     private readonly string _connectionString;
     private readonly SqlServerMaintenanceOptions _options;
     private readonly SqlServerOutboxStore _store;
@@ -75,10 +82,13 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
             SELECT CAST(1 AS bit);
             """;
         _read = $"""
+            {AgeCutoffSql}
+            IF @cutoff IS NULL RETURN;
+
             SELECT TOP (@limit) id, transport, message_type, destination, body, headers, ordering_key,
                 deliver_at, created_at, lane, attempts, last_error, tenant_id
             FROM {_table} WHERE lane IS NULL AND status='pending'
-                AND created_at <= DATEADD(millisecond, -@ageRemainder, DATEADD(day, -@ageDays, SYSUTCDATETIME()))
+                AND created_at <= @cutoff
                 AND (deliver_at IS NULL OR deliver_at <= SYSUTCDATETIME())
                 AND (claim_expires_at IS NULL OR claim_expires_at <= SYSUTCDATETIME())
                 AND (@after IS NULL OR id > @after) AND id <= @through ORDER BY id
@@ -176,7 +186,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
 
         await using var command = new SqlCommand(_read, connection, transaction);
         command.Parameters.AddWithValue("@limit", _rows.Length);
-        AddDuration(command, "@ageDays", "@ageRemainder", _options.RecoveryDelay);
+        AddDuration(command, _options.RecoveryDelay);
         command.Parameters.Add("@after", SqlDbType.Binary, 16).Value = _hasAfter ? _after : DBNull.Value;
         command.Parameters.Add("@through", SqlDbType.Binary, 16).Value = _through;
         var count = await _store.ReadRecoveryAsync(command, _rows, cancellationToken).ConfigureAwait(false);
@@ -246,7 +256,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
     {
         await using var command = new SqlCommand(sql, connection, transaction);
         command.Parameters.AddWithValue("@limit", _options.BatchSize);
-        AddDuration(command, "@days", "@remainder", retention);
+        AddDuration(command, retention);
         return (int)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 
@@ -254,8 +264,8 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
     {
         var preserve = column == "failed_at" ? $" AND NOT EXISTS (SELECT 1 FROM {_table} p WHERE p.id=d.id AND p.status='parked')" : "";
         return $"""
-            DECLARE @now datetime2(7) = SYSUTCDATETIME();
-            IF DATEDIFF_BIG(millisecond, '0001-01-01', @now) < CAST(@days AS bigint) * 86400000 + @remainder
+            {AgeCutoffSql}
+            IF @cutoff IS NULL
             BEGIN
                 SELECT 0;
                 RETURN;
@@ -263,7 +273,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
 
             ;WITH expired AS (
                 SELECT TOP (@limit) * FROM {table} d
-                WHERE {column} <= DATEADD(millisecond, -@remainder, DATEADD(day, -@days, @now)){preserve}
+                WHERE {column} <= @cutoff{preserve}
                 ORDER BY {column}
             )
             DELETE FROM expired;
@@ -271,10 +281,10 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
             """;
     }
 
-    private static void AddDuration(SqlCommand command, string daysName, string remainderName, TimeSpan duration)
+    private static void AddDuration(SqlCommand command, TimeSpan duration)
     {
-        command.Parameters.AddWithValue(daysName, duration.Days);
-        command.Parameters.AddWithValue(remainderName, (int)Math.Ceiling((duration - TimeSpan.FromDays(duration.Days)).TotalMilliseconds));
+        command.Parameters.AddWithValue("@ageDays", duration.Days);
+        command.Parameters.AddWithValue("@ageRemainder", (int)Math.Ceiling((duration - TimeSpan.FromDays(duration.Days)).TotalMilliseconds));
     }
 
     internal async ValueTask ReleaseAsync(CancellationToken cancellationToken = default)

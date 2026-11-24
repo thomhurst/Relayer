@@ -1679,6 +1679,9 @@ No new notification or wake mechanism is introduced; Service Broker remains appl
 Transfer malformed header rows to a raw dead copy under a live fenced claim. Count recovery configuration
 failures and native send failures; an atomic update/dead-copy/delete transaction dead-letters exhausted
 unordered rows and parks exhausted ordered rows. Retention preserves dead copies of parked barriers.
+Recovery and retention reuse the same SQL Server UTC cutoff calculation. A cutoff below the timestamp
+range matches no rows. The [SQL Server maintenance guide](../website/docs/reference/sqlserver-store.md)
+describes this behavior.
 If application-owned repair makes a parked row pending again, the fenced failure mutation uses native
 `OUTPUT INTO` and `MERGE` to refresh the retained dead snapshot by message ID on the next terminal
 failure. The live row keeps its identity and sequence.

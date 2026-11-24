@@ -52,6 +52,20 @@ public sealed class MaintenanceTests(SqlServerFixture database)
     }
 
     [Test]
+    public async Task Recovery_cutoff_before_the_datetime2_range_leaves_pending_rows()
+    {
+        var data = new StoreData(database);
+        await data.Create();
+        await data.Insert(Guid.CreateVersion7(), DateTimeOffset.MinValue);
+        var transport = new Transport();
+        using var worker = Worker(data, transport, TimeSpan.MaxValue);
+
+        await Assert.That(await worker.SweepAsync()).IsEqualTo(0);
+        await Assert.That(transport.Sent).IsEqualTo(0);
+        await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {data.Table} WHERE status='pending'")).IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Repeated_recovery_query_failures_do_not_suppress_inbox_retention()
     {
         var data = new StoreData(database);
@@ -438,7 +452,7 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {SqlServerOutboxSchema.DeadTable(data.Options)} WHERE last_error LIKE '%missing%'")).IsEqualTo(1L);
     }
 
-    private SqlServerMaintenanceWorker Worker(StoreData data, Transport transport)
+    private SqlServerMaintenanceWorker Worker(StoreData data, Transport transport, TimeSpan? recoveryDelay = null)
     {
         return new(
                 new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master", MaxPoolSize = 2 }.ConnectionString,
@@ -447,7 +461,7 @@ public sealed class MaintenanceTests(SqlServerFixture database)
                     TablePrefix = data.Options.TablePrefix,
                     MaxDispatchAttempts = data.Options.MaxDispatchAttempts,
                     BatchSize = 4,
-                    RecoveryDelay = TimeSpan.Zero
+                    RecoveryDelay = recoveryDelay ?? TimeSpan.Zero
                 },
                 [transport], NullLogger<SqlServerMaintenanceWorker>.Instance);
     }
