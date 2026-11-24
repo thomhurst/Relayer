@@ -22,6 +22,15 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
+    public async Task Outage_requires_recovery_marker_after_all_acknowledged_sends_arrive()
+    {
+        var suite = Suite("outage-missing-marker");
+        var error = await Assert.That(async () => await suite.RunAsync(TransportConformanceCase.SendDuringOutage))
+            .Throws<InvalidOperationException>().WithMessageContaining("outage recovery receive; outstanding values: 4.");
+        await Assert.That(error!.InnerException is OperationCanceledException).IsTrue();
+    }
+
+    [Test]
     public async Task Outage_waits_for_post_restart_warmup_after_initial_replay()
     {
         var result = await Suite("initial-replay").RunAsync(TransportConformanceCase.SendDuringOutage);
@@ -545,6 +554,11 @@ public sealed class OutageConformanceTests
                 {
                     return;
                 }
+            }
+
+            if (mode == "outage-missing-marker" && _recovered && message.Body.Span.SequenceEqual("{\"Value\":4}"u8))
+            {
+                return;
             }
 
             if (_offline)
