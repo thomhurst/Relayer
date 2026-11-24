@@ -15,7 +15,7 @@ public sealed class MySqlDirectDispatchOptions
         get; init;
     } = 100;
 
-    /// <summary>Lifetime of a fenced claim, greater than zero and at most 1,000,000 days. A send that outlives it can be delivered again.</summary>
+    /// <summary>Lifetime of a fenced claim, from 1 microsecond to 1,000,000 days inclusive. A send that outlives it can be delivered again.</summary>
     public TimeSpan ClaimDuration
     {
         get; init;

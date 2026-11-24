@@ -1788,9 +1788,10 @@ independently; preserve parked rows and their dead copies. Ordered decoding isol
 rows through the existing lane failure/parking path, retaining the original sequence and raw payload.
 
 Guard recovery and retention cutoffs with MySQL's `TIMESTAMPDIFF` and `CASE` before subtracting
-the age. A cutoff below the supported `DATETIME(6)` range matches zero rows. Direct dispatch and
-maintenance require a positive claim duration of at most 1,000,000 days at registration. This keeps
-ordinary claim durations available and leaves millennia of clock headroom for native SQL and .NET
+the age. A cutoff below the supported `DATETIME(6)` range matches zero rows. Maintenance requires a
+positive claim duration and rounds it up to a whole microsecond on the database clock. Direct dispatch
+requires at least one microsecond so its `DATETIME(6)` claim expiry advances past the claim timestamp.
+Registration caps both durations at 1,000,000 days to leave clock headroom for native SQL and .NET
 expiry calculations.
 
 **Consequences.** Maintenance is explicit, named, immutable configuration. Each pass needs one

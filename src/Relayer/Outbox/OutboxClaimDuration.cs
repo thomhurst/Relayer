@@ -6,12 +6,15 @@ internal static class OutboxClaimDuration
     // Leave millennia of headroom when the dispatch worker adds the duration to the UTC clock.
     private static readonly TimeSpan s_maxClaimDuration = TimeSpan.FromDays(MaxClaimDurationDays);
 
-    internal static void Validate(TimeSpan duration, string paramName)
+    internal static void Validate(TimeSpan duration, string paramName, bool requireMicrosecondPrecision = false)
     {
-        if (duration <= TimeSpan.Zero || duration > s_maxClaimDuration)
+        long minimumTicks = requireMicrosecondPrecision ? TimeSpan.TicksPerMicrosecond : 1;
+
+        if (duration.Ticks < minimumTicks || duration > s_maxClaimDuration)
         {
+            string minimum = requireMicrosecondPrecision ? "at least 1 microsecond" : "positive";
             throw new ArgumentOutOfRangeException(paramName, duration,
-                $"The duration must be positive and at most {MaxClaimDurationDays} days.");
+                $"The duration must be {minimum} and at most {MaxClaimDurationDays} days.");
         }
     }
 }
