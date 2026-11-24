@@ -264,6 +264,9 @@ Use `"infinite"` for either retention in configuration, or `null` in code, to di
 Keep the inbox retention window longer than the application's replay horizon: deleting a key permits
 that message to run again.
 
+If subtracting `RecoveryDelay`, `DeadRetention`, or `InboxRetention` from the SQL Server UTC clock
+puts the cutoff before January 1, year 1, that recovery or cleanup query matches zero rows.
+
 Hosted maintenance waits for the application to finish starting before claiming rows.
 By then, hosted transports have finished starting, regardless of registration order.
 

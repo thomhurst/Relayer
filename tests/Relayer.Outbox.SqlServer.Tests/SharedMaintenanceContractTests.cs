@@ -12,30 +12,35 @@ public sealed class SharedMaintenanceContractTests(SqlServerFixture database) : 
 {
     protected override async Task<MaintenanceFixture> CreateFixtureAsync()
     {
-        return await CreateFixtureAsync(TimeSpan.FromDays(30));
+        return await CreateFixtureAsync(TimeSpan.FromDays(30), TimeSpan.FromDays(7));
     }
 
     [Test]
-    public async Task Retention_before_the_datetime2_range_leaves_dead_rows_and_cleans_the_inbox()
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Retention_before_the_datetime2_range_leaves_rows_in_only_the_affected_table(bool deadCutoffOutOfRange)
     {
-        await using var fixture = await CreateFixtureAsync(TimeSpan.MaxValue);
-        await fixture.InsertDead(Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(-60));
-        await fixture.InsertInbox("consumer", Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(-8));
+        await using var fixture = await CreateFixtureAsync(
+            deadCutoffOutOfRange ? TimeSpan.MaxValue : TimeSpan.FromDays(30),
+            deadCutoffOutOfRange ? TimeSpan.FromDays(7) : TimeSpan.MaxValue);
+        await fixture.InsertDead(Guid.NewGuid(), DateTimeOffset.MinValue);
+        await fixture.InsertInbox("consumer", Guid.NewGuid(), DateTimeOffset.MinValue);
         using var worker = fixture.Worker(new());
 
         await Assert.That(await worker.CleanupAsync()).IsEqualTo(1);
-        await Assert.That(await fixture.Count(Table.Dead)).IsEqualTo(1L);
-        await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(0L);
+        await Assert.That(await fixture.Count(Table.Dead)).IsEqualTo(deadCutoffOutOfRange ? 1L : 0L);
+        await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(deadCutoffOutOfRange ? 0L : 1L);
     }
 
-    private async Task<MaintenanceFixture> CreateFixtureAsync(TimeSpan deadRetentionPeriod)
+    private async Task<MaintenanceFixture> CreateFixtureAsync(TimeSpan deadRetentionPeriod, TimeSpan inboxRetentionPeriod)
     {
         var data = new StoreData(database);
         await data.Create();
-        return new Fixture(new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString, data, deadRetentionPeriod);
+        var connectionString = new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
+        return new Fixture(connectionString, data, deadRetentionPeriod, inboxRetentionPeriod);
     }
 
-    private sealed class Fixture(string connectionString, StoreData data, TimeSpan deadRetentionPeriod) : MaintenanceFixture
+    private sealed class Fixture(string connectionString, StoreData data, TimeSpan deadRetentionPeriod, TimeSpan inboxRetentionPeriod) : MaintenanceFixture
     {
         private string Dead => SqlServerOutboxSchema.DeadTable(data.Options);
 
@@ -54,7 +59,7 @@ public sealed class SharedMaintenanceContractTests(SqlServerFixture database) : 
                 CleanupInterval = cleanupInterval ?? TimeSpan.FromHours(1),
                 RecoveryDelay = TimeSpan.FromHours(1),
                 DeadRetention = deadRetention ? deadRetentionPeriod : null,
-                InboxRetention = inboxRetention ? TimeSpan.FromDays(7) : null
+                InboxRetention = inboxRetention ? inboxRetentionPeriod : null
             }, [transport], new FailureLogger<SqlServerMaintenanceWorker>(failure), instrumentation: instrumentation, idleTimeProvider: idleTimeProvider, storeName: "store"));
         }
 
