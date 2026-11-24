@@ -45,15 +45,9 @@ using (var contractsProvider = new ServiceCollection().AddRelayer(builder =>
 
 Console.WriteLine("Cross-assembly generated message registration passed under Native AOT.");
 
-using (var asynchronousReceive = new Relayer.TestFixtures.ConcurrentReceiveFixture())
-{
-    for (var i = 0; i < 4; i++)
-    {
-        asynchronousReceive.Run(Relayer.TestFixtures.ConcurrentReceiveFixture.Mode.Receive);
-    }
-}
-
-Console.WriteLine("Concurrent cross-thread receive passed under Native AOT.");
+// Run send first so its native completion source owns the primary Native AOT dispatch entry.
+// The receive fixture uses the same awaiter with a different source type. Warming send after
+// receive would rely on a shared cache entry that can be evicted and allocate on the next miss.
 foreach (var batch in new[] { false, true })
 {
     foreach (var listener in new[] { false, true })
@@ -89,6 +83,17 @@ static void AssertSendAllocation(Relayer.TestFixtures.SendTracingCompletionFixtu
 }
 
 Console.WriteLine("Cross-thread single and batch send tracing passed under Native AOT.");
+
+using (var asynchronousReceive = new Relayer.TestFixtures.ConcurrentReceiveFixture())
+{
+    for (var i = 0; i < 4; i++)
+    {
+        asynchronousReceive.Run(Relayer.TestFixtures.ConcurrentReceiveFixture.Mode.Receive);
+    }
+}
+
+Console.WriteLine("Concurrent cross-thread receive passed under Native AOT.");
+
 await KafkaSchemaSmoke.RunAsync();
 await AvroSmoke.RunAsync();
 await NatsTopologySmoke.RunAsync();
