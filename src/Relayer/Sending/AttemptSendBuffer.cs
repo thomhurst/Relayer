@@ -14,7 +14,7 @@ internal sealed class AttemptSendBuffer(Pipeline.ConsumePipeline? owner = null)
 
     internal bool IsEmpty => _count == 0;
 
-    internal void Add(ITransport transport, OutgoingMessage message, TimeSpan timeout)
+    internal void Add(ITransport transport, OutgoingMessage message, TimeSpan timerDelay)
     {
         var index = Interlocked.Increment(ref _count) - 1;
         var segment = _entries;
@@ -33,7 +33,7 @@ internal sealed class AttemptSendBuffer(Pipeline.ConsumePipeline? owner = null)
         // Each concurrent send owns one unique index. Flush starts only after the handler awaits its sends.
         var slot = index % Segment.Size;
         var entry = segment.Items[slot] ??= new Entry();
-        entry.Copy(owner?.Redirect(transport) ?? transport, message, timeout);
+        entry.Copy(owner?.Redirect(transport) ?? transport, message, timerDelay);
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -131,7 +131,7 @@ internal sealed class AttemptSendBuffer(Pipeline.ConsumePipeline? owner = null)
             _timeout.Dispose();
         }
 
-        internal void Copy(ITransport transport, OutgoingMessage message, TimeSpan timeout)
+        internal void Copy(ITransport transport, OutgoingMessage message, TimeSpan timerDelay)
         {
             var length = message.Body.Length;
 
@@ -167,7 +167,7 @@ internal sealed class AttemptSendBuffer(Pipeline.ConsumePipeline? owner = null)
             _message = new(message.Destination, _bytes.AsMemory(0, message.Body.Length),
                 _headers.AsMemory(0, message.Headers.Length), key, message.DeliverAt, _options, message.IsTombstone);
             _transport = transport;
-            _timeoutDelay = timeout;
+            _timeoutDelay = timerDelay;
             Ready = true;
         }
 
