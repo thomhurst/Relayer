@@ -251,8 +251,10 @@ records the error and a durable exponential retry deadline in `deliver_at`: 1 se
 not exhaust `MaxDispatchAttempts` or move rows to dead storage. A completion error after a successful
 send leaves attempts unchanged. An expired or interrupted
 send may be delivered again: this is at-least-once delivery, not an atomic broker/database commit.
-Size `ClaimDuration` for the slowest expected database and broker operation. It must be greater
-than zero and at most 1,000,000 days.
+Size `ClaimDuration` for the slowest expected database and broker operation. Direct dispatch accepts
+1 microsecond through 1,000,000 days at registration. MySQL stores claim expiry as `DATETIME(6)`.
+Direct dispatch sends the current time and expiry with six fractional digits, so a shorter duration
+can put both timestamps in the same microsecond.
 
 Queue overflow or a stopped worker attempts to log an error. Rows remain durable and the commit
 returns successfully even if the logging provider throws. Graceful shutdown drains accepted work until the

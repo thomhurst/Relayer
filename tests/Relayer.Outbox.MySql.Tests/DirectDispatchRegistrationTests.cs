@@ -11,25 +11,25 @@ public sealed class DirectDispatchRegistrationTests
     private const string ConnectionString = "Server=localhost;Database=orders";
 
     [Test]
+    [Arguments(false, 1L)]
+    [Arguments(true, 1L)]
+    [Arguments(false, TimeSpan.TicksPerMicrosecond - 1)]
+    [Arguments(true, TimeSpan.TicksPerMicrosecond - 1)]
+    [Arguments(false, long.MaxValue)]
+    [Arguments(true, long.MaxValue)]
+    public async Task Claim_duration_outside_the_mysql_range_fails_at_registration(bool fromConfiguration, long ticks)
+    {
+        var error = await Assert.That(() => RegisterWithClaimDuration(fromConfiguration, TimeSpan.FromTicks(ticks)))
+            .Throws<ArgumentOutOfRangeException>().WithMessageContaining("at least 1 microsecond and at most 1000000 days");
+        await Assert.That(error!.ParamName).IsEqualTo("ClaimDuration");
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task Claim_duration_above_the_mysql_limit_fails_at_registration(bool fromConfiguration)
+    public void One_microsecond_is_accepted_at_registration(bool fromConfiguration)
     {
-        using var source = new MySqlConnector.MySqlDataSource(ConnectionString);
-        var services = new ServiceCollection();
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["ClaimDuration"] = TimeSpan.MaxValue.ToString("c")
-        }).Build();
-        var options = new MySqlDirectDispatchOptions
-        {
-            ClaimDuration = TimeSpan.MaxValue
-        };
-        var error = await Assert.That(() => fromConfiguration
-            ? services.AddRelayerMySqlDirectDispatch("store", source, configuration)
-            : services.AddRelayerMySqlDirectDispatch("store", source, dispatchOptions: options))
-            .Throws<ArgumentOutOfRangeException>().WithMessageContaining("at most 1000000 days");
-        await Assert.That(error!.ParamName).IsEqualTo("ClaimDuration");
+        RegisterWithClaimDuration(fromConfiguration, TimeSpan.FromMicroseconds(1));
     }
 
     [Test]
@@ -165,6 +165,28 @@ public sealed class DirectDispatchRegistrationTests
         await using var missingProvider = missing.BuildServiceProvider();
         using var missingScope = missingProvider.CreateScope();
         await Assert.That(() => missingScope.ServiceProvider.GetRequiredService<MySqlOutbox>()).Throws<InvalidOperationException>();
+    }
+
+    private static void RegisterWithClaimDuration(bool fromConfiguration, TimeSpan duration)
+    {
+        using var source = new MySqlConnector.MySqlDataSource(ConnectionString);
+        var services = new ServiceCollection();
+
+        if (fromConfiguration)
+        {
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ClaimDuration"] = duration.ToString("c")
+            }).Build();
+            services.AddRelayerMySqlDirectDispatch("store", source, configuration);
+        }
+        else
+        {
+            services.AddRelayerMySqlDirectDispatch("store", source, dispatchOptions: new()
+            {
+                ClaimDuration = duration
+            });
+        }
     }
 
     private sealed class IndependentEnlistment : IOutboxEnlistment
