@@ -421,6 +421,8 @@ public class SentHistoryTests
         {
             // First turn starts with history and is cancelled during its actual native row-lock wait.
             // The next turn starts with dead/inbox and commits those batches before reaching history.
+            int previousWaiter = 0;
+
             for (var turn = 0; turn < 2; turn++)
             {
                 using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
@@ -428,11 +430,20 @@ public class SentHistoryTests
 
                 try
                 {
-                    await using var blocked = source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE @pid = ANY(pg_blocking_pids(pid)))");
-                    blocked.Parameters.AddWithValue("pid", blocker.ProcessID);
+                    // A cancelled command's backend can still be unwinding when the next turn starts.
+                    await using var blocked = source.CreateCommand(
+                        "SELECT pid FROM pg_stat_activity WHERE pid <> @previous AND @blocker = ANY(pg_blocking_pids(pid))");
+                    blocked.Parameters.AddWithValue("previous", previousWaiter);
+                    blocked.Parameters.AddWithValue("blocker", blocker.ProcessID);
 
-                    while (await blocked.ExecuteScalarAsync(timeout.Token) is not true)
+                    while (true)
                     {
+                        if (await blocked.ExecuteScalarAsync(timeout.Token) is int waiter)
+                        {
+                            previousWaiter = waiter;
+                            break;
+                        }
+
                         await Task.Delay(10, timeout.Token);
                     }
 
