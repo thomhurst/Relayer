@@ -22,6 +22,22 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
+    public async Task Outage_waits_for_post_restart_warmup_after_initial_replay()
+    {
+        var result = await Suite("initial-replay").RunAsync(TransportConformanceCase.SendDuringOutage);
+        await Assert.That(result.Skipped).IsFalse();
+    }
+
+    [Test]
+    public async Task Outage_initial_replay_cannot_satisfy_missing_post_restart_warmup()
+    {
+        var suite = Suite("initial-replay-missing-warmup");
+        var error = await Assert.That(async () => await suite.RunAsync(TransportConformanceCase.SendDuringOutage))
+            .Throws<InvalidOperationException>().WithMessageContaining("outage warm-up receive");
+        await Assert.That(error!.InnerException is OperationCanceledException).IsTrue();
+    }
+
+    [Test]
     public async Task Reconnect_waits_for_the_restarted_receiver_and_accepts_warmup_redelivery()
     {
         var result = await Suite("reconnect").RunAsync(TransportConformanceCase.Reconnect);
@@ -266,13 +282,15 @@ public sealed class OutageConformanceTests
         private bool _recovered;
         private bool _shutdownIncomplete;
         private int _outageSends;
-        private int _warmupSettlements;
-        private readonly TaskCompletionSource _warmupRedelivered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _replaySettlements;
+        private readonly TaskCompletionSource _markerReplayed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool _started;
         private bool _restartPending;
-        private int _reconnectWarmupReceived;
+        private int _restartWarmupReceived;
 
         private bool TestReconnect => mode is "reconnect" or "reconnect-missing-marker";
+
+        private bool ReplayInitial => mode is "initial-replay" or "initial-replay-missing-warmup";
 
         public ITransport Transport => this;
 
@@ -310,9 +328,12 @@ public sealed class OutageConformanceTests
 
             _inner.RegisterConsumer((incoming, token) =>
             {
-                if (TestReconnect && incoming.Message.Body.Span.SequenceEqual("{\"Value\":2}"u8))
+                var body = incoming.Message.Body.Span;
+
+                if (TestReconnect && body.SequenceEqual("{\"Value\":2}"u8) ||
+                    ReplayInitial && body.SequenceEqual("{\"Value\":5}"u8))
                 {
-                    Volatile.Write(ref _reconnectWarmupReceived, 1);
+                    Volatile.Write(ref _restartWarmupReceived, 1);
                 }
 
                 return receive(incoming, token);
@@ -321,34 +342,31 @@ public sealed class OutageConformanceTests
 
         public ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken token)
         {
-            // Requeue exactly the post-restart warm-up. Handler observation precedes
-            // settlement, so its next delivery may already be queued when outage recovery starts.
-            if (TestReconnect && incoming.Message.Body.Span.SequenceEqual("{\"Value\":2}"u8))
-            {
-                return SettleWarmup(incoming, disposition, token, replayOnSettlement: 1);
-            }
+            var body = incoming.Message.Body.Span;
 
-            if (mode == "warmup-redelivery" && incoming.Message.Body.Span.SequenceEqual("{\"Value\":0}"u8))
+            if (TestReconnect && body.SequenceEqual("{\"Value\":2}"u8) ||
+                mode == "warmup-redelivery" && body.SequenceEqual("{\"Value\":5}"u8) ||
+                ReplayInitial && body.SequenceEqual("{\"Value\":0}"u8))
             {
-                return SettleWarmup(incoming, disposition, token, replayOnSettlement: 2);
+                return SettleWithReplay(incoming, disposition, token);
             }
 
             return _inner.SettleAsync(incoming, disposition, token);
         }
 
-        private ValueTask SettleWarmup(InMemoryDelivery incoming, Disposition disposition, CancellationToken token, int replayOnSettlement)
+        private ValueTask SettleWithReplay(InMemoryDelivery incoming, Disposition disposition, CancellationToken token)
         {
-            var settlement = Interlocked.Increment(ref _warmupSettlements);
+            var settlement = Interlocked.Increment(ref _replaySettlements);
 
-            if (settlement == replayOnSettlement)
+            if (settlement == 1)
             {
                 incoming.Redeliver(TimeSpan.Zero);
                 return default;
             }
 
-            if (settlement == replayOnSettlement + 1)
+            if (settlement == 2)
             {
-                _warmupRedelivered.TrySetResult();
+                _markerReplayed.TrySetResult();
             }
 
             return _inner.SettleAsync(incoming, disposition, token);
@@ -425,7 +443,7 @@ public sealed class OutageConformanceTests
         {
             calls?.Add(nameof(DisconnectAsync));
 
-            if (TestReconnect && Volatile.Read(ref _reconnectWarmupReceived) == 0)
+            if ((TestReconnect || ReplayInitial) && Volatile.Read(ref _restartWarmupReceived) == 0)
             {
                 throw new InvalidOperationException("Disconnected before the restarted receiver received the warm-up.");
             }
@@ -462,6 +480,22 @@ public sealed class OutageConformanceTests
             {
                 await _inner.Transport.StartAsync(token);
                 _restartPending = false;
+            }
+
+            if (ReplayInitial && !_offline && !_recovered)
+            {
+                if (!_markerReplayed.Task.IsCompleted)
+                {
+                    // Queue the initial delivery and its replay before the suite can stop the receiver.
+                    await _inner.Transport.SendAsync(message, token);
+                    await _markerReplayed.Task.WaitAsync(token);
+                    return;
+                }
+
+                if (mode == "initial-replay-missing-warmup")
+                {
+                    return;
+                }
             }
 
             if (_offline)
@@ -506,7 +540,7 @@ public sealed class OutageConformanceTests
             // of the in-memory endpoint's partition scheduling.
             if (TestReconnect && _recovered || mode == "warmup-redelivery" && !_offline && Volatile.Read(ref _outageSends) != 0)
             {
-                await _warmupRedelivered.Task.WaitAsync(token);
+                await _markerReplayed.Task.WaitAsync(token);
 
                 if (mode == "reconnect-missing-marker")
                 {
