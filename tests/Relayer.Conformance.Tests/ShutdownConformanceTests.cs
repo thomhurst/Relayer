@@ -52,48 +52,55 @@ public class ShutdownConformanceTests
     }
 
     [Test]
-    public async Task Pending_stop_fails_when_scenario_is_cancelled_and_cleanup_releases_it()
+    [Arguments(TransportConformanceCase.SendReceiveSettle, "transport start", 1, 0, 1)]
+    [Arguments(TransportConformanceCase.SendReceiveSettle, "transport drain", 0, 1, 2)]
+    [Arguments(TransportConformanceCase.SendReceiveSettle, "transport restart", 2, 0, 2)]
+    [Arguments(TransportConformanceCase.CleanShutdown, "in-flight transport shutdown", 0, 1, 2)]
+    public async Task Cancellation_reports_lifecycle_phase_and_cleans_up_before_late_fault(
+        TransportConformanceCase scenario, string phase, int pendingStart, int pendingStop, int stopCalls)
     {
         using var cancellation = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         BrokenFixture? fixture = null;
-        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
-            new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
-                fixture = new BrokenFixture(tracing, false, false, false, cancelScenarioAfterReceive: cancellation.Cancel)));
 
-        var error = await Assert.That(async () =>
-                await suite.RunAsync(TransportConformanceCase.CleanShutdown, cancellation.Token)
-                    .WaitAsync(TimeSpan.FromSeconds(5)))
-            .Throws<InvalidOperationException>();
-        await Assert.That(error!.Message).Contains("in-flight transport shutdown");
-        await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
-        await Assert.That(fixture!.PendingStopReleased).IsTrue();
-    }
+        Task? PauseOperation(int call, int pendingCall)
+        {
+            if (call != pendingCall)
+            {
+                return null;
+            }
 
-    [Test]
-    [Arguments(false, "transport drain")]
-    [Arguments(true, "transport restart")]
-    public async Task Pending_lifecycle_operation_fails_when_scenario_is_cancelled(bool stallRestart, string phase)
-    {
-        using var cancellation = new CancellationTokenSource();
-        BrokenFixture? fixture = null;
+            entered.SetResult();
+            return pending.Task;
+        }
+
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
             new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
                 fixture = new BrokenFixture(tracing, false, false, false,
-                    cancelPendingLifecycle: cancellation.Cancel, stallRestart: stallRestart)));
+                    start: call => PauseOperation(call, pendingStart),
+                    stop: call => PauseOperation(call, pendingStop))));
+        var run = suite.RunAsync(scenario, cancellation.Token);
 
         try
         {
-            var error = await Assert.That(async () =>
-                    await suite.RunAsync(TransportConformanceCase.SendReceiveSettle, cancellation.Token)
-                        .WaitAsync(TimeSpan.FromSeconds(5)))
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            cancellation.Cancel();
+
+            var error = await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
                 .Throws<InvalidOperationException>();
             await Assert.That(error!.Message).Contains(phase);
             await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
-            await Assert.That(fixture!.PendingLifecycleReleasedByCleanup).IsTrue();
+            await Assert.That(fixture!.StopCalls).IsEqualTo(stopCalls);
+            await Assert.That(fixture.LastStopToken.CanBeCanceled && !fixture.LastStopToken.IsCancellationRequested).IsTrue();
+            await Assert.That(fixture.Disposed).IsTrue();
+            await Assert.That(pending.Task.IsCompleted).IsFalse();
+
+            pending.SetException(new IOException($"Late {phase} failure."));
         }
         finally
         {
-            fixture?.ReleasePendingLifecycle();
+            pending.TrySetResult();
         }
     }
 
@@ -130,74 +137,77 @@ public class ShutdownConformanceTests
             await Assert.That(fixture!.StopCalls).IsEqualTo(stopCalls);
             await Assert.That(fixture.Disposed).IsTrue();
             await Assert.That(verification.Task.IsCompleted).IsFalse();
+
+            verification.SetException(new IOException($"Late {phase} failure."));
         }
         finally
         {
-            verification.SetResult();
+            verification.TrySetResult();
             await ((Task)run).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         }
     }
 
     [Test]
-    public async Task Pending_initial_start_fails_when_scenario_is_cancelled_and_cleanup_releases_it()
+    public async Task Final_shutdown_watchdog_allows_disposal_before_late_fault()
     {
-        using var cancellation = new CancellationTokenSource();
-        var startEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var startRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        BrokenFixture? fixture = null;
+
+        Task? PauseFinalStop(int call)
+        {
+            if (call != 3)
+            {
+                return null;
+            }
+
+            entered.SetResult();
+            return pending.Task;
+        }
+
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
             new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
-                new BrokenFixture(tracing, false, false, false, startEntered: startEntered, startRelease: startRelease)));
-
-        var run = suite.RunAsync(TransportConformanceCase.SendReceiveSettle, cancellation.Token);
+                fixture = new BrokenFixture(tracing, false, false, false, stop: PauseFinalStop)));
+        var run = suite.RunAsync(TransportConformanceCase.SendReceiveSettle);
 
         try
         {
-            await startEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            cancellation.Cancel();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            var error = await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
-                .Throws<InvalidOperationException>();
-            await Assert.That(error!.Message).Contains("transport start");
-            await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
-            await Assert.That(startRelease.Task.IsCompletedSuccessfully).IsTrue();
+            await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(30))).Throws<TimeoutException>();
+            await Assert.That(fixture!.LastStopToken.IsCancellationRequested).IsTrue();
+            await Assert.That(fixture.Disposed).IsTrue();
+            await Assert.That(pending.Task.IsCompleted).IsFalse();
+
+            pending.SetException(new IOException("Late final shutdown failure."));
         }
         finally
         {
-            startRelease.TrySetResult();
+            pending.TrySetResult();
         }
     }
 
     private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation,
-        bool asynchronousEarlyStop = false, Action? cancelScenarioAfterReceive = null,
-        Action? cancelPendingLifecycle = null, bool stallRestart = false, Func<CancellationToken, ValueTask>? verifyNative = null,
-        TaskCompletionSource? startEntered = null, TaskCompletionSource? startRelease = null)
+        bool asynchronousEarlyStop = false, Func<CancellationToken, ValueTask>? verifyNative = null,
+        Func<int, Task?>? start = null, Func<int, Task?>? stop = null)
         : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
         private readonly TaskCompletionSource _settlementRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource _stopRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource _pendingLifecycle = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _startCalls;
         private int _stopCalls;
 
-        public bool PendingLifecycleReleasedByCleanup
+        public int StopCalls => Volatile.Read(ref _stopCalls);
+
+        public CancellationToken LastStopToken
         {
             get; private set;
         }
-
-        public void ReleasePendingLifecycle()
-        {
-            _pendingLifecycle.TrySetResult();
-        }
-
-        public int StopCalls => Volatile.Read(ref _stopCalls);
 
         public bool Disposed
         {
             get; private set;
         }
-
-        public bool PendingStopReleased => _stopRelease.Task.IsCompletedSuccessfully;
 
         public ConformanceLogCapture Logs => _inner.Logs;
 
@@ -215,12 +225,7 @@ public class ShutdownConformanceTests
 
         public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive)
         {
-            _inner.RegisterConsumer(async (delivery, token) =>
-                        {
-                            var disposition = await receive(delivery, token);
-                            cancelScenarioAfterReceive?.Invoke();
-                            return disposition;
-                        });
+            _inner.RegisterConsumer(receive);
         }
 
         public async ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken token)
@@ -271,52 +276,21 @@ public class ShutdownConformanceTests
 
         public Task StartAsync(CancellationToken token)
         {
-            if (startRelease is not null)
-            {
-                startEntered!.SetResult();
-                return startRelease.Task;
-            }
-
-            if (stallRestart && ++_startCalls == 2)
-            {
-                return StallLifecycle();
-            }
-
-            return _inner.Transport.StartAsync(token);
-        }
-
-        private Task StallLifecycle()
-        {
-            cancelPendingLifecycle!.Invoke();
-            return _pendingLifecycle.Task;
+            return start?.Invoke(++_startCalls) ?? _inner.Transport.StartAsync(token);
         }
 
         public async Task StopAsync(CancellationToken token)
         {
-            var firstStop = Interlocked.Increment(ref _stopCalls) == 1;
+            var call = Interlocked.Increment(ref _stopCalls);
+            LastStopToken = token;
 
-            if (firstStop && cancelScenarioAfterReceive is not null)
+            if (stop?.Invoke(call) is { } pending)
             {
-                await _stopRelease.Task;
+                await pending;
                 return;
             }
 
-            if (firstStop && cancelPendingLifecycle is not null && !stallRestart)
-            {
-                await StallLifecycle();
-                return;
-            }
-
-            if (!firstStop && cancelPendingLifecycle is not null)
-            {
-                PendingLifecycleReleasedByCleanup = token.CanBeCanceled && !token.IsCancellationRequested;
-                ReleasePendingLifecycle();
-            }
-
-            startRelease?.TrySetResult();
-            _stopRelease.TrySetResult();
-
-            if (firstStop && asynchronousEarlyStop)
+            if (call == 1 && asynchronousEarlyStop)
             {
                 await Task.Yield();
                 return;

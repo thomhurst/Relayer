@@ -247,7 +247,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
         try
         {
-            await fixture.Transport.StartAsync(token).WaitAsync(token).ConfigureAwait(false);
+            await WaitForLifecycleAsync(fixture.Transport.StartAsync(token), token).ConfigureAwait(false);
             await RunScenarioAsync(scenario, fixture, received.Reader, spans, () => redeliverAt, orderRelease, progress, shutdown, token).ConfigureAwait(false);
         }
         catch (Exception error)
@@ -263,7 +263,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
             try
             {
-                await fixture.Transport.StopAsync(cleanupDeadline.Token).WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+                await WaitForLifecycleAsync(fixture.Transport.StopAsync(cleanupDeadline.Token), watchdog: TimeSpan.FromSeconds(15)).ConfigureAwait(false);
             }
             catch (Exception cleanup) when (failure is not null)
             {
@@ -272,6 +272,20 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         }
 
         return new(scenario);
+    }
+
+    private static async ValueTask WaitForLifecycleAsync(Task operation, CancellationToken token = default, TimeSpan? watchdog = null)
+    {
+        try
+        {
+            await operation.WaitAsync(watchdog ?? Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is OperationCanceledException or TimeoutException)
+        {
+            // The operation can fault as the wait ends or after cleanup has finished.
+            ObserveLateFault(operation);
+            throw;
+        }
     }
 
     private static string? SkipReason(TransportConformanceCase scenario, TransportCapabilities capabilities)
@@ -351,16 +365,16 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             }
         }
 
-        Task Stop()
+        ValueTask Stop()
         {
             progress.Phase = "transport drain";
-            return fixture.Transport.StopAsync(token).WaitAsync(token);
+            return WaitForLifecycleAsync(fixture.Transport.StopAsync(token), token);
         }
 
-        Task Start()
+        ValueTask Start()
         {
             progress.Phase = "transport restart";
-            return fixture.Transport.StartAsync(token).WaitAsync(token);
+            return WaitForLifecycleAsync(fixture.Transport.StartAsync(token), token);
         }
 
         switch (scenario)
@@ -381,9 +395,9 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                         "StopAsync completed before the in-flight consumer finished.");
                 }, shutdown, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 orderRelease.TrySetResult();
-                await observedStop.WaitAsync(token).ConfigureAwait(false);
+                await WaitForLifecycleAsync(observedStop, token).ConfigureAwait(false);
                 progress.Phase = "native shutdown verification";
-                await ((ITransportShutdownConformanceFixture)fixture).VerifyShutdownAsync(token).AsTask().WaitAsync(token).ConfigureAwait(false);
+                await WaitForLifecycleAsync(((ITransportShutdownConformanceFixture)fixture).VerifyShutdownAsync(token).AsTask(), token).ConfigureAwait(false);
                 break;
             case TransportConformanceCase.SendReceiveSettle:
                 await Send(1).ConfigureAwait(false);
@@ -394,7 +408,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 CheckBody(await Next().ConfigureAwait(false), 2);
                 await Stop().ConfigureAwait(false);
                 progress.Phase = "native settlement verification";
-                await fixture.VerifySettlementAsync(token).AsTask().WaitAsync(token).ConfigureAwait(false);
+                await WaitForLifecycleAsync(fixture.VerifySettlementAsync(token).AsTask(), token).ConfigureAwait(false);
                 break;
             case TransportConformanceCase.FailureHandlingFailure:
                 await Send(1, creation: true).ConfigureAwait(false);
@@ -493,7 +507,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Send(0).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 0);
                 progress.Phase = "broker disconnect";
-                await fixture.DisconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
+                await WaitForLifecycleAsync(fixture.DisconnectAsync(token), token).ConfigureAwait(false);
                 progress.Phase = "outage sends";
                 using (var outage = CancellationTokenSource.CreateLinkedTokenSource(token))
                 {
@@ -521,7 +535,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
                     try
                     {
-                        await fixture.Transport.StopAsync(offlineShutdown.Token).WaitAsync(TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
+                        await WaitForLifecycleAsync(fixture.Transport.StopAsync(offlineShutdown.Token), token, TimeSpan.FromSeconds(15)).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (offlineShutdown.IsCancellationRequested && !token.IsCancellationRequested)
                     {
@@ -534,7 +548,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     }
 
                     progress.Phase = "broker reconnect";
-                    await fixture.ReconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
+                    await WaitForLifecycleAsync(fixture.ReconnectAsync(token), token).ConfigureAwait(false);
                     // An offline stop can exhaust its budget while native drain is still
                     // running. Finish that shutdown with connectivity restored before
                     // Start can treat the still-started transport as an idempotent no-op.
@@ -577,9 +591,9 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Send(Warmup).ConfigureAwait(false);
                 CheckBody(await Next("reconnect warm-up receive").ConfigureAwait(false), Warmup);
                 progress.Phase = "broker disconnect";
-                await fixture.DisconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
+                await WaitForLifecycleAsync(fixture.DisconnectAsync(token), token).ConfigureAwait(false);
                 progress.Phase = "broker reconnect";
-                await fixture.ReconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
+                await WaitForLifecycleAsync(fixture.ReconnectAsync(token), token).ConfigureAwait(false);
                 await Send(Recovery).ConfigureAwait(false);
                 Delivery recoveredDelivery;
 
