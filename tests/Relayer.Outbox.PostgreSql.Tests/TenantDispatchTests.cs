@@ -619,6 +619,35 @@ public class TenantDispatchTests
         await Assert.That(() => services.AddRelayerPostgreSqlTenantDispatch()).Throws<InvalidOperationException>();
     }
 
+    [Test]
+    [Arguments(1L, TimeSpan.TicksPerMillisecond, nameof(PostgreSqlTenantDispatchOptions.PollInterval))]
+    [Arguments(TimeSpan.TicksPerMillisecond, 1L, nameof(PostgreSqlTenantDispatchOptions.TurnTimeout))]
+    public async Task Registration_rejects_sub_millisecond_timers(long pollTicks, long turnTicks, string parameter)
+    {
+        var options = new PostgreSqlTenantDispatchOptions
+        {
+            PollInterval = TimeSpan.FromTicks(pollTicks),
+            TurnTimeout = TimeSpan.FromTicks(turnTicks)
+        };
+
+        var error = await Assert.That(() => new ServiceCollection().AddRelayerPostgreSqlTenantDispatch(options))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(error!.ParamName).IsEqualTo(parameter);
+    }
+
+    [Test]
+    [Arguments(1L)]
+    [Arguments(4_294_967_294L)]
+    public void Registration_accepts_timer_boundaries(long milliseconds)
+    {
+        var interval = TimeSpan.FromMilliseconds(milliseconds);
+        new ServiceCollection().AddRelayerPostgreSqlTenantDispatch(new PostgreSqlTenantDispatchOptions
+        {
+            PollInterval = interval,
+            TurnTimeout = interval
+        });
+    }
+
     private static PostgreSqlTenantDispatcher Worker(Catalog catalog, Transport transport, int connections = 2)
     {
         return new(catalog, new()

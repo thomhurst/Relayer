@@ -44,8 +44,9 @@ probe can send PostgreSQL integer arrays, including under Native AOT. Standard d
 Options are init-only and available through `IOptionsMonitor<PostgreSqlOrderedDispatchOptions>.Get("orders")`.
 An overload accepts `IConfiguration`, for example `configuration.GetSection("Outbox:Orders")`, with explicit
 Native AOT-safe binding. Settings are snapshotted at registration; restart to apply changes. Lane counts
-must be 1–65,536, batch sizes 1–10,000, lease durations one second to one hour, and poll intervals positive
-and less than one third of the lease duration. Invalid settings fail registration.
+must be 1–65,536, batch sizes 1–10,000, and lease durations one second to one hour. For PostgreSQL,
+SQL Server, and MySQL, `PollInterval` must be at least 1 ms and less than one third of the lease
+duration. Invalid settings fail registration.
 
 Normal route registration validates native ordering support. Persisted rows referencing missing adapters,
 missing ordering keys or endpoints without `OrderedByKey` fail dispatch with actionable errors. Destination
