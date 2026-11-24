@@ -5,7 +5,6 @@ using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Metadata;
-using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -833,18 +832,6 @@ public class InboxTests : InboxContractTests
             {
                 await onDispose(this);
             }
-        }
-    }
-
-    // EF 10.0.15 has a first-use relational-model race (dotnet/efcore#39214).
-    // Build it in EF's existing model-construction pipeline before publishing the cached
-    // runtime model. Tests still execute concurrently; remove after upgrading to 10.0.16.
-    private sealed class InitializeRelationalModel : IModelFinalizedConvention
-    {
-        public IModel ProcessModelFinalized(IModel model)
-        {
-            _ = model.GetRelationalModel();
-            return model;
         }
     }
 

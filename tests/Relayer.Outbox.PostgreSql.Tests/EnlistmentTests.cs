@@ -4,6 +4,7 @@ using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,6 +19,18 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 
 public class EnlistmentTests
 {
+    [Test]
+    public async Task Orders_model_has_relational_metadata_before_first_save()
+    {
+        var options = new DbContextOptionsBuilder<OrdersContext>()
+            .UseNpgsql("Host=unused")
+            .EnableServiceProviderCaching(false)
+            .Options;
+        await using var context = new OrdersContext(options);
+
+        await Assert.That(context.Model.FindRuntimeAnnotationValue(RelationalAnnotationNames.RelationalModel)).IsNotNull();
+    }
+
     [Test]
     [Arguments(false, false)]
     [Arguments(true, false)]
@@ -1439,6 +1452,11 @@ public class EnlistmentTests
 
     public sealed class OrdersContext(DbContextOptions<OrdersContext> options) : DbContext(options)
     {
+        protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+        {
+            configurationBuilder.Conventions.Add(static _ => new InitializeRelationalModel());
+        }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<Order>().ToTable("orders").HasKey(x => x.Id);
