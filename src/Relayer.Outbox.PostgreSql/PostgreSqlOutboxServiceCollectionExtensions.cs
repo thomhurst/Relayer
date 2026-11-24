@@ -49,11 +49,12 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
 
         dispatchOptions ??= new();
 
-        if (dispatchOptions.QueueCapacity is <= 0 or int.MaxValue || dispatchOptions.BatchSize <= 0 || dispatchOptions.ClaimDuration <= TimeSpan.Zero)
+        if (dispatchOptions.QueueCapacity is <= 0 or int.MaxValue || dispatchOptions.BatchSize <= 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(dispatchOptions), "QueueCapacity and BatchSize must be positive, QueueCapacity must be below Int32.MaxValue, and ClaimDuration must be positive.");
+            throw new ArgumentOutOfRangeException(nameof(dispatchOptions), "QueueCapacity and BatchSize must be positive, QueueCapacity must be below Int32.MaxValue.");
         }
 
+        OutboxClaimDuration.Validate(dispatchOptions.ClaimDuration, nameof(dispatchOptions.ClaimDuration));
         storeOptions ??= new();
         var snapshot = new PostgreSqlOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix, MaxDispatchAttempts = storeOptions.MaxDispatchAttempts, RetainSentMessages = storeOptions.RetainSentMessages };
         _ = PostgreSqlOutboxSchema.CreateScript(snapshot);

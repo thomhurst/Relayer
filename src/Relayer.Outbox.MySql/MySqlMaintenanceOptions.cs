@@ -92,7 +92,7 @@ public sealed class MySqlMaintenanceOptions
         }
 
         ValidateDelay(SweepInterval, nameof(SweepInterval));
-        MySqlDirectDispatchOptions.ValidateClaimDuration(ClaimDuration);
+        OutboxClaimDuration.Validate(ClaimDuration, nameof(ClaimDuration));
         ValidateDelay(CleanupInterval, nameof(CleanupInterval));
 
         if (DeadRetention is { } dead)

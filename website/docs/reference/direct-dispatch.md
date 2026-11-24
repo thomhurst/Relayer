@@ -42,7 +42,8 @@ operations use native UUID array parameters. The regular `NpgsqlDataSource` buil
 For dispatch limits from configuration, use
 `services.AddRelayerPostgreSqlDirectDispatch("orders", dataSource, configuration.GetSection("Dispatch"), storeOptions)`.
 Keys are `QueueCapacity`, `BatchSize` and `ClaimDuration`. Registration snapshots the values and rejects
-malformed or nonpositive values. Read the same named snapshot with
+malformed or nonpositive values. `ClaimDuration` must be greater than zero and at most 1,000,000 days
+in both code and configuration. Read the same named snapshot with
 `IOptionsMonitor<PostgreSqlDirectDispatchOptions>.Get("orders")`. Restart the host to change dispatch limits.
 
 ### EF Core writer

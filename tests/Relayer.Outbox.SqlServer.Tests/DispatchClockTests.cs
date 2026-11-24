@@ -73,7 +73,9 @@ public class DispatchClockTests(SqlServerFixture database)
     }
 
     [Test]
-    public async Task Database_claim_accepts_durations_beyond_the_millisecond_offset_limit()
+    [Arguments(30, 12_345L)]
+    [Arguments(1_000_000, 0L)]
+    public async Task Database_claim_accepts_durations_beyond_the_millisecond_offset_limit(int days, long ticks)
     {
         var data = new StoreData(database);
         await data.Create();
@@ -81,7 +83,7 @@ public class DispatchClockTests(SqlServerFixture database)
         var row = await InsertAsync(data, now, now.AddMinutes(-1));
         var claim = new OutboxClaim(row.Id, Guid.NewGuid());
         var store = data.Store();
-        var duration = TimeSpan.FromDays(30) + TimeSpan.FromTicks(12_345);
+        var duration = TimeSpan.FromDays(days) + TimeSpan.FromTicks(ticks);
         var sql = store.CreateDispatchClaimSql(duration);
 
         await Assert.That(await store.ClaimForDispatchAsync(claim, sql, default)).IsTrue();

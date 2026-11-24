@@ -47,7 +47,8 @@ to bind the same property names without reflection. Set `DeadRetention` or `Inbo
 or `null` in code, to disable deletion from that table. Settings are immutable snapshots, readable through
 `IOptionsMonitor<PostgreSqlMaintenanceOptions>.Get("orders")`; restart to change them. Batch size must be
 1–10000. `SweepInterval` and `CleanupInterval` must each be greater than zero and at most 4,294,967,294 ms.
-`RecoveryDelay` must be nonnegative. `ClaimDuration` and enabled retention periods must be positive.
+`RecoveryDelay` must be nonnegative. Enabled retention periods must be positive. `ClaimDuration` must be
+greater than zero and at most 1,000,000 days in both code and configuration.
 Leadership leases must be 1 second–1 hour.
 All instances sharing these tables must agree on retention and timing settings.
 

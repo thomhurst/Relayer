@@ -39,7 +39,7 @@ public static partial class MySqlOutboxServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(dispatchOptions), "QueueCapacity and BatchSize must be positive, and QueueCapacity must be below Int32.MaxValue.");
         }
 
-        MySqlDirectDispatchOptions.ValidateClaimDuration(dispatchOptions.ClaimDuration);
+        OutboxClaimDuration.Validate(dispatchOptions.ClaimDuration, nameof(dispatchOptions.ClaimDuration));
         storeOptions ??= new();
         var snapshot = new MySqlOutboxOptions { MaxDispatchAttempts = storeOptions.MaxDispatchAttempts, TablePrefix = storeOptions.TablePrefix, Lanes = storeOptions.Lanes };
         _ = MySqlOutboxSchema.CreateScript(snapshot);

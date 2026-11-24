@@ -8,11 +8,12 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 public class DirectDispatchClockTests
 {
     [Test]
-    [Arguments(-24, false)]
-    [Arguments(24, false)]
-    [Arguments(-24, true)]
-    [Arguments(24, true)]
-    public async Task Database_clock_controls_claim_eligibility_and_completion_with_offset_host_clock(int hours, bool recovery)
+    [Arguments(-24, false, 0)]
+    [Arguments(24, false, 0)]
+    [Arguments(-24, true, 0)]
+    [Arguments(24, true, 0)]
+    [Arguments(0, false, 1_000_000)]
+    public async Task Database_clock_controls_claim_eligibility_and_completion_with_offset_host_clock(int hours, bool recovery, int claimDays)
     {
         await using var database = new DirectDispatchTests.Database();
         await database.Start();
@@ -32,14 +33,22 @@ public class DirectDispatchClockTests
         }
 
         var clock = new Clock(now.AddHours(hours));
-        using var dispatcher = Dispatcher(database, transport, clock, retainSent: true);
+        var claimDuration = claimDays == 0 ? TimeSpan.FromMinutes(1) : TimeSpan.FromDays(claimDays);
+        using var dispatcher = Dispatcher(database, transport, clock, retainSent: true, claimDuration: claimDuration);
         var dispatch = Dispatch(dispatcher, [due, future], recovery);
         await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         try
         {
-            await Assert.That(await database.Scalar($"SELECT count(*) FROM {DirectDispatchTests.Database.Table} WHERE claim_expires_at > clock_timestamp() AND claim_expires_at < clock_timestamp() + interval '2 minutes'"))
-                .IsEqualTo(1L);
+            var afterClaim = await DatabaseTime(database);
+
+            await using (var expiryCommand = database.Source.CreateCommand($"SELECT claim_expires_at FROM {DirectDispatchTests.Database.Table} WHERE id = @id"))
+            {
+                expiryCommand.Parameters.AddWithValue("id", due.Id);
+                var expiry = (DateTime)(await expiryCommand.ExecuteScalarAsync())!;
+                await Assert.That(expiry >= now.UtcDateTime + claimDuration && expiry <= afterClaim.UtcDateTime + claimDuration).IsTrue();
+            }
+
             var competitor = new PostgreSqlOutboxStore(database.Source,
                 new()
                 {
@@ -143,7 +152,8 @@ public class DirectDispatchClockTests
         await Assert.That(due >= before.AddSeconds(1) && due <= reader.GetFieldValue<DateTimeOffset>(3).AddSeconds(1)).IsTrue();
     }
 
-    private static PostgreSqlDirectDispatcher Dispatcher(DirectDispatchTests.Database database, Transport transport, TimeProvider clock, bool retainSent = false)
+    private static PostgreSqlDirectDispatcher Dispatcher(DirectDispatchTests.Database database, Transport transport, TimeProvider clock,
+        bool retainSent = false, TimeSpan? claimDuration = null)
     {
         return new(database.Source, new()
         {
@@ -153,7 +163,7 @@ public class DirectDispatchClockTests
         },
                     new()
                     {
-                        ClaimDuration = TimeSpan.FromMinutes(1)
+                        ClaimDuration = claimDuration ?? TimeSpan.FromMinutes(1)
                     }, [transport], NullLogger<PostgreSqlDirectDispatcher>.Instance,
                     timeProvider: clock);
     }
