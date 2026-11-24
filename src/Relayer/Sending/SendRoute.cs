@@ -65,6 +65,12 @@ internal sealed class UnsupportedFanOutTombstoneTarget<TMessage>(MessageType mes
 
 internal static class SendRouteTimeout
 {
+    internal static TimeSpan RoundUpTimerDelay(TimeSpan duration)
+    {
+        // CancelAfter truncates fractional milliseconds when it programs the system timer.
+        return TimeSpan.FromMilliseconds(Math.Ceiling(duration.TotalMilliseconds));
+    }
+
     internal static bool HasExpired(CancellationToken callerToken, CancellationTokenSource timeout)
     {
         return !callerToken.IsCancellationRequested && timeout.IsCancellationRequested;
@@ -100,6 +106,11 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
     private FrozenDictionary<string, SendRoute<TMessage>>? _targets;
 
     internal SendRouteOptions Options => _options;
+
+    internal TimeSpan TimerDelay
+    {
+        get;
+    }
 
     internal MessageType MessageType => _messageType;
 
@@ -142,6 +153,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
         _destinationUtf8 = Encoding.UTF8.GetBytes(destination);
         _messageType = messageType;
         _options = options;
+        TimerDelay = SendRouteTimeout.RoundUpTimerDelay(options.Timeout);
         _orderingKey = orderingKey;
         _serializer = serializer;
         // Bind once so calling the serializer does not depend on the runtime's shared generic dispatch cache.
@@ -166,23 +178,25 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
         ReplyMetadata reply, WireString tenant, MessageEnvelopeMetadata metadata, Guid rowId)
     {
         var route = this;
-        var timeout = _options.Timeout;
+        var timerDelay = TimerDelay;
 
         if (_selector is { } selector)
         {
             var started = Stopwatch.GetTimestamp();
             route = Select(selector(message));
-            timeout -= Stopwatch.GetElapsedTime(started);
+            var remaining = _options.Timeout - Stopwatch.GetElapsedTime(started);
 
-            if (timeout <= TimeSpan.Zero)
+            if (remaining <= TimeSpan.Zero)
             {
                 return callerToken.IsCancellationRequested
                     ? ValueTask.FromCanceled(callerToken)
                     : ValueTask.FromException(SendRouteTimeout.CreateException());
             }
+
+            timerDelay = SendRouteTimeout.RoundUpTimerDelay(remaining);
         }
 
-        return route.Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, metadata, rowId, timeout);
+        return route.Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, metadata, rowId, timerDelay);
     }
 
     private SendRoute<TMessage> Select(string destination)
@@ -268,7 +282,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
         public override CancellationToken CancellationToken => Timeout.Token;
 
         internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer, ReplyMetadata reply, WireString tenant,
-            MessageEnvelopeMetadata metadata, Guid rowId, TimeSpan timeout)
+            MessageEnvelopeMetadata metadata, Guid rowId, TimeSpan timerDelay)
         {
             _reply = reply;
             _tenant = tenant;
@@ -283,7 +297,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
 
             try
             {
-                Timeout.CancelAfter(timeout);
+                Timeout.CancelAfter(timerDelay);
                 _registration = callerToken.UnsafeRegister(static state => ((Operation)state!).Timeout.Cancel(), this);
                 configure?.Invoke(Options);
                 CancellationToken.ThrowIfCancellationRequested();
@@ -534,7 +548,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
 
             if (_outbox is null && _buffer is not null)
             {
-                _buffer.Add(_route._transport, outgoing, _route._options.Timeout);
+                _buffer.Add(_route._transport, outgoing, _route.TimerDelay);
                 return ValueTask.CompletedTask;
             }
 

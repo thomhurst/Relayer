@@ -275,6 +275,38 @@ public class SenderTests
     }
 
     [Test]
+    [Arguments(10_000L, 1L)]
+    [Arguments(19_000L, 2L)]
+    [Arguments(20_000L, 2L)]
+    [Arguments(300_000_000L, 30_000L)]
+    [Arguments((uint.MaxValue - 1L) * TimeSpan.TicksPerMillisecond - 1, uint.MaxValue - 1L)]
+    [Arguments((uint.MaxValue - 1L) * TimeSpan.TicksPerMillisecond, uint.MaxValue - 1L)]
+    public async Task Composed_route_preserves_configured_timeout_and_rounds_timer_delay(long ticks, long expectedMilliseconds)
+    {
+        var transport = new RecordingTransport("events");
+        var timeout = TimeSpan.FromTicks(ticks);
+        var options = new SendRouteOptions { Timeout = timeout };
+        using var provider = CreateProvider(builder => builder.DeclareRoute<OrderPlaced>("events", "orders", options: options), transport);
+        var route = provider.GetRequiredService<SendPipeline>().GetRoute<OrderPlaced>();
+
+        await Assert.That(route.Options.Timeout).IsEqualTo(timeout);
+        await Assert.That(route.TimerDelay).IsEqualTo(TimeSpan.FromMilliseconds(expectedMilliseconds));
+    }
+
+    [Test]
+    [Arguments(1L, 1L)]
+    [Arguments(9_999L, 1L)]
+    [Arguments(10_000L, 1L)]
+    [Arguments(10_001L, 2L)]
+    public async Task Positive_selector_remainder_rounds_up_at_the_timer_boundary(long ticks, long expectedMilliseconds)
+    {
+        var remaining = TimeSpan.FromTicks(ticks);
+
+        await Assert.That(SendRouteTimeout.RoundUpTimerDelay(remaining))
+            .IsEqualTo(TimeSpan.FromMilliseconds(expectedMilliseconds));
+    }
+
+    [Test]
     public async Task Times_out_a_cancelable_transport_and_recovers_after_cancellation()
     {
         var transport = new RecordingTransport("events") { WaitForCancellation = true };

@@ -6,7 +6,10 @@ namespace Relayer;
 public sealed class SendRouteOptions
 {
     /// <summary>The maximum duration of a send, including destination selection, middleware, and outbox enlistment.</summary>
-    /// <remarks>Defaults to 30 seconds. Valid durations are 1 through 4,294,967,294 milliseconds.</remarks>
+    /// <remarks>
+    /// Defaults to 30 seconds. Valid durations are 1 through 4,294,967,294 milliseconds.
+    /// Cancellation timers round positive delays up to whole milliseconds.
+    /// </remarks>
     public TimeSpan Timeout
     {
         get; init;
