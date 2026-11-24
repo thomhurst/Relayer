@@ -648,6 +648,93 @@ public class TenantDispatchTests
         });
     }
 
+    [Test]
+    [Arguments(19_000L, 2L)]
+    [Arguments(30_000L, 3L)]
+    [Arguments(42_949_672_939_999L, 4_294_967_294L)]
+    public async Task Catalog_poll_and_shutdown_program_whole_milliseconds(long ticks, long milliseconds)
+    {
+        var interval = TimeSpan.FromTicks(ticks);
+        var clock = new RecordingTimerProvider();
+        using var worker = new PostgreSqlTenantDispatcher(new Catalog(), new()
+        {
+            PollInterval = interval,
+            TurnTimeout = interval
+        }, [new Transport()], NullLoggerFactory.Instance)
+        {
+            TimerProvider = clock
+        };
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await worker.StartAsync(timeout.Token);
+
+        try
+        {
+            await clock.FirstTimer.Task.WaitAsync(timeout.Token);
+        }
+        finally
+        {
+            await worker.StopAsync(timeout.Token);
+        }
+
+        var expected = TimeSpan.FromMilliseconds(milliseconds);
+        await Assert.That(clock.DueTimes.ToArray()).IsEquivalentTo(new[] { expected, expected });
+    }
+
+    [Test]
+    [Arguments(19_000L, 2L)]
+    [Arguments(30_000L, 3L)]
+    public async Task Tenant_turn_and_lease_release_program_whole_milliseconds(long ticks, long milliseconds)
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused;Pooling=false");
+        var entry = new PostgreSqlTenantStore("tenant", source, new());
+        var catalog = new Catalog { Entries = [entry] };
+        var dueTimes = new List<TimeSpan>();
+        var options = new PostgreSqlTenantDispatchOptions
+        {
+            TurnTimeout = TimeSpan.FromTicks(ticks)
+        };
+        using var worker = new PostgreSqlTenantDispatcher(catalog, options, [new Transport()], NullLoggerFactory.Instance)
+        {
+            CancelAfter = (deadline, delay) =>
+            {
+                dueTimes.Add(delay);
+                deadline.Cancel();
+            }
+        };
+        var expected = TimeSpan.FromMilliseconds(milliseconds);
+        await worker.PassAsync(default);
+        await Assert.That(dueTimes).IsEquivalentTo(new[] { expected });
+
+        catalog.Entries = [];
+        await worker.PassAsync(default);
+        await Assert.That(dueTimes).IsEquivalentTo(new[] { expected, expected });
+
+        catalog.Entries = [entry];
+        _ = worker.GetDispatcher(entry.TenantId);
+        await worker.ReleaseAllAsync();
+        await Assert.That(dueTimes).IsEquivalentTo(new[] { expected, expected, expected });
+    }
+
+    private sealed class RecordingTimerProvider : TimeProvider
+    {
+        internal ConcurrentQueue<TimeSpan> DueTimes
+        {
+            get;
+        } = new();
+
+        internal TaskCompletionSource FirstTimer
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            DueTimes.Enqueue(dueTime);
+            FirstTimer.TrySetResult();
+            return System.CreateTimer(callback, state, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        }
+    }
+
     private static PostgreSqlTenantDispatcher Worker(Catalog catalog, Transport transport, int connections = 2)
     {
         return new(catalog, new()

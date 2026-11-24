@@ -13,12 +13,14 @@ public sealed class PostgreSqlTenantDispatchOptions
     } = 4;
 
     /// <summary>Delay between finite catalog passes, including refreshing additions and removals. Minimum 1 ms.</summary>
+    /// <remarks>The timer rounds fractional milliseconds up.</remarks>
     public TimeSpan PollInterval
     {
         get; init;
     } = TimeSpan.FromSeconds(1);
 
     /// <summary>Maximum duration of one tenant turn or lease release. Minimum 1 ms. Failures do not stop other tenants.</summary>
+    /// <remarks>Cancellation timers round fractional milliseconds up.</remarks>
     public TimeSpan TurnTimeout
     {
         get; init;
