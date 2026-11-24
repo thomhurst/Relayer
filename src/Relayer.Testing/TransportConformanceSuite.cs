@@ -609,16 +609,25 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
                 break;
             case TransportConformanceCase.Reconnect:
+                const int Initial = 1;
                 const int Warmup = 2;
                 const int Recovery = 3;
 
-                await Send(1).ConfigureAwait(false);
-                CheckBody(await Next().ConfigureAwait(false), 1);
-                // Drain the first completion before fault injection. At-least-once brokers may otherwise redeliver it legitimately.
+                await Send(Initial).ConfigureAwait(false);
+                CheckBody(await Next().ConfigureAwait(false), Initial);
                 await Stop().ConfigureAwait(false);
                 await Start().ConfigureAwait(false);
                 await Send(Warmup).ConfigureAwait(false);
-                CheckBody(await Next("reconnect warm-up receive").ConfigureAwait(false), Warmup);
+                Delivery warmupDelivery;
+
+                // A replay of the initial marker does not prove the restarted receiver delivered the warm-up.
+                do
+                {
+                    warmupDelivery = await Next("reconnect warm-up receive").ConfigureAwait(false);
+                }
+                while (HasBody(warmupDelivery, Initial));
+
+                CheckBody(warmupDelivery, Warmup);
                 progress.Phase = "broker disconnect";
                 await WaitForLifecycleAsync(fixture.DisconnectAsync(token), token).ConfigureAwait(false);
                 progress.Phase = "broker reconnect";
@@ -626,12 +635,12 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Send(Recovery).ConfigureAwait(false);
                 Delivery recoveredDelivery;
 
-                // Observing the warm-up does not mean its native settlement survived the outage.
+                // The broker may replay either pre-outage marker during recovery.
                 do
                 {
                     recoveredDelivery = await Next("reconnect recovery receive").ConfigureAwait(false);
                 }
-                while (HasBody(recoveredDelivery, Warmup));
+                while (HasBody(recoveredDelivery, Initial) || HasBody(recoveredDelivery, Warmup));
 
                 CheckBody(recoveredDelivery, Recovery);
                 break;

@@ -37,6 +37,26 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
+    [Arguments("warm-up")]
+    [Arguments("recovery")]
+    public async Task Reconnect_accepts_initial_replay_before_expected_marker(string replayBefore)
+    {
+        var result = await Suite("reconnect", replayBefore).RunAsync(TransportConformanceCase.Reconnect);
+        await Assert.That(result.Skipped).IsFalse();
+    }
+
+    [Test]
+    [Arguments("warm-up")]
+    [Arguments("recovery")]
+    public async Task Reconnect_requires_expected_marker_after_initial_replay(string replayBefore)
+    {
+        var suite = Suite("reconnect", replayBefore, omitMarker: true);
+        var error = await Assert.That(async () => await suite.RunAsync(TransportConformanceCase.Reconnect))
+            .Throws<InvalidOperationException>().WithMessageContaining($"reconnect {replayBefore} receive");
+        await Assert.That(error!.InnerException is OperationCanceledException).IsTrue();
+    }
+
+    [Test]
     [Arguments("unexpected", "outage sends")]
     [Arguments("lost", "outage recovery receive; outstanding values: 1, 2, 3")]
     public async Task Outage_rejects_unexpected_failures_and_lost_acknowledged_messages(string mode, string phase)
@@ -228,16 +248,19 @@ public sealed class OutageConformanceTests
         }
     }
 
-    private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(string mode)
+    private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(string mode,
+        string? replayBefore = null, bool omitMarker = false)
     {
-        return new((tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new OutageFixture(tracing, mode)),
-                    TimeSpan.FromSeconds(2));
+        return new((tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
+            new OutageFixture(tracing, mode, replayBefore: replayBefore, omitMarker: omitMarker)), TimeSpan.FromSeconds(2));
     }
 
     // A controlled fixture tests the contract's assertions, not a broker's reconnect implementation.
-    private sealed class OutageFixture(MessageTracing tracing, string mode, PendingHook? hook = null, List<string>? calls = null) : ITransportConformanceFixture<InMemoryDelivery>, ITransport
+    private sealed class OutageFixture(MessageTracing tracing, string mode, PendingHook? hook = null, List<string>? calls = null,
+        string? replayBefore = null, bool omitMarker = false) : ITransportConformanceFixture<InMemoryDelivery>, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
+        private OutgoingMessage _initial;
         private bool _offline;
         private bool _shutdownFailed;
         private bool _recovered;
@@ -262,6 +285,9 @@ public sealed class OutageConformanceTests
         public string SettlementOperation => _inner.SettlementOperation;
 
         public HeaderNames HeaderNames => _inner.HeaderNames;
+
+        // Put reconnect replays and their markers on the same ordered partition.
+        public WireString? DefaultOrderingKey => replayBefore is null ? null : new WireString("reconnect");
 
         public TimeSpan? OutageSendTimeout
         {
@@ -485,6 +511,35 @@ public sealed class OutageConformanceTests
                 if (mode == "reconnect-missing-marker")
                 {
                     return;
+                }
+            }
+
+            if (replayBefore is not null)
+            {
+                if (message.Body.Span.SequenceEqual("{\"Value\":1}"u8))
+                {
+                    if (replayBefore == "warm-up")
+                    {
+                        // Enqueue a second delivery on the same partition before the first stop.
+                        await _inner.Transport.SendAsync(message, token);
+                    }
+                    else
+                    {
+                        // Keep an owned copy for the replay after reconnect.
+                        _initial = new(message.Destination, message.Body.ToArray(), message.Headers.ToArray(), message.OrderingKey);
+                    }
+                }
+                else if (replayBefore == (_recovered ? "recovery" : "warm-up"))
+                {
+                    if (_recovered)
+                    {
+                        await _inner.Transport.SendAsync(_initial, token);
+                    }
+
+                    if (omitMarker)
+                    {
+                        return;
+                    }
                 }
             }
 
