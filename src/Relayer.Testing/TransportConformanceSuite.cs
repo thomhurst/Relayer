@@ -441,7 +441,19 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Send(1, creation: true).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 1);
                 progress.Phase = "dead-letter receive";
-                var dead = await fixture.ReadDeadLetterAsync(token).AsTask().WaitAsync(token).ConfigureAwait(false);
+                var read = fixture.ReadDeadLetterAsync(token).AsTask();
+                ConformanceDeadLetter dead;
+
+                try
+                {
+                    dead = await read.WaitAsync(token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    ObserveLateFault(read);
+                    throw;
+                }
+
                 Require(Encoding.UTF8.GetString(dead.Body.Span) == "{\"Value\":1}", "Dead-letter body changed.");
                 Require(dead.Reason == "conformance_poison" && dead.Description == "expected failure", "Dead-letter error metadata changed.");
                 Require(dead.Headers.TryGetValue("traceparent", out var parent) && parent == TraceParent &&

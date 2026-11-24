@@ -64,7 +64,7 @@ public class InMemoryConformanceTests
     }
 
     [Test]
-    public async Task Cancelled_dead_letter_read_reports_phase_and_cleans_up_while_read_is_pending()
+    public async Task Cancelled_dead_letter_read_reports_phase_and_cleans_up_before_late_fault()
     {
         using var cancellation = new CancellationTokenSource();
         var readStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -98,6 +98,8 @@ public class InMemoryConformanceTests
             await Assert.That(fixture!.StoppedBeforeDisposal).IsTrue();
             await Assert.That(fixture.Disposed).IsTrue();
             await Assert.That(pendingRead.Task.IsCompleted).IsFalse();
+
+            pendingRead.SetException(new InvalidOperationException("Dead-letter read failed after fixture disposal."));
         }
         finally
         {
