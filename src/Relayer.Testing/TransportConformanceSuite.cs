@@ -547,6 +547,15 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 const int OutageInitial = 0;
                 const int OutageWarmup = 5;
 
+                static int CheckOutageDelivery(Delivery message)
+                {
+                    using var document = JsonDocument.Parse(message.Body);
+                    var value = document.RootElement.GetProperty("Value").GetInt32();
+                    CheckBody(message, value);
+                    Require(value is >= OutageInitial and <= OutageWarmup, "Unexpected outage delivery body.");
+                    return value;
+                }
+
                 await Send(OutageInitial).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), OutageInitial);
                 await Stop().ConfigureAwait(false);
@@ -625,12 +634,17 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     while (required.Count != 0)
                     {
                         var message = await Next($"outage recovery receive; outstanding values: {string.Join(", ", required)}").ConfigureAwait(false);
-                        using var document = JsonDocument.Parse(message.Body);
-                        var value = document.RootElement.GetProperty("Value").GetInt32();
-                        CheckBody(message, value);
-                        Require(value is >= OutageInitial and <= OutageWarmup, "Unexpected outage delivery body.");
-                        required.Remove(value);
+                        required.Remove(CheckOutageDelivery(message));
                     }
+                }
+
+                await Stop().ConfigureAwait(false);
+                progress.Phase = "outage drain verification";
+
+                while (received.TryRead(out var drainedDelivery))
+                {
+                    token.ThrowIfCancellationRequested();
+                    CheckOutageDelivery(drainedDelivery);
                 }
 
                 break;
