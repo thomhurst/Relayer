@@ -225,6 +225,37 @@ public sealed class OutageConformanceTests
         }
     }
 
+    [Test]
+    public async Task Outage_watchdog_times_out_and_cleans_up_while_send_is_pending()
+    {
+        var send = new PendingHook("outage sends");
+        using var cleanup = new CancellationTokenSource();
+        var testTimeout = TimeSpan.FromSeconds(15);
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
+            (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
+                new OutageFixture(tracing, "success", send)));
+        var run = suite.RunAsync(TransportConformanceCase.SendDuringOutage, cleanup.Token);
+
+        try
+        {
+            var sendToken = await send.Entered.Task.WaitAsync(testTimeout);
+            var failure = await Assert.That(async () => await run.WaitAsync(testTimeout))
+                .Throws<InvalidOperationException>().WithMessageContaining("outage sends");
+
+            await Assert.That(failure!.InnerException is TimeoutException).IsTrue();
+            await Assert.That(sendToken.IsCancellationRequested).IsTrue();
+            await Assert.That(send.StoppedWhilePending).IsTrue();
+            await Assert.That(send.DisposedWhilePending).IsTrue();
+            await Assert.That(send.IsPending).IsTrue();
+        }
+        finally
+        {
+            cleanup.Cancel();
+            send.Completion.TrySetResult();
+            await ((Task)run).WaitAsync(testTimeout).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+    }
+
     private sealed class PendingHook(string phase)
     {
         public string Phase
@@ -232,7 +263,7 @@ public sealed class OutageConformanceTests
             get;
         } = phase;
 
-        public TaskCompletionSource Entered
+        public TaskCompletionSource<CancellationToken> Entered
         {
             get;
         } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -259,10 +290,10 @@ public sealed class OutageConformanceTests
             get; set;
         }
 
-        public Task WaitAsync(OutgoingMessage message = default)
+        public Task WaitAsync(OutgoingMessage message = default, CancellationToken token = default)
         {
             Message = message;
-            Entered.SetResult();
+            Entered.SetResult(token);
             return Completion.Task;
         }
     }
@@ -507,7 +538,7 @@ public sealed class OutageConformanceTests
 
                 if (hook is { Phase: "outage sends" } && attempt == 1)
                 {
-                    await hook.WaitAsync(message);
+                    await hook.WaitAsync(message, token);
                     return;
                 }
 
