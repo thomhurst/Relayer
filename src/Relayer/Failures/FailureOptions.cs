@@ -50,6 +50,7 @@ public sealed class FailureOptions(
     } = DeadLetterEndpoint;
 
     /// <summary>Timeout for a scheduled or dead-letter copy. Null selects 30 seconds. Native operations observe receive cancellation.</summary>
+    /// <remarks>Explicit durations must be between 1 and 4,294,967,294 milliseconds.</remarks>
     public TimeSpan? CopyTimeout
     {
         get; set;

@@ -94,7 +94,7 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
 
             foreach (var route in transport.Routes)
             {
-                var location = $"Route for '{route.MessageType}' on transport '{transport.Name}'";
+                var location = $"Route for '{route.MessageType}' to '{route.Destination}' on transport '{transport.Name}'";
 
                 if (string.IsNullOrWhiteSpace(route.Destination))
                 {

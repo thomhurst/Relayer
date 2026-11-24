@@ -201,13 +201,17 @@ public class RequestResponseTests
     }
 
     [Test]
-    public async Task Deadline_expires_without_sleep_and_late_reply_cannot_complete_reused_slot()
+    [Arguments(1L)]
+    [Arguments(TimeSpan.TicksPerSecond)]
+    public async Task Deadline_expires_without_sleep_and_late_reply_cannot_complete_reused_slot(long ticks)
     {
         var clock = new InMemoryTestClock();
         await using var fixture = new Fixture(clock);
-        var expired = fixture.Client.RequestAsync(new(1), TimeSpan.FromSeconds(1)).AsTask();
+        var expired = fixture.Client.RequestAsync(new(1), TimeSpan.FromTicks(ticks)).AsTask();
         var first = await fixture.Next();
-        clock.Advance(TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromTicks(ticks - 1));
+        await Assert.That(expired.IsCompleted).IsFalse();
+        clock.Advance(TimeSpan.FromTicks(1));
         await Assert.That(async () => await expired).Throws<TimeoutException>();
         var current = fixture.Client.RequestAsync(new(2), s_limit).AsTask();
         var second = await fixture.Next();
@@ -280,6 +284,8 @@ public class RequestResponseTests
         var first = fixture.Client.RequestAsync(new(1), s_limit).AsTask();
         var sent = await fixture.Next();
         await Assert.That(async () => await fixture.Client.RequestAsync(new(2), s_limit)).Throws<InvalidOperationException>();
+        await Assert.That(async () => await fixture.Client.RequestAsync(new(2), TimeSpan.FromTicks(1)))
+            .Throws<ArgumentOutOfRangeException>();
         await Assert.That(fixture.Transport.Sent.Reader.TryRead(out _)).IsFalse();
         await fixture.Reply(sent.Headers[fixture.Names.CorrelationId], 1);
         await first;
@@ -288,19 +294,25 @@ public class RequestResponseTests
     [Test]
     [Arguments(0L)]
     [Arguments(-1L)]
-    [Arguments(long.MaxValue)]
+    [Arguments(TimeSpan.TicksPerMillisecond - 1)]
+    [Arguments((uint.MaxValue - 1L) * TimeSpan.TicksPerMillisecond + 1)]
     public async Task Invalid_timeout_is_rejected_before_sending(long ticks)
     {
         await using var fixture = new Fixture();
-        await Assert.That(async () => await fixture.Client.RequestAsync(new(1), TimeSpan.FromTicks(ticks))).Throws<ArgumentOutOfRangeException>();
+        var error = await Assert.That(async () => await fixture.Client.RequestAsync(new(1), TimeSpan.FromTicks(ticks)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(error!.ParamName).IsEqualTo("timeout");
         await Assert.That(fixture.Transport.Sent.Reader.TryRead(out _)).IsFalse();
     }
 
     [Test]
-    public async Task Already_cancelled_request_is_not_sent()
+    [Arguments(TimeSpan.TicksPerMillisecond)]
+    [Arguments((uint.MaxValue - 1L) * TimeSpan.TicksPerMillisecond)]
+    public async Task Already_cancelled_request_with_valid_timeout_is_not_sent(long ticks)
     {
         await using var fixture = new Fixture();
-        await Assert.That(async () => await fixture.Client.RequestAsync(new(1), s_limit, new(true))).Throws<OperationCanceledException>();
+        await Assert.That(async () => await fixture.Client.RequestAsync(new(1), TimeSpan.FromTicks(ticks), new(true)))
+            .Throws<OperationCanceledException>();
         await Assert.That(fixture.Transport.Sent.Reader.TryRead(out _)).IsFalse();
     }
 
