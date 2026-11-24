@@ -140,7 +140,7 @@ internal abstract class OutboxMaintenanceWorker(int tableCount, int batchSize, i
         }
         finally
         {
-            using var timeout = new CancellationTokenSource(leaseDuration);
+            using var timeout = new CancellationTokenSource(SystemTimerDelay.RoundUp(leaseDuration));
 
             try
             {

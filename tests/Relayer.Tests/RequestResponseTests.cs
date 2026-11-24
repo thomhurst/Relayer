@@ -202,6 +202,7 @@ public class RequestResponseTests
 
     [Test]
     [Arguments(1L)]
+    [Arguments(19_000L)]
     [Arguments(TimeSpan.TicksPerSecond)]
     public async Task Deadline_expires_without_sleep_and_late_reply_cannot_complete_reused_slot(long ticks)
     {

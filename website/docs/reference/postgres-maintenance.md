@@ -37,7 +37,8 @@ services.AddRelayerPostgreSqlMaintenance("orders", dataSource,
 
 The host starts and stops the worker. This registration does not create tables, register a writer or
 start ordered dispatch. Stop the host before disposing the data source. Graceful shutdown cancels work,
-awaits in-flight operations, and releases this worker's leases. After a crash, leases and row claims expire.
+awaits in-flight operations, and releases this worker's leases. The lease release timeout uses `LeaseDuration`
+rounded up to a whole millisecond. After a crash, leases and row claims expire.
 With `NpgsqlSlimDataSourceBuilder`, enable arrays for the reused batch claim and completion operations.
 Each pass uses one connection for leadership, recovery claims, completion and retention. Maintenance does not
 hold a pool connection while waiting to borrow another; a single-connection pool works, with application work serialized.

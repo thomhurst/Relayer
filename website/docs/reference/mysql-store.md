@@ -388,8 +388,9 @@ native command timeout (plus the configured MySqlConnector cancellation timeout)
 is logged without replacing the original pass error or cancellation. Broken sessions are discarded
 by MySqlConnector. A crashed process
 releases its session lock; rivals recover after leadership and row claims expire. Graceful
-shutdown releases this worker's leases. Use one writable MySQL primary: named locks are local
-to that server and are unsuitable for independent multi-primary writers.
+shutdown releases this worker's leases. The lease release timeout uses `LeaseDuration` rounded up
+to a whole millisecond. Use one writable MySQL primary: named locks are local to that server and
+are unsuitable for independent multi-primary writers.
 
 Nonempty recovery passes continue immediately, releasing named-lock admission between bounded batches
 (default `BatchSize`: 100). `SweepInterval` (five seconds by default) is the idle delay after exhausting

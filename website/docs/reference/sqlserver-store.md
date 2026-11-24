@@ -293,7 +293,8 @@ for alerts that stay raised until dead or parked rows are handled.
 Separate durable `sweeper` and `cleanup` leases use the database clock. Native transaction application
 locks serialize connected passes without waiting behind another leader. Acquisition and renewal round
 `LeaseDuration` up to a whole millisecond for the persisted deadline. Graceful shutdown releases
-owned leases. Choose `ClaimDuration` above database and broker latency. These workers poll; they
+owned leases. The lease release timeout also uses `LeaseDuration` rounded up to a whole millisecond.
+Choose `ClaimDuration` above database and broker latency. These workers poll; they
 do not enable Service Broker, query notifications or CDC.
 
 Malformed encoded headers are transferred immediately to `outbox_dead`, with the raw payload and an
