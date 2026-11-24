@@ -283,8 +283,49 @@ public sealed class FailurePipeline
 
     internal ValueTask WaitRetryAsync(int retry, CancellationToken cancellationToken)
     {
-        var delay = Jitter(_retries[retry]);
+        var configuredDelay = _retries[retry];
+
+        if (configuredDelay == TimeSpan.Zero)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        var delay = Jitter(configuredDelay);
+
+        if (_time == TimeProvider.System)
+        {
+            var minimumDelay = TimeSpan.FromMilliseconds(1);
+            return new(Task.Delay(delay < minimumDelay ? minimumDelay : delay, cancellationToken));
+        }
+
+        if (delay.Ticks % TimeSpan.TicksPerMillisecond != 0)
+        {
+            return WaitForCustomTimerAsync(delay, cancellationToken);
+        }
+
         return delay == TimeSpan.Zero ? ValueTask.CompletedTask : new(Task.Delay(delay, _time, cancellationToken));
+    }
+
+    [RuntimeAsyncMethodGeneration(false)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask WaitForCustomTimerAsync(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Task.Delay truncates fractional milliseconds before calling a custom TimeProvider.
+        var elapsed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ITimer timer;
+
+        using (ExecutionContext.IsFlowSuppressed() ? default : ExecutionContext.SuppressFlow())
+        {
+            timer = _time.CreateTimer(static state => ((TaskCompletionSource)state!).TrySetResult(),
+                elapsed, delay, Timeout.InfiniteTimeSpan);
+        }
+
+        using (timer)
+        {
+            await elapsed.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private TimeSpan Jitter(TimeSpan delay)
