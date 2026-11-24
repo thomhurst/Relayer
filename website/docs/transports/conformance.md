@@ -134,7 +134,7 @@ Offline shutdown can surface the same native connectivity fault that already ter
 
 If the wait times out or is canceled while outage sends are pending, the suite reports the failure in the `outage sends` phase and proceeds with bounded cleanup. Pending sends retain their borrowed buffers until completion. The suite observes late send faults in the background.
 
-After reconnect, the suite requires delivery of the recovery marker and every successfully acknowledged outage send, including sends that succeed during the watchdog grace period. A broker can also deliver failed or cancelled sends, duplicate deliveries, and replays of either pre-outage marker. The test does not retract messages, replace native retry policies, impose cross-message ordering, or reinterpret native acknowledgements.
+After reconnect, the suite requires delivery of the recovery marker and every successfully acknowledged outage send, including sends that succeed during the watchdog grace period. It then stops the transport within the scenario deadline and checks all deliveries buffered through the end of the drain. The suite accepts duplicate deliveries, replays of either pre-outage marker, and deliveries from sends that failed or were cancelled. Any unexpected delivery during recovery or the final drain fails the case. Failure cleanup has its own budget. The test does not retract messages, replace native retry policies, impose cross-message ordering, or reinterpret native acknowledgements.
 
 
 Native span destinations can differ from route addresses. Fixtures can override `SendDestinationName` and

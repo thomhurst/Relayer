@@ -1,3 +1,4 @@
+using System.Text;
 using Relayer.InMemory;
 using Relayer.Testing;
 using Relayer.Transports;
@@ -88,6 +89,28 @@ public sealed class OutageConformanceTests
     {
         await Assert.That(async () => await Suite(mode).RunAsync(TransportConformanceCase.SendDuringOutage))
             .Throws<InvalidOperationException>().WithMessageContaining(phase);
+    }
+
+    [Test]
+    public async Task Outage_rejects_unexpected_delivery_during_final_drain()
+    {
+        var suite = Suite("success", outageDrainValue: 99);
+        var error = await Assert.That(async () => await suite.RunAsync(TransportConformanceCase.SendDuringOutage))
+            .Throws<InvalidOperationException>().WithMessageContaining("outage drain verification");
+        await Assert.That(error!.InnerException!.Message).Contains("Unexpected outage delivery body.");
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    [Arguments(5)]
+    public async Task Outage_accepts_sent_values_during_final_drain(int value)
+    {
+        var result = await Suite("cancel", outageDrainValue: value).RunAsync(TransportConformanceCase.SendDuringOutage);
+        await Assert.That(result.Skipped).IsFalse();
     }
 
     [Test]
@@ -323,10 +346,13 @@ public sealed class OutageConformanceTests
     }
 
     private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(string mode,
-        string? replayBefore = null, bool omitMarker = false)
+        string? replayBefore = null, bool omitMarker = false, int? outageDrainValue = null)
     {
         return new((tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
-            new OutageFixture(tracing, mode, replayBefore: replayBefore, omitMarker: omitMarker)), TimeSpan.FromSeconds(2));
+            new OutageFixture(tracing, mode, replayBefore: replayBefore, omitMarker: omitMarker)
+            {
+                OutageDrainValue = outageDrainValue,
+            }), TimeSpan.FromSeconds(2));
     }
 
     // A controlled fixture tests the contract's assertions, not a broker's reconnect implementation.
@@ -345,6 +371,15 @@ public sealed class OutageConformanceTests
         private bool _started;
         private bool _restartPending;
         private int _restartWarmupReceived;
+
+        private const string OutageDrainKey = "outage-drain";
+        private readonly TaskCompletionSource _outageDrainReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private OutgoingMessage? _outageDrainDelivery;
+
+        public int? OutageDrainValue
+        {
+            get; init;
+        }
 
         private bool TestReconnect => mode is "reconnect" or "reconnect-missing-marker";
 
@@ -409,7 +444,14 @@ public sealed class OutageConformanceTests
                 return SettleWithReplay(incoming, disposition, token);
             }
 
-            return _inner.SettleAsync(incoming, disposition, token);
+            var settlement = _inner.SettleAsync(incoming, disposition, token);
+
+            if (OutageDrainValue is not null && incoming.Message.OrderingKey?.ToString() == OutageDrainKey)
+            {
+                _outageDrainReceived.TrySetResult();
+            }
+
+            return settlement;
         }
 
         private ValueTask SettleWithReplay(InMemoryDelivery incoming, Disposition disposition, CancellationToken token)
@@ -473,6 +515,14 @@ public sealed class OutageConformanceTests
             if (hook is { IsPending: true })
             {
                 hook.StoppedWhilePending = true;
+            }
+
+            if (_outageDrainDelivery is { } delivery)
+            {
+                // Keep the receiver running until the injected delivery has reached the suite.
+                _outageDrainDelivery = null;
+                await _inner.Transport.SendAsync(delivery, token);
+                await _outageDrainReceived.Task.WaitAsync(token);
             }
 
             if (_offline && mode == "interrupted-shutdown")
@@ -622,6 +672,12 @@ public sealed class OutageConformanceTests
                 {
                     return;
                 }
+            }
+
+            if (_recovered && OutageDrainValue is { } value)
+            {
+                var body = Encoding.UTF8.GetBytes($"{{\"Value\":{value}}}");
+                _outageDrainDelivery = new(message.Destination, body, message.Headers.ToArray(), new WireString(OutageDrainKey));
             }
 
             if (replayBefore is not null)
