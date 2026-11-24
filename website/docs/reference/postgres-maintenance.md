@@ -46,7 +46,9 @@ Use `services.AddRelayerPostgreSqlMaintenance("orders", dataSource, configuratio
 to bind the same property names without reflection. Set `DeadRetention` or `InboxRetention` to `"infinite"` in configuration,
 or `null` in code, to disable deletion from that table. Settings are immutable snapshots, readable through
 `IOptionsMonitor<PostgreSqlMaintenanceOptions>.Get("orders")`; restart to change them. Batch size must be
-1–10000. Delays and retention must be positive (recovery age can be zero); leadership leases must be 1 second–1 hour.
+1–10000. `SweepInterval` and `CleanupInterval` must each be greater than zero and at most 4,294,967,294 ms.
+`RecoveryDelay` must be nonnegative. `ClaimDuration` and enabled retention periods must be positive.
+Leadership leases must be 1 second–1 hour.
 All instances sharing these tables must agree on retention and timing settings.
 
 ## Recovery and ownership

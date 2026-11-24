@@ -360,7 +360,8 @@ services.AddRelayerMySqlMaintenance("orders", dataSource, new MySqlMaintenanceOp
 ```
 
 The overload taking an `IConfiguration` section snapshots immutable named options through the
-Options pattern. Use `infinite` for either retention setting to retain records indefinitely.
+Options pattern. `SweepInterval` and `CleanupInterval` must each be greater than zero and at most
+4,294,967,294 ms. Use `infinite` for either retention setting to retain records indefinitely.
 Invalid settings and duplicate names fail before connecting. Workers do not create tables.
 Keep the data source alive until workers stop. Each pass uses one connection for admission, scans,
 and dispatch mutations. Multiple workers can share a pool. Size it for the number of passes
