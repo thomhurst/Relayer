@@ -25,7 +25,7 @@ internal sealed class MySqlOrderedLane : IDisposable
         _ready = new($"SELECT (deliver_at IS NULL OR deliver_at <= UTC_TIMESTAMP(6)) AND (claim_expires_at IS NULL OR claim_expires_at <= UTC_TIMESTAMP(6)) {heads}");
         const string Fenced = "id = @id AND claim_token = @token AND claim_expires_at > UTC_TIMESTAMP(6)";
         _claim = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = TIMESTAMPADD(MICROSECOND, @duration, UTC_TIMESTAMP(6)) WHERE id = @id AND status = 'pending' AND (deliver_at IS NULL OR deliver_at <= UTC_TIMESTAMP(6)) AND (claim_expires_at IS NULL OR claim_expires_at <= UTC_TIMESTAMP(6))");
-        _claim.Command.Parameters.AddWithValue("duration", duration.Ticks / 10);
+        _claim.Command.Parameters.AddWithValue("duration", (long)Math.Ceiling(duration.TotalMicroseconds));
         _complete = new($"DELETE FROM {table} WHERE {Fenced}");
         _retry = new(MySqlRetrySql.Update(table, Fenced, "UTC_TIMESTAMP(6)"));
         _fail = new($"UPDATE {table} SET status = IF(attempts + 1 >= @maximum, 'parked', 'pending'), attempts = attempts + 1, last_error = @error, claim_token = NULL, claim_expires_at = NULL WHERE {Fenced}");

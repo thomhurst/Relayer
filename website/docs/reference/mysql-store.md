@@ -301,6 +301,7 @@ cursors remain UUID-based.
 
 Database-time membership shares lanes fairly. Conditional InnoDB updates renew ownership;
 the native lease-row lock remains held through sequential broker sends and database completion.
+Membership, lane and message-claim deadlines round `LeaseDuration` up to a whole microsecond.
 A rival cannot steal an in-flight send. Expired ownership transfers after the transaction releases
 its lock. Idle scans do not renew lane leases. Hosted batches stop admitting sends after a quarter
 lease and request cancellation after half a lease; native completion is awaited before releasing

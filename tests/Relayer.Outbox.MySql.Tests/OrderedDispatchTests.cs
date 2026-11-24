@@ -14,6 +14,62 @@ namespace Relayer.Outbox.MySql.Tests;
 public sealed class OrderedDispatchTests
 {
     [Test]
+    [Arguments(10_000_000L, 1_000_000L)]
+    [Arguments(10_000_009L, 1_000_001L)]
+    public async Task Ordered_worker_persists_membership_lane_and_claim_deadlines(long ticks, long microseconds)
+    {
+        await using var database = new MySqlFixture();
+        await database.StartAsync();
+        var id = Guid.CreateVersion7();
+        await database.Insert(id, DateTimeOffset.UtcNow, lane: 0);
+        var options = new MySqlOrderedDispatchOptions
+        {
+            Lanes = 1,
+            TablePrefix = database.Options.TablePrefix,
+            LeaseDuration = TimeSpan.FromTicks(ticks),
+            PollInterval = TimeSpan.FromMilliseconds(10)
+        };
+        // Pin the MySQL clock on this test's sessions so a one-microsecond difference is observable.
+        await using var source = new MySqlDataSourceBuilder(database.Source.ConnectionString)
+            .UseConnectionOpenedCallback(static async (context, cancellationToken) =>
+            {
+                await using var clock = new MySqlCommand("SET timestamp = 1767225600", context.Connection);
+                await clock.ExecuteNonQueryAsync(cancellationToken);
+            })
+            .Build();
+        using var coordinator = new MySqlLaneCoordinator(source, options);
+        using var lane = new MySqlOrderedLane(source, database.Options, options.LeaseDuration, 10);
+        var leases = MySqlOutboxSchema.LeaseTable(database.Options);
+        var table = MySqlOutboxSchema.Table(database.Options);
+
+        await coordinator.RebalanceAsync(default);
+        await using var connection = await source.OpenConnectionAsync();
+
+        await using (var transaction = await connection.BeginTransactionAsync())
+        {
+            await Assert.That(await coordinator.AcquireAsync(connection, transaction, 0, default)).IsTrue();
+            await Assert.That(await lane.ClaimAsync(connection, transaction, new(id, Guid.NewGuid()), default)).IsTrue();
+            await transaction.CommitAsync();
+        }
+
+        await using var command = new MySqlCommand($"""
+            SELECT TIMESTAMPDIFF(MICROSECOND, UTC_TIMESTAMP(6), expires_at) FROM {leases}
+            UNION ALL SELECT TIMESTAMPDIFF(MICROSECOND, UTC_TIMESTAMP(6), claim_expires_at) FROM {table}
+            """, connection);
+        await using var reader = await command.ExecuteReaderAsync();
+        var count = 0;
+
+        while (await reader.ReadAsync())
+        {
+            long deadline = reader.GetInt64(0);
+            await Assert.That(deadline).IsEqualTo(microseconds);
+            count++;
+        }
+
+        await Assert.That(count).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task Named_options_bind_without_reflection_and_reject_duplicate_or_invalid_settings()
     {
         await using var source = new MySqlDataSource("Server=localhost;Database=relayer");

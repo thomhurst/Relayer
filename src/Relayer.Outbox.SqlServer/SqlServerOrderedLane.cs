@@ -31,7 +31,7 @@ internal sealed class SqlServerOrderedLane : IDisposable
         _ready = $"SELECT CAST(CASE WHEN EXISTS (SELECT 1 FROM (SELECT TOP (1) deliver_at, claim_expires_at {pending} ORDER BY seq) AS head WHERE (deliver_at IS NULL OR deliver_at <= SYSUTCDATETIME()) AND (claim_expires_at IS NULL OR claim_expires_at <= SYSUTCDATETIME())) THEN 1 ELSE 0 END AS bit)";
         var fenced = "id = @id AND claim_token = @token AND claim_expires_at > SYSUTCDATETIME()";
         _claim = Create($"UPDATE {table} SET claim_token = @token, claim_expires_at = DATEADD(millisecond, @duration, SYSUTCDATETIME()) WHERE id = @id AND status = 'pending' AND (deliver_at IS NULL OR deliver_at <= SYSUTCDATETIME()) AND (claim_expires_at IS NULL OR claim_expires_at <= SYSUTCDATETIME()); SELECT CAST(@@ROWCOUNT AS bit)");
-        _claim.Parameters.Add("@duration", SqlDbType.Int).Value = checked((int)duration.TotalMilliseconds);
+        _claim.Parameters.Add("@duration", SqlDbType.Int).Value = checked((int)Math.Ceiling(duration.TotalMilliseconds));
         _complete = Create($"DELETE FROM {table} WHERE {fenced}; SELECT CAST(@@ROWCOUNT AS bit)");
         _fail = Create($"UPDATE {table} SET attempts = attempts + 1, last_error = @error, status = CASE WHEN attempts + 1 >= @maxAttempts THEN 'parked' ELSE 'pending' END, claim_token = NULL, claim_expires_at = NULL WHERE {fenced}; SELECT CAST(@@ROWCOUNT AS bit)");
         _fail.Parameters.Add("@error", SqlDbType.NVarChar, -1);

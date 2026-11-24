@@ -291,9 +291,10 @@ Maintenance also refreshes the
 for alerts that stay raised until dead or parked rows are handled.
 
 Separate durable `sweeper` and `cleanup` leases use the database clock. Native transaction application
-locks serialize connected passes without waiting behind another leader. Idle leadership expires after
-`LeaseDuration`; graceful shutdown releases owned leases. Choose `ClaimDuration` above database and broker
-latency. These workers poll; they do not enable Service Broker, query notifications or CDC.
+locks serialize connected passes without waiting behind another leader. Acquisition and renewal round
+`LeaseDuration` up to a whole millisecond for the persisted deadline. Graceful shutdown releases
+owned leases. Choose `ClaimDuration` above database and broker latency. These workers poll; they
+do not enable Service Broker, query notifications or CDC.
 
 Malformed encoded headers are transferred immediately to `outbox_dead`, with the raw payload and an
 actionable `last_error`. Recovery can quarantine these rows and dispatch other eligible rows in the
@@ -407,11 +408,12 @@ lane count. A configuration-section overload binds these immutable settings thro
 reflection; native SqlClient runtime trimming/AOT restrictions still apply. Register unordered direct dispatch
 separately. Ordered dispatch does not require `DispatchStoreName`.
 
-The database clock controls membership, lane leases, schedules and fenced message claims. Ordered
-membership uses `ordered_leases`, separate from the maintenance `leases` table. Members
-rebalance lanes into fair shares; each worker stops renewing lanes outside its share. A new owner may
-wait up to `LeaseDuration` for the previous owner's lease to expire. A lane transaction
-locks its ownership row across sequential native sends, preventing another connected worker from stealing
+The database clock controls membership, lane leases, schedules and fenced message claims. Membership,
+lane and message-claim deadlines round `LeaseDuration` up to a whole millisecond. Ordered membership
+uses `ordered_leases`, separate from the maintenance `leases` table. Members rebalance lanes into fair
+shares, and each worker stops renewing lanes outside its share. A new owner waits for the previous
+owner's lease to expire. A lane transaction locks its ownership row across sequential native sends,
+preventing another connected worker from stealing
 an in-flight lane even after expiry. Hard send deadlines use half the lease duration; admission stops after
 one quarter. Cancellation and shutdown roll back uncertain batches and release membership/leases when possible;
 otherwise they expire. A disconnected or cancellation-insensitive native send may still complete, so delivery
