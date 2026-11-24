@@ -93,6 +93,9 @@ and at most 1,000,000 days in both code and configuration.
 `ReconnectDelay` defaults to 5 seconds. Registration accepts delays from 1 to 4,294,967,294 milliseconds.
 Restart the host to change settings.
 
+Set `ClaimDuration` to at least one microsecond (10 ticks) in code and configuration.
+PostgreSQL intervals have microsecond resolution. Npgsql truncates fractional microseconds.
+
 ## Recovery and delivery
 
 One slot supports one active reader. Deploy one active CDC worker per slot; other instances can write and

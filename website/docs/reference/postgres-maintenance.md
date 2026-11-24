@@ -52,6 +52,9 @@ greater than zero and at most 1,000,000 days in both code and configuration.
 Leadership leases must be 1 second–1 hour.
 All instances sharing these tables must agree on retention and timing settings.
 
+Set `ClaimDuration` to at least one microsecond (10 ticks) in code and configuration.
+PostgreSQL intervals have microsecond resolution. Npgsql truncates fractional microseconds.
+
 ## Recovery and ownership
 
 Hosted maintenance waits for the application to finish starting before claiming rows.

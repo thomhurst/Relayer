@@ -21,4 +21,13 @@ public sealed class PostgreSqlDirectDispatchOptions
     {
         get; init;
     } = TimeSpan.FromSeconds(30);
+
+    internal static void ValidateClaimDurationResolution(TimeSpan duration)
+    {
+        if (duration.Ticks is > 0 and < TimeSpan.TicksPerMicrosecond)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ClaimDuration), duration,
+                "PostgreSQL claim durations must be at least 1 microsecond.");
+        }
+    }
 }

@@ -46,6 +46,9 @@ malformed or nonpositive values. `ClaimDuration` must be greater than zero and a
 in both code and configuration. Read the same named snapshot with
 `IOptionsMonitor<PostgreSqlDirectDispatchOptions>.Get("orders")`. Restart the host to change dispatch limits.
 
+PostgreSQL requires a `ClaimDuration` of at least one microsecond (10 ticks) in code and configuration.
+PostgreSQL intervals have microsecond resolution. Npgsql truncates fractional microseconds.
+
 ### EF Core writer
 
 Prefer the [combined outbox registration](ef-core-outbox.md#registration), which includes direct

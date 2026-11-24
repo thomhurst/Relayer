@@ -111,6 +111,8 @@ public sealed class PostgreSqlMaintenanceOptions
             throw new ArgumentOutOfRangeException(nameof(LeaseDuration));
         }
 
+        PostgreSqlDirectDispatchOptions.ValidateClaimDurationResolution(ClaimDuration);
+
         ValidateDelay(SweepInterval, nameof(SweepInterval));
         OutboxClaimDuration.Validate(ClaimDuration, nameof(ClaimDuration));
         ValidateDelay(CleanupInterval, nameof(CleanupInterval));
