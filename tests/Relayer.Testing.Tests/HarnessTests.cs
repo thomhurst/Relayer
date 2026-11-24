@@ -131,6 +131,56 @@ public class HarnessTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Harness_preserves_constructor_selection_for_transport_implementation_types(bool observe)
+    {
+        var calls = new List<(string Label, string Destination)>();
+        var services = new ServiceCollection();
+        services.AddSingleton(calls);
+        services.AddSingleton(new TransportLabel("configured"));
+        services.AddSingleton<ITransport, RecordingTransport>();
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.AddTransport<object, object>(TombstoneTransport.TransportName, transport => transport.Send<Probe>("probes"));
+        });
+
+        if (observe)
+        {
+            services.AddRelayerHarness();
+        }
+
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(42));
+
+        await Assert.That(calls.Single()).IsEqualTo(("configured", "probes"));
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Harness_preserves_build_validation_for_transport_implementation_types(bool observe)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<ITransport, RecordingTransport>();
+        services.AddRelayer(_ =>
+        {
+        });
+
+        if (observe)
+        {
+            services.AddRelayerHarness();
+        }
+
+        await Assert.That(() =>
+        {
+            using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+        }).Throws<AggregateException>().WithMessageContaining(nameof(RecordingTransport));
+    }
+
+    [Test]
     public async Task Harness_preserves_disposal_of_a_keyed_transport_alias()
     {
         int controlDisposals = await CountAliasDisposalsAsync(observe: false);
@@ -199,7 +249,34 @@ public class HarnessTests
         return transport.DisposalCount;
     }
 
-    private sealed class TombstoneTransport : ITransport
+    private sealed record TransportLabel(string Value);
+
+    private sealed class RecordingTransport : TombstoneTransport
+    {
+        private readonly List<(string Label, string Destination)> _calls;
+        private readonly TransportLabel _label;
+
+        [ActivatorUtilitiesConstructor]
+        public RecordingTransport(List<(string Label, string Destination)> calls)
+            : this(calls, new("default"))
+        {
+        }
+
+        public RecordingTransport(List<(string Label, string Destination)> calls, TransportLabel label)
+        {
+            _calls = calls;
+            _label = label;
+        }
+
+        public override ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _calls.Add((_label.Value, message.Destination));
+            return default;
+        }
+    }
+
+    private class TombstoneTransport : ITransport
     {
         internal const string TransportName = "tombstones";
 
@@ -224,7 +301,7 @@ public class HarnessTests
             return new(new TopologyReport([]));
         }
 
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        public virtual ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return default;
