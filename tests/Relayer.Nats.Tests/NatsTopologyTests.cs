@@ -96,6 +96,79 @@ public class NatsTopologyTests
     }
 
     [Test]
+    public async Task Validate_uses_live_stream_consumer_limits_for_omitted_settings()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var stream = TestContext.Current!.Isolation.GetIsolatedName("orders");
+        var nativeOptions = broker.Options();
+        const string ConsumerName = "handler";
+        var consumer = new ConsumerConfig(ConsumerName);
+        await using var connection = new NatsConnection(nativeOptions);
+        var js = new NatsJSContext(connection);
+
+        // The pinned native StreamConfig cannot send consumer_limits.
+        var createStream = Encoding.UTF8.GetBytes($$"""
+            {
+                "name": "{{stream}}",
+                "subjects": ["{{stream}}.>"],
+                "consumer_limits": { "max_ack_pending": 16, "inactive_threshold": 60000000000 }
+            }
+            """);
+        var serializer = NatsRawSerializer<byte[]>.Default;
+        await connection.RequestAsync<byte[], byte[]>($"{js.Opts.Prefix}.STREAM.CREATE.{stream}", createStream,
+            requestSerializer: serializer, replySerializer: serializer, cancellationToken: token);
+
+        await using var provisionProvider = NatsConfigurationTests.Provider(options =>
+        {
+            options.ConnectionOptions = nativeOptions;
+            options.Streams.Add(new(stream));
+            options.Consumers.Add(new(stream, ConsumerName)
+            {
+                Configuration = consumer
+            });
+        });
+        var transport = provisionProvider.GetRequiredService<ITransport>();
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences).IsEmpty();
+        var actual = (await js.GetConsumerAsync(stream, ConsumerName, token)).Info.Config;
+        await Assert.That(actual.MaxAckPending).IsEqualTo(16L);
+        await Assert.That(actual.InactiveThreshold).IsEqualTo(TimeSpan.FromMinutes(1));
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+        await using var externalProvider = NatsConfigurationTests.Provider(options =>
+        {
+            options.ConnectionOptions = nativeOptions;
+            options.Consumers.Add(new(stream, ConsumerName)
+            {
+                Configuration = consumer
+            });
+        });
+        var external = externalProvider.GetRequiredService<ITransport>();
+        await Assert.That((await external.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
+
+        await using var driftProvider = NatsConfigurationTests.Provider(options =>
+        {
+            options.ConnectionOptions = nativeOptions;
+            options.Consumers.Add(new(stream, ConsumerName)
+            {
+                Configuration = consumer with
+                {
+                    MaxAckPending = 8,
+                    InactiveThreshold = TimeSpan.FromSeconds(30)
+                }
+            });
+        });
+        var drift = driftProvider.GetRequiredService<ITransport>();
+        var differences = (await drift.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences;
+        await Assert.That(differences.Count).IsEqualTo(2);
+        await Assert.That(differences.Single(difference => difference.Contains("'max_ack_pending'", StringComparison.Ordinal)))
+            .Contains("expected 8, actual 16");
+        await Assert.That(differences.Single(difference => difference.Contains("'inactive_threshold'", StringComparison.Ordinal)))
+            .Contains("expected 30000000000, actual 60000000000");
+    }
+
+    [Test]
     public async Task Validate_reports_missing_and_conflicting_configuration_without_creating_entities()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));

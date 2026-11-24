@@ -106,6 +106,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D93](#d93-generated-json-registrations-apply-to-message-roots) | Generated JSON registrations apply to message roots | Accepted |
 | [D94](#d94-named-in-memory-clocks-preserve-binary-compatibility) | Named in-memory clocks preserve binary compatibility | Accepted |
 | [D95](#d95-kafka-validation-reports-invalid-topic-names-without-topic-creation) | Kafka validation reports invalid topic names without topic creation | Accepted |
+| [D96](#d96-jetstream-validation-reads-consumer-limits-from-the-live-stream) | JetStream validation reads consumer limits from the live stream | Accepted |
 
 ---
 
@@ -2218,3 +2219,11 @@ Refines [D8](#d8-systemtextjson-source-generation-by-default).
 **Decision.** Keep `TopologyMode.Validate` on native all-topic metadata and config reads. When a declared topic is missing or invisible, use [Kafka's topic-name rules](https://github.com/apache/kafka/blob/4.0.2/clients/src/main/java/org/apache/kafka/common/internals/Topic.java) to direct the operator to fix malformed names. This narrow D42 exception applies to startup diagnostics. Use native named metadata when the standalone admin client can guarantee a read-only request.
 
 **Consequences.** Validate needs topic metadata access and checks explicit settings with its existing config reads. It cannot create a missing topic. Provision uses native topic creation and Kafka's own validation. There is no per-message work.
+
+## D96. JetStream validation reads consumer limits from the live stream
+
+**Context.** JetStream uses `config.consumer_limits` from the parent stream when a consumer omits `MaxAckPending` or `InactiveThreshold`. NATS.Client.JetStream 3.4.1's `GetStreamAsync` drops that field when deserializing `StreamConfig`. [nats.net #1307](https://github.com/nats-io/nats.net/issues/1307) requests native support.
+
+**Decision.** Under D42, use the native NATS connection's request API to read the two fields from the existing JetStream stream-info response, once per stream per validation call that needs them. Apply the limits to omitted consumer settings before running the existing topology comparison. Use `GetStreamAsync` for this read once the native model exposes the field.
+
+**Consequences.** Validation honors the broker's stream limits for declared and externally managed streams and still reports drift in explicit consumer settings. Reading inherited limits requires permission to request stream info. Provision continues to use native create-only APIs. There is no per-message work.
