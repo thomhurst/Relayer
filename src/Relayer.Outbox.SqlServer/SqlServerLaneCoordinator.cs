@@ -26,7 +26,7 @@ internal sealed class SqlServerLaneCoordinator
     internal SqlServerLaneCoordinator(string connectionString, SqlServerOrderedDispatchOptions options)
     {
         _connectionString = connectionString;
-        _duration = checked((int)options.LeaseDuration.TotalMilliseconds);
+        _duration = checked((int)Math.Ceiling(options.LeaseDuration.TotalMilliseconds));
         var table = SqlServerOutboxSchema.OrderedLeaseTable(options.Validate());
         _heartbeat = $"UPDATE {table} SET expires_at = DATEADD(millisecond, @duration, SYSUTCDATETIME()) WHERE name = @member; IF @@ROWCOUNT = 0 INSERT INTO {table} (name, owner, expires_at) VALUES (@member, @member, DATEADD(millisecond, @duration, SYSUTCDATETIME()));";
         _members = $"DELETE FROM {table} WITH (READPAST, READCOMMITTEDLOCK) WHERE name LIKE 'member:%' AND expires_at <= SYSUTCDATETIME(); SELECT name FROM {table} WHERE name LIKE 'member:%' AND expires_at > SYSUTCDATETIME() ORDER BY name COLLATE Latin1_General_100_BIN2;";

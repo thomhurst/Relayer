@@ -19,6 +19,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
 
     private readonly string _connectionString;
     private readonly SqlServerMaintenanceOptions _options;
+    private readonly int _leaseMilliseconds;
     private readonly SqlServerOutboxStore _store;
     private readonly SqlServerDirectDispatcher _dispatcher;
     private readonly ILogger<SqlServerMaintenanceWorker> _logger;
@@ -46,6 +47,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
         _connectionString = connectionString;
         _options = options;
         var settings = options.Validate();
+        _leaseMilliseconds = (int)Math.Ceiling(options.LeaseDuration.TotalMilliseconds);
         _store = new(connectionString, settings);
         _dispatcher = new(connectionString, settings, new()
         {
@@ -133,7 +135,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
         acquire.Parameters.AddWithValue("@resource", cleanup ? _cleanupResource : _sweeperResource);
         acquire.Parameters.AddWithValue("@name", name);
         acquire.Parameters.AddWithValue("@owner", _owner);
-        acquire.Parameters.AddWithValue("@duration", (int)_options.LeaseDuration.TotalMilliseconds);
+        acquire.Parameters.AddWithValue("@duration", _leaseMilliseconds);
 
         if (await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true)
         {
@@ -148,7 +150,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
             var count = cleanup ? await DeleteExpiredAsync(connection, transaction, cleanupTable, cancellationToken).ConfigureAwait(false)
                 : await DispatchAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             await using var renew = new SqlCommand(_renew, connection, transaction);
-            renew.Parameters.AddWithValue("@duration", (int)_options.LeaseDuration.TotalMilliseconds);
+            renew.Parameters.AddWithValue("@duration", _leaseMilliseconds);
             renew.Parameters.AddWithValue("@name", name);
             renew.Parameters.AddWithValue("@owner", _owner);
             await renew.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

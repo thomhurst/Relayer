@@ -1695,7 +1695,8 @@ and [sp_getapplock](https://learn.microsoft.com/en-us/sql/relational-databases/s
 Use native transaction-owned application locks with zero wait to arbitrate connected leadership, and hold
 that transaction through dispatch and retention. Reuse the direct dispatcher, capability cache, native batches
 and fenced mutations on that same connection, avoiding a second sender or waiting on a second pool slot.
-Database clock expiry governs idle leadership. Row fencing still arbitrates against direct dispatch.
+Database clock expiry governs idle leadership. Acquisition and renewal round the persisted lease duration
+up to a whole millisecond. Row fencing still arbitrates against direct dispatch.
 No new notification or wake mechanism is introduced; Service Broker remains application-owned.
 
 Transfer malformed header rows to a raw dead copy under a live fenced claim. Count recovery configuration
@@ -1723,7 +1724,8 @@ or track their completion.
 
 **Decision.** Reuse D34's polling, membership, bounded admission and lease-row transaction lock
 across native sends, using MySQL database time and conditional statements with explicit ownership
-checks. Native identity follows the existing batch flush's send order (D48). Core shares the
+checks. Persist membership, lane and message-claim deadlines with the lease duration rounded up to a whole
+microsecond. Native identity follows the existing batch flush's send order (D48). Core shares the
 capability cache and sequence-header projection. No parallel notification engine is introduced.
 When a MySQL writer selects a store by name, host startup checks its lane count against any
 local ordered worker with the same name. New writer scopes also check the running worker's
@@ -1755,7 +1757,8 @@ expired-lease recovery alone.
 
 **Decision.** Apply D34's bounded sequential lane lifecycle using native conditional SQL and
 `UPDLOCK, HOLDLOCK` on the lease key, retained through the send transaction. Database time controls
-membership, ownership, schedules and fenced message mutations. Do not create a second lock service,
+membership, ownership, schedules and fenced message mutations. Persist membership, lane and message-claim
+deadlines with the lease duration rounded up to a whole millisecond. Do not create a second lock service,
 notification runtime, or custom database retry mechanism. Fair membership and send deadlines follow the
 existing PostgreSQL worker, and both providers reuse the bounded endpoint capability cache and insert-sequence
 header projection. Poll only bounded assigned-lane heads; Service Broker/query notifications are not installed.

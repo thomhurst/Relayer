@@ -25,16 +25,17 @@ internal sealed class MySqlLaneCoordinator : IDisposable
     {
         _source = source;
         var table = MySqlOutboxSchema.LeaseTable(options.Validate());
+        long leaseMicroseconds = (long)Math.Ceiling(options.LeaseDuration.TotalMicroseconds);
         _heartbeat = new($"INSERT INTO {table} (name, owner, expires_at) VALUES (@member, @member, TIMESTAMPADD(MICROSECOND, @duration, UTC_TIMESTAMP(6))) ON DUPLICATE KEY UPDATE expires_at = TIMESTAMPADD(MICROSECOND, @duration, UTC_TIMESTAMP(6))");
         _heartbeat.Parameters.AddWithValue("member", _member);
-        _heartbeat.Parameters.AddWithValue("duration", options.LeaseDuration.Ticks / 10);
+        _heartbeat.Parameters.AddWithValue("duration", leaseMicroseconds);
         _members = new($"DELETE FROM {table} WHERE name LIKE 'member:%' AND expires_at <= UTC_TIMESTAMP(6); SELECT name FROM {table} WHERE name LIKE 'member:%' AND expires_at > UTC_TIMESTAMP(6) ORDER BY name");
         // INSERT IGNORE and UPDATE take native row locks, including when another owner is still live.
         // The final SELECT verifies ownership, independently of CLIENT_FOUND_ROWS and no-op renewals.
         _acquire = new($"INSERT IGNORE INTO {table} (name, owner, expires_at) VALUES (@lane, @token, TIMESTAMPADD(MICROSECOND, @duration, UTC_TIMESTAMP(6))); UPDATE {table} SET owner = @token, expires_at = TIMESTAMPADD(MICROSECOND, @duration, UTC_TIMESTAMP(6)) WHERE name = @lane AND (owner = @token OR expires_at <= UTC_TIMESTAMP(6)); SELECT owner = @token AND expires_at > UTC_TIMESTAMP(6) FROM {table} WHERE name = @lane");
         _acquire.Parameters.AddWithValue("lane", "");
         _acquire.Parameters.AddWithValue("token", "");
-        _acquire.Parameters.AddWithValue("duration", options.LeaseDuration.Ticks / 10);
+        _acquire.Parameters.AddWithValue("duration", leaseMicroseconds);
         _release = new($"DELETE FROM {table} WHERE (name = @member AND owner = @member) OR owner LIKE @prefix");
         _release.Parameters.AddWithValue("member", _member);
         _release.Parameters.AddWithValue("prefix", _member + "/%");
