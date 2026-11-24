@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
@@ -33,21 +34,37 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
             var graceful = !abort && !fail;
             const int ProbeOffset = 3;
             var recordCount = graceful ? ProbeOffset + 1 : ProbeOffset;
+            const int DrainMarkerOffset = ProbeOffset - 1;
 
-            for (var i = 0; i < recordCount; i++)
+            for (var i = 0; i < ProbeOffset; i++)
             {
                 await producer.ProduceAsync(new()
                 {
                     Topic = topic,
                     Partition = partition.Partition,
-                    Key = [(byte)(i == ProbeOffset ? 1 : 0)],
+                    Key = [(byte)(graceful && i == DrainMarkerOffset ? 1 : 0)],
                     Value = new byte[] { (byte)i }
                 }, token);
             }
 
             using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
             var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var probeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var drainMarkerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var commitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var commitFinished = new TaskCompletionSource<Activity>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var releaseCommit = new ManualResetEventSlim();
+            using var listener = new ActivityListener
+            {
+                ShouldListenTo = source => graceful && ReferenceEquals(source, tracing.Source),
+                Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+                ActivityStarted = _ =>
+                {
+                    commitStarted.TrySetResult();
+                    releaseCommit.Wait(token);
+                },
+                ActivityStopped = activity => commitFinished.TrySetResult(activity),
+            };
+            ActivitySource.AddActivityListener(listener);
             var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var handled = new List<long>();
@@ -56,7 +73,7 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
             {
                 Ordering = PartitionedProcessingOrder.Key,
                 MaxConcurrentHandlersPerPartition = concurrency,
-                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                CommitPolicy = graceful ? PartitionCommitPolicy.CommitCompletedOnRevoke : PartitionCommitPolicy.CommitCompletedPeriodically,
                 // Only the forced-stop cases need a short deadline. Graceful stop also waits for the broker commit.
                 StopTimeout = TimeSpan.FromSeconds(abort ? 1 : 30),
             };
@@ -77,8 +94,8 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
 
                     if (graceful)
                     {
-                        // This later offset runs on a second key, proving the held key's suffix reached the dispatcher.
-                        await probeEntered.Task.WaitAsync(token);
+                        // The last prefix record runs on a second key, so reaching it proves the whole prefix was queued.
+                        await drainMarkerEntered.Task.WaitAsync(token);
                     }
 
                     using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -116,19 +133,42 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                         }
                         else
                         {
+                            if (await Task.WhenAny(commitStarted.Task, stopping) == stopping)
+                            {
+                                await stopping;
+                            }
+
+                            await Assert.That(commitStarted.Task.IsCompletedSuccessfully).IsTrue()
+                                .Because("the completed prefix must reach Dekaf's shutdown commit");
+                            await Assert.That(stopping.IsCompleted).IsFalse()
+                                .Because("StopAsync must wait for the native commit");
+
+                            // Input has stopped and the prefix has drained. Append the probe before the
+                            // commit is sent, so the record is present at shutdown and only restart can read it.
+                            await producer.ProduceAsync(new()
+                            {
+                                Topic = topic,
+                                Partition = partition.Partition,
+                                Value = [(byte)ProbeOffset],
+                            }, token);
+                            releaseCommit.Set();
+
                             await stopping;
+                            await Assert.That(commitFinished.Task.IsCompletedSuccessfully).IsTrue()
+                                .Because("StopAsync must wait for Dekaf's shutdown commit");
+                            var commit = await commitFinished.Task;
+                            await Assert.That(commit.Status).IsNotEqualTo(ActivityStatusCode.Error);
+                            await Assert.That(commit.GetTagItem("messaging.batch.message_count") as int?).IsEqualTo(ProbeOffset);
                         }
                     }
 
-                    await using var reader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).WithGroupId(topic)
-                        .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
-                    await reader.InitializeAsync(token);
-                    var checkpoint = await reader.GetCommittedOffsetAsync(partition, token) is { } committed and >= 0 ? committed : 0;
+                    // Read the broker checkpoint independently from the consumer's offset cache.
+                    var offsets = await admin.ListConsumerGroupOffsetsAsync(topic, token);
+                    var checkpoint = offsets.GetValueOrDefault(partition);
 
                     if (graceful)
                     {
-                        // A graceful drain finishes the held record and the records already queued behind it.
-                        await Assert.That(checkpoint).IsEqualTo((long)recordCount);
+                        await Assert.That(checkpoint).IsEqualTo((long)ProbeOffset);
                         await Assert.That(handled.ToArray()).IsEquivalentTo(new long[] { 0, 1, 2 });
                     }
                     else
@@ -143,6 +183,7 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                 finally
                 {
                     release.TrySetResult();
+                    releaseCommit.Set();
                 }
             }
 
@@ -196,15 +237,14 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
 
             async ValueTask<Disposition> Receive(KafkaDelivery delivery, CancellationToken cancellationToken)
             {
-                if (delivery.Result.Offset == ProbeOffset)
-                {
-                    probeEntered.SetResult();
-                    return Disposition.Complete;
-                }
-
                 lock (handled)
                 {
                     handled.Add(delivery.Result.Offset);
+                }
+
+                if (graceful && delivery.Result.Offset == DrainMarkerOffset)
+                {
+                    drainMarkerEntered.SetResult();
                 }
 
                 if (delivery.Result.Offset == blocked)
