@@ -8,6 +8,26 @@ namespace Relayer.Conformance.Tests;
 public class ConformanceFailureTests
 {
     [Test]
+    public async Task Pre_canceled_run_fails_before_invoking_fixture_factory()
+    {
+        using var caller = new CancellationTokenSource();
+        caller.Cancel();
+
+        var factoryCalls = 0;
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
+        {
+            factoryCalls++;
+            return new(new InMemoryFixture(tracing, capabilities: new()));
+        });
+
+        var error = await Assert.That(async () => await suite.RunAsync(TransportConformanceCase.Delay, caller.Token))
+            .Throws<InvalidOperationException>();
+        await Assert.That(error!.Message).Contains("Delay failed during fixture creation");
+        await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
+        await Assert.That(factoryCalls).IsEqualTo(0);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Pending_fixture_creation_is_bounded_and_late_fixture_is_disposed(bool useDeadline)
