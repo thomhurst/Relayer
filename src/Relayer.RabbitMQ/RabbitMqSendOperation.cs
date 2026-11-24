@@ -114,7 +114,6 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
         _publisher = publisher;
         _message = message;
         _token = token;
-        _started = Stopwatch.GetTimestamp();
         _stage = Stage.Recover;
         _pending = ValueTask.CompletedTask.ConfigureAwait(false).GetAwaiter();
         Advance();
@@ -245,7 +244,6 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
                     case Stage.Lease:
                         _publisher = _lease.GetResult();
                         _lease = default;
-                        _started = Stopwatch.GetTimestamp();
                         _stage = Stage.Recover;
                         _pending = (_publisher.Channel.IsOpen ? ValueTask.CompletedTask :
                             _transport.ReplacePublisherChannelAsync(_publisher, _connection, _token)).ConfigureAwait(false).GetAwaiter();
@@ -261,8 +259,11 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
                         // Channel contention and recovery must not extend an absolute delivery deadline.
                         _delay = _endpoint.Delay(_message.DeliverAt);
                         _publisher!.Prepare(_message, _delay);
-                        _stage = Stage.Publish;
+                        _token.ThrowIfCancellationRequested();
+
                         _endpoint.Telemetry?.RecordSent();
+                        _started = Stopwatch.GetTimestamp();
+                        _stage = Stage.Publish;
                         _pending = _publisher.Channel.BasicPublishAsync(_delay > 0 ? _endpoint.DelayedExchange! : _endpoint.Exchange,
                             _endpoint.RoutingKey, mandatory: _delay == 0, _publisher.Properties, _message.Body, _token)
                             .ConfigureAwait(false).GetAwaiter();
@@ -292,7 +293,10 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
         {
             try
             {
-                _endpoint?.Telemetry?.RecordDuration(Stopwatch.GetElapsedTime(_started), error is not null);
+                if (_stage == Stage.Publish)
+                {
+                    _endpoint.Telemetry?.RecordDuration(Stopwatch.GetElapsedTime(_started), error is not null);
+                }
             }
             catch (Exception telemetryError)
             {
