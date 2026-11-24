@@ -114,7 +114,7 @@ Shared outbox shutdown contracts separately validate claims, database disposal a
 
 ## Reconnect
 
-`Reconnect` sends and receives an initial message, drains and restarts the consumer, then sends a distinct warm-up message. The suite waits for the restarted receiver to deliver the warm-up before calling `DisconnectAsync`. After `ReconnectAsync` restores connectivity, the suite sends and waits for a separate recovery marker. The broker may replay the warm-up if its settlement was interrupted. Only the recovery marker satisfies the final delivery assertion. All steps use the same scenario deadline.
+`Reconnect` sends and receives an initial message, drains and restarts the consumer, then sends a distinct warm-up message. The suite waits for the restarted receiver to deliver the warm-up before calling `DisconnectAsync`. After `ReconnectAsync` restores connectivity, the suite sends and waits for a separate recovery marker. While waiting for the warm-up, the suite skips replays of the initial message. During recovery, it skips replays of the initial message and the warm-up. Any other unexpected delivery fails the case. All steps use the same scenario deadline.
 
 ## Outage sends
 
