@@ -56,6 +56,24 @@ public class FailurePipelineTests
     }
 
     [Test]
+    [Arguments(null, 30_000L)]
+    [Arguments(10_000L, 1L)]
+    [Arguments(19_000L, 2L)]
+    [Arguments(20_000L, 2L)]
+    [Arguments((uint.MaxValue - 1L) * TimeSpan.TicksPerMillisecond - 1, uint.MaxValue - 1L)]
+    public async Task Copy_timeout_programs_whole_system_timer_milliseconds(long? configuredTicks, long expectedMilliseconds)
+    {
+        using var provider = Provider(new Transport());
+        var options = new FailureOptions
+        {
+            CopyTimeout = configuredTicks is long ticks ? TimeSpan.FromTicks(ticks) : null
+        };
+        var pipeline = new FailurePipeline(provider, "test", "source", "consumer", options);
+
+        await Assert.That(pipeline.CopyTimerDelay).IsEqualTo(TimeSpan.FromMilliseconds(expectedMilliseconds));
+    }
+
+    [Test]
     public async Task Circuit_rejected_delivery_explicitly_requests_redelivery_without_settlement()
     {
         using var provider = Provider(new Transport());
@@ -380,9 +398,11 @@ public class FailurePipelineTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Pending_and_failed_fallback_never_returns_completion(bool durableScheduler)
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task Pending_failed_or_cancelled_fallback_never_returns_completion(bool durableScheduler, bool cancel)
     {
         var transport = new Transport { Capabilities = new() { MaxDeliveryDelay = TimeSpan.FromSeconds(10) } };
         using var provider = Provider(transport);
@@ -390,12 +410,31 @@ public class FailurePipelineTests
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         transport.Pending = gate.Task;
         var scheduler = new Scheduler { Pending = gate.Task };
-        var options = new FailureOptions { DeadLetterEndpoint = "errors", RedeliveryDelays = durableScheduler ? new[] { TimeSpan.FromMinutes(1) } : [] };
+        var options = new FailureOptions
+        {
+            RetryDelays = [],
+            RedeliveryDelays = durableScheduler ? [TimeSpan.FromMinutes(1)] : [],
+            DeadLetterEndpoint = "errors",
+            CopyTimeout = TimeSpan.FromMinutes(10)
+        };
         var pipeline = Pipeline(provider, options, Copy, scheduler);
-        var pending = pipeline.ProcessAsync(new());
+        using var cancellation = new CancellationTokenSource();
+        var pending = pipeline.ProcessAsync(new(), cancellation.Token);
         await Assert.That(pending.IsCompleted).IsFalse();
-        gate.SetException(new ApplicationException("durable write failed"));
-        await Assert.That(async () => await pending).Throws<ApplicationException>();
+
+        if (cancel)
+        {
+            cancellation.Cancel();
+            await Assert.That(async () => await pending).Throws<OperationCanceledException>();
+        }
+        else
+        {
+            gate.SetException(new ApplicationException("durable write failed"));
+            await Assert.That(async () => await pending).Throws<ApplicationException>();
+        }
+
+        await Assert.That(transport.Sends.Count).IsEqualTo(0);
+        await Assert.That(scheduler.Copies.Count).IsEqualTo(0);
     }
 
     [Test]
@@ -416,6 +455,19 @@ public class FailurePipelineTests
         await Assert.That(async () => await pipeline.ProcessAsync(new())).Throws<ApplicationException>();
         await Assert.That(provider.GetRequiredService<Control>().Calls).IsEqualTo(1);
         await Assert.That(transport.Sends.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(0L, 1L)]
+    [Arguments(1L, 1L)]
+    [Arguments(10_000L, 1L)]
+    [Arguments(19_000L, 2L)]
+    [Arguments(20_000L, 2L)]
+    public async Task System_retry_timer_rounds_the_jittered_delay_up(long jitteredTicks, long expectedMilliseconds)
+    {
+        var delay = FailurePipeline.GetSystemTimerDelay(TimeSpan.FromTicks(jitteredTicks));
+
+        await Assert.That(delay).IsEqualTo(TimeSpan.FromMilliseconds(expectedMilliseconds));
     }
 
     [Test]
