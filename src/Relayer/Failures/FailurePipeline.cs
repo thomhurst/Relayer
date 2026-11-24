@@ -77,9 +77,9 @@ public sealed class FailurePipeline
             throw InvalidOption("Jitter must be between zero and one.");
         }
 
-        if (_copyTimeout <= TimeSpan.Zero || _copyTimeout.TotalMilliseconds > uint.MaxValue - 1)
+        if (_copyTimeout < TimeSpan.FromMilliseconds(1) || _copyTimeout.TotalMilliseconds > uint.MaxValue - 1)
         {
-            throw InvalidOption("CopyTimeout must be positive and fit a CancellationTokenSource timer.");
+            throw InvalidOption($"{nameof(FailureOptions.CopyTimeout)} must be between 1 and {uint.MaxValue - 1} ms.");
         }
 
         foreach (var delay in _retries)

@@ -6,6 +6,7 @@ namespace Relayer;
 public sealed class SendRouteOptions
 {
     /// <summary>The maximum duration of a send, including destination selection, middleware, and outbox enlistment.</summary>
+    /// <remarks>Defaults to 30 seconds. Valid durations are 1 through 4,294,967,294 milliseconds.</remarks>
     public TimeSpan Timeout
     {
         get; init;
@@ -53,9 +54,9 @@ public sealed class SendRouteOptions
             failures.Add($"{location}: TransactionRequirement must be a defined value.");
         }
 
-        if (Timeout <= TimeSpan.Zero || Timeout.TotalMilliseconds > uint.MaxValue - 1)
+        if (Timeout < TimeSpan.FromMilliseconds(1) || Timeout.TotalMilliseconds > uint.MaxValue - 1)
         {
-            failures.Add($"{location}: requires a finite positive send timeout of at most {uint.MaxValue - 1} ms.");
+            failures.Add($"{location}: {nameof(Timeout)} must be between 1 and {uint.MaxValue - 1} ms.");
         }
 
         if (string.IsNullOrWhiteSpace(Source) || !Uri.TryCreate(Source, UriKind.RelativeOrAbsolute, out _))

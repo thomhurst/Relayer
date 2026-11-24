@@ -9,9 +9,11 @@ internal sealed class RequestClient<TRequest, TResponse>(SendPipeline pipeline, 
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > uint.MaxValue - 1)
+        if ((timeout < TimeSpan.FromMilliseconds(1) && (timeout <= TimeSpan.Zero || replies.Clock == TimeProvider.System))
+            || timeout.TotalMilliseconds > uint.MaxValue - 1)
         {
-            throw new ArgumentOutOfRangeException(nameof(timeout), "A request requires a finite positive timeout of at most 4294967294 ms.");
+            throw new ArgumentOutOfRangeException(nameof(timeout),
+                "A request requires a positive timeout of at most 4294967294 ms. TimeProvider.System requires at least 1 ms.");
         }
 
         cancellationToken.ThrowIfCancellationRequested();

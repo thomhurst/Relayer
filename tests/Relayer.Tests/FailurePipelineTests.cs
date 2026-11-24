@@ -34,6 +34,28 @@ public class FailurePipelineTests
     }
 
     [Test]
+    [Arguments(TimeSpan.TicksPerMillisecond - 1, false)]
+    [Arguments(TimeSpan.TicksPerMillisecond, true)]
+    [Arguments((uint.MaxValue - 1L) * TimeSpan.TicksPerMillisecond, true)]
+    [Arguments((uint.MaxValue - 1L) * TimeSpan.TicksPerMillisecond + 1, false)]
+    public async Task Copy_timeout_range_is_validated_during_pipeline_composition(long ticks, bool valid)
+    {
+        using var provider = Provider(new Transport());
+        var options = new FailureOptions { CopyTimeout = TimeSpan.FromTicks(ticks) };
+
+        if (valid)
+        {
+            _ = new FailurePipeline(provider, "test", "source", "consumer", options);
+        }
+        else
+        {
+            await Assert.That(() => new FailurePipeline(provider, "test", "source", "consumer", options))
+                .Throws<ArgumentOutOfRangeException>()
+                .WithMessageContaining("Consumer 'consumer' from 'source' on transport 'test': CopyTimeout");
+        }
+    }
+
+    [Test]
     public async Task Circuit_rejected_delivery_explicitly_requests_redelivery_without_settlement()
     {
         using var provider = Provider(new Transport());

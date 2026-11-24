@@ -798,6 +798,37 @@ public class SenderTests
     }
 
     [Test]
+    [Arguments(TimeSpan.TicksPerMillisecond - 1, false)]
+    [Arguments(TimeSpan.TicksPerMillisecond, true)]
+    [Arguments((uint.MaxValue - 1L) * TimeSpan.TicksPerMillisecond, true)]
+    [Arguments((uint.MaxValue - 1L) * TimeSpan.TicksPerMillisecond + 1, false)]
+    public async Task Route_timeout_range_is_validated_at_host_startup(long ticks, bool valid)
+    {
+        var hostBuilder = Host.CreateApplicationBuilder();
+        hostBuilder.Services.AddSingleton<ITransport>(new RecordingTransport("events"));
+        hostBuilder.Services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders", options: new()
+            {
+                Timeout = TimeSpan.FromTicks(ticks)
+            });
+        });
+        using var host = hostBuilder.Build();
+
+        if (valid)
+        {
+            await host.StartAsync();
+            await host.StopAsync();
+        }
+        else
+        {
+            await Assert.That(() => host.StartAsync()).Throws<OptionsValidationException>()
+                .WithMessageContaining("Route for 'Relayer.Tests.OrderPlaced' to 'orders' on transport 'events': Timeout");
+        }
+    }
+
+    [Test]
     [Arguments("orders.standard", "string")]
     [Arguments("orders.standard", "scalar")]
     [Arguments("orders.standard", "none")]
