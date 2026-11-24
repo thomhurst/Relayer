@@ -986,14 +986,16 @@ public class InMemoryTransportTests
     }
 
     [Test]
-    [Arguments(false, 200.0)]
-    [Arguments(true, 200.0)]
-    [Arguments(false, 0.5)]
-    [Arguments(true, 0.5)]
-    public async Task Ordered_redelivery_waits_for_elapsed_deadline_despite_timer_precision(bool log, double milliseconds)
+    [Arguments(false, 2_000_000, true)]
+    [Arguments(true, 2_000_000, true)]
+    [Arguments(false, 15_000, false)]
+    [Arguments(true, 15_000, false)]
+    [Arguments(false, 1, false)]
+    [Arguments(true, 1, false)]
+    public async Task Ordered_redelivery_waits_for_elapsed_deadline_despite_timer_precision(bool log, int ticks, bool wakeEarly)
     {
         var clock = new InMemoryTestClock();
-        var delay = TimeSpan.FromMilliseconds(milliseconds);
+        var delay = TimeSpan.FromTicks(ticks);
         var due = clock.GetUtcNow() + delay;
         await using var transport = Transport(new()
         {
@@ -1021,9 +1023,12 @@ public class InMemoryTransportTests
         await Assert.That(await Task.WhenAny(armed, redelivered.Task).WaitAsync(s_limit)).IsSameReferenceAs(armed);
         await armed;
 
-        if (milliseconds >= 1)
+        var remaining = delay;
+
+        if (wakeEarly)
         {
-            clock.Advance(delay - TimeSpan.FromMilliseconds(0.5));
+            remaining = TimeSpan.FromMilliseconds(0.5);
+            clock.Advance(delay - remaining);
             clock.FireTimersEarly();
             var rearmed = clock.NextTimer();
             await Assert.That(await Task.WhenAny(rearmed, redelivered.Task).WaitAsync(s_limit)).IsSameReferenceAs(rearmed);
@@ -1031,8 +1036,8 @@ public class InMemoryTransportTests
         }
 
         await Assert.That(redelivered.Task.IsCompleted).IsFalse();
-        clock.Advance(TimeSpan.FromMilliseconds(1));
-        await Assert.That(await redelivered.Task.WaitAsync(s_limit)).IsGreaterThanOrEqualTo(due);
+        clock.Advance(remaining);
+        await Assert.That(await redelivered.Task.WaitAsync(s_limit)).IsEqualTo(due);
         await transport.StopAsync(default);
     }
 

@@ -725,7 +725,8 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
 
                 while (_retryDelay > TimeSpan.Zero)
                 {
-                    var remaining = _retryDelay - endpoint.Clock.GetElapsedTime(_retryStarted);
+                    var clock = endpoint.Clock;
+                    var remaining = _retryDelay - clock.GetElapsedTime(_retryStarted);
 
                     if (remaining <= TimeSpan.Zero)
                     {
@@ -734,10 +735,19 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                     }
 
                     var delay = remaining > TimeSpan.FromDays(1) ? TimeSpan.FromDays(1) : remaining;
-                    // Task.Delay truncates to whole milliseconds. Re-check elapsed time after each wake,
-                    // and round up so a fractional remainder cannot become a synchronous busy loop.
-                    delay = TimeSpan.FromMilliseconds(Math.Ceiling(delay.TotalMilliseconds));
-                    await Task.Delay(delay, endpoint.Clock, stop).ConfigureAwait(false);
+
+                    if (clock == TimeProvider.System)
+                    {
+                        // Round up so a fractional remainder cannot become a synchronous busy loop.
+                        delay = TimeSpan.FromMilliseconds(Math.Ceiling(delay.TotalMilliseconds));
+                    }
+                    else if (delay.Ticks % TimeSpan.TicksPerMillisecond != 0)
+                    {
+                        await WaitForCustomTimerAsync(clock, delay, stop).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    await Task.Delay(delay, clock, stop).ConfigureAwait(false);
                 }
 
                 _manual = false;
@@ -843,6 +853,26 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested || abort.IsCancellationRequested)
         {
+        }
+    }
+
+    private static async Task WaitForCustomTimerAsync(TimeProvider clock, TimeSpan delay, CancellationToken stop)
+    {
+        stop.ThrowIfCancellationRequested();
+
+        // Task.Delay truncates fractional milliseconds before it calls the custom provider.
+        var elapsed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ITimer timer;
+
+        using (ExecutionContext.IsFlowSuppressed() ? default : ExecutionContext.SuppressFlow())
+        {
+            timer = clock.CreateTimer(static state => ((TaskCompletionSource)state!).TrySetResult(),
+                elapsed, delay, Timeout.InfiniteTimeSpan);
+        }
+
+        using (timer)
+        {
+            await elapsed.Task.WaitAsync(stop).ConfigureAwait(false);
         }
     }
 
