@@ -11,6 +11,28 @@ public sealed class DirectDispatchRegistrationTests
     private const string ConnectionString = "Server=localhost;Database=orders";
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Claim_duration_above_the_mysql_limit_fails_at_registration(bool fromConfiguration)
+    {
+        using var source = new MySqlConnector.MySqlDataSource(ConnectionString);
+        var services = new ServiceCollection();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["ClaimDuration"] = TimeSpan.MaxValue.ToString("c")
+        }).Build();
+        var options = new MySqlDirectDispatchOptions
+        {
+            ClaimDuration = TimeSpan.MaxValue
+        };
+        var error = await Assert.That(() => fromConfiguration
+            ? services.AddRelayerMySqlDirectDispatch("store", source, configuration)
+            : services.AddRelayerMySqlDirectDispatch("store", source, dispatchOptions: options))
+            .Throws<ArgumentOutOfRangeException>().WithMessageContaining("at most 1000000 days");
+        await Assert.That(error!.ParamName).IsEqualTo("ClaimDuration");
+    }
+
+    [Test]
     [Arguments(false, false)]
     [Arguments(false, true)]
     [Arguments(true, false)]
@@ -94,6 +116,7 @@ public sealed class DirectDispatchRegistrationTests
         await Assert.That(monitor.Get("first").BatchSize).IsEqualTo(7);
         await Assert.That(monitor.Get("first").ClaimDuration).IsEqualTo(TimeSpan.FromMinutes(2));
         await Assert.That(monitor.Get("second").BatchSize).IsEqualTo(2);
+        await Assert.That(monitor.Get("second").ClaimDuration).IsEqualTo(TimeSpan.FromSeconds(30));
         await Assert.That(provider.GetServices<IHostedService>().Count()).IsEqualTo(2);
         using var scope = provider.CreateScope();
         await Assert.That(scope.ServiceProvider.GetRequiredKeyedService<IOutboxStore>("first")).IsNotNull();

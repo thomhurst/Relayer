@@ -251,7 +251,8 @@ records the error and a durable exponential retry deadline in `deliver_at`: 1 se
 not exhaust `MaxDispatchAttempts` or move rows to dead storage. A completion error after a successful
 send leaves attempts unchanged. An expired or interrupted
 send may be delivered again: this is at-least-once delivery, not an atomic broker/database commit.
-Size `ClaimDuration` for the slowest expected database and broker operation.
+Size `ClaimDuration` for the slowest expected database and broker operation. It must be greater
+than zero and at most 1,000,000 days.
 
 Queue overflow or a stopped worker attempts to log an error. Rows remain durable and the commit
 returns successfully even if the logging provider throws. Graceful shutdown drains accepted work until the
@@ -361,7 +362,10 @@ services.AddRelayerMySqlMaintenance("orders", dataSource, new MySqlMaintenanceOp
 
 The overload taking an `IConfiguration` section snapshots immutable named options through the
 Options pattern. `SweepInterval` and `CleanupInterval` must each be greater than zero and at most
-4,294,967,294 ms. Use `infinite` for either retention setting to retain records indefinitely.
+4,294,967,294 ms. `ClaimDuration` must be greater than zero and at most 1,000,000 days.
+Use `infinite` in configuration or `null` in code to retain dead rows or inbox records indefinitely.
+`RecoveryDelay`, `DeadRetention`, and `InboxRetention` use the MySQL UTC clock. If subtracting
+the configured age would give a cutoff before January 1, 1000 UTC, that operation matches zero rows.
 Invalid settings and duplicate names fail before connecting. Workers do not create tables.
 Keep the data source alive until workers stop. Each pass uses one connection for admission, scans,
 and dispatch mutations. Multiple workers can share a pool. Size it for the number of passes

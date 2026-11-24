@@ -8,6 +8,13 @@ namespace Relayer.Outbox.MySql;
 
 internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
 {
+    // Keep the cutoff on the value side of the comparison for the retention indexes.
+    private const string CutoffSql = """
+        CASE WHEN @age <= TIMESTAMPDIFF(MICROSECOND, TIMESTAMP '1000-01-01 00:00:00', UTC_TIMESTAMP(6))
+            THEN TIMESTAMPADD(MICROSECOND, -@age, UTC_TIMESTAMP(6))
+        END
+        """;
+
     private readonly MySqlDataSource _dataSource;
     private readonly MySqlMaintenanceOptions _options;
     private readonly MySqlOutboxStore _store;
@@ -70,7 +77,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
             SELECT id, transport, message_type, destination, body, headers, ordering_key,
                 deliver_at, created_at, lane, attempts, last_error, tenant_id
             FROM {_table} WHERE lane IS NULL AND status='pending'
-                AND created_at <= TIMESTAMPADD(MICROSECOND,-@age,UTC_TIMESTAMP(6))
+                AND created_at <= ({CutoffSql})
                 AND (deliver_at IS NULL OR deliver_at <= UTC_TIMESTAMP(6))
                 AND (claim_expires_at IS NULL OR claim_expires_at <= UTC_TIMESTAMP(6))
                 AND (@after IS NULL OR id > @after) AND id <= @through ORDER BY id LIMIT @limit
@@ -268,12 +275,13 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
     private string DeleteSql(string table, string column)
     {
         var preserve = column == "failed_at" ? $" AND NOT EXISTS (SELECT 1 FROM {_table} p WHERE p.id={table}.id AND p.status='parked')" : "";
-        return $"DELETE FROM {table} WHERE {column} <= TIMESTAMPADD(MICROSECOND,-@age,UTC_TIMESTAMP(6)){preserve} ORDER BY {column} LIMIT @limit";
+        return $"DELETE FROM {table} WHERE {column} <= ({CutoffSql}){preserve} ORDER BY {column} LIMIT @limit";
     }
 
     private static long Micros(TimeSpan duration)
     {
-        return checked((long)Math.Ceiling(duration.TotalMicroseconds));
+        var (microseconds, remainingTicks) = Math.DivRem(duration.Ticks, TimeSpan.TicksPerMicrosecond);
+        return microseconds + (remainingTicks > 0 ? 1 : 0);
     }
 
     internal async ValueTask ReleaseAsync(CancellationToken cancellationToken = default)

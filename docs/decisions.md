@@ -1781,6 +1781,12 @@ completion after broker acceptance never consumes attempts. Bound indexed dead/i
 independently; preserve parked rows and their dead copies. Ordered decoding isolates malformed
 rows through the existing lane failure/parking path, retaining the original sequence and raw payload.
 
+Guard recovery and retention cutoffs with MySQL's `TIMESTAMPDIFF` and `CASE` before subtracting
+the age. A cutoff below the supported `DATETIME(6)` range matches zero rows. Direct dispatch and
+maintenance require a positive claim duration of at most 1,000,000 days at registration. This keeps
+ordinary claim durations available and leaves millennia of clock headroom for native SQL and .NET
+expiry calculations.
+
 **Consequences.** Maintenance is explicit, named, immutable configuration. Each pass needs one
 connection. Concurrent passes can share a pool without holding one session while waiting for another.
 No Event Scheduler privilege or server change is required. Native transports still own broker retry,
