@@ -259,6 +259,7 @@ services.AddRelayerSqlServerMaintenance("orders", connectionString,
 ```
 
 An `IConfiguration` overload snapshots the same init-only properties into named Options settings.
+`SweepInterval` and `CleanupInterval` must each be greater than zero and at most 4,294,967,294 ms.
 Use `"infinite"` for either retention in configuration, or `null` in code, to disable that cleanup.
 Keep the inbox retention window longer than the application's replay horizon: deleting a key permits
 that message to run again.

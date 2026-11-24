@@ -62,6 +62,9 @@ public class ShutdownConformanceTests
         using var cancellation = new CancellationTokenSource();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var settled = scenario == TransportConformanceCase.CleanShutdown
+            ? new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+            : null;
         BrokenFixture? fixture = null;
 
         Task? PauseOperation(int call, int pendingCall)
@@ -79,12 +82,21 @@ public class ShutdownConformanceTests
             new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
                 fixture = new BrokenFixture(tracing, false, false, false,
                     start: call => PauseOperation(call, pendingStart),
-                    stop: call => PauseOperation(call, pendingStop))));
+                    stop: call => PauseOperation(call, pendingStop),
+                    onSettlement: settled is null ? null : settled.SetResult)));
         var run = suite.RunAsync(scenario, cancellation.Token);
 
         try
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // CleanShutdown uses the scenario token in the handler too. Let settlement
+            // finish before cancelling the still-pending stop so cleanup can drain normally.
+            if (settled is not null)
+            {
+                await settled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+
             cancellation.Cancel();
 
             var error = await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
@@ -189,7 +201,7 @@ public class ShutdownConformanceTests
 
     private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation,
         bool asynchronousEarlyStop = false, Func<CancellationToken, ValueTask>? verifyNative = null,
-        Func<int, Task?>? start = null, Func<int, Task?>? stop = null)
+        Func<int, Task?>? start = null, Func<int, Task?>? stop = null, Action? onSettlement = null)
         : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
@@ -237,6 +249,7 @@ public class ShutdownConformanceTests
             }
 
             await _inner.SettleAsync(incoming, disposition, token);
+            onSettlement?.Invoke();
         }
 
         public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token)
