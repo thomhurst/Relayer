@@ -76,12 +76,22 @@ public static class PostgreSqlLocalBuilderExtensions
 
     private sealed class LocalConsumers(IServiceProvider provider, string name, string storeName) : IHostedService
     {
+        private bool _registered;
+
         public Task StartAsync(CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // A later hosted service can fail after these consumers are ready.
+            if (_registered)
+            {
+                return Task.CompletedTask;
+            }
+
             var transport = PostgreSqlLocalTransport.Find(provider.GetServices<ITransport>().Single(item => item.Name == name))!;
             var declaration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
-            transport.Dispatcher = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(storeName);
-            transport.Dispatcher.ValidateLocal(transport);
+            var dispatcher = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(storeName);
+            dispatcher.ValidateLocal(transport);
             var handlers = provider.GetRequiredService<HandlerRegistry>();
             provider.GetRequiredService<SenderPool>().Enable();
 
@@ -92,6 +102,8 @@ public static class PostgreSqlLocalBuilderExtensions
                     throw new NotSupportedException("PostgreSQL local routes require CloudEvents headers. Raw envelopes and custom CloudEvents header bindings are unsupported.");
                 }
             }
+
+            var receivers = new Dictionary<string, PostgreSqlLocalTransport.Receiver>(declaration.Consumers.Count, StringComparer.Ordinal);
 
             foreach (var consumer in declaration.Consumers)
             {
@@ -151,11 +163,14 @@ public static class PostgreSqlLocalBuilderExtensions
                 composed.ReceiveEndpoint = (name, consumer.Source);
                 composed.BufferAttemptSends = true;
                 var receive = new ReceivePipeline<PostgreSqlLocalDelivery, PostgreSqlLocalMessageBinding>(composed, new(), consumer.Concurrency);
-                transport.Register(consumer.Source, receive.ProcessAsync, consumer.Concurrency, options.MaxAttempts, options.RedeliveryDelays,
+                transport.Register(receivers, consumer.Source, receive.ProcessAsync, consumer.Concurrency, options.MaxAttempts, options.RedeliveryDelays,
                     options.Completion == PostgreSqlLocalCompletion.AtLeastOnce);
             }
 
-            transport.ValidateConsumers();
+            cancellationToken.ThrowIfCancellationRequested();
+            transport.PublishConsumers(receivers);
+            transport.Dispatcher = dispatcher;
+            _registered = true;
             return Task.CompletedTask;
         }
 

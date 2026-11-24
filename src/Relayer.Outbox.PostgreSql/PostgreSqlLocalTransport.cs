@@ -13,7 +13,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
     private readonly NpgsqlDataSource _source;
     private readonly PostgreSqlOutboxOptions _options;
     private readonly FrozenSet<string> _endpoints;
-    private readonly Dictionary<string, Receiver> _consumers = new(StringComparer.Ordinal);
+    private Dictionary<string, Receiver> _consumers = new(StringComparer.Ordinal);
     private readonly PostgreSqlLocalStatePool<PostgreSqlOutboxStore> _completionStores;
     private readonly FrozenDictionary<string, SendTracing>? _tracing;
     private readonly FrozenDictionary<string, MessageOperationTracing>? _settlementTracing;
@@ -75,7 +75,14 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
     internal void Register(string endpoint, Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int concurrency = 1,
         int? maxAttempts = null, TimeSpan[]? redeliveryDelays = null, bool atLeastOnce = false)
     {
-        if (!_consumers.TryAdd(endpoint, new(receive, concurrency, maxAttempts ?? _options.MaxDispatchAttempts, redeliveryDelays?.ToArray() ?? [], atLeastOnce)))
+        Register(_consumers, endpoint, receive, concurrency, maxAttempts, redeliveryDelays, atLeastOnce);
+    }
+
+    internal void Register(Dictionary<string, Receiver> receivers, string endpoint,
+        Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int concurrency,
+        int? maxAttempts, TimeSpan[]? redeliveryDelays, bool atLeastOnce)
+    {
+        if (!receivers.TryAdd(endpoint, new(receive, concurrency, maxAttempts ?? _options.MaxDispatchAttempts, redeliveryDelays?.ToArray() ?? [], atLeastOnce)))
         {
             throw new InvalidOperationException($"Declare only one PostgreSQL local consumer for '{endpoint}'.");
         }
@@ -142,15 +149,17 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         return _consumers.TryGetValue(endpoint, out var receiver) && receiver.TryEnter() ? receiver : null;
     }
 
-    internal void ValidateConsumers()
+    internal void PublishConsumers(Dictionary<string, Receiver> receivers)
     {
         foreach (var endpoint in _endpoints)
         {
-            if (!_consumers.ContainsKey(endpoint))
+            if (!receivers.ContainsKey(endpoint))
             {
                 throw new InvalidOperationException($"PostgreSQL local transport '{Name}': endpoint '{endpoint}' has no consumer. Declare the same consumers on every dispatching instance.");
             }
         }
+
+        _consumers = receivers;
     }
 
     internal void ValidateStore(NpgsqlDataSource source, string? schema, string prefix, bool retainSentMessages, int maxDispatchAttempts)

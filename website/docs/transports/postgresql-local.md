@@ -43,6 +43,8 @@ To enable [sent-message history](../reference/postgres-maintenance.md#sent-messa
 
 Every dispatching instance must declare the same local consumers. Instances compete for work; consumers are not broadcast subscriptions.
 
+Relayer registers local receivers after all consumer pipelines for that transport compose and validate successfully. If pipeline composition fails, `StartAsync` surfaces the error. Once the cause is cleared, you can retry startup on the same host.
+
 For keyed routes, use `route.OrderingKey(message => message.CustomerId)` and register `AddRelayerPostgreSqlOrderedDispatch("local", source)`. Set the same `Lanes` on the local transport, outbox writer and ordered dispatcher. Relayer checks lane counts at startup for the ordered dispatcher and an ADO.NET writer configured with a dispatch store name. Relayer checks an unnamed ADO.NET writer when it begins an outbox transaction and an EF Core writer when its DbContext enlists. The ordered dispatcher preserves insertion order and parks poisoned keys until redrive or purge. Other keys continue. Register maintenance even with direct dispatch to recover after crashes, missed notifications, queue pressure and failed attempts.
 
 ## Enqueue atomically
