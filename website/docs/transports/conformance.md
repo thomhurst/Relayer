@@ -118,6 +118,8 @@ The fixture must return from `DisconnectAsync` only after connectivity is interr
 
 Offline shutdown can surface the same native connectivity fault that already terminated a receiver. `IsExpectedOutageFailure` must recognize that specific observed native failure, not arbitrary shutdown exceptions. `ReconnectAsync` may explicitly dispose and recreate the application when the native client requires it, retaining the broker's topic, queue or subscription. This is application lifecycle recovery, not an adapter retry loop. The Pub/Sub fixture covers its native initial-stream-write TCP reset this way; a deterministic fault-injection test also verifies application replacement. Unrecognized shutdown errors still fail the case.
 
+If the caller cancels, the scenario deadline expires, or the watchdog expires while outage sends are pending, the suite reports the failure in the `outage sends` phase and proceeds with bounded cleanup. Pending sends retain their borrowed buffers until completion. The suite observes late send faults in the background.
+
 Successful send acknowledgements must result in delivery after recovery. Failed or cancelled sends can still have been accepted by a broker, so their arrival and duplicate deliveries are allowed. The post-restart warm-up may also redeliver during recovery because observing its handler does not prove that native settlement finished before disconnect. The test does not retract messages, replace native retry policies, impose cross-message ordering, or reinterpret native acknowledgements.
 
 
