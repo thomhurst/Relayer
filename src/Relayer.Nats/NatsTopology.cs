@@ -121,11 +121,7 @@ internal sealed class NatsTopology
                             Default(expectedConfig, "inactive_threshold", limits.InactiveThreshold);
                         }
 
-                        if (expected.AckPolicy != ConsumerConfigAckPolicy.None)
-                        {
-                            Default(expectedConfig, "max_ack_pending", 1000);
-                        }
-
+                        ApplyConsumerDefaults(expected, actual.Info.Config, expectedConfig);
                         Compare(entity, expectedConfig, Json(actual.Info.Config), true, differences);
                     }
                 }
@@ -220,6 +216,27 @@ internal sealed class NatsTopology
             }
 
             differences.Add($"{entity}: setting '{name}' expected {wanted?.ToJsonString() ?? "null"}, actual {found?.ToJsonString() ?? "null"}. Reconcile settings externally; Validate is read-only.");
+        }
+    }
+
+    private static void ApplyConsumerDefaults(ConsumerConfig expected, ConsumerConfig actual, JsonObject expectedConfig)
+    {
+        if (expected.PriorityPolicy == ConsumerConfigPriorityPolicy.PinnedClient)
+        {
+            Default(expectedConfig, "priority_timeout", 120_000_000_000L);
+        }
+
+        if (string.IsNullOrEmpty(expected.DeliverSubject) && actual.MaxBatch > 0)
+        {
+            Default(expectedConfig, "max_batch", actual.MaxBatch);
+        }
+
+        if (expected.AckPolicy != ConsumerConfigAckPolicy.None)
+        {
+            // Consumer info exposes the effective value. A server or account cap can only lower the default.
+            const long DefaultMaxAckPending = 1000;
+            var maxAckPending = actual.MaxAckPending is > 0 and <= DefaultMaxAckPending ? actual.MaxAckPending : DefaultMaxAckPending;
+            Default(expectedConfig, "max_ack_pending", maxAckPending);
         }
     }
 

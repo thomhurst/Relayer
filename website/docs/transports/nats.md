@@ -99,6 +99,8 @@ The original native message exposes its connection. Delivery objects are borrowe
 
 When a consumer's `Configuration` leaves `MaxAckPending` or `InactiveThreshold` at zero, `Validate` uses the live stream's consumer limits for those settings, including on externally managed streams. Explicit consumer values must match the broker. To validate inherited settings, grant permission to request `$JS.API.STREAM.INFO.<stream>` or the equivalent subject under a custom JetStream API prefix.
 
+For a pull consumer, an omitted `MaxBatch` accepts a positive limit JetStream could have set. When the consumer uses acknowledgments and neither the consumer nor the stream supplies `MaxAckPending`, the server or account can lower the default of 1000. Validation accepts that effective value. An omitted `PinnedTTL` defaults to two minutes for the pinned-client priority policy. Set these values explicitly to require an exact match.
+
 `Provision` calls native create-only APIs with the supplied `StreamConfig`/`ConsumerConfig`. The server checks existing entities for equivalence. Relayer never updates, deletes or purges entities; reconcile conflicts externally. Names and optional `DurableName` must match the declaration.
 
 If a standalone JetStream server rejects a stream configured with more than one replica, `Provision` reports the named stream and the broker's reason, then continues with later declarations. To resolve a missing stream or consumer in `Validate`, create it externally or use `Provision` with native `Configuration`. For stream limits that JetStream stores as unlimited, such as a negative `MaxMsgs`, `Validate` compares the effective value of `-1`.
