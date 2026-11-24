@@ -62,9 +62,7 @@ public class ShutdownConformanceTests
         using var cancellation = new CancellationTokenSource();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var settled = scenario == TransportConformanceCase.CleanShutdown
-            ? new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
-            : null;
+        var watchdog = TimeSpan.FromSeconds(5);
         BrokenFixture? fixture = null;
 
         Task? PauseOperation(int call, int pendingCall)
@@ -82,24 +80,24 @@ public class ShutdownConformanceTests
             new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
                 fixture = new BrokenFixture(tracing, false, false, false,
                     start: call => PauseOperation(call, pendingStart),
-                    stop: call => PauseOperation(call, pendingStop),
-                    onSettlement: settled is null ? null : settled.SetResult)));
+                    stop: call => PauseOperation(call, pendingStop))));
         var run = suite.RunAsync(scenario, cancellation.Token);
 
         try
         {
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await entered.Task.WaitAsync(watchdog);
 
-            // CleanShutdown uses the scenario token in the handler too. Let settlement
-            // finish before cancelling the still-pending stop so cleanup can drain normally.
-            if (settled is not null)
+            // The handler also uses the scenario token. Drain the real transport before
+            // canceling the scenario while its simulated StopAsync is still pending.
+            if (scenario == TransportConformanceCase.CleanShutdown)
             {
-                await settled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await fixture!.DisconnectAsync(CancellationToken.None).WaitAsync(watchdog);
+                await fixture.VerifyShutdownAsync(CancellationToken.None);
             }
 
             cancellation.Cancel();
 
-            var error = await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
+            var error = await Assert.That(async () => await run.WaitAsync(watchdog))
                 .Throws<InvalidOperationException>();
             await Assert.That(error!.Message).Contains(phase);
             await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
@@ -201,7 +199,7 @@ public class ShutdownConformanceTests
 
     private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation,
         bool asynchronousEarlyStop = false, Func<CancellationToken, ValueTask>? verifyNative = null,
-        Func<int, Task?>? start = null, Func<int, Task?>? stop = null, Action? onSettlement = null)
+        Func<int, Task?>? start = null, Func<int, Task?>? stop = null)
         : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
@@ -249,7 +247,6 @@ public class ShutdownConformanceTests
             }
 
             await _inner.SettleAsync(incoming, disposition, token);
-            onSettlement?.Invoke();
         }
 
         public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token)
