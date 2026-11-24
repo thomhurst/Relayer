@@ -258,8 +258,8 @@ send leaves attempts unchanged. An expired or interrupted
 send may be delivered again: this is at-least-once delivery, not an atomic broker/database commit.
 Size `ClaimDuration` for the slowest expected database and broker operation. Direct dispatch accepts
 1 microsecond through 1,000,000 days at registration. MySQL stores claim expiry as `DATETIME(6)`.
-Direct dispatch sends the current time and expiry with six fractional digits, so a shorter duration
-can put both timestamps in the same microsecond.
+Direct dispatch uses the client UTC timestamp at MySQL's microsecond precision. It rounds fractional
+claim durations up to the next whole microsecond and preserves whole-microsecond durations.
 
 Queue overflow or a stopped worker attempts to log an error. Rows remain durable and the commit
 returns successfully even if the logging provider throws. Graceful shutdown drains accepted work until the

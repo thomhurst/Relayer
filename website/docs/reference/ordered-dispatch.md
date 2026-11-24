@@ -78,7 +78,8 @@ the lane lock before sending; a probe never grants ownership or permits overtaki
 
 A worker scans its assigned lanes and sends one bounded batch per lane per cycle. It starts another cycle
 immediately after any committed progress, including when it parks a failed row or the time budget shortens a batch.
-The worker waits for `PollInterval` only after a scan makes no progress.
+The worker waits for `PollInterval` only after a scan makes no progress. PostgreSQL, SQL Server and
+MySQL round fractional idle poll intervals up to the next whole millisecond.
 
 A commit can also end an idle wait early. When the direct dispatcher and the ordered worker run in the
 committing process under the same store name and tables, a commit that writes an unscheduled keyed row to a

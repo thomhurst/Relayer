@@ -46,6 +46,9 @@ internal static class OrderedLaneWorker
             return;
         }
 
+        var (pollMilliseconds, remainingPollTicks) = Math.DivRem(pollInterval.Ticks, TimeSpan.TicksPerMillisecond);
+        var idleDelay = TimeSpan.FromMilliseconds(pollMilliseconds + (remainingPollTicks > 0 ? 1 : 0));
+
         // Reuse the deadline source across successful batches. Cancellation is an exceptional path.
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         long? lastRebalance = null;
@@ -117,7 +120,7 @@ internal static class OrderedLaneWorker
 
                 if (!madeProgress)
                 {
-                    await (wake?.WaitAsync(pollInterval, timeProvider, idleToken) ?? Task.Delay(pollInterval, timeProvider, idleToken)).ConfigureAwait(false);
+                    await (wake?.WaitAsync(idleDelay, timeProvider, idleToken) ?? Task.Delay(idleDelay, timeProvider, idleToken)).ConfigureAwait(false);
                 }
             }
         }
