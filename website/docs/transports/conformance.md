@@ -68,7 +68,7 @@ The PostgreSQL local fixture runs `SendReceiveSettle`, `OrderingByKey`, `TracePr
 | `OrderingByKey` | 32 messages sent with one key arrive in native send order | `OrderedByKey` |
 | `TracePropagation` | Producer creation context survives native instrumentation; process links, operation names/kinds, native settlement and system identifier match the conventions | None |
 | `CreationContextCopies` | Stored `traceparent`/`tracestate` survive repeated serialized sends; each client send links to the original creation context | None |
-| `Reconnect` | Delivery resumes after connection interruption and recovery | None |
+| `Reconnect` | The restarted receiver delivers a warm-up message before disconnect, then delivers a distinct recovery marker after reconnect | None |
 | `CleanShutdown` | Stop with a handler in flight, drain before closure, native lifecycle/durability evidence and no failure logs through disposal | None; requires `ITransportShutdownConformanceFixture` |
 | `SendDuringOutage` | Concurrent outage sends and offline shutdown finish within deadlines; recovery delivers every successfully acknowledged message at least once | Fixture supplies a positive `OutageSendTimeout` |
 
@@ -105,6 +105,10 @@ Queue and log in-memory fixtures, Kafka, RabbitMQ, Service Bus queue and session
 RabbitMQ Streams ([#316](https://github.com/thomhurst/Relayer/issues/316)) does not yet implement a production receiver. Its graceful-stop adoption is planned alongside receive execution; it is not a passing case or capability skip. A fixture must not simulate native delivery to claim coverage.
 
 Shared outbox shutdown contracts separately validate claims, database disposal and owned leases; this transport case does not validate an outbox worker.
+
+## Reconnect
+
+`Reconnect` sends and receives an initial message, drains and restarts the consumer, then sends a distinct warm-up message. The suite waits for the restarted receiver to deliver the warm-up before calling `DisconnectAsync`. After `ReconnectAsync` restores connectivity, the suite sends and waits for a separate recovery marker. The broker may replay the warm-up if its settlement was interrupted. Only the recovery marker satisfies the final delivery assertion. All steps use the same scenario deadline.
 
 ## Outage sends
 
