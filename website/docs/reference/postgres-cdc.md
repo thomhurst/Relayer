@@ -145,10 +145,10 @@ Replication = new PgOutputReplicationOptions("orders_cdc", PgOutputProtocolVersi
 IdleCheckpointInterval = TimeSpan.FromSeconds(30),
 ```
 
-Set both options. `IdleCheckpointInterval` defaults to zero, which disables markers. When using the
-configuration overload, set `IdleCheckpointInterval` to a duration such as `00:00:30` and pass
-`messages: true` in the native options. The writer data source must be able to execute
-`pg_catalog.pg_logical_emit_message`.
+`IdleCheckpointInterval` defaults to zero, which disables markers. To enable markers, set an interval
+from 1 to 4,294,967,294 milliseconds, inclusive, and pass `messages: true` in the native options. When
+using the configuration overload, specify the interval as a duration such as `00:00:30`. The writer
+data source must be able to execute `pg_catalog.pg_logical_emit_message`.
 
 At each interval the worker commits a small logical message in the writer's database. The reader
 checkpoints its commit in stream order after the dispatch passes triggered by earlier outbox commits
