@@ -485,6 +485,72 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task Consumer_retry_schedule_rounds_up_to_PostgreSql_interval_precision(bool ordered)
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        var settings = new NpgsqlConnectionStringBuilder(database.ConnectionString)
+        {
+            SearchPath = "public, pg_catalog",
+            Timezone = "Europe/London"
+        };
+        await using var source = NpgsqlDataSource.Create(settings.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+
+        // Freeze the database clock before a DST transition. A 24-hour interval and a calendar day then differ.
+        await using (var command = source.CreateCommand("""
+            CREATE TABLE local_business (value integer PRIMARY KEY);
+            CREATE FUNCTION public.clock_timestamp() RETURNS timestamptz
+            LANGUAGE sql IMMUTABLE AS $$ SELECT timestamptz '2026-03-28 12:00:00+00' $$;
+            """))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
+        (TimeSpan Delay, string Interval)[] schedule =
+        [
+            (TimeSpan.FromTicks(9), "1 microsecond"),
+            (TimeSpan.Zero, "0 seconds"),
+            (TimeSpan.FromTicks(TimeSpan.TicksPerMicrosecond), "1 microsecond"),
+            (TimeSpan.FromTicks(TimeSpan.TicksPerDay - 1), "24 hours"),
+            (TimeSpan.FromDays(1), "1 day"),
+            (TimeSpan.MaxValue, "10675199 days 02:48:05.477581")
+        ];
+        await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry, consumerOptions: options =>
+        {
+            options.RedeliveryDelays = Array.ConvertAll(schedule, static entry => entry.Delay);
+            options.MaxAttempts = schedule.Length + 1;
+        });
+
+        foreach (var starter in provider.GetServices<IHostedService>())
+        {
+            if (starter is not PostgreSqlDirectDispatcher)
+            {
+                await starter.StartAsync(default);
+            }
+        }
+
+        var transport = provider.GetServices<ITransport>().Single();
+        await Enqueue(provider, source, new(-1), true);
+        using var worker = OrderedWorker(ordered, source, transport, provider);
+        await using var deadline = source.CreateCommand("""
+            SELECT deliver_at = public.clock_timestamp() + CAST(@expected AS interval)
+            FROM relayer_outbox
+            """);
+        var expected = deadline.Parameters.AddWithValue("expected", "");
+
+        foreach (var (_, interval) in schedule)
+        {
+            await Attempt(worker, source, transport, provider);
+            expected.Value = interval;
+            await Assert.That(await deadline.ExecuteScalarAsync() is true).IsTrue()
+                .Because($"The persisted delay should be {interval}.");
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Consumer_without_attempt_limit_never_poisons_retryable_failures(bool ordered)
     {
         await using var database = server.CreateDatabase();

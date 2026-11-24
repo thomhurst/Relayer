@@ -2,6 +2,7 @@ using System.Collections.Frozen;
 using System.Data.Common;
 using System.Runtime.CompilerServices;
 using Npgsql;
+using NpgsqlTypes;
 using Relayer.Pipeline;
 using Relayer.Transports;
 
@@ -82,14 +83,24 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int concurrency,
         int? maxAttempts, TimeSpan[]? redeliveryDelays, bool atLeastOnce)
     {
-        if (!receivers.TryAdd(endpoint, new(receive, concurrency, maxAttempts ?? _options.MaxDispatchAttempts, redeliveryDelays?.ToArray() ?? [], atLeastOnce)))
+        var retryIntervals = redeliveryDelays is null ? [] : Array.ConvertAll(redeliveryDelays, RoundRedeliveryDelay);
+
+        if (!receivers.TryAdd(endpoint, new(receive, concurrency, maxAttempts ?? _options.MaxDispatchAttempts, retryIntervals, atLeastOnce)))
         {
             throw new InvalidOperationException($"Declare only one PostgreSQL local consumer for '{endpoint}'.");
         }
     }
 
+    private static NpgsqlInterval RoundRedeliveryDelay(TimeSpan delay)
+    {
+        // Keep calendar days separate, even when rounding the time component up to 24 hours.
+        long ticksInDay = delay.Ticks % TimeSpan.TicksPerDay;
+        long microseconds = (ticksInDay + TimeSpan.TicksPerMicrosecond - 1) / TimeSpan.TicksPerMicrosecond;
+        return new(0, delay.Days, microseconds);
+    }
+
     internal sealed class Receiver(Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int maximum,
-        int maxAttempts, TimeSpan[] redeliveryDelays, bool atLeastOnce = false)
+        int maxAttempts, NpgsqlInterval[] redeliveryDelays, bool atLeastOnce = false)
     {
         internal readonly Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> Receive = receive;
         internal readonly int MaxAttempts = maxAttempts;
@@ -103,9 +114,9 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         internal int AvailableSlots => maximum - Volatile.Read(ref _active);
 
         // The failed attempt is one-based; the last configured delay repeats.
-        internal TimeSpan RedeliveryDelay(int attempt)
+        internal NpgsqlInterval RedeliveryDelay(int attempt)
         {
-            return redeliveryDelays.Length == 0 ? TimeSpan.Zero : redeliveryDelays[Math.Min(attempt, redeliveryDelays.Length) - 1];
+            return redeliveryDelays.Length == 0 ? default : redeliveryDelays[Math.Min(attempt, redeliveryDelays.Length) - 1];
         }
 
         internal bool TryEnter()
