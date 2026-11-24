@@ -1,5 +1,7 @@
 using System.Buffers;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using NATS.Client.Core;
 using NATS.Client.JetStream;
 using NATS.Client.JetStream.Models;
 
@@ -86,6 +88,8 @@ internal sealed class NatsTopology
             }
         }
 
+        var consumerLimitsByStream = new Dictionary<string, (long MaxAckPending, long InactiveThreshold)>(StringComparer.Ordinal);
+
         foreach (var consumer in _consumers)
         {
             token.ThrowIfCancellationRequested();
@@ -103,7 +107,22 @@ internal sealed class NatsTopology
 
                     if (consumer.Configuration is { } expected)
                     {
-                        Compare(entity, Json(expected), Json(actual.Info.Config), true, differences);
+                        var expectedConfig = Json(expected);
+
+                        if (expected.MaxAckPending == 0 || expected.InactiveThreshold == TimeSpan.Zero)
+                        {
+                            if (!consumerLimitsByStream.TryGetValue(consumer.Stream, out var limits))
+                            {
+                                limits = await ReadConsumerLimitsAsync(context, consumer.Stream, token).ConfigureAwait(false);
+                                consumerLimitsByStream.Add(consumer.Stream, limits);
+                            }
+
+                            Default(expectedConfig, "max_ack_pending", limits.MaxAckPending);
+                            Default(expectedConfig, "inactive_threshold", limits.InactiveThreshold);
+                        }
+
+                        ApplyConsumerDefaults(expected, actual.Info.Config, expectedConfig);
+                        Compare(entity, expectedConfig, Json(actual.Info.Config), true, differences);
                     }
                 }
             }
@@ -114,6 +133,40 @@ internal sealed class NatsTopology
         }
 
         return new(differences);
+    }
+
+    private static async ValueTask<(long MaxAckPending, long InactiveThreshold)> ReadConsumerLimitsAsync(
+        NatsJSContext context, string stream, CancellationToken token)
+    {
+        // GetStreamAsync discards consumer_limits in NATS.Client.JetStream 3.4.1 (nats.net #1307).
+        var serializer = NatsRawSerializer<ReadOnlyMemory<byte>>.Default;
+        var reply = await context.Connection.RequestAsync<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
+            $"{context.Opts.Prefix}.STREAM.INFO.{stream}", ReadOnlyMemory<byte>.Empty,
+            requestSerializer: serializer, replySerializer: serializer,
+            replyOpts: new NatsSubOpts { Timeout = context.Opts.RequestTimeout }, cancellationToken: token).ConfigureAwait(false);
+
+        if (reply.Error is { } error)
+        {
+            throw error;
+        }
+
+        using var document = JsonDocument.Parse(reply.Data);
+        var root = document.RootElement;
+
+        if (root.TryGetProperty("error", out _))
+        {
+            var response = NatsJSJsonSerializer<ErrorResponse>.Default.Deserialize(new ReadOnlySequence<byte>(reply.Data));
+            throw new NatsJSApiException(response!.Error);
+        }
+
+        if (!root.GetProperty("config").TryGetProperty("consumer_limits", out var limits))
+        {
+            return default;
+        }
+
+        return (
+            limits.TryGetProperty("max_ack_pending", out var maxAckPending) ? maxAckPending.GetInt64() : 0,
+            limits.TryGetProperty("inactive_threshold", out var inactiveThreshold) ? inactiveThreshold.GetInt64() : 0);
     }
 
     private static string DescribeApiError(string entity, ApiError error, TopologyMode mode, bool hasConfiguration)
@@ -166,6 +219,27 @@ internal sealed class NatsTopology
         }
     }
 
+    private static void ApplyConsumerDefaults(ConsumerConfig expected, ConsumerConfig actual, JsonObject expectedConfig)
+    {
+        if (expected.PriorityPolicy == ConsumerConfigPriorityPolicy.PinnedClient)
+        {
+            Default(expectedConfig, "priority_timeout", 120_000_000_000L);
+        }
+
+        if (string.IsNullOrEmpty(expected.DeliverSubject) && actual.MaxBatch > 0)
+        {
+            Default(expectedConfig, "max_batch", actual.MaxBatch);
+        }
+
+        if (expected.AckPolicy != ConsumerConfigAckPolicy.None)
+        {
+            // Consumer info exposes the effective value. A server or account cap can only lower the default.
+            const long DefaultMaxAckPending = 1000;
+            var maxAckPending = actual.MaxAckPending is > 0 and <= DefaultMaxAckPending ? actual.MaxAckPending : DefaultMaxAckPending;
+            Default(expectedConfig, "max_ack_pending", maxAckPending);
+        }
+    }
+
     private static void CompareDefaultDuplicateWindow(string entity, JsonObject expected, JsonObject actual, List<string> differences)
     {
         // Stream info reports the effective window but does not identify the server-wide cap.
@@ -196,7 +270,6 @@ internal sealed class NatsTopology
             }
 
             Default(config, "max_deliver", -1);
-            Default(config, "max_ack_pending", 1000);
             Default(config, "max_waiting", 512);
         }
         else
