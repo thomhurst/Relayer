@@ -29,7 +29,7 @@ internal sealed class ConsumerCircuit : IDisposable
         Validate(failureRatio, minimumThroughput, samplingDuration, breakDuration);
         _failureRatio = failureRatio;
         _minimumThroughput = minimumThroughput;
-        _breakDuration = breakDuration;
+        (TimeSpan samplingInterval, _breakDuration) = GetTimerDurations(time, samplingDuration, breakDuration);
         _probeAvailable = probeAvailable;
         // Construct disabled: callbacks must never observe partially initialized timer fields.
         _sampling = time.CreateTimer(static state => ((ConsumerCircuit)state!).ResetWindow(), this,
@@ -39,7 +39,7 @@ internal sealed class ConsumerCircuit : IDisposable
         {
             _recovery = time.CreateTimer(static state => ((ConsumerCircuit)state!).OfferProbe(), this,
                 Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
-            _sampling.Change(samplingDuration, samplingDuration);
+            _sampling.Change(samplingInterval, samplingInterval);
         }
         catch
         {
@@ -219,6 +219,19 @@ internal sealed class ConsumerCircuit : IDisposable
 
         ValidateDuration(samplingDuration, nameof(samplingDuration));
         ValidateDuration(breakDuration, nameof(breakDuration));
+    }
+
+    internal static (TimeSpan Sampling, TimeSpan Break) GetTimerDurations(
+        TimeProvider time, TimeSpan samplingDuration, TimeSpan breakDuration)
+    {
+        if (time != TimeProvider.System)
+        {
+            return (samplingDuration, breakDuration);
+        }
+
+        // The system timer truncates TimeSpan values to whole milliseconds.
+        return (TimeSpan.FromMilliseconds(Math.Ceiling(samplingDuration.TotalMilliseconds)),
+            TimeSpan.FromMilliseconds(Math.Ceiling(breakDuration.TotalMilliseconds)));
     }
 
     private static void ValidateDuration(TimeSpan duration, string name)

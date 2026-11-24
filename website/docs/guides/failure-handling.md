@@ -175,6 +175,8 @@ When composing the lower-level `ConsumePipelineBuilder` with an explicit `Consum
 
 ## Consumer circuit breaking
 
+For both Kafka and Service Bus, the default system timer uses whole milliseconds. Relayer rounds fractional milliseconds up for both `SamplingDuration` and `BreakDuration`. Custom time providers receive the exact configured durations.
+
 Kafka consumers can opt into failure-rate protection with `consumer.Options.CircuitBreaker`. It is disabled by default. The policy counts one logical delivery after its in-process retries, using fixed sampling windows. Only exceptions classified as `FailureAction.Retry` count as circuit failures. Permanent (`DeadLetter`) and intentional (`Discard`) outcomes follow the classifier immediately and count as successful circuit outcomes, so a permanent poison record cannot trap recovery in a loop. Once the minimum throughput and failure ratio are reached, the circuit opens. The threshold-crossing failed delivery is held in its key lane without a dead-letter copy and is never marked processed, so no offset commit passes it. Deliveries while open do not enter handlers and are held the same way. Their partitions fill and Dekaf's native backpressure pauses them.
 
 ```csharp
