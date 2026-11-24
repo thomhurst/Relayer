@@ -13,6 +13,61 @@ namespace Relayer.Outbox.MySql.Tests;
 
 public sealed class MaintenanceTests
 {
+    private static readonly DateTimeOffset s_databaseTime = new(2026, 11, 24, 0, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset s_firstMySqlDate = new(1000, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    [Test]
+    [Arguments(false, false, 1)]
+    [Arguments(true, false, 0)]
+    [Arguments(false, true, 0)]
+    public async Task Recovery_handles_the_mysql_datetime_lower_bound(bool beforeMinimum, bool overflow, int expected)
+    {
+        await using var data = new MySqlFixture();
+        await data.StartAsync();
+        await data.Insert(Guid.CreateVersion7(), s_firstMySqlDate);
+        var warnings = new List<MySqlError>();
+        await using var source = WithDatabaseTime(data, s_databaseTime, (_, args) => warnings.AddRange(args.Errors));
+        var transport = new Transport();
+        using var worker = new MySqlMaintenanceWorker(source, new()
+        {
+            RecoveryDelay = CutoffAge(beforeMinimum, overflow)
+        }, [transport], NullLogger<MySqlMaintenanceWorker>.Instance);
+
+        await Assert.That(await worker.SweepAsync()).IsEqualTo(expected);
+        await Assert.That(transport.Sent).IsEqualTo(expected);
+        await Assert.That(warnings).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(false, false, false, 1)]
+    [Arguments(false, true, false, 0)]
+    [Arguments(false, false, true, 0)]
+    [Arguments(true, false, false, 1)]
+    [Arguments(true, true, false, 0)]
+    [Arguments(true, false, true, 0)]
+    public async Task Retention_handles_the_mysql_datetime_lower_bound(bool dead, bool beforeMinimum, bool overflow, int expected)
+    {
+        await using var data = new MySqlFixture();
+        await data.StartAsync();
+        await data.Execute("""
+            INSERT INTO relayer_dead (id, transport, destination, message_type, headers, body, created_at, attempts, failed_at)
+            VALUES (UUID_TO_BIN(UUID()), 'events', 'orders', 'order', X'', X'', '1000-01-01', 1, '1000-01-01');
+            INSERT INTO relayer_inbox (consumer, message_id, processed_at)
+            VALUES ('orders', UUID_TO_BIN(UUID()), '1000-01-01');
+            """);
+        await using var source = WithDatabaseTime(data, s_databaseTime);
+        var age = CutoffAge(beforeMinimum, overflow);
+        using var worker = new MySqlMaintenanceWorker(source, new()
+        {
+            DeadRetention = dead ? age : null,
+            InboxRetention = dead ? null : age
+        }, [], NullLogger<MySqlMaintenanceWorker>.Instance);
+
+        await Assert.That(await worker.CleanupAsync()).IsEqualTo(expected);
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_dead")).IsEqualTo(dead ? 1L - expected : 1L);
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_inbox")).IsEqualTo(dead ? 1L : 1L - expected);
+    }
+
     [Test]
     public async Task Recovery_uses_mysql_time_for_due_rows_and_claims()
     {
@@ -481,7 +536,19 @@ public sealed class MaintenanceTests
         await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox WHERE status='parked' AND headers=X'FF' AND last_error LIKE '%Malformed%'")).IsEqualTo(1L);
     }
 
-    private static MySqlDataSource WithDatabaseTime(MySqlFixture data, DateTimeOffset databaseNow)
+    private static TimeSpan CutoffAge(bool beforeMinimum, bool overflow)
+    {
+        if (overflow)
+        {
+            return TimeSpan.FromDays(1_000_000);
+        }
+
+        var age = s_databaseTime - s_firstMySqlDate;
+        return beforeMinimum ? age + TimeSpan.FromMicroseconds(1) : age;
+    }
+
+    private static MySqlDataSource WithDatabaseTime(MySqlFixture data, DateTimeOffset databaseNow,
+        MySqlInfoMessageEventHandler? onWarning = null)
     {
         return new MySqlDataSourceBuilder(data.Source.ConnectionString)
             .UseConnectionOpenedCallback(async (context, token) =>
@@ -489,6 +556,11 @@ public sealed class MaintenanceTests
                 await using var command = new MySqlCommand("SET SESSION timestamp = @timestamp", context.Connection);
                 command.Parameters.AddWithValue("timestamp", databaseNow.ToUnixTimeSeconds());
                 await command.ExecuteNonQueryAsync(token);
+
+                if (onWarning is not null)
+                {
+                    context.Connection.InfoMessage += onWarning;
+                }
             }).Build();
     }
 
@@ -576,6 +648,28 @@ public sealed class MaintenanceTests
 public sealed class MaintenanceRegistrationTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Claim_duration_above_the_mysql_limit_fails_at_registration(bool fromConfiguration)
+    {
+        await using var source = new MySqlDataSource("Server=unused;Database=orders");
+        var services = new ServiceCollection();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["ClaimDuration"] = TimeSpan.MaxValue.ToString("c")
+        }).Build();
+        var options = new MySqlMaintenanceOptions
+        {
+            ClaimDuration = TimeSpan.MaxValue
+        };
+        var error = await Assert.That(() => fromConfiguration
+            ? services.AddRelayerMySqlMaintenance("store", source, configuration)
+            : services.AddRelayerMySqlMaintenance("store", source, options))
+            .Throws<ArgumentOutOfRangeException>().WithMessageContaining("at most 1000000 days");
+        await Assert.That(error!.ParamName).IsEqualTo("ClaimDuration");
+    }
+
+    [Test]
     public async Task Named_immutable_options_bind_and_validate_before_connecting()
     {
         await using var source = new MySqlDataSource("Server=unused;Database=orders");
@@ -583,6 +677,7 @@ public sealed class MaintenanceRegistrationTests
         {
             ["BatchSize"] = "7",
             ["CleanupBatchLimit"] = "3",
+            ["ClaimDuration"] = "00:02:00",
             ["DeadRetention"] = "infinite",
             ["InboxRetention"] = "2.00:00:00"
         }).Build();
@@ -593,6 +688,7 @@ public sealed class MaintenanceRegistrationTests
         var options = provider.GetRequiredService<IOptionsMonitor<MySqlMaintenanceOptions>>().Get("a");
         await Assert.That(options.CleanupBatchLimit).IsEqualTo(3);
         await Assert.That(options.BatchSize).IsEqualTo(7);
+        await Assert.That(options.ClaimDuration).IsEqualTo(TimeSpan.FromMinutes(2));
         await Assert.That(options.DeadRetention).IsNull();
         await Assert.That(options.InboxRetention).IsEqualTo(TimeSpan.FromDays(2));
         await Assert.That(provider.GetServices<IHostedService>().Count()).IsEqualTo(1);
