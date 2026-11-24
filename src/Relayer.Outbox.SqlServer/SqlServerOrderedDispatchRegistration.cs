@@ -44,7 +44,8 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
         services.AddKeyedSingleton<SqlServerOrderedDispatcher>(name, (provider, _) =>
             new(connectionString, provider.GetRequiredService<IOptionsMonitor<SqlServerOrderedDispatchOptions>>().Get(name),
                 provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<SqlServerOrderedDispatcher>>(),
-                instrumentation: provider.GetService<RelayerInstrumentation>()));
+                instrumentation: provider.GetService<RelayerInstrumentation>(),
+                hostLifetime: provider.GetService<IHostApplicationLifetime>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<SqlServerOrderedDispatcher>(name));
         return services;
     }

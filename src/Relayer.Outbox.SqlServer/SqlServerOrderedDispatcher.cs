@@ -25,14 +25,17 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
     private readonly ILogger<SqlServerOrderedDispatcher> _logger;
     private readonly TimeProvider _timeProvider;
     private readonly RelayerInstrumentation? _instrumentation;
+    private readonly IHostApplicationLifetime? _hostLifetime;
 
     [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     internal SqlServerOrderedDispatcher(string source, SqlServerOrderedDispatchOptions options,
-        IEnumerable<ITransport> transports, ILogger<SqlServerOrderedDispatcher> logger, TimeProvider? timeProvider = null, RelayerInstrumentation? instrumentation = null)
+        IEnumerable<ITransport> transports, ILogger<SqlServerOrderedDispatcher> logger, TimeProvider? timeProvider = null,
+        RelayerInstrumentation? instrumentation = null, IHostApplicationLifetime? hostLifetime = null)
     {
         _source = source;
         _instrumentation = instrumentation;
+        _hostLifetime = hostLifetime;
         _options = options;
         var store = options.Validate();
         _coordinator = new(source, options);
@@ -59,7 +62,7 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
         return OrderedLaneWorker.RunAsync(this, _options.LeaseDuration, _options.PollInterval,
-                    _timeProvider, stoppingToken, stoppingToken, Wake);
+            _timeProvider, stoppingToken, stoppingToken, Wake, _hostLifetime);
     }
 
     internal bool Matches(string? schema, string prefix)

@@ -31,6 +31,9 @@ services.AddRelayerPostgreSqlOrderedDispatch("orders", dataSource, new PostgreSq
 });
 ```
 
+The worker waits for the .NET host to finish startup before joining a lane group or dispatching rows.
+This gives hosted transports time to initialize even when services start concurrently.
+
 The application owns `dataSource`. Dispose it after the host stops. Worker names are explicit and
 case-sensitive; duplicate names fail immediately. Use the same database, schema, prefix and lane count
 on every writer and worker. Drain the outbox before changing the lane count. Distinct stores have separate

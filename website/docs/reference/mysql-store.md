@@ -279,6 +279,9 @@ services.AddRelayerMySqlOrderedDispatch("orders", dataSource,
     });
 ```
 
+The worker waits for the .NET host to finish startup before joining a lane group or dispatching rows.
+This gives hosted transports time to initialize even when services start concurrently.
+
 The `IConfiguration` overload reads the section once during registration. Set all values before
 calling `AddRelayerMySqlOrderedDispatch`. Later configuration changes do not update the worker.
 Use the same database, prefix and lane count on every writer and worker. The application owns
