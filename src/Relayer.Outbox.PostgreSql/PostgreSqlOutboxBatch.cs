@@ -10,10 +10,13 @@ internal sealed class PostgreSqlOutboxBatch : IOutboxBatch
 {
     internal static string CreateInsertSql(string table)
     {
+        // Npgsql can encode DateTimeOffset.MinValue as -infinity. Persist the actual finite deadline.
         return $"""
         INSERT INTO {table}
             (id, lane, ordering_key, transport, destination, message_type, headers, body, created_at, deliver_at, tenant_id)
-        SELECT id, lane, convert_from(key, 'UTF8'), transport, destination, type, headers, body, created, delivery, tenant
+        SELECT id, lane, convert_from(key, 'UTF8'), transport, destination, type, headers, body, created,
+            CASE WHEN delivery = '-infinity'::timestamptz THEN TIMESTAMPTZ '0001-01-01 00:00:00+00' ELSE delivery END,
+            tenant
         FROM unnest(@ids, @lanes, @keys, @transports, @destinations, @types, @headers, @bodies, @created, @delivery, @tenants)
             WITH ORDINALITY AS rows(id, lane, key, transport, destination, type, headers, body, created, delivery, tenant, position)
         ORDER BY position
@@ -66,6 +69,27 @@ internal sealed class PostgreSqlOutboxBatch : IOutboxBatch
 
     internal void Add(BufferedOutboxMessage row)
     {
+        var deliverAt = row.DeliverAt;
+
+        if (deliverAt is { } timestamp)
+        {
+            long remainder = timestamp.Ticks % TimeSpan.TicksPerMicrosecond;
+
+            if (remainder != 0)
+            {
+                long adjustment = TimeSpan.TicksPerMicrosecond - remainder;
+
+                if (timestamp.Ticks > DateTimeOffset.MaxValue.Ticks - adjustment)
+                {
+                    Clear();
+                    throw new ArgumentOutOfRangeException(nameof(deliverAt), timestamp,
+                        "The last finite PostgreSQL outbox delivery timestamp is 9999-12-31T23:59:59.999999Z.");
+                }
+
+                deliverAt = timestamp.AddTicks(adjustment);
+            }
+        }
+
         _ids.Add(row.Id);
         _lanes.Add(row.Lane);
         _keys.Add(row.OrderingKey);
@@ -75,7 +99,7 @@ internal sealed class PostgreSqlOutboxBatch : IOutboxBatch
         _headers.Add(row.Headers);
         _bodies.Add(row.Body);
         _created.Add(row.CreatedAt);
-        _delivery.Add(row.DeliverAt);
+        _delivery.Add(deliverAt);
         _tenants.Add(row.TenantId);
     }
 

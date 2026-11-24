@@ -113,9 +113,13 @@ connection. Both overloads accept an optional native `IsolationLevel` unchanged.
 - With the outbox registered, `SendAsync` enlists while this transaction is active and throws outside it.
   `SendViaOutboxAsync` requires an active transaction; `SendWithoutOutboxAsync` deliberately bypasses the outbox.
 - Serialized bodies, header names, duplicate headers, header bytes and ordering keys are copied before
-  `EnlistAsync` completes. The original UUIDv7 ID, stable wire type, creation time, tenant and `DeliverAt` persist.
+  `EnlistAsync` completes. The original UUIDv7 ID, stable wire type, creation time, tenant and delivery deadline persist.
   Ordered rows use the shared FNV-1a lane calculation; unordered rows have a null lane. Large transactions
   use a fixed number of array parameters rather than one parameter set per message.
+- PostgreSQL stores `DeliverAt` at microsecond precision. Relayer rounds fractional microseconds up so
+  the stored deadline is at or after the requested instant. Exact microseconds and null deadlines are
+  preserved. A `DeliverAt` later than `9999-12-31T23:59:59.999999Z` fails the write with an
+  `ArgumentOutOfRangeException` when the outbox flushes during commit.
 - Rollback, disposal of an uncommitted transaction and scope disposal discard the buffer and roll back business
   work. A failed or cancelled commit ends the unit; never retry `Commit` on that wrapper. Start a new transaction
   and retry the whole business unit. The scope can be reused after completion; disposal of an older wrapper

@@ -153,7 +153,8 @@ public class EnlistmentTests
         await database.Start();
         await using var schedulerSource = NpgsqlDataSource.Create(database.ConnectionString);
         await using var provider = database.Services(schedulerSource: schedulerSource);
-        var scheduled = DateTimeOffset.UtcNow.AddDays(1);
+        var tomorrow = DateTimeOffset.UtcNow.AddDays(1);
+        var scheduled = DateTimeOffset.FromUnixTimeSeconds(tomorrow.ToUnixTimeSeconds()).AddTicks(9);
 
         await using (var scope = provider.CreateAsyncScope())
         {
@@ -249,7 +250,7 @@ public class EnlistmentTests
         await Assert.That(await database.Count()).IsEqualTo(6L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM batch_log")).IsEqualTo(3L);
         await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(1);
-        await database.VerifyEnvelope(scheduled);
+        await database.VerifyEnvelope(scheduled.AddTicks(1));
     }
 
     [Test]
@@ -1425,7 +1426,7 @@ public class EnlistmentTests
             return (long)(await command.ExecuteScalarAsync())!;
         }
 
-        internal async Task VerifyEnvelope(DateTimeOffset scheduled)
+        internal async Task VerifyEnvelope(DateTimeOffset expectedDelivery)
         {
             await using var connection = new NpgsqlConnection(ConnectionString);
             await connection.OpenAsync();
@@ -1441,7 +1442,7 @@ public class EnlistmentTests
             await Assert.That(reader.GetFieldValue<byte[]>(3)[0]).IsEqualTo((byte)1);
             await Assert.That(reader.GetString(4)).IsEqualTo("café");
             await Assert.That(reader.GetInt32(5) is >= 0 and < 32).IsTrue();
-            await Assert.That(reader.GetFieldValue<DateTimeOffset>(6)).IsEqualTo(scheduled.AddTicks(-(scheduled.Ticks % 10)));
+            await Assert.That(reader.GetFieldValue<DateTimeOffset>(6)).IsEqualTo(expectedDelivery);
         }
 
         public ValueTask DisposeAsync()

@@ -90,6 +90,90 @@ public class AdoNetEnlistmentTests
     }
 
     [Test]
+    public async Task Batch_persists_scheduled_delivery_at_the_first_microsecond_on_or_after_the_requested_time()
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+        var exact = new DateTimeOffset(2026, 12, 1, 0, 0, 0, TimeSpan.Zero).AddTicks(10);
+        var beforePostgreSqlEpoch = DateTimeOffset.UnixEpoch;
+        var lastFinite = DateTimeOffset.MaxValue.AddTicks(-9);
+        (DateTimeOffset? Requested, DateTimeOffset? Expected)[] deadlines =
+        [
+            (exact.AddTicks(-1).ToOffset(TimeSpan.FromHours(2)), exact),
+            (exact, exact),
+            (beforePostgreSqlEpoch.AddTicks(1), beforePostgreSqlEpoch.AddTicks(10)),
+            (DateTimeOffset.MinValue, DateTimeOffset.MinValue),
+            (lastFinite, lastFinite),
+            (null, null)
+        ];
+
+        await using (var transaction = await outbox.BeginTransactionAsync(database.Source))
+        {
+            foreach (var deadline in deadlines)
+            {
+                await outbox.EnlistAsync(Record(deadline.Requested), default);
+            }
+
+            await transaction.CommitAsync();
+        }
+
+        await using var command = database.Source.CreateCommand(
+            $"SELECT deliver_at, isfinite(deliver_at) FROM {Database.Table} ORDER BY seq");
+        await using var reader = await command.ExecuteReaderAsync();
+
+        foreach (var deadline in deadlines)
+        {
+            await Assert.That(await reader.ReadAsync()).IsTrue();
+
+            if (deadline.Expected is { } expected)
+            {
+                await Assert.That(reader.GetFieldValue<DateTimeOffset>(0)).IsEqualTo(expected);
+                await Assert.That(reader.GetBoolean(1)).IsTrue();
+            }
+            else
+            {
+                await Assert.That(reader.IsDBNull(0)).IsTrue();
+            }
+        }
+
+        await Assert.That(await reader.ReadAsync()).IsFalse();
+    }
+
+    [Test]
+    [Arguments(1)]
+    [Arguments(9)]
+    public async Task Scheduled_delivery_beyond_the_last_finite_microsecond_fails_the_commit(int ticksPastLastFinite)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+        var lastFinite = DateTimeOffset.MaxValue.AddTicks(-9);
+
+        await using (var transaction = await outbox.BeginTransactionAsync(database.Source))
+        {
+            await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (1)", transaction: transaction);
+            await outbox.EnlistAsync(Record(), default);
+            await outbox.EnlistAsync(Record(lastFinite.AddTicks(ticksPastLastFinite)), default);
+
+            await Assert.That(async () => await transaction.CommitAsync()).Throws<ArgumentOutOfRangeException>()
+                .WithMessageContaining("last finite PostgreSQL outbox delivery timestamp");
+        }
+
+        await Assert.That(await database.Count()).IsEqualTo(0L);
+        await Assert.That(await database.Scalar("SELECT count(*) FROM business")).IsEqualTo(0L);
+
+        await using var next = await outbox.BeginTransactionAsync(database.Source);
+        await outbox.EnlistAsync(Record(), default);
+        await next.CommitAsync();
+        await Assert.That(await database.Count()).IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Fan_out_send_commits_one_row_per_route_in_the_same_transaction()
     {
         await using var database = new Database();
@@ -665,10 +749,10 @@ public class AdoNetEnlistmentTests
         await next.CommitAsync();
     }
 
-    private static OutboxRecord Record()
+    private static OutboxRecord Record(DateTimeOffset? deliverAt = null)
     {
         return new(Guid.CreateVersion7(), "events", "ado.probe;v=1",
-                new OutgoingMessage("destination", new byte[] { 1 }), DateTimeOffset.UtcNow);
+                new OutgoingMessage("destination", new byte[] { 1 }, deliverAt: deliverAt), DateTimeOffset.UtcNow);
     }
 
     private sealed class Database : IAsyncDisposable

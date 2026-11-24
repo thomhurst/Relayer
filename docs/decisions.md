@@ -718,6 +718,12 @@ using the selected connection's Npgsql host, port and database. A scheduled send
 before enlistment unless a worker matches the active transaction. Separate data sources can share a
 target. The database comparison follows D33 and requires a database or configured username.
 
+The shared PostgreSQL batch writer rounds `DeliverAt` up to a microsecond before binding it.
+Npgsql's `timestamptz` encoder discards sub-microsecond precision and maps the .NET date extrema to
+infinity by default. The insert preserves the finite minimum, and a timestamp beyond the last
+microsecond representable by `DateTimeOffset` fails the write. Dispatch keeps using PostgreSQL's
+native timestamp comparison against the persisted deadline.
+
 ## D33. Commit-triggered dispatch transfers owned buffers to a named worker
 
 **Context.** Direct dispatch must start without a polling interval and must outlive the committing
