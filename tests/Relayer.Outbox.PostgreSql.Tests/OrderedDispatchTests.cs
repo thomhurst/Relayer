@@ -211,6 +211,16 @@ public class OrderedDispatchTests
     }
 
     [Test]
+    public async Task Poll_interval_must_be_at_least_one_millisecond()
+    {
+        new PostgreSqlOrderedDispatchOptions { PollInterval = TimeSpan.FromMilliseconds(1) }.Validate();
+
+        var options = new PostgreSqlOrderedDispatchOptions { PollInterval = TimeSpan.FromTicks(1) };
+        var error = await Assert.That(() => options.Validate()).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(error!.ParamName).IsEqualTo(nameof(options.PollInterval));
+    }
+
+    [Test]
     public async Task Membership_heartbeats_assign_fair_shares_and_remove_crashed_members()
     {
         await using var fixture = new PostgreSqlFixture();

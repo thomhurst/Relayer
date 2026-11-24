@@ -12,13 +12,13 @@ public sealed class PostgreSqlTenantDispatchOptions
         get; init;
     } = 4;
 
-    /// <summary>Delay between finite catalog passes, including refreshing additions and removals.</summary>
+    /// <summary>Delay between finite catalog passes, including refreshing additions and removals. Minimum 1 ms.</summary>
     public TimeSpan PollInterval
     {
         get; init;
     } = TimeSpan.FromSeconds(1);
 
-    /// <summary>Maximum duration of one tenant turn or lease release. Failures do not stop other tenants.</summary>
+    /// <summary>Maximum duration of one tenant turn or lease release. Minimum 1 ms. Failures do not stop other tenants.</summary>
     public TimeSpan TurnTimeout
     {
         get; init;
@@ -91,9 +91,11 @@ public sealed class PostgreSqlTenantDispatchOptions
 
     private static void ValidateDelay(TimeSpan value, string name)
     {
-        if (value <= TimeSpan.Zero || value.TotalMilliseconds > uint.MaxValue - 1)
+        const uint MaxMilliseconds = uint.MaxValue - 1;
+
+        if (value.TotalMilliseconds is < 1 or > MaxMilliseconds)
         {
-            throw new ArgumentOutOfRangeException(name);
+            throw new ArgumentOutOfRangeException(name, $"The duration must be between 1 ms and {MaxMilliseconds} ms.");
         }
     }
 

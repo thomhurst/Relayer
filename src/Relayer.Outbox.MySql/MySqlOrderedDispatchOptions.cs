@@ -21,7 +21,7 @@ public sealed class MySqlOrderedDispatchOptions
         get; init;
     } = TimeSpan.FromSeconds(30);
 
-    /// <summary>Delay between scans, less than one third of the lease duration.</summary>
+    /// <summary>Delay between scans. At least 1 ms and less than one third of the lease duration.</summary>
     public TimeSpan PollInterval
     {
         get; init;
@@ -59,9 +59,9 @@ public sealed class MySqlOrderedDispatchOptions
             throw new ArgumentOutOfRangeException(nameof(LeaseDuration));
         }
 
-        if (PollInterval <= TimeSpan.Zero || PollInterval >= LeaseDuration / 3)
+        if (PollInterval < TimeSpan.FromMilliseconds(1) || PollInterval >= LeaseDuration / 3)
         {
-            throw new ArgumentOutOfRangeException(nameof(PollInterval), "PollInterval must be positive and less than LeaseDuration / 3.");
+            throw new ArgumentOutOfRangeException(nameof(PollInterval), "PollInterval must be at least 1 ms and less than LeaseDuration / 3.");
         }
 
         var store = new MySqlOutboxOptions { TablePrefix = TablePrefix, Lanes = Lanes };

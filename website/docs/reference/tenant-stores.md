@@ -245,6 +245,8 @@ Unordered recovery stops admitting native transport groups after half the remain
 time to commit completed groups. Unadmitted rows remain durable for a subsequent recovery pass.
 A native send or batch that individually exceeds the turn can still be retried under at-least-once delivery.
 Expected turn expiration does not produce an error log; genuine store failures still do.
+Registration requires `PollInterval` and `TurnTimeout` to be between 1 ms and 4,294,967,294 ms,
+inclusive. They default to 1 second and 15 seconds, respectively.
 Ordered batches stop admitting messages after half the remaining turn budget (or the existing lease-based
 admission budget, whichever is shorter), reserving time for the final admitted send and database commit.
 This lets completed sends drain a lane when a turn is shorter than a full batch. A send that itself
