@@ -22,13 +22,26 @@ internal sealed class MySqlOutboxBatch(string insertSql) : IDisposable
         """;
     }
 
-    internal void Prepare(MySqlTransaction transaction)
+    internal void Prepare(MySqlTransaction transaction, List<BufferedOutboxMessage> messages, int count)
     {
         _batch.Connection = transaction.Connection;
         _batch.Transaction = transaction;
+
+        try
+        {
+            for (var i = 0; i < count; i++)
+            {
+                Add(messages[i]);
+            }
+        }
+        catch
+        {
+            Clear();
+            throw;
+        }
     }
 
-    internal void Add(BufferedOutboxMessage message)
+    private void Add(BufferedOutboxMessage message)
     {
         if (_count == _rows.Count)
         {
@@ -130,11 +143,11 @@ internal sealed class MySqlOutboxBatch(string insertSql) : IDisposable
         internal void Set(BufferedOutboxMessage row)
         {
             row.Id.TryWriteBytes(_id, bigEndian: true, out _);
-            Timestamp(row.CreatedAt, _created);
+            Timestamp(row.CreatedAt.UtcDateTime, _created);
 
             if (row.DeliverAt is { } delivery)
             {
-                Timestamp(delivery, _delivery);
+                Timestamp(RoundDeliveryUp(delivery), _delivery);
             }
 
             Command.Parameters["delivery"].Value = row.DeliverAt.HasValue ? _deliveryView : DBNull.Value;
@@ -165,9 +178,31 @@ internal sealed class MySqlOutboxBatch(string insertSql) : IDisposable
             _key.Release();
         }
 
-        private static void Timestamp(DateTimeOffset value, Span<char> buffer)
+        private static DateTime RoundDeliveryUp(DateTimeOffset deliverAt)
         {
-            value.UtcDateTime.TryFormat(buffer, out _, "yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture);
+            var utc = deliverAt.UtcDateTime;
+            var ticks = utc.Ticks;
+            var subMicrosecondTicks = ticks % TimeSpan.TicksPerMicrosecond;
+
+            if (subMicrosecondTicks == 0)
+            {
+                return utc;
+            }
+
+            var roundedTicks = ticks + TimeSpan.TicksPerMicrosecond - subMicrosecondTicks;
+
+            if (roundedTicks > DateTime.MaxValue.Ticks)
+            {
+                throw new ArgumentOutOfRangeException(nameof(deliverAt), deliverAt,
+                    "MySQL outbox delivery deadlines cannot exceed 9999-12-31T23:59:59.999999Z.");
+            }
+
+            return new DateTime(roundedTicks, DateTimeKind.Utc);
+        }
+
+        private static void Timestamp(DateTime value, Span<char> buffer)
+        {
+            value.TryFormat(buffer, out _, "yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture);
         }
 
         // MySqlParameter serializes MemoryStream through TryGetBuffer. A reference-valued

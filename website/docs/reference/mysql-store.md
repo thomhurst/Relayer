@@ -122,6 +122,11 @@ so neither `AllowLoadLocalInfile` nor server local-infile settings need changing
 buffers and parameter views are reused after warm-up. Dates and UUIDs use the representation
 described above, regardless of native `DateTimeKind` and `GuidFormat` settings.
 
+At commit, Relayer rounds scheduled delivery deadlines up to the next UTC microsecond when
+needed so the stored deadline is never earlier than requested. Exact microseconds are preserved,
+and an unscheduled message stores `NULL`. A deadline later than `9999-12-31T23:59:59.999999Z`
+throws `ArgumentOutOfRangeException` at commit and rolls back the transaction.
+
 Both synchronous and asynchronous commit, rollback and disposal are supported. An insert
 failure or cancellation before commit rolls back the entire transaction, including earlier
 successful inserts in the batch. Disposing the transaction or scope without committing
