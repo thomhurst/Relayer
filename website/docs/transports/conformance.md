@@ -76,7 +76,7 @@ If the caller cancels or the scenario deadline expires while the dead-letter rea
 | `CreationContextCopies` | Stored `traceparent`/`tracestate` survive repeated serialized sends; each client send links to the original creation context | None |
 | `Reconnect` | The restarted receiver delivers a warm-up message before disconnect, then delivers a distinct recovery marker after reconnect | None |
 | `CleanShutdown` | Stop with a handler in flight, drain before closure, native lifecycle/durability evidence and no failure logs through disposal | None; requires `ITransportShutdownConformanceFixture` |
-| `SendDuringOutage` | Concurrent outage sends and offline shutdown finish within deadlines; recovery delivers every successfully acknowledged message at least once | Fixture supplies a positive `OutageSendTimeout` |
+| `SendDuringOutage` | Concurrent outage sends and offline shutdown finish within deadlines; recovery delivers every successfully acknowledged message at least once | Fixture supplies an `OutageSendTimeout` in the supported range |
 
 `OrderingByKey` lets each handler complete and settle while the 32 same-key sends proceed. It verifies native send order without holding a delivery lease during later sends or requiring capacity for 32 unsettled messages. Native admission backpressure remains active.
 
@@ -118,7 +118,9 @@ Shared outbox shutdown contracts separately validate claims, database disposal a
 
 ## Outage sends
 
-Opt into `SendDuringOutage` by supplying `ITransportConformanceFixture.OutageSendTimeout` and, when needed, `IsExpectedOutageFailure` for native transient connectivity or deadline exceptions. Other exceptions fail the contract; caller/scenario cancellation is never treated as a successful outage. A null timeout gives an explicit capability skip. A zero or negative timeout throws an `InvalidOperationException` before the suite starts the transport or calls any broker fault hooks. The suite still disposes the fixture. Kafka, RabbitMQ, Service Bus, Google Pub/Sub, NATS JetStream and SQS run this case against their broker or emulator; adapters whose receive paths remain planned do not claim this coverage.
+Opt into `SendDuringOutage` by supplying `ITransportConformanceFixture.OutageSendTimeout` and, when needed, `IsExpectedOutageFailure` for native transient connectivity or deadline exceptions. Other exceptions and caller or scenario cancellation fail the case. Kafka, RabbitMQ, Service Bus, Google Pub/Sub, NATS JetStream and SQS run this case against their broker or emulator. Adapters with planned receive paths have no outage conformance coverage.
+
+Set `OutageSendTimeout` to a positive duration under 4,294,962,295 milliseconds. The largest supported whole-millisecond budget is 4,294,962,294 milliseconds, which leaves five seconds for the watchdog. A null timeout skips the case. A timeout outside the supported range throws `InvalidOperationException` before the suite starts the transport, calls broker fault hooks or sends messages. The suite still disposes the fixture.
 
 The fixture must return from `DisconnectAsync` only after connectivity is interrupted. After restarting consumers, the suite observes a successful round trip before disconnecting so the outage interrupts an established receiver rather than racing its initial connection. The suite then attempts three concurrent sends and passes a deadline token to the adapter. Configure a native publish/retry deadline as well when the native API cannot cancel admitted sends: the Pub/Sub fixture uses the native API client's publish expiration. An independent watchdog fails a send that ignores its budget. The suite then requests offline shutdown with a ten-second token and a fifteen-second watchdog, restores the broker, finishes shutdown with connectivity available, restarts consumers and sends a recovery marker. This second shutdown awaits any native drain that outlived the offline stop budget before attempting a restart.
 

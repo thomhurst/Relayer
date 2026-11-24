@@ -83,10 +83,30 @@ public sealed class OutageConformanceTests
     [Test]
     public async Task Fixture_without_real_fault_injection_explicitly_skips_outage()
     {
+        var calls = new List<string>();
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
-            (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new InMemoryFixture(tracing)));
+            (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
+                new OutageFixture(tracing, "success", calls: calls) { OutageSendTimeout = null }));
         var result = await suite.RunAsync(TransportConformanceCase.SendDuringOutage);
         await Assert.That(result.SkipReason).IsEqualTo("Fixture has no bounded broker-outage send contract.");
+        await Assert.That(calls.ToArray()).IsEquivalentTo([nameof(IAsyncDisposable.DisposeAsync)]);
+    }
+
+    [Test]
+    [Arguments(4_294_962_295L)]
+    [Arguments(4_294_967_295L)]
+    public async Task Outage_rejects_oversized_timeout_before_lifecycle_calls(long milliseconds)
+    {
+        var calls = new List<string>();
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
+            (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
+                new OutageFixture(tracing, "success", calls: calls) { OutageSendTimeout = TimeSpan.FromMilliseconds(milliseconds) }));
+
+        var failure = await Assert.That(async () => await suite.RunAsync(TransportConformanceCase.SendDuringOutage))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(calls.ToArray()).IsEquivalentTo([nameof(IAsyncDisposable.DisposeAsync)]);
+        await Assert.That(failure!.Message).Contains("OutageSendTimeout must be less than 4,294,962,295 milliseconds");
     }
 
     [Test]
@@ -131,12 +151,15 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
-    public async Task Cancelled_outage_wait_cleans_up_before_pending_send_faults()
+    [Arguments(25L)]
+    [Arguments(4_294_962_294L)]
+    public async Task Cancelled_outage_wait_cleans_up_before_pending_send_faults(long milliseconds)
     {
         var send = new PendingHook("outage sends");
         using var caller = new CancellationTokenSource();
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
-            (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new OutageFixture(tracing, "success", send)));
+            (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
+                new OutageFixture(tracing, "success", send) { OutageSendTimeout = TimeSpan.FromMilliseconds(milliseconds) }));
         var run = suite.RunAsync(TransportConformanceCase.SendDuringOutage, caller.Token);
 
         try
@@ -407,6 +430,8 @@ public sealed class OutageConformanceTests
 
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
         {
+            calls?.Add(nameof(SendAsync));
+
             if (_restartPending)
             {
                 await _inner.Transport.StartAsync(token);
