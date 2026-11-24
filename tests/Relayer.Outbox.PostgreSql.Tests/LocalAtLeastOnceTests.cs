@@ -99,6 +99,7 @@ public class LocalAtLeastOnceTests(PostgreSqlLocalSessionFixture server)
         var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var otherSettled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finalBarrier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retriedAttempt = 0;
         var expectedValue = competingFailure ? 5 : 3;
         transport.Register("work", async (delivery, token) =>
         {
@@ -113,6 +114,11 @@ public class LocalAtLeastOnceTests(PostgreSqlLocalSessionFixture server)
             {
                 secondEntered.SetResult();
                 await releaseSecond.Task.WaitAsync(token);
+            }
+
+            if (competingFailure && value == 3)
+            {
+                retriedAttempt = delivery.Attempt;
             }
 
             await transport.SettleAsync(delivery, Disposition.Complete, token);
@@ -172,6 +178,18 @@ public class LocalAtLeastOnceTests(PostgreSqlLocalSessionFixture server)
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(competingFailure ? 1L : 0L);
         await Assert.That(await Count(source, "relayer_outbox WHERE attempts = 1 AND claim_token IS NULL"))
             .IsEqualTo(competingFailure ? 1L : 0L);
+
+        if (competingFailure)
+        {
+            using var maintenance = new PostgreSqlMaintenanceWorker(source,
+                new()
+                {
+                    RecoveryDelay = TimeSpan.Zero
+                }, [transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+            await maintenance.SweepAsync(deadline.Token);
+            await Assert.That(retriedAttempt).IsEqualTo(2);
+            await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
+        }
 
         ValueTask SendAsync(string destination, byte value)
         {

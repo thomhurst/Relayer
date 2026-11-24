@@ -73,7 +73,8 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
         bool recovery, CancellationToken cancellationToken);
 
     // Native operations are forwarded unchanged, without another async state machine on the success path.
-    protected abstract ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken);
+    protected abstract ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, bool deferred,
+        CancellationToken cancellationToken);
 
     protected abstract ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken);
 
@@ -316,7 +317,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     protected async ValueTask DispatchAsync(TBatch batch, CancellationToken cancellationToken,
         bool recovery = false, bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null,
-        TimeProvider? admissionTimeProvider = null, bool background = false)
+        TimeProvider? admissionTimeProvider = null, bool background = false, bool deferred = false)
     {
         var started = admissionBudget.HasValue ? (admissionTimeProvider ?? TimeProvider.System).GetTimestamp() : 0;
         Sort(batch);
@@ -371,7 +372,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                 var expires = now + _claimDuration;
                 // PostgreSQL leases use database time; measure age from before the round trip.
                 var claimStarted = _leaseTime?.GetTimestamp() ?? 0;
-                await ClaimAsync(count, now, expires, cancellationToken).ConfigureAwait(false);
+                await ClaimAsync(count, now, expires, deferred, cancellationToken).ConfigureAwait(false);
                 var live = CompactClaims(_messages.AsSpan(0, count), _claims.AsSpan(0, count), _claimed.AsSpan(0, count),
                     _created.AsSpan(0, count));
 

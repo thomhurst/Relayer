@@ -29,9 +29,9 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     private readonly int _deferredCapacity;
     // Only the hosted queue reader touches parked rows. Slot release only signals that reader.
     private Dictionary<PostgreSqlLocalTransport.Receiver, Queue<OutboxDispatchBatch>>? _deferredLocal;
+    private Stack<Queue<OutboxDispatchBatch>>? _emptyDeferredQueues;
     private Action? _requestDeferredDispatch;
     private int _deferredCount;
-    private bool _dispatchingDeferred;
     private PostgreSqlLocalStatePool<LocalAttempt>? _localAttempts;
     private TaskCompletionSource? _localDrained;
     // The queue reader owns the initial count until it exits. Each detached attempt owns one more.
@@ -231,10 +231,11 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         return new(offset);
     }
 
-    protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken)
+    protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, bool deferred,
+        CancellationToken cancellationToken)
     {
         return _store.ClaimDirectBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), expires - now,
-            cancellationToken, deferred: _dispatchingDeferred);
+            cancellationToken, deferred);
     }
 
     protected override ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken)
@@ -334,7 +335,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
 
         if (!deferred.TryGetValue(receiver, out var waiting))
         {
-            waiting = new();
+            waiting = _emptyDeferredQueues?.TryPop(out var empty) == true ? empty : new();
             deferred.Add(receiver, waiting);
             receiver.CapacityReleased += _requestDeferredDispatch ??= RequestDeferredDispatch;
         }
@@ -390,6 +391,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
                     receiver.CapacityReleased -= _requestDeferredDispatch;
                     // Dictionary removal preserves the active enumerator on .NET.
                     deferred.Remove(receiver);
+                    (_emptyDeferredQueues ??= new()).Push(waiting);
                 }
             }
 
@@ -398,14 +400,11 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
                 // Recovery or ordered dispatch may race for capacity. The normal admission and claim
                 // path arbitrates both races and can park these rows again.
                 // A competing failure may have changed attempt metadata in PostgreSQL while a row waited.
-                _dispatchingDeferred = true;
-                await DispatchAsync(ready, cancellationToken, background: true).ConfigureAwait(false);
+                await DispatchAsync(ready, cancellationToken, background: true, deferred: true).ConfigureAwait(false);
             }
         }
         finally
         {
-            _dispatchingDeferred = false;
-
             if (ready is not null)
             {
                 Return(ready);
@@ -454,7 +453,8 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
                 }
             }
 
-            deferred.Clear();
+            _deferredLocal = null;
+            _emptyDeferredQueues = null;
             _deferredCount = 0;
         }
 
