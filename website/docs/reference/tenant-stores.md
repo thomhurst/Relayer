@@ -246,7 +246,9 @@ time to commit completed groups. Unadmitted rows remain durable for a subsequent
 A native send or batch that individually exceeds the turn can still be retried under at-least-once delivery.
 Expected turn expiration does not produce an error log; genuine store failures still do.
 Registration requires `PollInterval` and `TurnTimeout` to be between 1 ms and 4,294,967,294 ms,
-inclusive. They default to 1 second and 15 seconds, respectively.
+inclusive. They default to 1 second and 15 seconds, respectively. The catalog poll timer and the
+cancellation timers for tenant turns, lease release, and shutdown round fractional milliseconds up.
+For example, a setting of 1.9 ms schedules a 2 ms timer.
 
 Catalog dispatch applies the same [PostgreSQL cutoff age limits](postgres-maintenance.md#cutoff-age-limits)
 as standalone maintenance. It rounds fractional microseconds up for `RecoveryDelay`,

@@ -14,6 +14,8 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
     private readonly ITenantSource _catalog;
     private readonly IServiceScopeFactory? _scopes;
     private readonly PostgreSqlTenantDispatchOptions _options;
+    private readonly TimeSpan _pollDelay;
+    private readonly TimeSpan _turnTimerDelay;
     private readonly ITransport[] _transports;
     private readonly ILoggerFactory _logs;
     private readonly RelayerInstrumentation? _instrumentation;
@@ -31,6 +33,8 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         _catalog = catalog;
         _options = options;
         options.Validate();
+        _pollDelay = RoundUpToMilliseconds(options.PollInterval);
+        _turnTimerDelay = RoundUpToMilliseconds(options.TurnTimeout);
         _transports = transports.ToArray();
 
         if (_transports.Length == 0)
@@ -44,6 +48,21 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         _recoveryTimeProvider = recoveryTimeProvider;
         _logger = logs.CreateLogger<PostgreSqlTenantDispatcher>();
     }
+
+    private static TimeSpan RoundUpToMilliseconds(TimeSpan duration)
+    {
+        return TimeSpan.FromMilliseconds(Math.Ceiling(duration.TotalMilliseconds));
+    }
+
+    internal TimeProvider TimerProvider
+    {
+        get; init;
+    } = TimeProvider.System;
+
+    internal Action<CancellationTokenSource, TimeSpan> CancelAfter
+    {
+        get; init;
+    } = static (source, delay) => source.CancelAfter(delay);
 
     internal PostgreSqlDirectDispatcher GetDispatcher(string tenantId)
     {
@@ -118,7 +137,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
                     Failed(_logger, "catalog", error);
                 }
 
-                await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
+                await Task.Delay(_pollDelay, TimerProvider, stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -195,7 +214,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
 
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
                 var turnStarted = Stopwatch.GetTimestamp();
-                deadline.CancelAfter(_options.TurnTimeout);
+                CancelAfter(deadline, _turnTimerDelay);
 
                 try
                 {
@@ -273,7 +292,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
             _stores.Clear();
         }
 
-        using var shutdown = new CancellationTokenSource(_options.TurnTimeout);
+        using var shutdown = new CancellationTokenSource(_turnTimerDelay, TimerProvider);
         await Parallel.ForEachAsync(stores, new ParallelOptions { MaxDegreeOfParallelism = _options.MaxConnections },
             async (store, _) => await ReleaseAsync(store, shutdown.Token).ConfigureAwait(false)).ConfigureAwait(false);
     }
@@ -282,7 +301,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
     {
         store.Direct.Retire();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(_options.TurnTimeout);
+        CancelAfter(deadline, _turnTimerDelay);
 
         try
         {

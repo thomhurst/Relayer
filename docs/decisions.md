@@ -1654,8 +1654,9 @@ pooled sources; existing fixed-store registrations retain their configuration an
 workers. Unpooled native connection setup is visible in the catalog benchmark; this opt-in feature
 makes no throughput claim against pooled fixed-store dispatch. Applications that require pooled
 dispatch can continue using fixed-store registrations with explicitly managed per-source budgets.
-Catalog refreshes and turns are finite, bounded by cancellation deadlines. Per-store reusable buffers
-and queues live only while cataloged; removing a store retires queues and releases fenced leases
+Catalog refreshes and turns are finite, bounded by cancellation deadlines. Round fractional milliseconds
+up when programming .NET timers for catalog polling, tenant turns, lease release and shutdown.
+Per-store reusable buffers and queues live only while cataloged; removing a store retires queues and releases fenced leases
 under the same admission limit. Native expiry recovers interrupted release. Source ownership,
 authorization, provisioning and immutable snapshot publication remain application responsibilities.
 
