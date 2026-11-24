@@ -529,14 +529,25 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
                 break;
             case TransportConformanceCase.SendDuringOutage:
-                await Send(0).ConfigureAwait(false);
-                CheckBody(await Next().ConfigureAwait(false), 0);
+                const int OutageInitial = 0;
+                const int OutageWarmup = 5;
+
+                await Send(OutageInitial).ConfigureAwait(false);
+                CheckBody(await Next().ConfigureAwait(false), OutageInitial);
                 await Stop().ConfigureAwait(false);
                 await Start().ConfigureAwait(false);
-                // Native Start may return before its stream is established. Observe a
-                // delivery after restart before testing an established connection outage.
-                await Send(0).ConfigureAwait(false);
-                CheckBody(await Next().ConfigureAwait(false), 0);
+                // Native Start may return before its stream is established. An initial
+                // replay cannot prove that the restarted receiver delivered the warm-up.
+                await Send(OutageWarmup).ConfigureAwait(false);
+                Delivery outageWarmup;
+
+                do
+                {
+                    outageWarmup = await Next("outage warm-up receive").ConfigureAwait(false);
+                }
+                while (HasBody(outageWarmup, OutageInitial));
+
+                CheckBody(outageWarmup, OutageWarmup);
                 progress.Phase = "broker disconnect";
                 await WaitForLifecycleAsync(fixture.DisconnectAsync(token), token).ConfigureAwait(false);
                 progress.Phase = "outage sends";
@@ -584,8 +595,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     await Stop().ConfigureAwait(false);
                     await Start().ConfigureAwait(false);
                     await Send(4).ConfigureAwait(false);
-                    // A failed/cancelled native send or unsettled warm-up may still arrive. Duplicates are legal;
-                    // every successfully acknowledged send and the recovery marker must arrive.
+                    // Failed or cancelled native sends and replays of either pre-outage marker may still arrive.
+                    // Every successfully acknowledged send and the recovery marker must arrive.
                     var required = new HashSet<int> { 4 };
 
                     for (var i = 0; i < acknowledged.Length; i++)
@@ -602,7 +613,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                         using var document = JsonDocument.Parse(message.Body);
                         var value = document.RootElement.GetProperty("Value").GetInt32();
                         CheckBody(message, value);
-                        Require(value is >= 0 and <= 4, "Unexpected outage delivery body.");
+                        Require(value is >= OutageInitial and <= OutageWarmup, "Unexpected outage delivery body.");
                         required.Remove(value);
                     }
                 }
