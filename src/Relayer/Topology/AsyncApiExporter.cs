@@ -152,16 +152,36 @@ internal static class AsyncApiExporter
 
     private static string GetAliasKey(JsonObject messages, MessageType identity, string payloadKey)
     {
-        var key = GetComponentKey(identity) + "_as_" + payloadKey;
+        var registeredKey = GetComponentKey(identity);
+        var key = registeredKey + "_as_" + payloadKey;
 
-        if (!messages.ContainsKey(key))
+        if (messages.ContainsKey(key))
         {
-            // Another consumer or a send route can use this wire identity with a different payload.
-            var schema = messages[payloadKey]!["payload"]!["schema"]!.DeepClone();
-            messages.Add(key, CreateMessage(identity, key, schema));
+            return key;
         }
 
+        var schema = ClonePayloadSchema(messages[payloadKey]!);
+
+        if (messages[registeredKey] is { } registered && JsonNode.DeepEquals(schema, ClonePayloadSchema(registered)))
+        {
+            return registeredKey;
+        }
+
+        messages.Add(key, CreateMessage(identity, key, schema));
         return key;
+    }
+
+    private static JsonNode ClonePayloadSchema(JsonNode message)
+    {
+        var schema = message["payload"]!["schema"]!.DeepClone();
+
+        if (schema is JsonObject schemaObject)
+        {
+            // The root resource ID identifies the component and is not a payload constraint.
+            schemaObject.Remove("$id");
+        }
+
+        return schema;
     }
 
     private static void AddReceiveMessage(Channel channel, List<string> keys, string key)
